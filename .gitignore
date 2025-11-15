@@ -13,3 +13,6 @@ npm-debug.log*
 # editor settings
 .vscode/
 .idea/
+
+# backup logs
+backup.log
