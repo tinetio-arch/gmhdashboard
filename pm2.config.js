@@ -18,7 +18,11 @@ module.exports = {
         PGSSLMODE: 'require',
         NEXT_TELEMETRY_DISABLED: '1',
         SESSION_SECRET: 'change-me-session-secret',
-        NEXT_PUBLIC_BASE_PATH: '/ops'
+        NEXT_PUBLIC_BASE_PATH: '/ops',
+        QUICKBOOKS_CLIENT_ID: 'AB3eaMsbEZ0soZabCEJzRVnFuFerzS1865NZpfJm2ypXV31MiB',
+        QUICKBOOKS_CLIENT_SECRET: 'Ji6bJy4NjB095mYQ9j2t44O5MzQrUHZmYK9SgAfa',
+        QUICKBOOKS_REDIRECT_URI: 'https://nowoptimal.com/ops/api/auth/quickbooks/callback',
+        QUICKBOOKS_ENVIRONMENT: 'production'
       },
       env_production: {
         NODE_ENV: 'production',
@@ -31,7 +35,11 @@ module.exports = {
         PGSSLMODE: 'require',
         NEXT_TELEMETRY_DISABLED: '1',
         SESSION_SECRET: 'change-me-session-secret',
-        NEXT_PUBLIC_BASE_PATH: '/ops'
+        NEXT_PUBLIC_BASE_PATH: '/ops',
+        QUICKBOOKS_CLIENT_ID: 'AB3eaMsbEZ0soZabCEJzRVnFuFerzS1865NZpfJm2ypXV31MiB',
+        QUICKBOOKS_CLIENT_SECRET: 'Ji6bJy4NjB095mYQ9j2t44O5MzQrUHZmYK9SgAfa',
+        QUICKBOOKS_REDIRECT_URI: 'https://nowoptimal.com/ops/api/auth/quickbooks/callback',
+        QUICKBOOKS_ENVIRONMENT: 'production'
       },
       max_memory_restart: '512M',
       restart_delay: 5000
