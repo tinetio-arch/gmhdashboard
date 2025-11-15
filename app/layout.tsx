@@ -42,6 +42,7 @@ export default async function RootLayout({
                 {user && (user.can_sign || userHasRole(user, 'admin')) && <Link href="/provider/signatures">Provider Signatures</Link>}
                 <Link href="/account">Account</Link>
                 {user && userHasRole(user, 'admin') && <Link href="/admin/users">User Admin</Link>}
+                {user && userHasRole(user, 'admin') && <Link href="/admin/quickbooks">QuickBooks</Link>}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', color: '#475569' }}>
                 <span style={{ fontWeight: 600 }}>{user?.display_name ?? user?.email}</span>

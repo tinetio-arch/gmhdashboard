@@ -1,3 +1,0 @@
-# Auto-backup gmh-dashboard to GitHub every 6 hours
-0 */6 * * * /Users/philschafer/Phils\ Fun\ Stuff/gmh-dashboard/backup-to-github.sh >/dev/null 2>&1
-
