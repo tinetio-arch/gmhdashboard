@@ -1,16 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 
 export async function GET(req: NextRequest) {
   try {
-    const session = await getServerSession();
-    if (!session?.user || session.user.role !== 'admin') {
-      return NextResponse.json(
-        { error: 'Unauthorized - Admin access required' },
-        { status: 403 }
-      );
-    }
+    const user = await requireApiUser(req, 'admin');
 
     // Get unresolved payment issues with patient details
     const issues = await query<{

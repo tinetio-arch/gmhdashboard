@@ -1,17 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { getServerSession } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 
 export async function GET(req: NextRequest) {
   try {
     // Check if user is authenticated and is admin
-    const session = await getServerSession();
-    if (!session?.user || session.user.role !== 'admin') {
-      return NextResponse.json(
-        { error: 'Unauthorized - Admin access required' },
-        { status: 403 }
-      );
-    }
+    const user = await requireApiUser(req, 'admin');
 
     const clientId = process.env.QUICKBOOKS_CLIENT_ID;
     const redirectUri = process.env.QUICKBOOKS_REDIRECT_URI;

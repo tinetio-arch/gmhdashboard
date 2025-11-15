@@ -1,17 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 import { createQuickBooksClient } from '@/lib/quickbooks';
 import { query } from '@/lib/db';
 
 export async function POST(req: NextRequest) {
   try {
-    const session = await getServerSession();
-    if (!session?.user || session.user.role !== 'admin') {
-      return NextResponse.json(
-        { error: 'Unauthorized - Admin access required' },
-        { status: 403 }
-      );
-    }
+    const user = await requireApiUser(req, 'admin');
 
     // Create QuickBooks client
     const qbClient = await createQuickBooksClient();

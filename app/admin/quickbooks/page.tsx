@@ -1,11 +1,11 @@
 import { redirect } from 'next/navigation';
-import { getServerSession } from '@/lib/auth';
+import { getCurrentUser } from '@/lib/auth';
 import QuickBooksAdminClient from './QuickBooksAdminClient';
 
 export default async function QuickBooksAdminPage() {
-  const session = await getServerSession();
+  const user = await getCurrentUser();
 
-  if (!session?.user || session.user.role !== 'admin') {
+  if (!user || user.role !== 'admin') {
     redirect('/unauthorized');
   }
 
