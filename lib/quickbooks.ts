@@ -1,0 +1,589 @@
+/**
+ * QuickBooks Online API Client
+ * Handles authentication and data fetching from QuickBooks Online API
+ */
+
+export type QuickBooksConfig = {
+  clientId: string;
+  clientSecret: string;
+  realmId: string; // Company ID
+  accessToken?: string;
+  refreshToken?: string;
+  environment?: 'sandbox' | 'production';
+};
+
+export type QuickBooksCustomer = {
+  Id: string;
+  DisplayName: string;
+  PrimaryEmailAddr?: { Address: string };
+  PrimaryPhone?: { FreeFormNumber: string };
+  Balance?: number;
+  BalanceWithJobs?: number;
+};
+
+export type QuickBooksInvoice = {
+  Id: string;
+  DocNumber?: string;
+  TxnDate?: string;
+  DueDate?: string;
+  CustomerRef: { value: string; name?: string };
+  Balance: number;
+  TotalAmt: number;
+  CurrencyRef?: { value: string };
+  Line?: Array<{
+    Amount: number;
+    Description?: string;
+  }>;
+  LinkedTxn?: Array<{
+    TxnId: string;
+    TxnType: string;
+  }>;
+};
+
+export type QuickBooksPayment = {
+  Id: string;
+  TxnDate?: string;
+  TotalAmt: number;
+  CustomerRef: { value: string; name?: string };
+  DepositToAccountRef?: { value: string };
+};
+
+export type QuickBooksRecurringTransaction = {
+  Id: string;
+  Name: string;
+  Type: 'Invoice' | 'SalesReceipt' | 'Estimate' | 'CreditMemo';
+  Active: boolean;
+  ScheduleInfo?: {
+    StartDate?: string;
+    EndDate?: string;
+    NextDueDate?: string;
+    IntervalType?: 'Daily' | 'Weekly' | 'Monthly' | 'Yearly';
+    NumInterval?: number;
+    DaysBefore?: number;
+    MaxOccurrences?: number;
+    ReminderDaysBefore?: number;
+  };
+  CustomerRef?: { value: string; name?: string };
+  TotalAmt?: number;
+  SyncToken?: string;
+};
+
+export class QuickBooksClient {
+  private config: QuickBooksConfig;
+  private baseUrl: string;
+
+  constructor(config: QuickBooksConfig) {
+    this.config = config;
+    this.baseUrl = config.environment === 'sandbox'
+      ? 'https://sandbox-quickbooks.api.intuit.com'
+      : 'https://quickbooks.api.intuit.com';
+  }
+
+  private async request<T>(
+    method: string,
+    endpoint: string,
+    body?: unknown
+  ): Promise<T> {
+    if (!this.config.accessToken) {
+      throw new Error('QuickBooks access token is required. Please authenticate first.');
+    }
+
+    const url = `${this.baseUrl}/v3/company/${this.config.realmId}${endpoint}`;
+    const response = await fetch(url, {
+      method,
+      headers: {
+        'Authorization': `Bearer ${this.config.accessToken}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`QuickBooks API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Refresh the access token using the refresh token
+   */
+  async refreshAccessToken(): Promise<{ access_token: string; refresh_token: string; expires_in: number }> {
+    const tokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
+    
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Basic ${Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString('base64')}`,
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: this.config.refreshToken!,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Get all customers with balances
+   */
+  async getCustomers(): Promise<QuickBooksCustomer[]> {
+    const customers: QuickBooksCustomer[] = [];
+    let startPosition = 1;
+    const maxResults = 100;
+
+    while (true) {
+      const response = await this.request<{
+        QueryResponse: {
+          Customer?: QuickBooksCustomer[];
+          maxResults: number;
+          startPosition: number;
+        };
+      }>(`GET`, `/query?query=SELECT * FROM Customer MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`);
+
+      const queryResponse = response.QueryResponse;
+      if (queryResponse.Customer) {
+        customers.push(...queryResponse.Customer);
+      }
+
+      if (!queryResponse.Customer || queryResponse.Customer.length < maxResults) {
+        break;
+      }
+
+      startPosition += maxResults;
+    }
+
+    return customers;
+  }
+
+  /**
+   * Get customer by ID
+   */
+  async getCustomer(customerId: string): Promise<QuickBooksCustomer> {
+    const response = await this.request<{
+      QueryResponse: {
+        Customer: QuickBooksCustomer[];
+      };
+    }>(`GET`, `/query?query=SELECT * FROM Customer WHERE Id = '${customerId}'`);
+
+    if (!response.QueryResponse.Customer || response.QueryResponse.Customer.length === 0) {
+      throw new Error(`Customer not found: ${customerId}`);
+    }
+
+    return response.QueryResponse.Customer[0];
+  }
+
+  /**
+   * Get all invoices for a customer
+   */
+  async getInvoicesForCustomer(customerId: string): Promise<QuickBooksInvoice[]> {
+    const invoices: QuickBooksInvoice[] = [];
+    let startPosition = 1;
+    const maxResults = 100;
+
+    while (true) {
+      const response = await this.request<{
+        QueryResponse: {
+          Invoice?: QuickBooksInvoice[];
+          maxResults: number;
+          startPosition: number;
+        };
+      }>(`GET`, `/query?query=SELECT * FROM Invoice WHERE CustomerRef = '${customerId}' MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`);
+
+      const queryResponse = response.QueryResponse;
+      if (queryResponse.Invoice) {
+        invoices.push(...queryResponse.Invoice);
+      }
+
+      if (!queryResponse.Invoice || queryResponse.Invoice.length < maxResults) {
+        break;
+      }
+
+      startPosition += maxResults;
+    }
+
+    return invoices;
+  }
+
+  /**
+   * Get all open invoices (with balance > 0)
+   */
+  async getOpenInvoices(): Promise<QuickBooksInvoice[]> {
+    const invoices: QuickBooksInvoice[] = [];
+    let startPosition = 1;
+    const maxResults = 100;
+
+    while (true) {
+      const response = await this.request<{
+        QueryResponse: {
+          Invoice?: QuickBooksInvoice[];
+          maxResults: number;
+          startPosition: number;
+        };
+      }>(`GET`, `/query?query=SELECT * FROM Invoice WHERE Balance > '0' MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`);
+
+      const queryResponse = response.QueryResponse;
+      if (queryResponse.Invoice) {
+        invoices.push(...queryResponse.Invoice);
+      }
+
+      if (!queryResponse.Invoice || queryResponse.Invoice.length < maxResults) {
+        break;
+      }
+
+      startPosition += maxResults;
+    }
+
+    return invoices;
+  }
+
+  /**
+   * Get payments for a customer
+   */
+  async getPaymentsForCustomer(customerId: string): Promise<QuickBooksPayment[]> {
+    const payments: QuickBooksPayment[] = [];
+    let startPosition = 1;
+    const maxResults = 100;
+
+    while (true) {
+      const response = await this.request<{
+        QueryResponse: {
+          Payment?: QuickBooksPayment[];
+          maxResults: number;
+          startPosition: number;
+        };
+      }>(`GET`, `/query?query=SELECT * FROM Payment WHERE CustomerRef = '${customerId}' MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`);
+
+      const queryResponse = response.QueryResponse;
+      if (queryResponse.Payment) {
+        payments.push(...queryResponse.Payment);
+      }
+
+      if (!queryResponse.Payment || queryResponse.Payment.length < maxResults) {
+        break;
+      }
+
+      startPosition += maxResults;
+    }
+
+    return payments;
+  }
+
+  /**
+   * Calculate days overdue for an invoice
+   */
+  calculateDaysOverdue(invoice: QuickBooksInvoice): number {
+    if (!invoice.DueDate) return 0;
+    
+    const dueDate = new Date(invoice.DueDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    dueDate.setHours(0, 0, 0, 0);
+    
+    const diffTime = today.getTime() - dueDate.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    
+    return Math.max(0, diffDays);
+  }
+
+  /**
+   * Determine payment status for an invoice
+   */
+  getPaymentStatus(invoice: QuickBooksInvoice): 'paid' | 'partial' | 'overdue' | 'open' {
+    if (invoice.Balance === 0) return 'paid';
+    if (invoice.Balance < invoice.TotalAmt) return 'partial';
+    
+    const daysOverdue = this.calculateDaysOverdue(invoice);
+    if (daysOverdue > 0) return 'overdue';
+    
+    return 'open';
+  }
+
+  /**
+   * Get all recurring transactions (templates)
+   */
+  async getRecurringTransactions(): Promise<QuickBooksRecurringTransaction[]> {
+    const transactions: QuickBooksRecurringTransaction[] = [];
+    let startPosition = 1;
+    const maxResults = 100;
+
+    while (true) {
+      const response = await this.request<{
+        QueryResponse: {
+          RecurringTransaction?: QuickBooksRecurringTransaction[];
+          maxResults: number;
+          startPosition: number;
+        };
+      }>(`GET`, `/query?query=SELECT * FROM RecurringTransaction MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`);
+
+      const queryResponse = response.QueryResponse;
+      if (queryResponse.RecurringTransaction) {
+        transactions.push(...queryResponse.RecurringTransaction);
+      }
+
+      if (!queryResponse.RecurringTransaction || queryResponse.RecurringTransaction.length < maxResults) {
+        break;
+      }
+
+      startPosition += maxResults;
+    }
+
+    return transactions;
+  }
+
+  /**
+   * Get recurring transactions for a specific customer
+   */
+  async getRecurringTransactionsForCustomer(customerId: string): Promise<QuickBooksRecurringTransaction[]> {
+    const transactions: QuickBooksRecurringTransaction[] = [];
+    let startPosition = 1;
+    const maxResults = 100;
+
+    while (true) {
+      const response = await this.request<{
+        QueryResponse: {
+          RecurringTransaction?: QuickBooksRecurringTransaction[];
+          maxResults: number;
+          startPosition: number;
+        };
+      }>(`GET`, `/query?query=SELECT * FROM RecurringTransaction WHERE CustomerRef = '${customerId}' MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`);
+
+      const queryResponse = response.QueryResponse;
+      if (queryResponse.RecurringTransaction) {
+        transactions.push(...queryResponse.RecurringTransaction);
+      }
+
+      if (!queryResponse.RecurringTransaction || queryResponse.RecurringTransaction.length < maxResults) {
+        break;
+      }
+
+      startPosition += maxResults;
+    }
+
+    return transactions;
+  }
+
+  /**
+   * Get only active recurring transactions
+   */
+  async getActiveRecurringTransactions(): Promise<QuickBooksRecurringTransaction[]> {
+    const allRecurring = await this.getRecurringTransactions();
+    return allRecurring.filter(rt => rt.Active === true);
+  }
+
+  /**
+   * Get invoices generated from a recurring transaction template
+   * Note: This requires querying invoices and matching by template name or other identifier
+   */
+  async getInvoicesFromRecurringTemplate(recurringTemplateName: string): Promise<QuickBooksInvoice[]> {
+    // QuickBooks doesn't directly link invoices to recurring templates,
+    // but we can search for invoices that match the pattern
+    const allInvoices = await this.getOpenInvoices();
+    return allInvoices.filter(inv => 
+      inv.DocNumber?.includes(recurringTemplateName) || 
+      false // Add other matching logic as needed
+    );
+  }
+
+  /**
+   * Calculate next charge date based on recurring transaction schedule
+   */
+  calculateNextChargeDate(recurring: QuickBooksRecurringTransaction): Date | null {
+    if (!recurring.ScheduleInfo?.NextDueDate) {
+      return null;
+    }
+
+    return new Date(recurring.ScheduleInfo.NextDueDate);
+  }
+
+  /**
+   * Check if a recurring transaction is due for next charge
+   */
+  isRecurringDue(recurring: QuickBooksRecurringTransaction): boolean {
+    const nextDue = this.calculateNextChargeDate(recurring);
+    if (!nextDue) return false;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    nextDue.setHours(0, 0, 0, 0);
+
+    return nextDue <= today;
+  }
+}
+
+/**
+ * Load OAuth tokens from database
+ */
+async function loadTokensFromDatabase(realmId?: string): Promise<{
+  accessToken: string;
+  refreshToken: string;
+  realmId: string;
+} | null> {
+  try {
+    const { query } = await import('./db');
+    const realmIdToLoad = realmId || process.env.QUICKBOOKS_REALM_ID;
+    
+    if (!realmIdToLoad) {
+      return null;
+    }
+
+    const tokens = await query<{
+      realm_id: string;
+      access_token: string;
+      refresh_token: string;
+      expires_at: Date;
+    }>(
+      `SELECT realm_id, access_token, refresh_token, expires_at 
+       FROM quickbooks_oauth_tokens 
+       WHERE realm_id = $1 
+       ORDER BY updated_at DESC 
+       LIMIT 1`,
+      [realmIdToLoad]
+    );
+
+    if (tokens.length === 0) {
+      return null;
+    }
+
+    const token = tokens[0];
+    
+    // Check if token is expired (with 5 minute buffer)
+    const expiresAt = new Date(token.expires_at);
+    const now = new Date();
+    const buffer = 5 * 60 * 1000; // 5 minutes
+    
+    if (expiresAt.getTime() - now.getTime() < buffer) {
+      // Token expired, try to refresh
+      console.log('QuickBooks access token expired, attempting refresh...');
+      try {
+        const refreshed = await refreshQuickBooksToken(token.refresh_token);
+        
+        // Update database with new tokens
+        const expiresAtNew = new Date();
+        expiresAtNew.setSeconds(expiresAtNew.getSeconds() + (refreshed.expires_in || 3600));
+        
+        await query(
+          `UPDATE quickbooks_oauth_tokens 
+           SET access_token = $1, 
+               refresh_token = $2, 
+               expires_at = $3, 
+               updated_at = NOW() 
+           WHERE realm_id = $4`,
+          [refreshed.access_token, refreshed.refresh_token, expiresAtNew, token.realm_id]
+        );
+        
+        return {
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token,
+          realmId: token.realm_id,
+        };
+      } catch (refreshError) {
+        console.error('Failed to refresh QuickBooks token:', refreshError);
+        return null;
+      }
+    }
+
+    return {
+      accessToken: token.access_token,
+      refreshToken: token.refresh_token,
+      realmId: token.realm_id,
+    };
+  } catch (error) {
+    console.warn('Could not load tokens from database:', error);
+    return null;
+  }
+}
+
+/**
+ * Refresh QuickBooks access token using refresh token
+ */
+export async function refreshQuickBooksToken(refreshToken: string): Promise<{
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}> {
+  const clientId = process.env.QUICKBOOKS_CLIENT_ID;
+  const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error('QuickBooks OAuth credentials not configured');
+  }
+
+  const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Create a QuickBooks client from environment variables or database
+ */
+export async function createQuickBooksClient(): Promise<QuickBooksClient | null> {
+  const clientId = process.env.QUICKBOOKS_CLIENT_ID;
+  const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET;
+  const environment = (process.env.QUICKBOOKS_ENVIRONMENT || 'production') as 'sandbox' | 'production';
+
+  if (!clientId || !clientSecret) {
+    console.warn('QuickBooks OAuth credentials not configured');
+    return null;
+  }
+
+  // Try to load tokens from database first (production)
+  const dbTokens = await loadTokensFromDatabase();
+  
+  if (dbTokens) {
+    return new QuickBooksClient({
+      clientId,
+      clientSecret,
+      realmId: dbTokens.realmId,
+      accessToken: dbTokens.accessToken,
+      refreshToken: dbTokens.refreshToken,
+      environment,
+    });
+  }
+
+  // Fall back to environment variables (development)
+  const realmId = process.env.QUICKBOOKS_REALM_ID;
+  const accessToken = process.env.QUICKBOOKS_ACCESS_TOKEN;
+  const refreshToken = process.env.QUICKBOOKS_REFRESH_TOKEN;
+
+  if (!realmId || !accessToken || !refreshToken) {
+    console.warn('QuickBooks tokens not found. Please complete OAuth flow at /api/auth/quickbooks');
+    return null;
+  }
+
+  return new QuickBooksClient({
+    clientId,
+    clientSecret,
+    realmId,
+    accessToken,
+    refreshToken,
+    environment,
+  });
+}
+

@@ -1,0 +1,24 @@
+:root {
+  color-scheme: light;
+  font-family: 'Inter', sans-serif;
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+body {
+  margin: 0;
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+main {
+  padding: 2.5rem 2rem;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
