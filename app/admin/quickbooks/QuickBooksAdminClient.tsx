@@ -67,8 +67,8 @@ export default function QuickBooksAdminClient() {
   const loadData = async () => {
     try {
       const [metricsResponse, issuesResponse] = await Promise.all([
-        fetch('/api/admin/quickbooks/metrics'),
-        fetch('/api/admin/quickbooks/payment-issues')
+        fetch('/ops/api/admin/quickbooks/metrics'),
+        fetch('/ops/api/admin/quickbooks/payment-issues')
       ]);
 
       if (metricsResponse.ok) {
@@ -89,7 +89,7 @@ export default function QuickBooksAdminClient() {
 
   const checkConnection = async () => {
     try {
-      const response = await fetch('/api/admin/quickbooks/connection-status');
+      const response = await fetch('/ops/api/admin/quickbooks/connection-status');
       if (response.ok) {
         const { connected } = await response.json();
         setConnected(connected);
@@ -102,7 +102,7 @@ export default function QuickBooksAdminClient() {
   const connectQuickBooks = async () => {
     setConnecting(true);
     try {
-      window.location.href = '/api/auth/quickbooks';
+      window.location.href = '/ops/api/auth/quickbooks';
     } catch (error) {
       console.error('Error connecting to QuickBooks:', error);
       setConnecting(false);
@@ -112,7 +112,7 @@ export default function QuickBooksAdminClient() {
   const syncData = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/admin/quickbooks/sync', {
+      const response = await fetch('/ops/api/admin/quickbooks/sync', {
         method: 'POST'
       });
 
@@ -131,7 +131,7 @@ export default function QuickBooksAdminClient() {
 
   const loadPatientMatches = async () => {
     try {
-      const response = await fetch('/api/admin/quickbooks/patient-matching');
+      const response = await fetch('/ops/api/admin/quickbooks/patient-matching');
       if (response.ok) {
         const data = await response.json();
         setPatientMatches(data);
@@ -143,7 +143,7 @@ export default function QuickBooksAdminClient() {
 
   const createMapping = async (patientId: string, qbCustomerId: string, matchMethod: string) => {
     try {
-      const response = await fetch('/api/admin/quickbooks/patient-matching', {
+      const response = await fetch('/ops/api/admin/quickbooks/patient-matching', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ patientId, qbCustomerId, matchMethod })

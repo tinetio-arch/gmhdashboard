@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
       INSERT INTO payment_sync_log (sync_type, sync_status, created_by)
       VALUES ('quickbooks', 'running', $1)
       RETURNING sync_id
-    `, [session.user.userId]);
+    `, [user.user_id]);
 
     const syncId = syncLog[0].sync_id;
 
