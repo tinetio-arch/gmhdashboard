@@ -10,3 +10,4 @@ export default async function AuditPage() {
   return <AuditClient history={history} summary={summary} />;
 }
 
+

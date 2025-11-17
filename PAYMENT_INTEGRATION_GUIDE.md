@@ -285,3 +285,4 @@ For issues or questions:
 - Review payment issues: `SELECT * FROM payment_issues WHERE resolved_at IS NULL`
 - Check API client configuration in `lib/quickbooks.ts` and `lib/ghl.ts`
 
+
