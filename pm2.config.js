@@ -19,8 +19,8 @@ module.exports = {
         NEXT_TELEMETRY_DISABLED: '1',
         SESSION_SECRET: 'change-me-session-secret',
         NEXT_PUBLIC_BASE_PATH: '/ops',
-        QUICKBOOKS_CLIENT_ID: 'AB0VF0dgLIendLlXgPPN4QdfmhmIf88E9DgUnQXhUxmjKMgKxC',
-        QUICKBOOKS_CLIENT_SECRET: '4JJjvEspNvPWhhV3tVdTZCT46sZ1tTErHrJf4jSh',
+        QUICKBOOKS_CLIENT_ID: 'AB9kAOBoZoKKCk60j8pu9dniJQPfVe5hc7lAar62NurYBhs1ZM',
+        QUICKBOOKS_CLIENT_SECRET: 'oX4NIOJ8VpGUJGWVlVVNzL2jyGuUal1ij90U6fUK',
         QUICKBOOKS_REDIRECT_URI: 'https://nowoptimal.com/ops/api/auth/quickbooks/callback',
         QUICKBOOKS_ENVIRONMENT: 'production'
       },
@@ -36,8 +36,8 @@ module.exports = {
         NEXT_TELEMETRY_DISABLED: '1',
         SESSION_SECRET: 'change-me-session-secret',
         NEXT_PUBLIC_BASE_PATH: '/ops',
-        QUICKBOOKS_CLIENT_ID: 'AB0VF0dgLIendLlXgPPN4QdfmhmIf88E9DgUnQXhUxmjKMgKxC',
-        QUICKBOOKS_CLIENT_SECRET: '4JJjvEspNvPWhhV3tVdTZCT46sZ1tTErHrJf4jSh',
+        QUICKBOOKS_CLIENT_ID: 'AB9kAOBoZoKKCk60j8pu9dniJQPfVe5hc7lAar62NurYBhs1ZM',
+        QUICKBOOKS_CLIENT_SECRET: 'oX4NIOJ8VpGUJGWVlVVNzL2jyGuUal1ij90U6fUK',
         QUICKBOOKS_REDIRECT_URI: 'https://nowoptimal.com/ops/api/auth/quickbooks/callback',
         QUICKBOOKS_ENVIRONMENT: 'production'
       },
