@@ -86,7 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_qb_payments_overdue
 -- Memberships table (if not exists in base schema)
 CREATE TABLE IF NOT EXISTS memberships (
     membership_id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    patient_id           UUID NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+    patient_id            UUID NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
     program_name          TEXT,
     status                TEXT,
     fee_amount            NUMERIC(12,2),
@@ -102,6 +102,64 @@ CREATE INDEX IF NOT EXISTS idx_memberships_patient
     ON memberships (patient_id);
 CREATE INDEX IF NOT EXISTS idx_memberships_next_charge 
     ON memberships (next_charge_date) WHERE next_charge_date IS NOT NULL;
+
+-- Track ClinicSync/Jane membership details
+CREATE TABLE IF NOT EXISTS patient_clinicsync_mapping (
+    mapping_id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    patient_id            UUID NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+    clinicsync_patient_id TEXT NOT NULL,
+    match_method          TEXT CHECK (match_method IN ('id', 'email', 'phone', 'name', 'manual')),
+    match_confidence      NUMERIC(5,2),
+    created_at            TIMESTAMP DEFAULT NOW(),
+    updated_at            TIMESTAMP DEFAULT NOW(),
+    UNIQUE (patient_id, clinicsync_patient_id),
+    UNIQUE (clinicsync_patient_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_patient_clinicsync_mapping_patient 
+    ON patient_clinicsync_mapping (patient_id);
+
+CREATE TABLE IF NOT EXISTS clinicsync_memberships (
+    clinicsync_membership_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    clinicsync_patient_id    TEXT NOT NULL,
+    patient_id               UUID REFERENCES patients(patient_id) ON DELETE SET NULL,
+    membership_plan          TEXT,
+    membership_status        TEXT,
+    membership_tier          TEXT,
+    balance_owing            NUMERIC(12,2),
+    amount_due               NUMERIC(12,2),
+    last_payment_at          TIMESTAMP,
+    next_payment_due         DATE,
+    service_start_date       DATE,
+    contract_end_date        DATE,
+    is_active                BOOLEAN DEFAULT TRUE,
+    raw_payload              JSONB,
+    created_at               TIMESTAMP DEFAULT NOW(),
+    updated_at               TIMESTAMP DEFAULT NOW(),
+    UNIQUE (clinicsync_patient_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_clinicsync_memberships_patient 
+    ON clinicsync_memberships (patient_id);
+CREATE INDEX IF NOT EXISTS idx_clinicsync_memberships_status 
+    ON clinicsync_memberships (membership_status);
+
+CREATE TABLE IF NOT EXISTS membership_audit_resolutions (
+    resolution_id       UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    normalized_name     TEXT UNIQUE NOT NULL,
+    resolution_status   TEXT DEFAULT 'resolved',
+    notes               TEXT,
+    resolved_by         UUID REFERENCES users(user_id),
+    resolved_at         TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS clinicsync_webhook_events (
+    event_id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    event_type             TEXT,
+    clinicsync_patient_id  TEXT,
+    payload                JSONB,
+    received_at            TIMESTAMP DEFAULT NOW()
+);
 
 -- Track patient-to-QuickBooks customer mapping
 CREATE TABLE IF NOT EXISTS patient_qb_mapping (
@@ -144,7 +202,16 @@ CREATE INDEX IF NOT EXISTS idx_patient_ghl_mapping_ghl_contact
 CREATE TABLE IF NOT EXISTS payment_issues (
     issue_id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     patient_id             UUID NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
-    issue_type             TEXT NOT NULL CHECK (issue_type IN ('overdue_invoice', 'unpaid_balance', 'failed_payment', 'payment_declined')),
+    issue_type             TEXT NOT NULL CHECK (
+        issue_type IN (
+            'overdue_invoice',
+            'unpaid_balance',
+            'failed_payment',
+            'payment_declined',
+            'membership_delinquent',
+            'contract_expired'
+        )
+    ),
     issue_severity         TEXT NOT NULL CHECK (issue_severity IN ('warning', 'critical')),
     amount_owed            NUMERIC(12,2),
     days_overdue           INTEGER,
@@ -199,6 +266,24 @@ DO $$
 BEGIN
     CREATE TRIGGER trg_qb_payments_updated
         BEFORE UPDATE ON quickbooks_payments
+        FOR EACH ROW
+        EXECUTE FUNCTION touch_payment_updated_at();
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    CREATE TRIGGER trg_patient_clinicsync_map_updated
+        BEFORE UPDATE ON patient_clinicsync_mapping
+        FOR EACH ROW
+        EXECUTE FUNCTION touch_payment_updated_at();
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    CREATE TRIGGER trg_clinicsync_memberships_updated
+        BEFORE UPDATE ON clinicsync_memberships
         FOR EACH ROW
         EXECUTE FUNCTION touch_payment_updated_at();
 EXCEPTION WHEN duplicate_object THEN NULL;

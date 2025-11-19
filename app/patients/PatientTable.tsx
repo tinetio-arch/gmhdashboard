@@ -810,7 +810,13 @@ export default function PatientTable({
                         onBlur={onBlur}
                         autoFocus
                         rows={2}
-                        style={{ ...inputStyle, minHeight: '36px', resize: 'vertical' }}
+                        style={{
+                          ...inputStyle,
+                          minHeight: '36px',
+                          resize: 'vertical',
+                          direction: 'ltr',
+                          textAlign: 'left'
+                        }}
                       />
                     )}
                   />
@@ -962,7 +968,13 @@ export default function PatientTable({
                         onBlur={onBlur}
                         autoFocus
                         rows={3}
-                        style={{ ...inputStyle, minHeight: '48px', resize: 'vertical' }}
+                        style={{
+                          ...inputStyle,
+                          minHeight: '48px',
+                          resize: 'vertical',
+                          direction: 'ltr',
+                          textAlign: 'left'
+                        }}
                       />
                     )}
                   />

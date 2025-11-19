@@ -20,9 +20,15 @@ module.exports = {
         SESSION_SECRET: 'change-me-session-secret',
         NEXT_PUBLIC_BASE_PATH: '/ops',
         QUICKBOOKS_CLIENT_ID: 'AB9kAOBoZoKKCk60j8pu9dniJQPfVe5hc7lAar62NurYBhs1ZM',
-        QUICKBOOKS_CLIENT_SECRET: 'oX4NIOJ8VpGUJGWVlVVNzL2jyGuUal1ij90U6fUK',
+        QUICKBOOKS_CLIENT_SECRET: 'r5ukjQFb2iJx472Ej4eFsEaCFcDnz6VGOgczuGf6',
         QUICKBOOKS_REDIRECT_URI: 'https://nowoptimal.com/ops/api/auth/quickbooks/callback',
-        QUICKBOOKS_ENVIRONMENT: 'production'
+        QUICKBOOKS_ENVIRONMENT: 'production',
+        QUICKBOOKS_REALM_ID: '9130349088183916',
+        CLINICSYNC_API_KEY: '39b51e86-6b00-439b-aaab-986ee30b038d',
+        CLINICSYNC_WEBHOOK_SECRET: '39b51e86-6b00-439b-aaab-986ee30b038d',
+        CLINICSYNC_SYNC_URL: '',
+        CLINICSYNC_SYNC_METHOD: 'GET',
+        CLINICSYNC_PAYMENT_THRESHOLD: '0'
       },
       env_production: {
         NODE_ENV: 'production',
@@ -37,9 +43,15 @@ module.exports = {
         SESSION_SECRET: 'change-me-session-secret',
         NEXT_PUBLIC_BASE_PATH: '/ops',
         QUICKBOOKS_CLIENT_ID: 'AB9kAOBoZoKKCk60j8pu9dniJQPfVe5hc7lAar62NurYBhs1ZM',
-        QUICKBOOKS_CLIENT_SECRET: 'oX4NIOJ8VpGUJGWVlVVNzL2jyGuUal1ij90U6fUK',
+        QUICKBOOKS_CLIENT_SECRET: 'r5ukjQFb2iJx472Ej4eFsEaCFcDnz6VGOgczuGf6',
         QUICKBOOKS_REDIRECT_URI: 'https://nowoptimal.com/ops/api/auth/quickbooks/callback',
-        QUICKBOOKS_ENVIRONMENT: 'production'
+        QUICKBOOKS_ENVIRONMENT: 'production',
+        QUICKBOOKS_REALM_ID: '9130349088183916',
+        CLINICSYNC_API_KEY: '39b51e86-6b00-439b-aaab-986ee30b038d',
+        CLINICSYNC_WEBHOOK_SECRET: '39b51e86-6b00-439b-aaab-986ee30b038d',
+        CLINICSYNC_SYNC_URL: '',
+        CLINICSYNC_SYNC_METHOD: 'GET',
+        CLINICSYNC_PAYMENT_THRESHOLD: '0'
       },
       max_memory_restart: '512M',
       restart_delay: 5000

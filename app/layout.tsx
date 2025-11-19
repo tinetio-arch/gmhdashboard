@@ -43,6 +43,7 @@ export default async function RootLayout({
                 <Link href="/account">Account</Link>
                 {user && userHasRole(user, 'admin') && <Link href="/admin/users">User Admin</Link>}
                 {user && userHasRole(user, 'admin') && <Link href="/admin/quickbooks">QuickBooks</Link>}
+                {user && userHasRole(user, 'admin') && <Link href="/admin/membership-audit">Membership Audit</Link>}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', color: '#475569' }}>
                 <span style={{ fontWeight: 600 }}>{user?.display_name ?? user?.email}</span>

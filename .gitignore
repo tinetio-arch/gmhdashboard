@@ -16,3 +16,12 @@ npm-debug.log*
 
 # backup logs
 backup.log
+tmp_memberships.csv
+tmp_all_patients.csv
+import_patients_clean.csv
+jane_packages_clean.csv
+
+# local tooling
+/tmp/
+*.local.log
+.justfile
