@@ -187,74 +187,75 @@ export default async function HomePage() {
         ))}
       </div>
 
-      <section
-        style={{
-          marginBottom: '2.5rem',
-          padding: '1.5rem',
-          borderRadius: '0.9rem',
-          background: '#ffffff',
-          border: '1px solid rgba(148, 163, 184, 0.22)',
-          boxShadow: '0 12px 28px rgba(15, 23, 42, 0.06)'
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: '1.2rem', color: '#0f172a' }}>Outstanding Membership Balances</h3>
-            <p style={{ margin: '0.4rem 0 0', color: '#64748b', fontSize: '0.92rem' }}>
-              Pulled from the latest Jane package export. Anything above $0 automatically moves patients to Hold – Payment Research.
-            </p>
-          </div>
-          <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-            Showing top {outstandingMemberships.length} balances
-          </span>
-        </div>
-        {outstandingMemberships.length === 0 ? (
-          <p style={{ color: '#16a34a', fontWeight: 600, margin: 0 }}>All membership balances are clear — awesome work.</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-            {outstandingMemberships.map((row) => (
-              <div
-                key={`${row.patientName}-${row.planName ?? 'plan'}`}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-start',
-                  padding: '0.75rem 0',
-                  borderBottom: '1px solid rgba(148, 163, 184, 0.18)'
-                }}
-              >
-                <div>
-                  <p style={{ margin: 0, fontWeight: 600, color: '#0f172a' }}>{row.patientName}</p>
-                  <p style={{ margin: '0.2rem 0 0', color: '#94a3b8', fontSize: '0.85rem' }}>
-                    {row.planName ?? 'Plan TBD'} · {row.status ?? 'status pending'}
-                  </p>
-                  {row.contractEndDate ? (
-                    <p style={{ margin: '0.15rem 0 0', color: '#a855f7', fontSize: '0.8rem' }}>
-                      Contract ends {formatDate(row.contractEndDate)}
-                    </p>
-                  ) : null}
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <p style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600, color: '#b91c1c' }}>
-                    {formatCurrency(row.outstandingBalance)}
-                  </p>
-                  <p style={{ margin: '0.15rem 0 0', color: '#94a3b8', fontSize: '0.8rem' }}>Balance due</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
       <div
         style={{
-          marginTop: '2.5rem',
           marginBottom: '2.5rem',
           display: 'grid',
           gap: '1.5rem',
           gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))'
         }}
       >
+        <section
+          style={{
+            padding: '1.5rem',
+            borderRadius: '0.85rem',
+            background: '#ffffff',
+            border: '1px solid rgba(148, 163, 184, 0.22)',
+            boxShadow: '0 12px 28px rgba(15, 23, 42, 0.06)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.85rem'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '1.15rem', color: '#0f172a' }}>Outstanding Membership Balances</h3>
+              <p style={{ margin: '0.4rem 0 0', color: '#64748b', fontSize: '0.85rem' }}>
+                Active memberships owing money. Inactive patients are filtered out automatically.
+              </p>
+            </div>
+            <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+              Top {outstandingMemberships.length}
+            </span>
+          </div>
+          {outstandingMemberships.length === 0 ? (
+            <p style={{ color: '#16a34a', fontWeight: 600, margin: 0 }}>All balances cleared — great job.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem' }}>
+              {outstandingMemberships.map((row) => (
+                <div
+                  key={`${row.patientName}-${row.planName ?? 'plan'}`}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    paddingBottom: '0.65rem',
+                    borderBottom: '1px solid rgba(148, 163, 184, 0.15)'
+                  }}
+                >
+                  <div>
+                    <p style={{ margin: 0, fontWeight: 600, color: '#0f172a' }}>{row.patientName}</p>
+                    <p style={{ margin: '0.15rem 0 0', color: '#94a3b8', fontSize: '0.82rem' }}>
+                      {row.planName ?? 'Plan TBD'} · {row.status ?? 'status pending'}
+                    </p>
+                    {row.contractEndDate ? (
+                      <p style={{ margin: '0.1rem 0 0', color: '#a855f7', fontSize: '0.78rem' }}>
+                        Contract ends {formatDate(row.contractEndDate)}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <p style={{ margin: 0, fontSize: '1.05rem', fontWeight: 600, color: '#b91c1c' }}>
+                      {formatCurrency(row.outstandingBalance)}
+                    </p>
+                    <p style={{ margin: '0.1rem 0 0', color: '#94a3b8', fontSize: '0.75rem' }}>Balance due</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         <section
           style={{
             padding: '1.5rem',

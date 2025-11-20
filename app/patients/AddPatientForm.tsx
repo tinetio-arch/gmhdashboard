@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import type { LookupSets } from '@/lib/lookups';
 import type { UserRole } from '@/lib/auth';
 import { withBasePath } from '@/lib/basePath';
+import { stripHonorifics } from '@/lib/nameUtils';
 
 type Props = {
   lookups: LookupSets;
@@ -83,7 +84,8 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
       setMessage('You do not have permission to add patients.');
       return;
     }
-    if (!form.patientName.trim()) {
+    const cleanedName = stripHonorifics(form.patientName.trim());
+    if (!cleanedName) {
       setMessage('Patient name is required.');
       return;
     }
@@ -118,7 +120,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          patientName: form.patientName.trim(),
+          patientName: cleanedName,
           statusKey: form.statusKey,
           paymentMethodKey: form.paymentMethodKey,
           clientTypeKey: form.clientTypeKey,

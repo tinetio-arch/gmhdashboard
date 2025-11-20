@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 import { getMembershipAuditData } from '@/lib/membershipAudit';
+import { fetchLookupSets } from '@/lib/lookups';
 import MembershipAuditClient from './MembershipAuditClient';
 
 export default async function MembershipAuditPage() {
@@ -9,7 +10,8 @@ export default async function MembershipAuditPage() {
     redirect('/unauthorized');
   }
 
-  const data = await getMembershipAuditData();
-  return <MembershipAuditClient data={data} />;
+  const [data, lookups] = await Promise.all([getMembershipAuditData(), fetchLookupSets()]);
+  return <MembershipAuditClient data={data} lookups={lookups} />;
 }
+
 

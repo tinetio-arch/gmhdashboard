@@ -1,5 +1,6 @@
 import { getPool, query } from './db';
 import { computeLabStatus, type LabStatusState } from './patientFormatting';
+import { stripHonorifics } from './nameUtils';
 
 export type PatientDataEntryRow = {
   patient_id: string;
@@ -404,6 +405,7 @@ export async function createPatient(payload: PatientDataEntryPayload): Promise<P
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const cleanedName = stripHonorifics(payload.patientName ?? '');
     const { address_line1, city, state, postal_code } = splitAddressString(payload.address ?? null);
     const serviceStart = normalizeDate(payload.serviceStartDate);
     const contractEnd = normalizeDate(payload.contractEndDate);
@@ -480,7 +482,7 @@ export async function createPatient(payload: PatientDataEntryPayload): Promise<P
           NOW()
        ) RETURNING patient_id`,
       [
-        payload.patientName.trim(),
+        cleanedName || payload.patientName.trim(),
         statusKey,
         payload.paymentMethodKey,
         payload.clientTypeKey,
@@ -536,6 +538,7 @@ export async function updatePatient(payload: PatientDataEntryPayload): Promise<P
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const cleanedName = stripHonorifics(payload.patientName ?? '');
     const { address_line1, city, state, postal_code } = splitAddressString(payload.address ?? null);
     const serviceStart = normalizeDate(payload.serviceStartDate);
     const contractEnd = normalizeDate(payload.contractEndDate);
@@ -592,7 +595,7 @@ export async function updatePatient(payload: PatientDataEntryPayload): Promise<P
         WHERE patient_id = $1`,
       [
         payload.patientId,
-        payload.patientName.trim(),
+        cleanedName || payload.patientName.trim(),
         statusKey,
         payload.paymentMethodKey,
         payload.clientTypeKey,

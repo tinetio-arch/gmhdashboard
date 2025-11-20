@@ -129,7 +129,9 @@ const selectStyle: CSSProperties = {
   backgroundColor: '#ffffff',
   color: '#0f172a',
   boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)',
-  fontSize: '0.85rem'
+  fontSize: '0.85rem',
+  direction: 'ltr',
+  textAlign: 'left'
 };
 
 const inputStyle: CSSProperties = {
@@ -141,7 +143,9 @@ const inputStyle: CSSProperties = {
   color: '#0f172a',
   boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)',
   lineHeight: 1.2,
-  fontSize: '0.85rem'
+  fontSize: '0.85rem',
+  direction: 'ltr',
+  textAlign: 'left'
 };
 
 function toNullableString(value: unknown): string | null {
@@ -827,8 +831,10 @@ export default function PatientTable({
                     display={formatDisplayDate(row.lastLab)}
                     renderEditor={({ onBlur }) => (
                       <input
-                        type="date"
+                        type="text"
                         value={toDateInput(row.lastLab)}
+                        placeholder="YYYY-MM-DD"
+                        inputMode="numeric"
                         onChange={(event) =>
                           updateRow(row.id, (current) => {
                             const newLastLab = event.target.value;
@@ -868,8 +874,10 @@ export default function PatientTable({
                     display={formatDisplayDate(row.nextLab)}
                     renderEditor={({ onBlur }) => (
                       <input
-                        type="date"
+                        type="text"
                         value={toDateInput(row.nextLab)}
+                        placeholder="YYYY-MM-DD"
+                        inputMode="numeric"
                         onChange={(event) =>
                           updateRow(row.id, (current) => {
                             const newNextLab = event.target.value;
@@ -909,8 +917,10 @@ export default function PatientTable({
                     display={formatDisplayDate(row.serviceStartDate)}
                     renderEditor={({ onBlur }) => (
                       <input
-                        type="date"
+                        type="text"
                         value={toDateInput(row.serviceStartDate)}
+                        placeholder="YYYY-MM-DD"
+                        inputMode="numeric"
                         onChange={(event) =>
                           updateRow(row.id, (current) => ({ ...current, serviceStartDate: event.target.value }))
                         }
@@ -927,8 +937,10 @@ export default function PatientTable({
                     display={formatDisplayDate(row.contractEnd)}
                     renderEditor={({ onBlur }) => (
                       <input
-                        type="date"
+                        type="text"
                         value={toDateInput(row.contractEnd)}
+                        placeholder="YYYY-MM-DD"
+                        inputMode="numeric"
                         onChange={(event) =>
                           updateRow(row.id, (current) => ({ ...current, contractEnd: event.target.value }))
                         }
@@ -945,8 +957,10 @@ export default function PatientTable({
                     display={formatDisplayDate(row.dateOfBirth)}
                     renderEditor={({ onBlur }) => (
                       <input
-                        type="date"
+                        type="text"
                         value={toDateInput(row.dateOfBirth)}
+                        placeholder="YYYY-MM-DD"
+                        inputMode="numeric"
                         onChange={(event) =>
                           updateRow(row.id, (current) => ({ ...current, dateOfBirth: event.target.value }))
                         }

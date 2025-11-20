@@ -9,6 +9,8 @@ type AuditBase = {
   outstanding_balance: string | null;
   category: string | null;
   norm_name: string;
+  purchase_date: string | null;
+  service_start_date: string | null;
 };
 
 type ReadyRow = AuditBase & {
@@ -19,14 +21,25 @@ type ReadyRow = AuditBase & {
 
 type NeedsDataRow = AuditBase & {
   issue: string;
+  patient_id: string | null;
+  matched_patient: string | null;
+  clinicsync_patient_id: string | null;
+  clinicsync_name: string | null;
 };
 
 type InactiveRow = AuditBase;
+
+type DuplicateMembershipGroup = {
+  patient_name: string;
+  norm_name: string;
+  memberships: AuditBase[];
+};
 
 export type MembershipAuditData = {
   readyToMap: ReadyRow[];
   needsData: NeedsDataRow[];
   inactive: InactiveRow[];
+  duplicates: DuplicateMembershipGroup[];
 };
 
 const NORMALIZE_PATIENT_SQL =
@@ -79,6 +92,8 @@ export async function getMembershipAuditData(): Promise<MembershipAuditData> {
       pkg.outstanding_balance::text,
       pkg.category,
       pkg.normalized_name AS norm_name,
+      pkg.purchase_date::text,
+      pkg.start_date::text AS service_start_date,
       pn.patient_id,
       pn.full_name AS matched_patient,
       cs.clinicsync_patient_id
@@ -137,6 +152,12 @@ export async function getMembershipAuditData(): Promise<MembershipAuditData> {
       pkg.outstanding_balance::text,
       pkg.category,
       pkg.normalized_name AS norm_name,
+      pkg.purchase_date::text,
+      pkg.start_date::text AS service_start_date,
+      pn.patient_id,
+      pn.full_name AS matched_patient,
+      cs.clinicsync_patient_id,
+      cs.cs_name AS clinicsync_name,
       CASE
         WHEN r.normalized_name IS NOT NULL THEN 'resolved'
         WHEN pn.patient_id IS NULL THEN 'no_gmh_match'
@@ -177,7 +198,9 @@ export async function getMembershipAuditData(): Promise<MembershipAuditData> {
       contract_end_date::text,
       outstanding_balance::text,
       category,
-      lower(norm_name) AS norm_name
+      lower(norm_name) AS norm_name,
+      purchase_date::text,
+      start_date::text AS service_start_date
     FROM jane_packages_import
     WHERE COALESCE(status, '') = ''
       OR lower(status) LIKE 'inactive%'
@@ -185,16 +208,43 @@ export async function getMembershipAuditData(): Promise<MembershipAuditData> {
     ORDER BY patient_name;
   `;
 
-  const [readyRows, needsRows, inactiveRows] = await Promise.all([
+  const duplicatesQuery = `
+    SELECT
+      lower(norm_name) AS norm_name,
+      MIN(patient_name) AS patient_name,
+      json_agg(
+        json_build_object(
+          'patient_name', patient_name,
+          'plan_name', plan_name,
+          'status', status,
+          'remaining_cycles', remaining_cycles::text,
+          'contract_end_date', contract_end_date::text,
+          'outstanding_balance', outstanding_balance::text,
+          'category', category,
+          'norm_name', lower(norm_name),
+          'purchase_date', purchase_date::text,
+          'service_start_date', start_date::text
+        )
+        ORDER BY plan_name
+      ) AS memberships
+    FROM jane_packages_import
+    GROUP BY lower(norm_name)
+    HAVING COUNT(*) > 1
+    ORDER BY MIN(patient_name);
+  `;
+
+  const [readyRows, needsRows, inactiveRows, duplicateRows] = await Promise.all([
     query<ReadyRow>(readyQuery),
     query<NeedsDataRow>(needsDataQuery),
-    query<InactiveRow>(inactiveQuery)
+    query<InactiveRow>(inactiveQuery),
+    query<DuplicateMembershipGroup>(duplicatesQuery)
   ]);
 
   return {
     readyToMap: readyRows,
     needsData: needsRows,
-    inactive: inactiveRows
+    inactive: inactiveRows,
+    duplicates: duplicateRows
   };
 }
 

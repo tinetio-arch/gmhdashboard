@@ -90,8 +90,14 @@ def parse_sheet():
         header = None
         continue
 
-      if first_cell and first_cell != 'Location' and not header and all(not cell for cell in row[1:]):
+      if (
+        first_cell
+        and first_cell not in ('Location',)
+        and all(not cell for cell in row[1:])
+        and first_cell.upper() not in ('PACKAGES', 'MEMBERSHIPS')
+      ):
         plan_name = first_cell
+        header = None
         continue
 
       if first_cell == 'Location':
@@ -172,4 +178,5 @@ def main():
 
 if __name__ == '__main__':
   main()
+
 

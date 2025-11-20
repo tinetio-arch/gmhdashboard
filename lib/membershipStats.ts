@@ -14,6 +14,9 @@ export type OutstandingMembership = {
   contractEndDate: string | null;
 };
 
+const NORMALIZE_PATIENT_SQL =
+  "lower(regexp_replace(regexp_replace(full_name, '^(mr\\.?|mrs\\.?|ms\\.?|dr\\.?|miss)\\s+', '', 'i'), '\\s+', ' ', 'g'))";
+
 export async function getMembershipStats(): Promise<MembershipStats> {
   const statsQuery = `
     SELECT
@@ -45,15 +48,37 @@ export async function getMembershipStats(): Promise<MembershipStats> {
 export async function getOutstandingMemberships(limit = 8): Promise<OutstandingMembership[]> {
   return query<OutstandingMembership>(
     `
+      WITH pkg AS (
+        SELECT
+          patient_name,
+          plan_name,
+          status,
+          outstanding_balance::numeric AS balance,
+          contract_end_date,
+          lower(norm_name) AS normalized_name
+        FROM jane_packages_import
+        WHERE COALESCE(outstanding_balance, 0)::numeric > 0
+      ),
+      patient_norm AS (
+        SELECT
+          ${NORMALIZE_PATIENT_SQL} AS normalized_name,
+          status_key
+        FROM patients
+      )
       SELECT
-        patient_name AS "patientName",
-        plan_name AS "planName",
-        status,
-        outstanding_balance::text AS "outstandingBalance",
-        contract_end_date::text AS "contractEndDate"
-      FROM jane_packages_import
-      WHERE COALESCE(outstanding_balance, 0)::numeric > 0
-      ORDER BY outstanding_balance::numeric DESC NULLS LAST, patient_name
+        pkg.patient_name AS "patientName",
+        pkg.plan_name AS "planName",
+        pkg.status,
+        pkg.balance::text AS "outstandingBalance",
+        pkg.contract_end_date::text AS "contractEndDate"
+      FROM pkg
+      LEFT JOIN patient_norm pn
+        ON pn.normalized_name = pkg.normalized_name
+      WHERE NOT (
+        COALESCE(pn.status_key, '') ILIKE 'inactive%'
+        OR COALESCE(pn.status_key, '') ILIKE 'discharg%'
+      )
+      ORDER BY pkg.balance DESC NULLS LAST, pkg.patient_name
       LIMIT $1
     `,
     [limit]
