@@ -54,9 +54,27 @@ type IntakeFormState = {
 
 type NeedsDataRow = MembershipAuditData['needsData'][number];
 type DuplicateGroup = MembershipAuditData['duplicates'][number];
+type PatientMatch = {
+  patient_id: string;
+  full_name: string;
+  status_key: string | null;
+  alert_status: string | null;
+  phone_primary: string | null;
+  service_start_date: string | null;
+  contract_end_date: string | null;
+  dob: string | null;
+};
 
 function formatPatientName(value: string | null | undefined): string {
   return stripHonorifics(value ?? '');
+}
+
+function formatCurrency(value: string | null | undefined): string {
+  const amount = Number(value ?? 0);
+  if (Number.isNaN(amount)) {
+    return '$0.00';
+  }
+  return amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
 function findStatusKey(lookups: LookupSets, key: string): string | null {
@@ -138,6 +156,11 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
   const [intakeError, setIntakeError] = useState<string | null>(null);
   const [intakeSaving, setIntakeSaving] = useState(false);
   const [intakeLoading, setIntakeLoading] = useState(false);
+  const [linkRow, setLinkRow] = useState<NeedsDataRow | null>(null);
+  const [linkResults, setLinkResults] = useState<PatientMatch[]>([]);
+  const [linkQuery, setLinkQuery] = useState('');
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   const filteredNeedsData = useMemo(
     () => auditData.needsData.filter((row) => issueFilters.includes(row.issue)),
@@ -215,6 +238,69 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
 
   function updateIntakeForm<K extends keyof IntakeFormState>(key: K, value: IntakeFormState[K]) {
     setIntakeForm((prev) => (prev ? { ...prev, [key]: value } : prev));
+  }
+
+  async function searchPatients(params: { query?: string; normName?: string }) {
+    setLinkLoading(true);
+    setLinkError(null);
+    try {
+      const res = await fetch(withBasePath('/api/admin/patients/search'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const payload = await res.json();
+      setLinkResults(payload?.data ?? []);
+    } catch (error) {
+      console.error(error);
+      setLinkError('Unable to search patients. Please try a different name.');
+      setLinkResults([]);
+    } finally {
+      setLinkLoading(false);
+    }
+  }
+
+  async function openLinkDrawer(row: NeedsDataRow) {
+    if (!row.clinicsync_patient_id) {
+      setMessage('This membership does not have a ClinicSync ID to link.');
+      return;
+    }
+    setLinkRow(row);
+    setLinkError(null);
+    const defaultQuery = formatPatientName(row.patient_name);
+    setLinkQuery(defaultQuery);
+    await searchPatients({ normName: row.norm_name, query: defaultQuery });
+  }
+
+  function closeLinkDrawer() {
+    setLinkRow(null);
+    setLinkResults([]);
+    setLinkQuery('');
+    setLinkError(null);
+    setLinkLoading(false);
+  }
+
+  async function handleLinkSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!linkRow) {
+      return;
+    }
+    await searchPatients({ query: linkQuery || formatPatientName(linkRow.patient_name) });
+  }
+
+  async function handleLinkSelection(patientId: string) {
+    if (!linkRow) {
+      return;
+    }
+    if (!linkRow.clinicsync_patient_id) {
+      setLinkError('This membership does not have a ClinicSync ID to link.');
+      return;
+    }
+    await handleLink(patientId, linkRow.clinicsync_patient_id, { removeNorm: linkRow.norm_name, removeIssue: linkRow.issue });
+    closeLinkDrawer();
   }
 
   async function handleLink(
@@ -369,22 +455,6 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
     }
   }
 
-  async function handleManualLink(
-    clinicsyncPatientId: string | null,
-    normName: string,
-    contextLabel: string
-  ) {
-    if (!clinicsyncPatientId) {
-      setMessage('No ClinicSync record was found for this membership yet.');
-      return;
-    }
-    const patientId = window.prompt(`Enter the GMH patient ID to link with "${contextLabel}":`)?.trim();
-    if (!patientId) {
-      return;
-    }
-    await handleLink(patientId, clinicsyncPatientId, { removeNorm: normName, removeIssue: 'no_gmh_match' });
-  }
-
   return (
     <div style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       {message ? (
@@ -494,15 +564,7 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
             <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
               <thead>
                 <tr>
-                  {[
-                    'Membership Name',
-                    'Plan',
-                    'Status',
-                    'Remaining',
-                    'Contract End',
-                    'Outstanding Balance',
-                    'Actions'
-                  ].map((label) => (
+                  {['Membership Name', 'Plan', 'Status', 'Remaining', 'Contract End', 'Outstanding', 'Actions'].map((label) => (
                     <th
                       key={label}
                       style={{
@@ -519,13 +581,13 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
               </thead>
               <tbody>
                 {needsIntakeRows.map((row) => (
-                  <tr key={`${row.norm_name}-intake`} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                  <tr key={`${row.norm_name}-${row.clinicsync_patient_id ?? row.patient_name}`} style={{ borderBottom: '1px solid #e2e8f0' }}>
                     <td style={{ padding: '0.75rem', fontWeight: 600 }}>{formatPatientName(row.patient_name)}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.plan_name ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.status ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.remaining_cycles ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.contract_end_date ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.outstanding_balance ?? ''}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.plan_name ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.status ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.remaining_cycles ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.contract_end_date ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>{formatCurrency(row.outstanding_balance ?? '0')}</td>
                     <td style={{ padding: '0.75rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
                       <button
                         type="button"
@@ -544,19 +606,20 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleManualLink(row.clinicsync_patient_id, row.norm_name, row.patient_name)}
-                        disabled={busyId === row.clinicsync_patient_id}
+                        onClick={() => openLinkDrawer(row)}
+                        disabled={!row.clinicsync_patient_id}
                         style={{
                           padding: '0.35rem 0.75rem',
                           borderRadius: '0.45rem',
                           border: 'none',
-                          background: '#0ea5e9',
+                          background: row.clinicsync_patient_id ? '#0ea5e9' : 'rgba(148,163,184,0.5)',
                           color: '#ffffff',
-                          cursor: 'pointer',
+                          fontSize: '0.85rem',
+                          cursor: row.clinicsync_patient_id ? 'pointer' : 'not-allowed',
                           opacity: busyId === row.clinicsync_patient_id ? 0.6 : 1
                         }}
                       >
-                        {busyId === row.clinicsync_patient_id ? 'Linking...' : 'Link'}
+                        {row.clinicsync_patient_id ? 'Link to GMH' : 'No ClinicSync ID'}
                       </button>
                       <button
                         type="button"
@@ -1106,6 +1169,132 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
               </button>
             </div>
           </form>
+        </div>
+      ) : null}
+
+      {linkRow ? (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15,23,42,0.45)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 40,
+            padding: '1rem'
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: '640px',
+              background: '#ffffff',
+              borderRadius: '1rem',
+              padding: '1.25rem',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1rem'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Link {formatPatientName(linkRow.patient_name)} to GMH</h3>
+                <p style={{ margin: '0.35rem 0 0', color: '#475569', fontSize: '0.9rem' }}>
+                  Select the correct GMH patient record. This will attach the Jane membership so billing and holds stay in sync.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeLinkDrawer}
+                style={{ background: 'transparent', border: 'none', fontSize: '1.5rem', cursor: 'pointer' }}
+                aria-label="Close link drawer"
+              >
+                ×
+              </button>
+            </div>
+
+            <form onSubmit={handleLinkSearch} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                value={linkQuery}
+                onChange={(event) => setLinkQuery(event.target.value)}
+                placeholder="Search by name, phone, or email"
+                style={{
+                  flex: '1 1 260px',
+                  padding: '0.6rem',
+                  borderRadius: '0.5rem',
+                  border: '1px solid rgba(148,163,184,0.4)'
+                }}
+              />
+              <button
+                type="submit"
+                style={{
+                  padding: '0.6rem 1.2rem',
+                  borderRadius: '0.5rem',
+                  border: 'none',
+                  background: '#0ea5e9',
+                  color: '#ffffff',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Search
+              </button>
+            </form>
+
+            {linkError ? <div style={{ color: '#b91c1c' }}>{linkError}</div> : null}
+
+            <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid rgba(148,163,184,0.3)', borderRadius: '0.75rem' }}>
+              {linkLoading ? (
+                <p style={{ padding: '1rem', margin: 0, color: '#475569' }}>Searching…</p>
+              ) : linkResults.length === 0 ? (
+                <p style={{ padding: '1rem', margin: 0, color: '#475569' }}>No matching GMH patients found.</p>
+              ) : (
+                linkResults.map((patient) => (
+                  <div
+                    key={patient.patient_id}
+                    style={{
+                      padding: '0.85rem 1rem',
+                      borderBottom: '1px solid rgba(148,163,184,0.2)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: '0.75rem'
+                    }}
+                  >
+                    <div style={{ flex: '1 1 auto' }}>
+                      <div style={{ fontWeight: 600 }}>{patient.full_name}</div>
+                      <div style={{ color: '#475569', fontSize: '0.85rem' }}>
+                        {patient.status_key ? patient.status_key.replace(/_/g, ' ') : 'No status'} •{' '}
+                        {patient.dob ?? 'DOB unknown'} • {patient.phone_primary ?? 'No phone'}
+                      </div>
+                      <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>
+                        Service Start: {patient.service_start_date ?? '—'} • Contract End: {patient.contract_end_date ?? '—'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleLinkSelection(patient.patient_id)}
+                      style={{
+                        padding: '0.45rem 0.9rem',
+                        borderRadius: '0.45rem',
+                        border: 'none',
+                        background: '#22c55e',
+                        color: '#ffffff',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Link
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </div>
       ) : null}
     </div>
