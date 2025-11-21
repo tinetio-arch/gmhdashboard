@@ -247,6 +247,9 @@ export async function fetchInventorySummary(): Promise<InventorySummary> {
 }
 
 export async function fetchTransactions(limit = 250): Promise<TransactionRow[]> {
+  // NOTE: This query uses LEFT JOIN for patients, so it shows ALL dispenses
+  // regardless of patient status (active, inactive, etc.). This ensures
+  // historical records remain visible even after a patient is made inactive.
   return query<TransactionRow>(
     `SELECT
         d.dispense_id,

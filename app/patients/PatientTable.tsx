@@ -148,6 +148,8 @@ const inputStyle: CSSProperties = {
   textAlign: 'left'
 };
 
+const DATE_INPUT_PLACEHOLDER = 'MM-DD-YYYY';
+
 type NotesEditorProps = {
   rowId: string;
   initialValue: string;
@@ -179,6 +181,40 @@ function NotesEditor({ rowId, initialValue, onCommit, onBlur }: NotesEditorProps
         direction: 'ltr',
         textAlign: 'left'
       }}
+    />
+  );
+}
+
+type DateEditorProps = {
+  value: string;
+  placeholder?: string;
+  onCommit: (value: string) => void;
+  onBlur: () => void;
+  autoFocus?: boolean;
+};
+
+function DateEditor({ value, placeholder, onCommit, onBlur, autoFocus }: DateEditorProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (inputRef.current && typeof value === 'string' && inputRef.current.value !== value) {
+      inputRef.current.value = value;
+    }
+  }, [value]);
+
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      placeholder={placeholder}
+      inputMode="numeric"
+      defaultValue={value}
+      onBlur={() => {
+        onCommit(inputRef.current?.value ?? '');
+        onBlur();
+      }}
+      autoFocus={autoFocus}
+      style={inputStyle}
     />
   );
 }
@@ -424,9 +460,6 @@ export default function PatientTable({
   const [savingId, setSavingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [activeCell, setActiveCell] = useState<{ rowId: string; field: EditableFieldKey } | null>(null);
-  const [pendingValues, setPendingValues] = useState<
-    Record<string, Partial<Record<EditableFieldKey, string>>>
-  >({});
   const canEdit = currentUserRole !== 'read';
   const canDeletePatient = currentUserRole === 'admin';
 
@@ -472,35 +505,6 @@ export default function PatientTable({
     }, 200);
   }
 
-  const getPendingValue = (rowId: string, field: EditableFieldKey): string | undefined =>
-    pendingValues[rowId]?.[field];
-
-  function setPendingValue(rowId: string, field: EditableFieldKey, value: string) {
-    setPendingValues((prev) => ({
-      ...prev,
-      [rowId]: {
-        ...(prev[rowId] ?? {}),
-        [field]: value
-      }
-    }));
-  }
-
-  function clearPendingValue(rowId: string, field: EditableFieldKey) {
-    setPendingValues((prev) => {
-      const entry = prev[rowId];
-      if (!entry || !(field in entry)) {
-        return prev;
-      }
-      const { [field]: _, ...rest } = entry;
-      const next = { ...prev };
-      if (Object.keys(rest).length === 0) {
-        delete next[rowId];
-      } else {
-        next[rowId] = rest;
-      }
-      return next;
-    });
-  }
 
   const filteredRows = useMemo(() => {
     const matches = rows.filter((row) => {
@@ -577,6 +581,87 @@ export default function PatientTable({
 
   function updateRow(id: string, updater: (row: EditablePatient) => EditablePatient) {
     setRows((prev) => prev.map((row) => (row.id === id ? updater(row) : row)));
+  }
+
+  function handleLastLabCommit(rowId: string, rawValue: string) {
+    const trimmed = rawValue.trim();
+    if (trimmed && !normalizeDateValue(trimmed)) {
+      setFeedback('Enter date as MM-DD-YYYY');
+      return;
+    }
+    updateRow(rowId, (current) => {
+      const isoValue = trimmed ? normalizeDateValue(trimmed) : null;
+      const storedValue = trimmed ? isoValue ?? trimmed : '';
+      const nextLabIso = normalizeDateValue(current.nextLab) ?? null;
+      const labInfo = computeLabStatus(isoValue ?? null, nextLabIso);
+      const currentKey = (current.statusKey ?? '').toLowerCase();
+      let nextStatusKey = current.statusKey;
+      if (currentKey === 'active' && (labInfo.state === 'overdue' || labInfo.state === 'due-soon')) {
+        nextStatusKey = 'active_pending';
+      } else if (currentKey === 'active_pending' && labInfo.state === 'current') {
+        nextStatusKey = 'active';
+      }
+      const nextAlertStatus =
+        nextStatusKey === 'active_pending'
+          ? 'Active - Pending'
+          : nextStatusKey === 'active'
+            ? 'Active'
+            : current.alertStatus;
+      return {
+        ...current,
+        lastLab: storedValue,
+        labStatus: labInfo.label,
+        statusKey: nextStatusKey,
+        alertStatus: nextAlertStatus
+      };
+    });
+  }
+
+  function handleNextLabCommit(rowId: string, rawValue: string) {
+    const trimmed = rawValue.trim();
+    if (trimmed && !normalizeDateValue(trimmed)) {
+      setFeedback('Enter date as MM-DD-YYYY');
+      return;
+    }
+    updateRow(rowId, (current) => {
+      const isoValue = trimmed ? normalizeDateValue(trimmed) : null;
+      const storedValue = trimmed ? isoValue ?? trimmed : '';
+      const lastLabIso = normalizeDateValue(current.lastLab) ?? null;
+      const labInfo = computeLabStatus(lastLabIso, isoValue ?? null);
+      const currentKey = (current.statusKey ?? '').toLowerCase();
+      let nextStatusKey = current.statusKey;
+      if (currentKey === 'active' && (labInfo.state === 'overdue' || labInfo.state === 'due-soon')) {
+        nextStatusKey = 'active_pending';
+      } else if (currentKey === 'active_pending' && labInfo.state === 'current') {
+        nextStatusKey = 'active';
+      }
+      const nextAlertStatus =
+        nextStatusKey === 'active_pending'
+          ? 'Active - Pending'
+          : nextStatusKey === 'active'
+            ? 'Active'
+            : current.alertStatus;
+      return {
+        ...current,
+        nextLab: storedValue,
+        labStatus: labInfo.label,
+        statusKey: nextStatusKey,
+        alertStatus: nextAlertStatus
+      };
+    });
+  }
+
+  function handleSimpleDateCommit(rowId: string, field: 'serviceStartDate' | 'contractEnd' | 'dateOfBirth', rawValue: string) {
+    const trimmed = rawValue.trim();
+    if (trimmed && !normalizeDateValue(trimmed)) {
+      setFeedback('Enter date as MM-DD-YYYY');
+      return;
+    }
+    const isoValue = trimmed ? normalizeDateValue(trimmed) ?? trimmed : '';
+    updateRow(rowId, (current) => ({
+      ...current,
+      [field]: isoValue
+    }));
   }
 
   async function handleSave(row: EditablePatient) {
@@ -917,287 +1002,75 @@ export default function PatientTable({
                     field="lastLab"
                     cellStyle={narrowCellStyle}
                     display={formatDisplayDate(row.lastLab)}
-                    renderEditor={({ onBlur }) => {
-                      const pending = getPendingValue(row.id, 'lastLab');
-                      return (
-                        <input
-                          type="text"
-                          value={pending ?? formatDateInput(row.lastLab)}
-                          placeholder="MM-DD-YYYY"
-                          inputMode="numeric"
-                          onChange={(event) => setPendingValue(row.id, 'lastLab', event.target.value)}
-                          onBlur={() => {
-                            const nextPending = getPendingValue(row.id, 'lastLab');
-                            if (nextPending !== undefined) {
-                              const trimmed = nextPending.trim();
-                              if (!trimmed) {
-                                updateRow(row.id, (current) => {
-                                  const nextLabIso = normalizeDateValue(current.nextLab) ?? null;
-                                  const labInfo = computeLabStatus(null, nextLabIso);
-                                  const currentKey = (current.statusKey ?? '').toLowerCase();
-                                  let nextStatusKey = current.statusKey;
-                                  if (currentKey === 'active' && (labInfo.state === 'overdue' || labInfo.state === 'due-soon')) {
-                                    nextStatusKey = 'active_pending';
-                                  } else if (currentKey === 'active_pending' && labInfo.state === 'current') {
-                                    nextStatusKey = 'active';
-                                  }
-                                  const nextAlertStatus =
-                                    nextStatusKey === 'active_pending'
-                                      ? 'Active - Pending'
-                                      : nextStatusKey === 'active'
-                                        ? 'Active'
-                                        : current.alertStatus;
-                                  return {
-                                    ...current,
-                                    lastLab: '',
-                                    labStatus: labInfo.label,
-                                    statusKey: nextStatusKey,
-                                    alertStatus: nextAlertStatus
-                                  };
-                                });
-                              } else {
-                                const isoValue = normalizeDateValue(trimmed);
-                                if (!isoValue) {
-                                  setFeedback('Enter date as MM-DD-YYYY');
-                                  onBlur();
-                                  return;
-                                }
-                                updateRow(row.id, (current) => {
-                                  const nextLabIso = normalizeDateValue(current.nextLab) ?? null;
-                                  const labInfo = computeLabStatus(isoValue, nextLabIso);
-                                  const currentKey = (current.statusKey ?? '').toLowerCase();
-                                  let nextStatusKey = current.statusKey;
-                                  if (currentKey === 'active' && (labInfo.state === 'overdue' || labInfo.state === 'due-soon')) {
-                                    nextStatusKey = 'active_pending';
-                                  } else if (currentKey === 'active_pending' && labInfo.state === 'current') {
-                                    nextStatusKey = 'active';
-                                  }
-                                  const nextAlertStatus =
-                                    nextStatusKey === 'active_pending'
-                                      ? 'Active - Pending'
-                                      : nextStatusKey === 'active'
-                                        ? 'Active'
-                                        : current.alertStatus;
-                                  return {
-                                    ...current,
-                                    lastLab: isoValue,
-                                    labStatus: labInfo.label,
-                                    statusKey: nextStatusKey,
-                                    alertStatus: nextAlertStatus
-                                  };
-                                });
-                              }
-                              clearPendingValue(row.id, 'lastLab');
-                            }
-                            onBlur();
-                          }}
-                          autoFocus={pending === undefined}
-                          style={inputStyle}
-                        />
-                      );
-                    }}
+                    renderEditor={({ onBlur }) => (
+                      <DateEditor
+                        value={formatDateInput(row.lastLab)}
+                        placeholder={DATE_INPUT_PLACEHOLDER}
+                        autoFocus
+                        onCommit={(value) => handleLastLabCommit(row.id, value)}
+                        onBlur={onBlur}
+                      />
+                    )}
                   />
                   <EditableCell
                     rowId={row.id}
                     field="nextLab"
                     cellStyle={narrowCellStyle}
                     display={formatDisplayDate(row.nextLab)}
-                    renderEditor={({ onBlur }) => {
-                      const pending = getPendingValue(row.id, 'nextLab');
-                      return (
-                        <input
-                          type="text"
-                          value={pending ?? formatDateInput(row.nextLab)}
-                          placeholder="MM-DD-YYYY"
-                          inputMode="numeric"
-                          onChange={(event) => setPendingValue(row.id, 'nextLab', event.target.value)}
-                          onBlur={() => {
-                            const nextPending = getPendingValue(row.id, 'nextLab');
-                            if (nextPending !== undefined) {
-                              const trimmed = nextPending.trim();
-                              if (!trimmed) {
-                                updateRow(row.id, (current) => {
-                                  const lastLabIso = normalizeDateValue(current.lastLab) ?? null;
-                                  const labInfo = computeLabStatus(lastLabIso, null);
-                                  const currentKey = (current.statusKey ?? '').toLowerCase();
-                                  let nextStatusKey = current.statusKey;
-                                  if (currentKey === 'active' && (labInfo.state === 'overdue' || labInfo.state === 'due-soon')) {
-                                    nextStatusKey = 'active_pending';
-                                  } else if (currentKey === 'active_pending' && labInfo.state === 'current') {
-                                    nextStatusKey = 'active';
-                                  }
-                                  const nextAlertStatus =
-                                    nextStatusKey === 'active_pending'
-                                      ? 'Active - Pending'
-                                      : nextStatusKey === 'active'
-                                        ? 'Active'
-                                        : current.alertStatus;
-                                  return {
-                                    ...current,
-                                    nextLab: '',
-                                    labStatus: labInfo.label,
-                                    statusKey: nextStatusKey,
-                                    alertStatus: nextAlertStatus
-                                  };
-                                });
-                              } else {
-                                const isoValue = normalizeDateValue(trimmed);
-                                if (!isoValue) {
-                                  setFeedback('Enter date as MM-DD-YYYY');
-                                  onBlur();
-                                  return;
-                                }
-                                updateRow(row.id, (current) => {
-                                  const lastLabIso = normalizeDateValue(current.lastLab) ?? null;
-                                  const labInfo = computeLabStatus(lastLabIso, isoValue);
-                                  const currentKey = (current.statusKey ?? '').toLowerCase();
-                                  let nextStatusKey = current.statusKey;
-                                  if (currentKey === 'active' && (labInfo.state === 'overdue' || labInfo.state === 'due-soon')) {
-                                    nextStatusKey = 'active_pending';
-                                  } else if (currentKey === 'active_pending' && labInfo.state === 'current') {
-                                    nextStatusKey = 'active';
-                                  }
-                                  const nextAlertStatus =
-                                    nextStatusKey === 'active_pending'
-                                      ? 'Active - Pending'
-                                      : nextStatusKey === 'active'
-                                        ? 'Active'
-                                        : current.alertStatus;
-                                  return {
-                                    ...current,
-                                    nextLab: isoValue,
-                                    labStatus: labInfo.label,
-                                    statusKey: nextStatusKey,
-                                    alertStatus: nextAlertStatus
-                                  };
-                                });
-                              }
-                              clearPendingValue(row.id, 'nextLab');
-                            }
-                            onBlur();
-                          }}
-                          autoFocus={pending === undefined}
-                          style={inputStyle}
-                        />
-                      );
-                    }}
+                    renderEditor={({ onBlur }) => (
+                      <DateEditor
+                        value={formatDateInput(row.nextLab)}
+                        placeholder={DATE_INPUT_PLACEHOLDER}
+                        autoFocus
+                        onCommit={(value) => handleNextLabCommit(row.id, value)}
+                        onBlur={onBlur}
+                      />
+                    )}
                   />
                   <EditableCell
                     rowId={row.id}
                     field="serviceStartDate"
                     cellStyle={narrowCellStyle}
                     display={formatDisplayDate(row.serviceStartDate)}
-                    renderEditor={({ onBlur }) => {
-                      const pending = getPendingValue(row.id, 'serviceStartDate');
-                      return (
-                        <input
-                          type="text"
-                          value={pending ?? formatDateInput(row.serviceStartDate)}
-                          placeholder="MM-DD-YYYY"
-                          inputMode="numeric"
-                          onChange={(event) => setPendingValue(row.id, 'serviceStartDate', event.target.value)}
-                          onBlur={() => {
-                            const nextPending = getPendingValue(row.id, 'serviceStartDate');
-                            if (nextPending !== undefined) {
-                              const trimmed = nextPending.trim();
-                              if (!trimmed) {
-                                updateRow(row.id, (current) => ({ ...current, serviceStartDate: '' }));
-                              } else {
-                                const isoValue = normalizeDateValue(trimmed);
-                                if (!isoValue) {
-                                  setFeedback('Enter date as MM-DD-YYYY');
-                                  onBlur();
-                                  return;
-                                }
-                                updateRow(row.id, (current) => ({ ...current, serviceStartDate: isoValue }));
-                              }
-                              clearPendingValue(row.id, 'serviceStartDate');
-                            }
-                            onBlur();
-                          }}
-                          autoFocus={pending === undefined}
-                          style={inputStyle}
-                        />
-                      );
-                    }}
+                    renderEditor={({ onBlur }) => (
+                      <DateEditor
+                        value={formatDateInput(row.serviceStartDate)}
+                        placeholder={DATE_INPUT_PLACEHOLDER}
+                        autoFocus
+                        onCommit={(value) => handleSimpleDateCommit(row.id, 'serviceStartDate', value)}
+                        onBlur={onBlur}
+                      />
+                    )}
                   />
                   <EditableCell
                     rowId={row.id}
                     field="contractEnd"
                     cellStyle={narrowCellStyle}
                     display={formatDisplayDate(row.contractEnd)}
-                    renderEditor={({ onBlur }) => {
-                      const pending = getPendingValue(row.id, 'contractEnd');
-                      return (
-                        <input
-                          type="text"
-                          value={pending ?? formatDateInput(row.contractEnd)}
-                          placeholder="MM-DD-YYYY"
-                          inputMode="numeric"
-                          onChange={(event) => setPendingValue(row.id, 'contractEnd', event.target.value)}
-                          onBlur={() => {
-                            const nextPending = getPendingValue(row.id, 'contractEnd');
-                            if (nextPending !== undefined) {
-                              const trimmed = nextPending.trim();
-                              if (!trimmed) {
-                                updateRow(row.id, (current) => ({ ...current, contractEnd: '' }));
-                              } else {
-                                const isoValue = normalizeDateValue(trimmed);
-                                if (!isoValue) {
-                                  setFeedback('Enter date as MM-DD-YYYY');
-                                  onBlur();
-                                  return;
-                                }
-                                updateRow(row.id, (current) => ({ ...current, contractEnd: isoValue }));
-                              }
-                              clearPendingValue(row.id, 'contractEnd');
-                            }
-                            onBlur();
-                          }}
-                          autoFocus={pending === undefined}
-                          style={inputStyle}
-                        />
-                      );
-                    }}
+                    renderEditor={({ onBlur }) => (
+                      <DateEditor
+                        value={formatDateInput(row.contractEnd)}
+                        placeholder={DATE_INPUT_PLACEHOLDER}
+                        autoFocus
+                        onCommit={(value) => handleSimpleDateCommit(row.id, 'contractEnd', value)}
+                        onBlur={onBlur}
+                      />
+                    )}
                   />
                   <EditableCell
                     rowId={row.id}
                     field="dateOfBirth"
                     cellStyle={narrowCellStyle}
                     display={formatDisplayDate(row.dateOfBirth)}
-                    renderEditor={({ onBlur }) => {
-                      const pending = getPendingValue(row.id, 'dateOfBirth');
-                      return (
-                        <input
-                          type="text"
-                          value={pending ?? formatDateInput(row.dateOfBirth)}
-                          placeholder="MM-DD-YYYY"
-                          inputMode="numeric"
-                          onChange={(event) => setPendingValue(row.id, 'dateOfBirth', event.target.value)}
-                          onBlur={() => {
-                            const nextPending = getPendingValue(row.id, 'dateOfBirth');
-                            if (nextPending !== undefined) {
-                              const trimmed = nextPending.trim();
-                              if (!trimmed) {
-                                updateRow(row.id, (current) => ({ ...current, dateOfBirth: '' }));
-                              } else {
-                                const isoValue = normalizeDateValue(trimmed);
-                                if (!isoValue) {
-                                  setFeedback('Enter date as MM-DD-YYYY');
-                                  onBlur();
-                                  return;
-                                }
-                                updateRow(row.id, (current) => ({ ...current, dateOfBirth: isoValue }));
-                              }
-                              clearPendingValue(row.id, 'dateOfBirth');
-                            }
-                            onBlur();
-                          }}
-                          autoFocus={pending === undefined}
-                          style={inputStyle}
-                        />
-                      );
-                    }}
+                    renderEditor={({ onBlur }) => (
+                      <DateEditor
+                        value={formatDateInput(row.dateOfBirth)}
+                        placeholder={DATE_INPUT_PLACEHOLDER}
+                        autoFocus
+                        onCommit={(value) => handleSimpleDateCommit(row.id, 'dateOfBirth', value)}
+                        onBlur={onBlur}
+                      />
+                    )}
                   />
                   <EditableCell
                     rowId={row.id}

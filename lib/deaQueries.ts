@@ -20,6 +20,8 @@ export type DeaLogRow = {
 };
 
 export async function fetchRecentDeaLog(limit = 200): Promise<DeaLogRow[]> {
+  // NOTE: DEA log shows ALL historical dispenses, regardless of patient status.
+  // This is critical for audit compliance - we must maintain complete records.
   const rows = await query<Record<string, unknown>>(
     `SELECT * FROM dea_dispense_log_v ORDER BY transaction_time DESC NULLS LAST LIMIT $1`,
     [limit]

@@ -68,3 +68,4 @@ export function cleanedFullName(record: HistoricalPatientRecord): string {
   return stripHonorifics(record.full_name ?? '');
 }
 
+

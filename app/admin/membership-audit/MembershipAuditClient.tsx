@@ -656,6 +656,70 @@ export default function MembershipAuditClient({ data, quickbooksData, lookups }:
         </section>
       )}
 
+      {quickbooksAudit.connected && quickbooksAudit.unmappedPatients.length > 0 && (
+        <section
+          style={{
+            border: '1px solid rgba(148,163,184,0.3)',
+            borderRadius: '1rem',
+            padding: '1.5rem',
+            background: '#ffffff',
+            boxShadow: '0 10px 25px rgba(15,23,42,0.05)'
+          }}
+        >
+          <SectionHeading
+            title="QuickBooks Patients Without Mapping"
+            description="These GMH patients use QuickBooks for billing but are not tied to a QuickBooks customer ID yet. Link them so failed payments can automatically pause service."
+          />
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
+              <thead>
+                <tr>
+                  {['Patient', 'Alert Status', 'Payment Method', 'Phone', 'Actions'].map((label) => (
+                    <th
+                      key={label}
+                      style={{
+                        textAlign: 'left',
+                        padding: '0.75rem',
+                        background: '#f1f5f9',
+                        borderBottom: '1px solid #e2e8f0'
+                      }}
+                    >
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {quickbooksAudit.unmappedPatients.map((row) => (
+                  <tr key={row.patient_id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                    <td style={{ padding: '0.75rem', fontWeight: 600 }}>{row.full_name}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.status_key ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.payment_method ?? 'QuickBooks'}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.phone_primary ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>
+                      <a
+                        href="/ops/admin/quickbooks"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.35rem',
+                          padding: '0.45rem 0.85rem',
+                          borderRadius: '0.45rem',
+                          border: '1px solid rgba(14,165,233,0.45)',
+                          color: '#0369a1'
+                        }}
+                      >
+                        Open QuickBooks Mapping
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       <section
         style={{
           border: '1px solid rgba(148,163,184,0.3)',

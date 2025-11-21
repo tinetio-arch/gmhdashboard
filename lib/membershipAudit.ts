@@ -295,12 +295,14 @@ const EMPTY_QB_AUDIT: QuickBooksAuditData = {
 };
 
 export async function getQuickBooksAuditData(): Promise<QuickBooksAuditData> {
-  try {
-    const qbClient = await createQuickBooksClient();
-    if (!qbClient) {
-      return EMPTY_QB_AUDIT;
-    }
+  const qbClient = await createQuickBooksClient();
+  if (!qbClient) {
+    console.log('[QuickBooks Audit] No QB client available - OAuth not completed or tokens expired');
+    return EMPTY_QB_AUDIT;
+  }
 
+  console.log('[QuickBooks Audit] QB client created successfully, fetching data...');
+  try {
     const [recurringTemplates, customers, mappedRows, unmappedPatients, overdueInvoices] = await Promise.all([
       qbClient.getActiveRecurringTransactions(),
       qbClient.getCustomers(),
@@ -351,23 +353,54 @@ export async function getQuickBooksAuditData(): Promise<QuickBooksAuditData> {
     const mappedCustomerIds = new Set(mappedRows.map((row) => row.qb_customer_id));
     const customerMap = new Map(customers.map((customer) => [customer.Id, customer]));
 
-    const unmappedRecurring = recurringTemplates
-      .filter((template) => template.CustomerRef?.value && !mappedCustomerIds.has(template.CustomerRef.value))
-      .slice(0, 100)
-      .map<QuickBooksRecurringRow>((template) => {
-        const customerId = template.CustomerRef?.value ?? '';
-        const customer = customerMap.get(customerId);
-        return {
-          qbCustomerId: customerId,
-          customerName: customer?.DisplayName ?? template.CustomerRef?.name ?? 'Unknown customer',
-          email: customer?.PrimaryEmailAddr?.Address ?? null,
-          phone: customer?.PrimaryPhone?.FreeFormNumber ?? null,
-          templateName: template.Name ?? null,
-          amount: template.TotalAmt ?? null,
-          nextChargeDate: qbClient.calculateNextChargeDate(template)?.toISOString().split('T')[0] ?? null,
-          active: template.Active === true
-        };
+    const recurringRows: QuickBooksRecurringRow[] = [];
+
+    const addRecurringRow = (
+      customerId: string,
+      customerName: string,
+      email: string | null,
+      phone: string | null,
+      templateName: string | null,
+      amount: number | null,
+      nextChargeDate: string | null,
+      active: boolean
+    ) => {
+      if (!customerId || mappedCustomerIds.has(customerId)) {
+        return;
+      }
+      recurringRows.push({
+        qbCustomerId: customerId,
+        customerName,
+        email,
+        phone,
+        templateName,
+        amount,
+        nextChargeDate,
+        active
       });
+    };
+
+    // QuickBooks wraps SalesReceipt inside RecurringTransaction
+    recurringTemplates.forEach((template) => {
+      const customerId = template.CustomerRef?.value ?? '';
+      const customer = customerMap.get(customerId);
+      const templateName = template.Name ?? `${template.Type ?? 'Recurring'}`;
+      const amount = template.TotalAmt ?? null;
+      const nextDate = qbClient.calculateNextChargeDate(template)?.toISOString().split('T')[0] ?? null;
+      
+      addRecurringRow(
+        customerId,
+        customer?.DisplayName ?? template.CustomerRef?.name ?? 'Unknown customer',
+        customer?.PrimaryEmailAddr?.Address ?? null,
+        customer?.PrimaryPhone?.FreeFormNumber ?? null,
+        templateName,
+        amount,
+        nextDate,
+        template.Active === true
+      );
+    });
+
+    const unmappedRecurring = recurringRows.slice(0, 100);
 
     return {
       connected: true,
@@ -376,8 +409,14 @@ export async function getQuickBooksAuditData(): Promise<QuickBooksAuditData> {
       overdueInvoices
     };
   } catch (error) {
-    console.error('QuickBooks audit data error:', error);
-    return EMPTY_QB_AUDIT;
+    console.error('[QuickBooks Audit] Error fetching audit data:', error);
+    // Even if data fetch fails, we're still connected (client was created)
+    return {
+      connected: true,
+      unmappedRecurring: [],
+      unmappedPatients: [],
+      overdueInvoices: []
+    };
   }
 }
 

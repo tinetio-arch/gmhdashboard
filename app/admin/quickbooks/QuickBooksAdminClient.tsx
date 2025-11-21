@@ -178,15 +178,14 @@ export default function QuickBooksAdminClient() {
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold">QuickBooks Administration</h1>
         <div className="flex gap-4">
-          {!connected ? (
-            <button
-              onClick={connectQuickBooks}
-              disabled={connecting}
-              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
-            >
-              {connecting ? 'Connecting...' : 'Connect QuickBooks'}
-            </button>
-          ) : (
+          <button
+            onClick={connectQuickBooks}
+            disabled={connecting}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            {connecting ? 'Connecting...' : (connected ? 'Reconnect QuickBooks' : 'Connect QuickBooks')}
+          </button>
+          {connected && (
             <button
               onClick={syncData}
               disabled={loading}

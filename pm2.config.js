@@ -3,12 +3,13 @@ module.exports = {
     {
       name: 'gmh-dashboard',
       cwd: '/home/ec2-user/apps/gmh-dashboard',
-      script: 'node_modules/next/dist/bin/next',
-      args: 'start -p 3400',
+      script: '.next/standalone/server.js',
+      args: '',
       interpreter: 'node',
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
+        PORT: '3400',
         DATABASE_HOST: 'clinic-pg.cbkcu8m4geoo.us-east-2.rds.amazonaws.com',
         DATABASE_PORT: '5432',
         DATABASE_NAME: 'postgres',
@@ -32,6 +33,7 @@ module.exports = {
       },
       env_production: {
         NODE_ENV: 'production',
+        PORT: '3400',
         DATABASE_HOST: 'clinic-pg.cbkcu8m4geoo.us-east-2.rds.amazonaws.com',
         DATABASE_PORT: '5432',
         DATABASE_NAME: 'postgres',

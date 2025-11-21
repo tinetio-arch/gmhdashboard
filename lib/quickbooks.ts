@@ -48,6 +48,15 @@ export type QuickBooksPayment = {
   DepositToAccountRef?: { value: string };
 };
 
+export type QuickBooksSalesReceipt = {
+  Id: string;
+  TxnDate?: string;
+  CustomerRef?: { value: string; name?: string };
+  TotalAmt?: number;
+  PrivateNote?: string;
+  RecurringTxnId?: string;
+};
+
 export type QuickBooksRecurringTransaction = {
   Id: string;
   Name: string;
@@ -82,22 +91,67 @@ export class QuickBooksClient {
   private async request<T>(
     method: string,
     endpoint: string,
-    body?: unknown
+    options?: { body?: unknown; minorVersion?: number }
   ): Promise<T> {
     if (!this.config.accessToken) {
       throw new Error('QuickBooks access token is required. Please authenticate first.');
     }
 
-    const url = `${this.baseUrl}/v3/company/${this.config.realmId}${endpoint}`;
-    const response = await fetch(url, {
+    const url = new URL(`${this.baseUrl}/v3/company/${this.config.realmId}${endpoint}`);
+    if (options?.minorVersion && !url.searchParams.has('minorversion')) {
+      url.searchParams.append('minorversion', String(options.minorVersion));
+    }
+    
+    let response = await fetch(url.toString(), {
       method,
       headers: {
         'Authorization': `Bearer ${this.config.accessToken}`,
         'Accept': 'application/json',
         'Content-Type': 'application/json',
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: options?.body ? JSON.stringify(options.body) : undefined,
     });
+
+    // If we get a 401, try refreshing the token once and retry the request
+    if (response.status === 401 && this.config.refreshToken) {
+      console.log('[QuickBooks] Access token expired during request, refreshing...');
+      try {
+        const refreshed = await this.refreshAccessToken();
+        this.config.accessToken = refreshed.access_token;
+        this.config.refreshToken = refreshed.refresh_token;
+        
+        // Update database with new tokens
+        const { query } = await import('./db');
+        const expiresAt = new Date();
+        expiresAt.setSeconds(expiresAt.getSeconds() + (refreshed.expires_in || 3600));
+        
+        await query(
+          `UPDATE quickbooks_oauth_tokens 
+           SET access_token = $1, 
+               refresh_token = $2, 
+               expires_at = $3, 
+               updated_at = NOW() 
+           WHERE realm_id = $4`,
+          [refreshed.access_token, refreshed.refresh_token, expiresAt, this.config.realmId]
+        );
+        
+        console.log('[QuickBooks] Token refreshed successfully, retrying request...');
+        
+        // Retry the request with the new token
+        response = await fetch(url.toString(), {
+          method,
+          headers: {
+            'Authorization': `Bearer ${this.config.accessToken}`,
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: options?.body ? JSON.stringify(options.body) : undefined,
+        });
+      } catch (refreshError) {
+        console.error('[QuickBooks] Token refresh failed:', refreshError);
+        throw new Error('QuickBooks token expired and refresh failed. Please reconnect.');
+      }
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -279,6 +333,39 @@ export class QuickBooksClient {
     return payments;
   }
 
+  async getRecurringSalesReceipts(): Promise<QuickBooksSalesReceipt[]> {
+    const receipts: QuickBooksSalesReceipt[] = [];
+    let startPosition = 1;
+    const maxResults = 100;
+
+    while (true) {
+      const response = await this.request<{
+        QueryResponse: {
+          SalesReceipt?: QuickBooksSalesReceipt[];
+          maxResults: number;
+          startPosition: number;
+        };
+      }>(
+        `GET`,
+        `/query?query=SELECT Id, TxnDate, CustomerRef, TotalAmt, PrivateNote, RecurringTxnId FROM SalesReceipt WHERE RecurringTxnId != '' ORDER BY TxnDate DESC MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`,
+        { minorVersion: 65 }
+      );
+
+      const queryResponse = response.QueryResponse;
+      if (queryResponse.SalesReceipt) {
+        receipts.push(...queryResponse.SalesReceipt);
+      }
+
+      if (!queryResponse.SalesReceipt || queryResponse.SalesReceipt.length < maxResults) {
+        break;
+      }
+
+      startPosition += maxResults;
+    }
+
+    return receipts;
+  }
+
   /**
    * Calculate days overdue for an invoice
    */
@@ -324,7 +411,9 @@ export class QuickBooksClient {
           maxResults: number;
           startPosition: number;
         };
-      }>(`GET`, `/query?query=SELECT * FROM RecurringTransaction MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`);
+      }>(`GET`, `/query?query=SELECT * FROM RecurringTransaction MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`, {
+        minorVersion: 65
+      });
 
       const queryResponse = response.QueryResponse;
       if (queryResponse.RecurringTransaction) {
@@ -356,7 +445,9 @@ export class QuickBooksClient {
           maxResults: number;
           startPosition: number;
         };
-      }>(`GET`, `/query?query=SELECT * FROM RecurringTransaction WHERE CustomerRef = '${customerId}' MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`);
+      }>(`GET`, `/query?query=SELECT * FROM RecurringTransaction WHERE CustomerRef = '${customerId}' MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`, {
+        minorVersion: 65
+      });
 
       const queryResponse = response.QueryResponse;
       if (queryResponse.RecurringTransaction) {
@@ -431,13 +522,13 @@ async function loadTokensFromDatabase(realmId?: string): Promise<{
 } | null> {
   try {
     const { query } = await import('./db');
-    const realmIdToLoad = realmId || process.env.QUICKBOOKS_REALM_ID;
     
-    if (!realmIdToLoad) {
-      return null;
-    }
-
-    const tokens = await query<{
+    console.log('[QuickBooks] loadTokensFromDatabase called with realmId:', realmId);
+    console.log('[QuickBooks] process.env.QUICKBOOKS_REALM_ID:', process.env.QUICKBOOKS_REALM_ID);
+    
+    // Always load the most recent token from database, ignore environment variable
+    console.log('[QuickBooks] Loading most recent token from database');
+    const recentTokens = await query<{
       realm_id: string;
       access_token: string;
       refresh_token: string;
@@ -445,30 +536,29 @@ async function loadTokensFromDatabase(realmId?: string): Promise<{
     }>(
       `SELECT realm_id, access_token, refresh_token, expires_at 
        FROM quickbooks_oauth_tokens 
-       WHERE realm_id = $1 
        ORDER BY updated_at DESC 
-       LIMIT 1`,
-      [realmIdToLoad]
+       LIMIT 1`
     );
-
-    if (tokens.length === 0) {
+    
+    if (recentTokens.length === 0) {
+      console.log('[QuickBooks] No tokens found in database');
       return null;
     }
-
-    const token = tokens[0];
     
-    // Check if token is expired (with 5 minute buffer)
+    const token = recentTokens[0];
+    console.log('[QuickBooks] Found token for realm ID:', token.realm_id);
+    
+    // Check if token is expired and handle it
     const expiresAt = new Date(token.expires_at);
     const now = new Date();
-    const buffer = 5 * 60 * 1000; // 5 minutes
+    const buffer = 5 * 60 * 1000;
+    
+    console.log('[QuickBooks] Token expires at:', expiresAt.toISOString(), 'Now:', now.toISOString());
     
     if (expiresAt.getTime() - now.getTime() < buffer) {
-      // Token expired, try to refresh
-      console.log('QuickBooks access token expired, attempting refresh...');
+      console.log('[QuickBooks] Token expired, attempting refresh...');
       try {
         const refreshed = await refreshQuickBooksToken(token.refresh_token);
-        
-        // Update database with new tokens
         const expiresAtNew = new Date();
         expiresAtNew.setSeconds(expiresAtNew.getSeconds() + (refreshed.expires_in || 3600));
         
@@ -482,24 +572,27 @@ async function loadTokensFromDatabase(realmId?: string): Promise<{
           [refreshed.access_token, refreshed.refresh_token, expiresAtNew, token.realm_id]
         );
         
+        console.log('[QuickBooks] Token refreshed successfully');
+        
         return {
           accessToken: refreshed.access_token,
           refreshToken: refreshed.refresh_token,
           realmId: token.realm_id,
         };
       } catch (refreshError) {
-        console.error('Failed to refresh QuickBooks token:', refreshError);
+        console.error('[QuickBooks] Failed to refresh token:', refreshError);
         return null;
       }
     }
-
+    
+    console.log('[QuickBooks] Using existing valid token');
     return {
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
       realmId: token.realm_id,
     };
   } catch (error) {
-    console.warn('Could not load tokens from database:', error);
+    console.warn('[QuickBooks] Could not load tokens from database:', error);
     return null;
   }
 }

@@ -72,3 +72,4 @@ WHERE p.patient_id = um.patient_id
   AND COALESCE(p.status_key, '') NOT IN ('hold_contract_renewal', 'hold_payment_research');
 
 
+
