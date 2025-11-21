@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
-import { getMembershipAuditData } from '@/lib/membershipAudit';
+import { getMembershipAuditData, getQuickBooksAuditData } from '@/lib/membershipAudit';
 import { fetchLookupSets } from '@/lib/lookups';
 import MembershipAuditClient from './MembershipAuditClient';
 
@@ -10,8 +10,12 @@ export default async function MembershipAuditPage() {
     redirect('/unauthorized');
   }
 
-  const [data, lookups] = await Promise.all([getMembershipAuditData(), fetchLookupSets()]);
-  return <MembershipAuditClient data={data} lookups={lookups} />;
+  const [data, lookups, quickbooksData] = await Promise.all([
+    getMembershipAuditData(),
+    fetchLookupSets(),
+    getQuickBooksAuditData()
+  ]);
+  return <MembershipAuditClient data={data} lookups={lookups} quickbooksData={quickbooksData} />;
 }
 
 

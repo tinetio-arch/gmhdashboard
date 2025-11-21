@@ -2,13 +2,14 @@
 
 import { useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { MembershipAuditData } from '@/lib/membershipAudit';
+import type { MembershipAuditData, QuickBooksAuditData } from '@/lib/membershipAudit';
 import type { LookupSets } from '@/lib/lookups';
 import { withBasePath } from '@/lib/basePath';
 import { stripHonorifics } from '@/lib/nameUtils';
 
 type Props = {
   data: MembershipAuditData;
+  quickbooksData: QuickBooksAuditData;
   lookups: LookupSets;
 };
 
@@ -31,6 +32,7 @@ const ISSUE_DESCRIPTIONS: Record<string, string> = {
 };
 
 const ISSUE_KEYS = Object.keys(ISSUE_LABELS);
+const CLEANUP_ISSUES = ISSUE_KEYS.filter((issue) => issue !== 'no_gmh_match');
 
 type IntakeFormState = {
   patientName: string;
@@ -54,6 +56,9 @@ type IntakeFormState = {
 
 type NeedsDataRow = MembershipAuditData['needsData'][number];
 type DuplicateGroup = MembershipAuditData['duplicates'][number];
+type QuickBooksRecurringRow = QuickBooksAuditData['unmappedRecurring'][number];
+type QuickBooksInvoiceRow = QuickBooksAuditData['overdueInvoices'][number];
+type QuickBooksPatientRow = QuickBooksAuditData['unmappedPatients'][number];
 type PatientMatch = {
   patient_id: string;
   full_name: string;
@@ -64,6 +69,10 @@ type PatientMatch = {
   contract_end_date: string | null;
   dob: string | null;
 };
+
+type LinkContext =
+  | { kind: 'clinicsync'; row: NeedsDataRow }
+  | { kind: 'quickbooks'; qbCustomerId: string; customerName: string };
 
 function formatPatientName(value: string | null | undefined): string {
   return stripHonorifics(value ?? '');
@@ -146,30 +155,36 @@ function EmptyState() {
   return <p style={{ color: '#94a3b8' }}>Nothing to review.</p>;
 }
 
-export default function MembershipAuditClient({ data, lookups }: Props) {
+export default function MembershipAuditClient({ data, quickbooksData, lookups }: Props) {
   const [auditData, setAuditData] = useState(data);
+  const [quickbooksAudit, setQuickbooksAudit] = useState(quickbooksData);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [issueFilters, setIssueFilters] = useState<string[]>(ISSUE_KEYS);
   const [intakeRow, setIntakeRow] = useState<NeedsDataRow | null>(null);
   const [intakeForm, setIntakeForm] = useState<IntakeFormState | null>(null);
   const [intakeError, setIntakeError] = useState<string | null>(null);
   const [intakeSaving, setIntakeSaving] = useState(false);
   const [intakeLoading, setIntakeLoading] = useState(false);
-  const [linkRow, setLinkRow] = useState<NeedsDataRow | null>(null);
+  const [linkContext, setLinkContext] = useState<LinkContext | null>(null);
   const [linkResults, setLinkResults] = useState<PatientMatch[]>([]);
   const [linkQuery, setLinkQuery] = useState('');
   const [linkLoading, setLinkLoading] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
 
-  const filteredNeedsData = useMemo(
-    () => auditData.needsData.filter((row) => issueFilters.includes(row.issue)),
-    [auditData.needsData, issueFilters]
-  );
   const needsIntakeRows = useMemo(
     () => auditData.needsData.filter((row) => row.issue === 'no_gmh_match'),
     [auditData.needsData]
   );
+
+  const issueBuckets = useMemo(() => {
+    const bucket = new Map<string, NeedsDataRow[]>();
+    auditData.needsData.forEach((row) => {
+      const current = bucket.get(row.issue) ?? [];
+      current.push(row);
+      bucket.set(row.issue, current);
+    });
+    return bucket;
+  }, [auditData.needsData]);
 
   const duplicateLookup = useMemo(() => {
     const map = new Map<string, DuplicateGroup>();
@@ -178,17 +193,6 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
     });
     return map;
   }, [auditData.duplicates]);
-
-  function toggleIssue(issue: string) {
-    setIssueFilters((prev) => {
-      const next = prev.includes(issue) ? prev.filter((key) => key !== issue) : [...prev, issue];
-      return next.length === 0 ? ISSUE_KEYS : next;
-    });
-  }
-
-  function resetFilters() {
-    setIssueFilters(ISSUE_KEYS);
-  }
 
   async function openIntake(row: NeedsDataRow) {
     setIntakeRow(row);
@@ -263,20 +267,28 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
     }
   }
 
-  async function openLinkDrawer(row: NeedsDataRow) {
+  async function openClinicLinkDrawer(row: NeedsDataRow) {
     if (!row.clinicsync_patient_id) {
       setMessage('This membership does not have a ClinicSync ID to link.');
       return;
     }
-    setLinkRow(row);
+    setLinkContext({ kind: 'clinicsync', row });
     setLinkError(null);
     const defaultQuery = formatPatientName(row.patient_name);
     setLinkQuery(defaultQuery);
     await searchPatients({ normName: row.norm_name, query: defaultQuery });
   }
 
+  async function openQuickBooksLinkDrawer(row: QuickBooksRecurringRow) {
+    setLinkContext({ kind: 'quickbooks', qbCustomerId: row.qbCustomerId, customerName: row.customerName });
+    setLinkError(null);
+    const defaultQuery = stripHonorifics(row.customerName);
+    setLinkQuery(defaultQuery);
+    await searchPatients({ query: defaultQuery });
+  }
+
   function closeLinkDrawer() {
-    setLinkRow(null);
+    setLinkContext(null);
     setLinkResults([]);
     setLinkQuery('');
     setLinkError(null);
@@ -285,25 +297,42 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
 
   async function handleLinkSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!linkRow) {
+    if (!linkContext) {
       return;
     }
-    await searchPatients({ query: linkQuery || formatPatientName(linkRow.patient_name) });
+    if (linkContext.kind === 'clinicsync') {
+      await searchPatients({
+        query: linkQuery || formatPatientName(linkContext.row.patient_name),
+        normName: linkContext.row.norm_name
+      });
+    } else {
+      await searchPatients({
+        query: linkQuery || stripHonorifics(linkContext.customerName)
+      });
+    }
   }
 
   async function handleLinkSelection(patientId: string) {
-    if (!linkRow) {
+    if (!linkContext) {
       return;
     }
-    if (!linkRow.clinicsync_patient_id) {
-      setLinkError('This membership does not have a ClinicSync ID to link.');
-      return;
+    if (linkContext.kind === 'clinicsync') {
+      if (!linkContext.row.clinicsync_patient_id) {
+        setLinkError('This membership does not have a ClinicSync ID to link.');
+        return;
+      }
+      await handleClinicLink(patientId, linkContext.row.clinicsync_patient_id, {
+        removeNorm: linkContext.row.norm_name,
+        removeIssue: linkContext.row.issue
+      });
+      closeLinkDrawer();
+    } else {
+      await handleQuickBooksLink(patientId, linkContext.qbCustomerId);
+      closeLinkDrawer();
     }
-    await handleLink(patientId, linkRow.clinicsync_patient_id, { removeNorm: linkRow.norm_name, removeIssue: linkRow.issue });
-    closeLinkDrawer();
   }
 
-  async function handleLink(
+  async function handleClinicLink(
     patientId: string,
     clinicsyncPatientId: string,
     options?: { removeNorm?: string; removeIssue?: string }
@@ -332,6 +361,32 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
     } catch (error) {
       console.error(error);
       setMessage('Link failed. Please try again.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleQuickBooksLink(patientId: string, qbCustomerId: string) {
+    setBusyId(qbCustomerId);
+    setMessage(null);
+    try {
+      const res = await fetch(withBasePath('/api/admin/quickbooks/patient-matching'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patientId, qbCustomerId, matchMethod: 'manual' })
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      setQuickbooksAudit((prev) => ({
+        ...prev,
+        unmappedRecurring: prev.unmappedRecurring.filter((row) => row.qbCustomerId !== qbCustomerId),
+        unmappedPatients: prev.unmappedPatients.filter((row) => row.patient_id !== patientId)
+      }));
+      setMessage('QuickBooks customer linked successfully.');
+    } catch (error) {
+      console.error(error);
+      setMessage('Unable to link QuickBooks customer. Please try again.');
     } finally {
       setBusyId(null);
     }
@@ -442,7 +497,7 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
       closeIntake();
       setMessage('Patient created from intake. Link the membership to finish.');
       if (newPatientId && currentRow.clinicsync_patient_id) {
-        await handleLink(newPatientId, currentRow.clinicsync_patient_id, {
+        await handleClinicLink(newPatientId, currentRow.clinicsync_patient_id, {
           removeNorm: currentRow.norm_name,
           removeIssue: currentRow.issue
         });
@@ -521,7 +576,11 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
                     <td style={{ padding: '0.75rem' }}>
                       <button
                         type="button"
-                        onClick={() => handleLink(row.patient_id, row.clinicsync_patient_id)}
+                        onClick={() =>
+                          handleClinicLink(row.patient_id, row.clinicsync_patient_id, {
+                            removeNorm: row.norm_name
+                          })
+                        }
                         disabled={busyId === row.clinicsync_patient_id}
                         style={{
                           padding: '0.4rem 0.9rem',
@@ -534,6 +593,135 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
                         }}
                       >
                         {busyId === row.clinicsync_patient_id ? 'Linking...' : 'Link'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {quickbooksAudit.connected && (
+        <section
+          style={{
+            border: '1px solid rgba(148,163,184,0.3)',
+            borderRadius: '1rem',
+            padding: '1.5rem',
+            background: '#ffffff',
+            boxShadow: '0 10px 25px rgba(15,23,42,0.05)'
+          }}
+        >
+          <SectionHeading
+            title="QuickBooks Payment Issues"
+            description="Once a QuickBooks customer is linked, any failed charge automatically moves the patient to Hold - Payment Research."
+          />
+          {quickbooksAudit.overdueInvoices.length === 0 ? (
+            <EmptyState />
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
+                <thead>
+                  <tr>
+                    {['Patient', 'Balance', 'Days Overdue', 'Invoice #', 'Alert Status'].map((label) => (
+                      <th
+                        key={label}
+                        style={{
+                          textAlign: 'left',
+                          padding: '0.75rem',
+                          background: '#f1f5f9',
+                          borderBottom: '1px solid #e2e8f0'
+                        }}
+                      >
+                        {label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {quickbooksAudit.overdueInvoices.map((row) => (
+                    <tr key={row.qb_invoice_id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                      <td style={{ padding: '0.75rem', fontWeight: 600 }}>{formatPatientName(row.patient_name)}</td>
+                      <td style={{ padding: '0.75rem' }}>{formatCurrency(row.balance.toString())}</td>
+                      <td style={{ padding: '0.75rem' }}>{row.days_overdue}</td>
+                      <td style={{ padding: '0.75rem' }}>{row.invoice_number ?? '—'}</td>
+                      <td style={{ padding: '0.75rem' }}>{row.status_key ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      <section
+        style={{
+          border: '1px solid rgba(148,163,184,0.3)',
+          borderRadius: '1rem',
+          padding: '1.5rem',
+          background: '#ffffff',
+          boxShadow: '0 10px 25px rgba(15,23,42,0.05)'
+        }}
+      >
+        <SectionHeading
+          title="QuickBooks Recurring (Needs Mapping)"
+          description="These QuickBooks recurring templates are charging patients but are not linked to a GMH chart yet."
+        />
+        {!quickbooksAudit.connected ? (
+          <p style={{ color: '#b91c1c', margin: 0 }}>
+            QuickBooks is not connected. Connect from the QuickBooks admin page to populate this list.
+          </p>
+        ) : quickbooksAudit.unmappedRecurring.length === 0 ? (
+          <EmptyState />
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
+              <thead>
+                <tr>
+                  {['Customer', 'Template', 'Amount', 'Next Charge', 'Email', 'Phone', 'Actions'].map((label) => (
+                    <th
+                      key={label}
+                      style={{
+                        textAlign: 'left',
+                        padding: '0.75rem',
+                        background: '#f1f5f9',
+                        borderBottom: '1px solid #e2e8f0'
+                      }}
+                    >
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {quickbooksAudit.unmappedRecurring.map((row) => (
+                  <tr key={row.qbCustomerId} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                    <td style={{ padding: '0.75rem', fontWeight: 600 }}>{formatPatientName(row.customerName)}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.templateName ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>
+                      {typeof row.amount === 'number' ? formatCurrency(row.amount.toString()) : '—'}
+                    </td>
+                    <td style={{ padding: '0.75rem' }}>{row.nextChargeDate ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.email ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>{row.phone ?? '—'}</td>
+                    <td style={{ padding: '0.75rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => openQuickBooksLinkDrawer(row)}
+                        style={{
+                          padding: '0.4rem 0.9rem',
+                          borderRadius: '0.5rem',
+                          border: '1px solid rgba(14,165,233,0.45)',
+                          background: '#0ea5e9',
+                          color: '#ffffff',
+                          fontSize: '0.85rem',
+                          cursor: 'pointer',
+                          opacity: busyId === row.qbCustomerId ? 0.6 : 1
+                        }}
+                      >
+                        {busyId === row.qbCustomerId ? 'Linking...' : 'Link to GMH'}
                       </button>
                     </td>
                   </tr>
@@ -606,7 +794,7 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => openLinkDrawer(row)}
+                        onClick={() => openClinicLinkDrawer(row)}
                         disabled={!row.clinicsync_patient_id}
                         style={{
                           padding: '0.35rem 0.75rem',
@@ -658,100 +846,106 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
           title="Needs Data Cleanup"
           description="Add missing phone/email or fix duplicate names, then resolve to hide the row."
         />
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
-          <button
-            type="button"
-            onClick={resetFilters}
-            style={{
-              padding: '0.4rem 0.75rem',
-              borderRadius: '999px',
-              border: '1px solid rgba(148,163,184,0.4)',
-              background: issueFilters.length === ISSUE_KEYS.length ? '#0ea5e9' : '#ffffff',
-              color: issueFilters.length === ISSUE_KEYS.length ? '#ffffff' : '#475569',
-              cursor: 'pointer'
-            }}
-          >
-            Show All
-          </button>
-          {ISSUE_KEYS.map((issue) => {
-            const active = issueFilters.includes(issue);
-            return (
-              <button
-                type="button"
-                key={issue}
-                onClick={() => toggleIssue(issue)}
-                style={{
-                  padding: '0.35rem 0.75rem',
-                  borderRadius: '999px',
-                  border: active ? '1px solid rgba(14,165,233,0.45)' : '1px solid rgba(148,163,184,0.35)',
-                  background: active ? 'rgba(14,165,233,0.12)' : '#ffffff',
-                  color: active ? '#0369a1' : '#475569',
-                  cursor: 'pointer'
-                }}
-              >
-                {ISSUE_LABELS[issue]}
-              </button>
-            );
-          })}
-        </div>
-        {filteredNeedsData.length === 0 ? (
+        {CLEANUP_ISSUES.every((issue) => (issueBuckets.get(issue) ?? []).length === 0) ? (
           <EmptyState />
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
-              <thead>
-                <tr>
-                  {['Membership Name', 'Plan', 'Status', 'Issue', 'Remaining', 'Contract End', 'Balance', ''].map(
-                    (label) => (
-                      <th
-                        key={label}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {CLEANUP_ISSUES.map((issue) => {
+              const rows = issueBuckets.get(issue) ?? [];
+              if (rows.length === 0) {
+                return null;
+              }
+              const rowsToShow = rows.slice(0, 6);
+              return (
+                <details
+                  key={issue}
+                  open={issue === 'multiple_gmh_matches' || rows.length <= 3}
+                  style={{
+                    border: '1px solid rgba(148,163,184,0.3)',
+                    borderRadius: '0.75rem',
+                    padding: '0.75rem 1rem',
+                    background: '#f8fafc'
+                  }}
+                >
+                  <summary
+                    style={{
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.35rem'
+                    }}
+                  >
+                    <span style={{ fontWeight: 600 }}>
+                      {ISSUE_LABELS[issue]}{' '}
+                      <span
                         style={{
-                          textAlign: 'left',
-                          padding: '0.75rem',
-                          background: '#f1f5f9',
-                          borderBottom: '1px solid #e2e8f0'
+                          fontSize: '0.8rem',
+                          color: '#475569',
+                          marginLeft: '0.35rem'
                         }}
                       >
-                        {label}
-                      </th>
-                    )
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {filteredNeedsData.map((row) => (
-                  <tr key={`${row.norm_name}-${row.issue}`} style={{ borderBottom: '1px solid #e2e8f0' }}>
-                    <td style={{ padding: '0.75rem' }}>{formatPatientName(row.patient_name)}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.plan_name ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.status ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>
-                      <div style={{ fontWeight: 600 }}>{ISSUE_LABELS[row.issue] ?? row.issue}</div>
-                      <small style={{ color: '#94a3b8' }}>{ISSUE_DESCRIPTIONS[row.issue] ?? ''}</small>
-                    </td>
-                    <td style={{ padding: '0.75rem' }}>{row.remaining_cycles ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.contract_end_date ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>{row.outstanding_balance ?? ''}</td>
-                    <td style={{ padding: '0.75rem' }}>
-                      <button
-                        type="button"
-                        onClick={() => handleResolve(row.norm_name)}
-                        disabled={busyId === row.norm_name}
-                        style={{
-                          padding: '0.4rem 0.9rem',
-                          borderRadius: '0.5rem',
-                          border: '1px solid #e2e8f0',
-                          background: '#f1f5f9',
-                          cursor: 'pointer',
-                          opacity: busyId === row.norm_name ? 0.6 : 1
-                        }}
-                      >
-                        {busyId === row.norm_name ? 'Resolving...' : 'Resolve'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                        ({rows.length})
+                      </span>
+                    </span>
+                    <small style={{ color: '#94a3b8' }}>{ISSUE_DESCRIPTIONS[issue]}</small>
+                  </summary>
+                  <div style={{ overflowX: 'auto', marginTop: '0.75rem' }}>
+                    <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
+                      <thead>
+                        <tr>
+                          {['Membership Name', 'Plan', 'Status', 'Contract End', 'Balance', ''].map((label) => (
+                            <th
+                              key={label}
+                              style={{
+                                textAlign: 'left',
+                                padding: '0.6rem',
+                                background: '#e2e8f0',
+                                borderBottom: '1px solid #d1d5db'
+                              }}
+                            >
+                              {label}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rowsToShow.map((row) => (
+                          <tr key={`${row.norm_name}-${row.issue}`} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                            <td style={{ padding: '0.65rem' }}>{formatPatientName(row.patient_name)}</td>
+                            <td style={{ padding: '0.65rem' }}>{row.plan_name ?? '—'}</td>
+                            <td style={{ padding: '0.65rem' }}>{row.status ?? '—'}</td>
+                            <td style={{ padding: '0.65rem' }}>{row.contract_end_date ?? '—'}</td>
+                            <td style={{ padding: '0.65rem' }}>{row.outstanding_balance ?? '—'}</td>
+                            <td style={{ padding: '0.65rem' }}>
+                              <button
+                                type="button"
+                                onClick={() => handleResolve(row.norm_name)}
+                                disabled={busyId === row.norm_name}
+                                style={{
+                                  padding: '0.35rem 0.8rem',
+                                  borderRadius: '0.45rem',
+                                  border: '1px solid #cbd5f5',
+                                  background: '#ffffff',
+                                  cursor: 'pointer',
+                                  opacity: busyId === row.norm_name ? 0.6 : 1
+                                }}
+                              >
+                                {busyId === row.norm_name ? 'Resolving...' : 'Resolve'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {rows.length > rowsToShow.length ? (
+                      <p style={{ marginTop: '0.5rem', color: '#94a3b8', fontSize: '0.85rem' }}>
+                        Showing the first {rowsToShow.length} rows. Resolve a few and refresh to load more.
+                      </p>
+                    ) : null}
+                  </div>
+                </details>
+              );
+            })}
           </div>
         )}
       </section>
@@ -1172,7 +1366,7 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
         </div>
       ) : null}
 
-      {linkRow ? (
+      {linkContext ? (
         <div
           style={{
             position: 'fixed',
@@ -1201,9 +1395,13 @@ export default function MembershipAuditClient({ data, lookups }: Props) {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <h3 style={{ margin: 0 }}>Link {formatPatientName(linkRow.patient_name)} to GMH</h3>
+                <h3 style={{ margin: 0 }}>
+                  Link {formatPatientName(linkContext.kind === 'clinicsync' ? linkContext.row.patient_name : linkContext.customerName)} to GMH
+                </h3>
                 <p style={{ margin: '0.35rem 0 0', color: '#475569', fontSize: '0.9rem' }}>
-                  Select the correct GMH patient record. This will attach the Jane membership so billing and holds stay in sync.
+                  {linkContext.kind === 'clinicsync'
+                    ? 'Select the correct GMH patient record. This will attach the Jane membership so billing and holds stay in sync.'
+                    : 'Select the GMH patient who should be tied to this QuickBooks recurring payment so failed charges can pause automation.'}
                 </p>
               </div>
               <button

@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
 
     const clientId = process.env.QUICKBOOKS_CLIENT_ID;
     const redirectUri = process.env.QUICKBOOKS_REDIRECT_URI;
-    const scope = 'com.intuit.quickbooks.accounting com.intuit.quickbooks.payment profile email';
+    const scope = 'com.intuit.quickbooks.accounting com.intuit.quickbooks.payment openid profile email';
 
     if (!clientId || !redirectUri) {
       return NextResponse.json(

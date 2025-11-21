@@ -1,4 +1,5 @@
 import { query } from './db';
+import { createQuickBooksClient } from './quickbooks';
 
 type AuditBase = {
   patient_name: string;
@@ -40,6 +41,44 @@ export type MembershipAuditData = {
   needsData: NeedsDataRow[];
   inactive: InactiveRow[];
   duplicates: DuplicateMembershipGroup[];
+};
+
+export type QuickBooksRecurringRow = {
+  qbCustomerId: string;
+  customerName: string;
+  email: string | null;
+  phone: string | null;
+  templateName: string | null;
+  amount: number | null;
+  nextChargeDate: string | null;
+  active: boolean;
+};
+
+export type QuickBooksPatientRow = {
+  patient_id: string;
+  full_name: string;
+  email: string | null;
+  phone_primary: string | null;
+  payment_method: string | null;
+  status_key: string | null;
+};
+
+export type QuickBooksInvoiceRow = {
+  qb_invoice_id: string;
+  patient_id: string | null;
+  patient_name: string | null;
+  invoice_number: string | null;
+  balance: number;
+  days_overdue: number;
+  payment_status: string | null;
+  status_key: string | null;
+};
+
+export type QuickBooksAuditData = {
+  connected: boolean;
+  unmappedRecurring: QuickBooksRecurringRow[];
+  unmappedPatients: QuickBooksPatientRow[];
+  overdueInvoices: QuickBooksInvoiceRow[];
 };
 
 const NORMALIZE_PATIENT_SQL =
@@ -246,5 +285,99 @@ export async function getMembershipAuditData(): Promise<MembershipAuditData> {
     inactive: inactiveRows,
     duplicates: duplicateRows
   };
+}
+
+const EMPTY_QB_AUDIT: QuickBooksAuditData = {
+  connected: false,
+  unmappedRecurring: [],
+  unmappedPatients: [],
+  overdueInvoices: []
+};
+
+export async function getQuickBooksAuditData(): Promise<QuickBooksAuditData> {
+  try {
+    const qbClient = await createQuickBooksClient();
+    if (!qbClient) {
+      return EMPTY_QB_AUDIT;
+    }
+
+    const [recurringTemplates, customers, mappedRows, unmappedPatients, overdueInvoices] = await Promise.all([
+      qbClient.getActiveRecurringTransactions(),
+      qbClient.getCustomers(),
+      query<{ qb_customer_id: string }>(
+        `SELECT qb_customer_id
+         FROM patient_qb_mapping
+         WHERE is_active = TRUE`
+      ),
+      query<QuickBooksPatientRow>(
+        `SELECT
+           p.patient_id,
+           p.full_name,
+           p.email,
+           p.phone_primary,
+           p.payment_method,
+           p.status_key
+         FROM patients p
+         LEFT JOIN patient_qb_mapping pqm
+           ON pqm.patient_id = p.patient_id
+           AND pqm.is_active = TRUE
+         WHERE (COALESCE(p.payment_method,'') ILIKE '%quickbook%' OR p.payment_method_key = 'quickbooks')
+           AND pqm.patient_id IS NULL
+         ORDER BY p.full_name
+         LIMIT 100`
+      ),
+      query<QuickBooksInvoiceRow>(
+        `SELECT
+           q.qb_invoice_id,
+           p.patient_id,
+           p.full_name AS patient_name,
+           q.invoice_number,
+           COALESCE(q.balance, 0)::numeric AS balance,
+           COALESCE(q.days_overdue, 0) AS days_overdue,
+           q.payment_status,
+           p.status_key
+         FROM quickbooks_payments q
+         LEFT JOIN patient_qb_mapping pqm
+           ON pqm.qb_customer_id = q.qb_customer_id
+           AND pqm.is_active = TRUE
+         LEFT JOIN patients p
+           ON p.patient_id = pqm.patient_id
+         WHERE q.balance > 0
+         ORDER BY COALESCE(q.days_overdue, 0) DESC, q.balance DESC
+         LIMIT 50`
+      )
+    ]);
+
+    const mappedCustomerIds = new Set(mappedRows.map((row) => row.qb_customer_id));
+    const customerMap = new Map(customers.map((customer) => [customer.Id, customer]));
+
+    const unmappedRecurring = recurringTemplates
+      .filter((template) => template.CustomerRef?.value && !mappedCustomerIds.has(template.CustomerRef.value))
+      .slice(0, 100)
+      .map<QuickBooksRecurringRow>((template) => {
+        const customerId = template.CustomerRef?.value ?? '';
+        const customer = customerMap.get(customerId);
+        return {
+          qbCustomerId: customerId,
+          customerName: customer?.DisplayName ?? template.CustomerRef?.name ?? 'Unknown customer',
+          email: customer?.PrimaryEmailAddr?.Address ?? null,
+          phone: customer?.PrimaryPhone?.FreeFormNumber ?? null,
+          templateName: template.Name ?? null,
+          amount: template.TotalAmt ?? null,
+          nextChargeDate: qbClient.calculateNextChargeDate(template)?.toISOString().split('T')[0] ?? null,
+          active: template.Active === true
+        };
+      });
+
+    return {
+      connected: true,
+      unmappedRecurring,
+      unmappedPatients,
+      overdueInvoices
+    };
+  } catch (error) {
+    console.error('QuickBooks audit data error:', error);
+    return EMPTY_QB_AUDIT;
+  }
 }
 

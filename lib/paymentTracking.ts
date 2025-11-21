@@ -292,21 +292,22 @@ export async function updatePatientStatusFromPayments(): Promise<PaymentSyncResu
 
     // Find patients with overdue invoices
     const overduePatients = await client.query(
-      `SELECT DISTINCT
+      `SELECT
          p.patient_id,
          p.full_name,
          p.status_key AS current_status,
          COALESCE(SUM(qbp.balance), 0) AS total_balance,
          MAX(qbp.days_overdue) AS max_days_overdue,
-         COUNT(qbp.qb_payment_id) AS overdue_count
+         COUNT(qbp.qb_payment_id) AS overdue_count,
+         BOOL_OR(COALESCE(p.payment_method,'') ILIKE '%quickbook%' OR p.payment_method_key = 'quickbooks') AS is_quickbooks
        FROM patients p
        INNER JOIN patient_qb_mapping pqm ON pqm.patient_id = p.patient_id AND pqm.is_active = TRUE
        INNER JOIN quickbooks_payments qbp ON qbp.qb_customer_id = pqm.qb_customer_id
-       WHERE qbp.payment_status = 'overdue'
-         AND qbp.days_overdue >= $1
-         AND qbp.balance >= $2
-       GROUP BY p.patient_id, p.full_name, p.status_key
-       HAVING COALESCE(SUM(qbp.balance), 0) >= $2`,
+       WHERE (
+         (qbp.payment_status = 'overdue' AND qbp.days_overdue >= $1 AND qbp.balance >= $2)
+         OR ((COALESCE(p.payment_method,'') ILIKE '%quickbook%' OR p.payment_method_key = 'quickbooks') AND qbp.balance > 0)
+       )
+       GROUP BY p.patient_id, p.full_name, p.status_key`,
       [minDaysOverdue, minAmountThreshold]
     );
 
@@ -318,14 +319,20 @@ export async function updatePatientStatusFromPayments(): Promise<PaymentSyncResu
         const currentStatus = patient.current_status;
         const totalBalance = parseFloat(patient.total_balance || '0');
         const maxDaysOverdue = parseInt(patient.max_days_overdue || '0');
+        const isQuickBooks = !!patient.is_quickbooks;
 
         // Only update if not already in a hold status
-        if (currentStatus && currentStatus.startsWith('hold_')) {
+        if (currentStatus && (currentStatus.startsWith('hold_') || currentStatus === 'inactive')) {
           continue;
         }
 
         // Determine issue severity
-        const severity = maxDaysOverdue >= 60 || totalBalance >= 500 ? 'critical' : 'warning';
+        const severity = isQuickBooks
+          ? totalBalance >= 500 ? 'critical' : 'warning'
+          : maxDaysOverdue >= 60 || totalBalance >= 500
+            ? 'critical'
+            : 'warning';
+        const issueType = isQuickBooks ? 'failed_payment' : 'overdue_invoice';
 
         // Create payment issue record
         await client.query(
@@ -336,7 +343,7 @@ export async function updatePatientStatusFromPayments(): Promise<PaymentSyncResu
           ON CONFLICT DO NOTHING`,
           [
             patientId,
-            'overdue_invoice',
+            issueType,
             severity,
             totalBalance,
             maxDaysOverdue,
