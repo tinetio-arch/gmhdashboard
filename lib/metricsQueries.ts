@@ -24,6 +24,7 @@ export type RecentlyEditedPatient = {
 
 export type RecentlyDispensedPatient = {
   dispenseId: string;
+  patientId: string | null;
   patientName: string | null;
   dispensedAt: string | null;
   enteredBy: string | null;
@@ -104,6 +105,7 @@ export async function fetchRecentlyDispensedPatients(limit = 5): Promise<Recentl
     `
       SELECT
         d.dispense_id AS "dispenseId",
+        d.patient_id AS "patientId",
         COALESCE(p.full_name, d.patient_name) AS "patientName",
         to_char(COALESCE(dt.transaction_time, d.dispense_date::timestamp), 'Mon DD, HH24:MI') AS "dispensedAt",
         cu.display_name AS "enteredBy",

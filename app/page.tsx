@@ -8,6 +8,13 @@ import {
   fetchRecentlyDispensedPatients
 } from '@/lib/metricsQueries';
 import { getMembershipStats, getOutstandingMemberships } from '@/lib/membershipStats';
+import { getTestosteroneInventoryByVendor, getPaymentFailureStats } from '@/lib/testosteroneInventory';
+// import { withBasePath } from '@/lib/basePath';
+// Server-side version of withBasePath
+function withBasePath(path: string): string {
+  const basePath = '/ops';
+  return path.startsWith('/') ? `${basePath}${path}` : `${basePath}/${path}`;
+}
 import { requireUser, userHasRole } from '@/lib/auth';
 
 export const metadata: Metadata = {
@@ -23,12 +30,20 @@ export const metadata: Metadata = {
 export default async function HomePage() {
   const user = await requireUser('read');
   const showExecutiveEmbed = userHasRole(user, 'admin');
-  const [metrics, membershipStats, outstandingMemberships, recentlyEdited, recentlyDispensed] = await Promise.all([
+  const [metrics, membershipStats, outstandingMemberships, recentlyEdited, recentlyDispensed, testosteroneInventory, paymentFailures] = await Promise.all([
     fetchDashboardMetrics(),
     getMembershipStats(),
     getOutstandingMemberships(8),
     fetchRecentlyEditedPatients(5),
-    fetchRecentlyDispensedPatients(5)
+    fetchRecentlyDispensedPatients(5),
+    getTestosteroneInventoryByVendor().catch(err => {
+      console.error('Error fetching testosterone inventory:', err);
+      return [];
+    }),
+    getPaymentFailureStats().catch(err => {
+      console.error('Error fetching payment failures:', err);
+      return { jane: { count: 0, totalAmount: 0 }, quickbooks: { count: 0, totalAmount: 0 } };
+    })
   ]);
   const pendingSignatures = metrics.pendingSignatures ?? 0;
   const weeksSinceAudit = Number.isFinite(metrics.weeksSinceAudit)
@@ -67,7 +82,12 @@ export default async function HomePage() {
   const membershipCards = [
     { label: 'Renewals (<2 cycles)', value: membershipStats.renewalsDue },
     { label: 'Expired Memberships', value: membershipStats.expired },
-    { label: 'Outstanding Balances', value: membershipStats.outstanding }
+    { 
+      label: 'Outstanding Membership / Recurring Payment Balances', 
+      value: membershipStats.outstanding,
+      jane: paymentFailures.jane,
+      quickbooks: paymentFailures.quickbooks
+    }
   ];
 
   const currencyFormatter = new Intl.NumberFormat('en-US', {
@@ -112,12 +132,66 @@ export default async function HomePage() {
           }}
         >
           Inventory audit overdue — last recorded audit was {weeksSinceAudit.toFixed(1)} week(s) ago.{' '}
-          <Link href="/audit" style={{ color: '#990000', textDecoration: 'underline' }}>
+          <Link href={withBasePath("/audit")} style={{ color: '#990000', textDecoration: 'underline' }}>
             Record this week’s review
           </Link>
           .
         </div>
       )}
+
+      {/* Testosterone Inventory Cards */}
+      <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', marginBottom: '1.5rem' }}>
+        {testosteroneInventory && Array.isArray(testosteroneInventory) && testosteroneInventory.map((inventory) => {
+          const isCarrieBoyd = inventory.vendor.includes('Carrie Boyd');
+          const vendorShort = isCarrieBoyd ? 'Carrie Boyd (30ML)' : 'TopRX (10ML)';
+          
+          return (
+            <article 
+              key={inventory.vendor}
+              style={{
+                padding: '1rem 1.25rem',
+                borderRadius: '0.75rem',
+                background: inventory.lowInventory ? '#fef2f2' : '#ffffff',
+                border: inventory.lowInventory ? '2px solid #ef4444' : '1px solid rgba(148, 163, 184, 0.22)',
+                boxShadow: '0 8px 20px rgba(15, 23, 42, 0.04)',
+                position: 'relative'
+              }}
+            >
+              {inventory.lowInventory && (
+                <div style={{
+                  position: 'absolute',
+                  top: '-8px',
+                  right: '12px',
+                  background: '#ef4444',
+                  color: 'white',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  fontSize: '0.75rem',
+                  fontWeight: 600
+                }}>
+                  ORDER ALERT
+                </div>
+              )}
+              <h4 style={{ margin: '0 0 0.5rem', fontSize: '0.85rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {vendorShort}
+              </h4>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <p style={{ margin: 0, fontSize: '2rem', fontWeight: 700, color: inventory.lowInventory ? '#dc2626' : '#0f172a' }}>
+                  {inventory.activeVials}
+                </p>
+                <span style={{ fontSize: '0.9rem', color: '#64748b' }}>
+                  vials ({inventory.totalRemainingMl} mL)
+                </span>
+              </div>
+              {inventory.lowInventory && (
+                <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: '#dc2626', fontWeight: 500 }}>
+                  Low inventory - order immediately
+                </p>
+              )}
+            </article>
+          );
+        })}
+      </div>
 
       <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
         {cards.map((card) => (
@@ -136,31 +210,168 @@ export default async function HomePage() {
         ))}
       </div>
 
+      {/* Navigation Cards - Above Owner Signals */}
+      <div style={{ marginTop: '2.5rem', marginBottom: '2.5rem', display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+        <Link
+          href={withBasePath("/patients")}
+          style={{
+            padding: '1.25rem',
+            borderRadius: '0.75rem',
+            background: '#ffffff',
+            border: '1px solid rgba(148, 163, 184, 0.22)',
+            boxShadow: '0 8px 20px rgba(15, 23, 42, 0.04)',
+            textDecoration: 'none',
+            transition: 'all 0.2s',
+            display: 'block'
+          }}
+        >
+          <h3 style={{ margin: '0 0 0.35rem', fontSize: '1.1rem', color: '#0f172a' }}>Manage Patients</h3>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '0.9rem' }}>
+            Filter by status, edit plans, and push updates back to Postgres without touching Google Sheets.
+          </p>
+        </Link>
+        <Link
+          href={withBasePath("/professional")}
+          style={{
+            padding: '1.25rem',
+            borderRadius: '0.75rem',
+            background: '#ffffff',
+            border: '1px solid rgba(148, 163, 184, 0.22)',
+            boxShadow: '0 8px 20px rgba(15, 23, 42, 0.04)',
+            textDecoration: 'none',
+            transition: 'all 0.2s',
+            display: 'block'
+          }}
+        >
+          <h3 style={{ margin: '0 0 0.35rem', fontSize: '1.1rem', color: '#0f172a' }}>Professional Dashboard</h3>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '0.9rem' }}>
+            Read-only mirror of the clinician sheet with memberships, lab cadence, and DEA summaries.
+          </p>
+        </Link>
+        <Link
+          href={withBasePath("/dea")}
+          style={{
+            padding: '1.25rem',
+            borderRadius: '0.75rem',
+            background: '#ffffff',
+            border: '1px solid rgba(148, 163, 184, 0.22)',
+            boxShadow: '0 8px 20px rgba(15, 23, 42, 0.04)',
+            textDecoration: 'none',
+            transition: 'all 0.2s',
+            display: 'block'
+          }}
+        >
+          <h3 style={{ margin: '0 0 0.35rem', fontSize: '1.1rem', color: '#0f172a' }}>DEA Compliance</h3>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '0.9rem' }}>
+            Review the last 30 days of controlled substance activity and export for audits.
+          </p>
+        </Link>
+        <Link
+          href={withBasePath("/inventory")}
+          style={{
+            padding: '1.25rem',
+            borderRadius: '0.75rem',
+            background: '#ffffff',
+            border: '1px solid rgba(148, 163, 184, 0.22)',
+            boxShadow: '0 8px 20px rgba(15, 23, 42, 0.04)',
+            textDecoration: 'none',
+            transition: 'all 0.2s',
+            display: 'block'
+          }}
+        >
+          <h3 style={{ margin: '0 0 0.35rem', fontSize: '1.1rem', color: '#0f172a' }}>Vials & Transactions</h3>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '0.9rem' }}>
+            Track remaining inventory, reconcile dispenses, and flag low supply.
+          </p>
+        </Link>
+        <Link
+          href={withBasePath("/provider/signatures")}
+          style={{
+            padding: '1.25rem',
+            borderRadius: '0.75rem',
+            background: '#ffffff',
+            border: '1px solid rgba(148, 163, 184, 0.22)',
+            boxShadow: '0 8px 20px rgba(15, 23, 42, 0.04)',
+            textDecoration: 'none',
+            transition: 'all 0.2s',
+            display: 'block'
+          }}
+        >
+          <h3 style={{ margin: '0 0 0.35rem', fontSize: '1.1rem', color: '#0f172a' }}>Provider Signatures</h3>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '0.9rem' }}>
+            {pendingSignatures > 0
+              ? `${pendingSignatures} dispense${pendingSignatures === 1 ? '' : 's'} pending provider attestation.`
+              : 'All dispenses signed — great work!'}
+          </p>
+        </Link>
+        <Link
+          href={withBasePath("/audit")}
+          style={{
+            padding: '1.25rem',
+            borderRadius: '0.75rem',
+            background: '#ffffff',
+            border: '1px solid rgba(148, 163, 184, 0.22)',
+            boxShadow: '0 8px 20px rgba(15, 23, 42, 0.04)',
+            textDecoration: 'none',
+            transition: 'all 0.2s',
+            display: 'block'
+          }}
+        >
+          <h3 style={{ margin: '0 0 0.35rem', fontSize: '1.1rem', color: '#0f172a' }}>Weekly Audit</h3>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '0.9rem' }}>
+            {auditOverdue
+              ? 'Audit overdue — capture this week to stay compliant.'
+              : 'On schedule. Log counts weekly to maintain DEA readiness.'}
+          </p>
+        </Link>
+      </div>
+
       <section style={{ marginTop: '2.5rem', marginBottom: '1rem' }}>
         <h3 style={{ fontSize: '1.3rem', marginBottom: '0.35rem' }}>Owner Signals</h3>
         <p style={{ margin: 0, color: '#94a3b8' }}>Quick pulse on holds and inactive records that block revenue.</p>
       </section>
 
       <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
-        {ownerSignals.map((card) => (
-          <article
-            key={card.label}
-            style={{
-              padding: '1.25rem 1.5rem',
-              borderRadius: '0.85rem',
-              background: '#0f172a',
-              color: '#f8fafc',
-              border: '1px solid rgba(148, 163, 184, 0.25)',
-              boxShadow: '0 15px 32px rgba(15, 23, 42, 0.35)'
-            }}
-          >
-            <p style={{ margin: 0, fontSize: '0.85rem', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#94a3b8' }}>
-              {card.label}
-            </p>
-            <p style={{ margin: '0.35rem 0 0', fontSize: '2rem', fontWeight: 600 }}>{card.value}</p>
-            <p style={{ margin: '0.5rem 0 0', fontSize: '0.9rem', color: '#cbd5f5' }}>{card.helper}</p>
-          </article>
-        ))}
+        {ownerSignals.map((card) => {
+          // Create link based on card type
+          let filterLink = '/patients';
+          if (card.label === 'Hold – Payment Research') {
+            filterLink = '/patients?status=hold_payment_research';
+          } else if (card.label === 'Hold – Contract Renewal') {
+            filterLink = '/patients?status=hold_contract_renewal';
+          } else if (card.label === 'Inactive / Discharged') {
+            filterLink = '/patients?status=inactive';
+          }
+          
+          return (
+            <Link
+              key={card.label}
+              href={withBasePath(filterLink)}
+              style={{
+                padding: '1.25rem 1.5rem',
+                borderRadius: '0.85rem',
+                background: '#0f172a',
+                color: '#f8fafc',
+                border: '1px solid rgba(148, 163, 184, 0.25)',
+                boxShadow: '0 15px 32px rgba(15, 23, 42, 0.35)',
+                textDecoration: 'none',
+                display: 'block',
+                transition: 'all 0.2s'
+              }}
+            >
+              <p style={{ margin: 0, fontSize: '0.85rem', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#94a3b8' }}>
+                {card.label}
+              </p>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '2rem', fontWeight: 600 }}>{card.value}</p>
+              <p style={{ margin: '0.5rem 0 0', fontSize: '0.9rem', color: '#cbd5f5' }}>{card.helper}</p>
+              {card.value > 0 && (
+                <p style={{ margin: '0.75rem 0 0', fontSize: '0.8rem', color: '#60a5fa' }}>
+                  Click to view patients →
+                </p>
+              )}
+            </Link>
+          );
+        })}
       </div>
 
       <section style={{ marginTop: '2.5rem', marginBottom: '1.5rem' }}>
@@ -171,7 +382,7 @@ export default async function HomePage() {
       </section>
 
       <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', marginBottom: '2rem' }}>
-        {membershipCards.map((card) => (
+        {membershipCards.slice(0, 2).map((card) => (
           <article key={card.label} style={{
             padding: '1.5rem',
             borderRadius: '0.75rem',
@@ -207,16 +418,49 @@ export default async function HomePage() {
             gap: '0.85rem'
           }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <h3 style={{ margin: 0, fontSize: '1.15rem', color: '#0f172a' }}>Outstanding Membership Balances</h3>
-              <p style={{ margin: '0.4rem 0 0', color: '#64748b', fontSize: '0.85rem' }}>
-                Active memberships owing money. Inactive patients are filtered out automatically.
-              </p>
+          <div>
+            <h3 style={{ margin: 0, fontSize: '1.15rem', color: '#0f172a' }}>Outstanding Membership / Recurring Payment Balances</h3>
+            <p style={{ margin: '0.4rem 0 0', color: '#64748b', fontSize: '0.85rem' }}>
+              Active memberships and recurring payments with failed transactions.
+            </p>
+            
+            {/* Payment Failure Summary */}
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: '1fr 1fr', 
+              gap: '0.75rem', 
+              marginTop: '1rem',
+              marginBottom: '1rem'
+            }}>
+              <div style={{
+                padding: '0.75rem',
+                background: '#e0f2fe',
+                borderRadius: '0.5rem',
+                border: '1px solid #7dd3fc'
+              }}>
+                <h4 style={{ margin: 0, fontSize: '0.85rem', color: '#0369a1' }}>Jane Patients</h4>
+                <p style={{ margin: '0.25rem 0 0', fontSize: '1.25rem', fontWeight: 600, color: '#0c4a6e' }}>
+                  {paymentFailures.jane.count}
+                </p>
+                <p style={{ margin: '0.1rem 0 0', fontSize: '0.8rem', color: '#075985' }}>
+                  {currencyFormatter.format(paymentFailures.jane.totalAmount)} total
+                </p>
+              </div>
+              <div style={{
+                padding: '0.75rem',
+                background: '#fef3c7',
+                borderRadius: '0.5rem',
+                border: '1px solid #fcd34d'
+              }}>
+                <h4 style={{ margin: 0, fontSize: '0.85rem', color: '#92400e' }}>QuickBooks Patients</h4>
+                <p style={{ margin: '0.25rem 0 0', fontSize: '1.25rem', fontWeight: 600, color: '#78350f' }}>
+                  {paymentFailures.quickbooks.count}
+                </p>
+                <p style={{ margin: '0.1rem 0 0', fontSize: '0.8rem', color: '#92400e' }}>
+                  {currencyFormatter.format(paymentFailures.quickbooks.totalAmount)} total
+                </p>
+              </div>
             </div>
-            <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-              Top {outstandingMemberships.length}
-            </span>
           </div>
           {outstandingMemberships.length === 0 ? (
             <p style={{ color: '#16a34a', fontWeight: 600, margin: 0 }}>All balances cleared — great job.</p>
@@ -234,7 +478,18 @@ export default async function HomePage() {
                   }}
                 >
                   <div>
-                    <p style={{ margin: 0, fontWeight: 600, color: '#0f172a' }}>{row.patientName}</p>
+                    <p style={{ margin: 0, fontWeight: 600 }}>
+                      {row.patientId ? (
+                        <Link 
+                          href={withBasePath(`/patients/${row.patientId}`)} 
+                          style={{ color: '#0f172a', textDecoration: 'none' }}
+                        >
+                          {row.patientName}
+                        </Link>
+                      ) : (
+                        <span>{row.patientName}</span>
+                      )}
+                    </p>
                     <p style={{ margin: '0.15rem 0 0', color: '#94a3b8', fontSize: '0.82rem' }}>
                       {row.planName ?? 'Plan TBD'} · {row.status ?? 'status pending'}
                     </p>
@@ -272,7 +527,7 @@ export default async function HomePage() {
                 Last five saves, plus who updated the record.
               </p>
             </div>
-            <Link href="/patients" style={{ fontSize: '0.9rem', color: '#0ea5e9' }}>
+            <Link href={withBasePath("/patients")} style={{ fontSize: '0.9rem', color: '#0ea5e9' }}>
               View all
             </Link>
           </div>
@@ -292,7 +547,14 @@ export default async function HomePage() {
                   }}
                 >
                   <div>
-                    <p style={{ margin: 0, fontWeight: 600, color: '#0f172a' }}>{patient.patientName}</p>
+                    <p style={{ margin: 0, fontWeight: 600 }}>
+                      <Link 
+                        href={withBasePath(`/patients/${patient.patientId}`)} 
+                        style={{ color: '#0f172a', textDecoration: 'none' }}
+                      >
+                        {patient.patientName}
+                      </Link>
+                    </p>
                     <p style={{ margin: '0.2rem 0 0', color: '#94a3b8', fontSize: '0.85rem' }}>
                       {patient.statusKey ?? 'unknown'} · edited by {patient.lastEditor ?? 'unknown'}
                     </p>
@@ -342,7 +604,18 @@ export default async function HomePage() {
                   }}
                 >
                   <div>
-                    <p style={{ margin: 0, fontWeight: 600, color: '#0f172a' }}>{dispense.patientName ?? 'Unknown patient'}</p>
+                    <p style={{ margin: 0, fontWeight: 600 }}>
+                      {dispense.patientId ? (
+                        <Link 
+                          href={withBasePath(`/patients/${dispense.patientId}`)} 
+                          style={{ color: '#0f172a', textDecoration: 'none' }}
+                        >
+                          {dispense.patientName ?? 'Unknown patient'}
+                        </Link>
+                      ) : (
+                        <span>{dispense.patientName ?? 'Unknown patient'}</span>
+                      )}
+                    </p>
                     <p style={{ margin: '0.2rem 0 0', color: '#94a3b8', fontSize: '0.85rem' }}>
                       {dispense.medication ?? 'Medication TBD'} · dispensed by {dispense.enteredBy ?? 'unknown'}
                     </p>
@@ -369,102 +642,6 @@ export default async function HomePage() {
         </section>
       </div>
 
-      <div style={{ marginTop: '2.5rem', marginBottom: '2.5rem', display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
-        <Link
-          href="/patients"
-          style={{
-            padding: '1.5rem',
-            borderRadius: '0.75rem',
-            background: '#ffffff',
-            border: '1px solid rgba(148, 163, 184, 0.22)',
-            boxShadow: '0 10px 26px rgba(15, 23, 42, 0.05)'
-          }}
-        >
-          <h3 style={{ margin: '0 0 0.5rem' }}>Manage Patients</h3>
-          <p style={{ margin: 0, color: '#64748b' }}>
-            Filter by status, edit plans, and push updates back to Postgres without touching Google Sheets.
-          </p>
-        </Link>
-        <Link
-          href="/professional"
-          style={{
-            padding: '1.5rem',
-            borderRadius: '0.75rem',
-            background: '#ffffff',
-            border: '1px solid rgba(148, 163, 184, 0.22)',
-            boxShadow: '0 10px 26px rgba(15, 23, 42, 0.05)'
-          }}
-        >
-          <h3 style={{ margin: '0 0 0.5rem' }}>Professional Dashboard</h3>
-          <p style={{ margin: 0, color: '#64748b' }}>
-            Read-only mirror of the clinician sheet with memberships, lab cadence, and DEA summaries.
-          </p>
-        </Link>
-        <Link
-          href="/dea"
-          style={{
-            padding: '1.5rem',
-            borderRadius: '0.75rem',
-            background: '#ffffff',
-            border: '1px solid rgba(148, 163, 184, 0.22)',
-            boxShadow: '0 10px 26px rgba(15, 23, 42, 0.05)'
-          }}
-        >
-          <h3 style={{ margin: '0 0 0.5rem' }}>DEA Compliance</h3>
-          <p style={{ margin: 0, color: '#64748b' }}>
-            Review the last 30 days of controlled substance activity and export for audits.
-          </p>
-        </Link>
-        <Link
-          href="/inventory"
-          style={{
-            padding: '1.5rem',
-            borderRadius: '0.75rem',
-            background: '#ffffff',
-            border: '1px solid rgba(148, 163, 184, 0.22)',
-            boxShadow: '0 10px 26px rgba(15, 23, 42, 0.05)'
-          }}
-        >
-          <h3 style={{ margin: '0 0 0.5rem' }}>Vials & Transactions</h3>
-          <p style={{ margin: 0, color: '#64748b' }}>
-            Track remaining inventory, reconcile dispenses, and flag low supply.
-          </p>
-        </Link>
-        <Link
-          href="/provider/signatures"
-          style={{
-            padding: '1.5rem',
-            borderRadius: '0.75rem',
-            background: '#ffffff',
-            border: '1px solid rgba(148, 163, 184, 0.22)',
-            boxShadow: '0 10px 26px rgba(15, 23, 42, 0.05)'
-          }}
-        >
-          <h3 style={{ margin: '0 0 0.5rem' }}>Provider Signatures</h3>
-          <p style={{ margin: 0, color: '#64748b' }}>
-            {pendingSignatures > 0
-              ? `${pendingSignatures} dispense${pendingSignatures === 1 ? '' : 's'} pending provider attestation.`
-              : 'All dispenses signed — great work!'}
-          </p>
-        </Link>
-        <Link
-          href="/audit"
-          style={{
-            padding: '1.5rem',
-            borderRadius: '0.75rem',
-            background: '#ffffff',
-            border: '1px solid rgba(148, 163, 184, 0.22)',
-            boxShadow: '0 10px 26px rgba(15, 23, 42, 0.05)'
-          }}
-        >
-          <h3 style={{ margin: '0 0 0.5rem' }}>Weekly Audit</h3>
-          <p style={{ margin: 0, color: '#64748b' }}>
-            {auditOverdue
-              ? 'Audit overdue — capture this week to stay compliant.'
-              : 'On schedule. Log counts weekly to maintain DEA readiness.'}
-          </p>
-        </Link>
-      </div>
 
       {showExecutiveEmbed && (
         <details

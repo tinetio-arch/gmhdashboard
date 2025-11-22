@@ -7,6 +7,7 @@ export type MembershipStats = {
 };
 
 export type OutstandingMembership = {
+  patientId: string | null;
   patientName: string;
   planName: string | null;
   status: string | null;
@@ -61,11 +62,13 @@ export async function getOutstandingMemberships(limit = 8): Promise<OutstandingM
       ),
       patient_norm AS (
         SELECT
+          patient_id,
           ${NORMALIZE_PATIENT_SQL} AS normalized_name,
           status_key
         FROM patients
       )
       SELECT
+        pn.patient_id AS "patientId",
         pkg.patient_name AS "patientName",
         pkg.plan_name AS "planName",
         pkg.status,
