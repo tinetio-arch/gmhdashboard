@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
-import QuickBooksAdminClient from '../QuickBooksAdminClient';
+import QuickBooksAdminClient from './QuickBooksAdminClient';
 
 export default async function QuickBooksAdminPage() {
   const user = await getCurrentUser();

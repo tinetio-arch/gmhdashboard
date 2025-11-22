@@ -55,6 +55,12 @@ export type QuickBooksSalesReceipt = {
   TotalAmt?: number;
   PrivateNote?: string;
   RecurringTxnId?: string;
+  PaymentMethodRef?: { value: string; name?: string };
+  CreditCardPayment?: {
+    CreditChargeResponse?: {
+      Status?: string;
+    };
+  };
 };
 
 export type QuickBooksRecurringTransaction = {
@@ -364,6 +370,57 @@ export class QuickBooksClient {
     }
 
     return receipts;
+  }
+
+  /**
+   * Fetch sales receipts optionally filtered by a starting date
+   */
+  async getSalesReceipts(startDate?: Date): Promise<QuickBooksSalesReceipt[]> {
+    const filters: string[] = [];
+    if (startDate) {
+      filters.push(`TxnDate >= '${startDate.toISOString().split('T')[0]}'`);
+    }
+    const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const query = `SELECT Id, TxnDate, CustomerRef, TotalAmt, PrivateNote, RecurringTxnId FROM SalesReceipt ${whereClause} ORDER BY TxnDate DESC`;
+    const response = await this.request<{
+      QueryResponse: {
+        SalesReceipt?: QuickBooksSalesReceipt[];
+      };
+    }>(
+      `GET`,
+      `/query?query=${encodeURIComponent(query)}`,
+      { minorVersion: 73 }
+    );
+
+    return response.QueryResponse.SalesReceipt ?? [];
+  }
+
+  /**
+   * Helper for fetching recent sales receipts (defaults to 30 days)
+   */
+  async getRecentSalesReceipts(days = 30): Promise<QuickBooksSalesReceipt[]> {
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    return this.getSalesReceipts(since);
+  }
+
+  /**
+   * Returns customers who currently have open payment issues (based on open invoices)
+   */
+  async getCustomersWithPaymentFailures(): Promise<QuickBooksCustomer[]> {
+    const invoices = await this.getOpenInvoices();
+    const overdueCustomerIds = new Set(
+      invoices
+        .filter((invoice) => invoice.Balance > 0)
+        .map((invoice) => invoice.CustomerRef.value)
+    );
+
+    if (overdueCustomerIds.size === 0) {
+      return [];
+    }
+
+    const customers = await this.getCustomers();
+    return customers.filter((customer) => overdueCustomerIds.has(customer.Id));
   }
 
   /**

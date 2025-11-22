@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { getPool, query } from './db';
+import { PASS_CONFIG, KNOWN_PASS_IDS } from './passConfig';
 
 type ClinicSyncPayload = Record<string, any>;
 
@@ -27,11 +28,12 @@ type SanitizedMembership = {
   discharged: boolean;
   rawPayload: ClinicSyncPayload;
   eventType: string;
+  pass_id?: number;
 };
 
 type PatientMatch = {
   patientId: string;
-  matchMethod: 'id' | 'email' | 'phone' | 'name' | 'manual';
+  matchMethod: 'id' | 'email' | 'phone' | 'name' | 'name+dob' | 'manual';
   confidence: number;
 };
 
@@ -44,6 +46,27 @@ export async function upsertClinicSyncPatient(
   const sanitized = normalizePayload(payload, options?.source);
   if (!sanitized.clinicsyncPatientId) {
     throw new Error('ClinicSync payload missing patient identifier.');
+  }
+
+  // Check if this patient has a membership (even if not explicitly in membership_plan field)
+  // A patient has a membership if:
+  // 1. membership_plan is set, OR
+  // 2. payload.memberships array exists and has items, OR
+  // 3. payload.membership object exists, OR
+  // 4. passes array exists and contains membership/package data (passes can represent memberships/packages)
+  const hasMembership = !!(
+    sanitized.membershipPlan ||
+    (Array.isArray(payload.memberships) && payload.memberships.length > 0) ||
+    payload.membership ||
+    (Array.isArray(payload.passes) && payload.passes.length > 0 && 
+     payload.passes.some((pass: any) => 
+       pass?.name || pass?.package_name || pass?.membership_name || pass?.plan_name || pass?.program_name
+     ))
+  );
+
+  // If no membership data detected, still process but log it
+  if (!hasMembership) {
+    console.log(`[ClinicSync] Patient ${sanitized.clinicsyncPatientId} (${sanitized.fullName}) has no membership data in webhook payload`);
   }
 
   const pool = getPool();
@@ -66,6 +89,7 @@ export async function upsertClinicSyncPatient(
       await ensureMapping(client, match.patientId, sanitized.clinicsyncPatientId, match.matchMethod, match.confidence);
     }
 
+    // Always upsert membership record (even if hasMembership is false, we want to track the patient)
     await upsertClinicSyncMembership(client, sanitized, match?.patientId ?? null);
 
     if (match?.patientId) {
@@ -148,22 +172,58 @@ function normalizePayload(payload: ClinicSyncPayload, source?: string): Sanitize
     stringValue(payload.patient_id) ||
     '';
 
-  const membershipStatus =
+  // Determine membership status - check multiple possible locations
+  let membershipStatus =
     stringValue(payload.membership_status) ||
     stringValue(payload.status) ||
-    (payload.discharged ? 'discharged' : 'active');
+    (payload.discharged ? 'discharged' : null);
+  
+  // If still no status, check memberships array or nested membership object
+  if (!membershipStatus) {
+    if (Array.isArray(payload.memberships) && payload.memberships.length > 0) {
+      membershipStatus = stringValue(payload.memberships[0]?.status || payload.memberships[0]?.membership_status);
+    }
+    if (!membershipStatus && payload.membership) {
+      membershipStatus = stringValue(payload.membership.status || payload.membership.membership_status);
+    }
+  }
+  
+  // Default to 'active' if we have membership data but no status
+  // Check passes array specifically for membership indicators
+  const hasPassesWithMembership = Array.isArray(payload.passes) && payload.passes.length > 0 &&
+    payload.passes.some((pass: any) => 
+      pass?.name || pass?.package_name || pass?.membership_name || pass?.plan_name || pass?.program_name
+    );
+  
+  const hasMembershipData = !!(
+    stringValue(payload.membership_plan) ||
+    stringValue(payload.program_name) ||
+    (Array.isArray(payload.memberships) && payload.memberships.length > 0) ||
+    payload.membership ||
+    hasPassesWithMembership
+  );
+  
+  if (!membershipStatus && hasMembershipData) {
+    membershipStatus = 'active';
+  } else if (!membershipStatus) {
+    membershipStatus = payload.discharged ? 'discharged' : 'active';
+  }
 
   const balanceOwing =
     toNumber(payload.amount_owing) ||
     toNumber(payload.balance) ||
+    toNumber(payload.claims_amount_owing) ||  // Insurance claims balance
     toNumber(payload.total_remaining_balance);
 
+  // amount_due should only be what they currently owe, not lifetime totals
+  // Use amount_due if explicitly provided, otherwise use balance_owing
+  // Do NOT use total_purchased or total_payment_amount as those are historical totals
   const amountDue =
     toNumber(payload.amount_due) ||
-    toNumber(payload.total_payment_amount) ||
-    balanceOwing;
+    balanceOwing ||
+    0;  // Default to 0 if neither is available
 
-  return {
+  const sanitized = {
     clinicsyncPatientId,
     fullName: stringValue(
       payload.name ||
@@ -195,13 +255,35 @@ function normalizePayload(payload: ClinicSyncPayload, source?: string): Sanitize
     membershipPlan:
       stringValue(payload.membership_plan) ||
       stringValue(payload.program_name) ||
-      stringValue(payload.treatment_name),
+      stringValue(payload.treatment_name) ||
+      // Check if there's a memberships array
+      (Array.isArray(payload.memberships) && payload.memberships.length > 0
+        ? stringValue(payload.memberships[0]?.name || payload.memberships[0]?.plan_name || payload.memberships[0]?.program_name)
+        : null) ||
+      // Check nested membership object
+      stringValue(payload?.membership?.name || payload?.membership?.plan_name || payload?.membership?.program_name) ||
+      // Check passes array - passes can contain membership/package information
+      (Array.isArray(payload.passes) && payload.passes.length > 0
+        ? stringValue(
+            payload.passes[0]?.name ||
+            payload.passes[0]?.package_name ||
+            payload.passes[0]?.membership_name ||
+            payload.passes[0]?.plan_name ||
+            payload.passes[0]?.program_name ||
+            payload.passes[0]?.treatment_name
+          )
+        : null),
     membershipStatus,
     membershipTier: stringValue(payload.membership_tier || payload.patient_type),
     discharged: Boolean(payload.discharged),
     rawPayload: payload,
     eventType: source ? `clinicsync.${source}` : 'clinicsync.webhook'
   };
+
+  const { isActive, plan, passId, tier } = hasActiveMembership(sanitized);
+  sanitized.membershipTier = tier || sanitized.membershipTier;
+
+  return sanitized;
 }
 
 async function resolvePatientMatch(
@@ -212,6 +294,7 @@ async function resolvePatientMatch(
     return null;
   }
 
+  // First check if we already have a mapping by clinicsync_patient_id (patient_number)
   const byId = await client.query<{ patient_id: string }>(
     `SELECT patient_id FROM patient_clinicsync_mapping WHERE clinicsync_patient_id = $1`,
     [membership.clinicsyncPatientId]
@@ -219,6 +302,10 @@ async function resolvePatientMatch(
   if ((byId.rowCount ?? 0) > 0) {
     return { patientId: byId.rows[0].patient_id, matchMethod: 'id', confidence: 1 };
   }
+
+  // Also check if there's a patient with this clinicsync_patient_id stored somewhere
+  // (in case it was imported from CSV or stored in a custom field)
+  // For now, we'll rely on email/phone/name matching below
 
   if (membership.email) {
     const emailMatch = await client.query<{ patient_id: string }>(
@@ -250,21 +337,46 @@ async function resolvePatientMatch(
   }
 
   if (membership.fullName && membership.dob) {
+    // Use stripHonorifics for name matching to handle "Mr.", "Dr.", etc.
+    const { stripHonorifics } = await import('./nameUtils');
+    const normalizedName = stripHonorifics(membership.fullName).toLowerCase().trim();
+    
     const nameDobMatch = await client.query<{ patient_id: string }>(
       `SELECT patient_id
          FROM patients
-        WHERE LOWER(full_name) = LOWER($1)
+        WHERE LOWER(TRIM(REGEXP_REPLACE(full_name, '^(Mr\.|Mrs\.|Ms\.|Miss|Dr\.|Prof\.|Sir|Madam|Rev\.|Fr\.)\\s+', '', 'gi'))) = $1
           AND dob = $2
         LIMIT 1`,
-      [membership.fullName, membership.dob]
+      [normalizedName, membership.dob]
     );
     if ((nameDobMatch.rowCount ?? 0) > 0) {
-      return { patientId: nameDobMatch.rows[0].patient_id, matchMethod: 'name', confidence: 0.85 };
+      return { patientId: nameDobMatch.rows[0].patient_id, matchMethod: 'name+dob', confidence: 0.85 };
+    }
+  }
+
+  // Try name-only match as last resort (lower confidence)
+  if (membership.fullName) {
+    const { stripHonorifics } = await import('./nameUtils');
+    const normalizedName = stripHonorifics(membership.fullName).toLowerCase().trim();
+    
+    const nameOnlyMatch = await client.query<{ patient_id: string }>(
+      `SELECT patient_id
+         FROM patients
+        WHERE LOWER(TRIM(REGEXP_REPLACE(full_name, '^(Mr\.|Mrs\.|Ms\.|Miss|Dr\.|Prof\.|Sir|Madam|Rev\.|Fr\.)\\s+', '', 'gi'))) = $1
+          AND status_key NOT IN ('inactive', 'discharged')
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [normalizedName]
+    );
+    if ((nameOnlyMatch.rowCount ?? 0) > 0) {
+      return { patientId: nameOnlyMatch.rows[0].patient_id, matchMethod: 'name', confidence: 0.7 };
     }
   }
 
   return null;
 }
+
+export { normalizePayload };
 
 async function ensureMapping(
   client: PoolClient,
@@ -380,6 +492,17 @@ async function applyMembershipImpact(
   patientId: string,
   membership: SanitizedMembership
 ) {
+  // Get current patient status and name for logging
+  const patientInfo = await client.query<{
+    status_key: string | null;
+    full_name: string;
+  }>(`
+    SELECT status_key, full_name FROM patients WHERE patient_id = $1
+  `, [patientId]);
+
+  const currentStatus = patientInfo.rows[0]?.status_key ?? 'active';
+  const patientName = patientInfo.rows[0]?.full_name ?? 'Unknown';
+
   await client.query(
     `UPDATE patients
         SET service_start_date = COALESCE($2, service_start_date),
@@ -390,16 +513,176 @@ async function applyMembershipImpact(
     [patientId, membership.memberSince, membership.contractEndDate, membership.balanceOwing || null]
   );
 
+  // Check for membership cancellation (Jane) - do this BEFORE other status changes
+  const membershipStatus = (membership.membershipStatus || '').toLowerCase();
+  const isCancelled = membership.discharged || 
+    ['cancelled', 'canceled', 'inactive', 'discharged', 'terminated', 'ended'].includes(membershipStatus);
+  
+  if (isCancelled && currentStatus !== 'inactive') {
+    // Log the cancellation detection
+    await client.query(`
+      INSERT INTO patient_status_activity_log (
+        patient_id,
+        patient_name,
+        source_system,
+        change_type,
+        previous_status,
+        new_status,
+        reason,
+        metadata
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      patientId,
+      patientName,
+      'jane',
+      'membership_cancelled',
+      currentStatus,
+      'inactive',
+      `Membership cancelled in Jane - Status: ${membership.membershipStatus || 'discharged'}`,
+      JSON.stringify({
+        membership_plan: membership.membershipPlan,
+        membership_status: membership.membershipStatus,
+        discharged: membership.discharged,
+      })
+    ]);
+
+    // Update patient status to inactive
+    await client.query(
+      `UPDATE patients SET status_key = 'inactive', updated_at = NOW() WHERE patient_id = $1`,
+      [patientId]
+    );
+
+    console.log(`[ClinicSync] 🚨 Membership cancelled detected: ${patientName} → Set to inactive`);
+    // Return early - don't process payment failures or other holds if cancelled
+    return;
+  }
+
+  // IMPORTANT: If amount_due > 0, this indicates a credit card decline (payment failure)
+  // This is based on the user's requirement that outstanding balance > 0 means CC declined
+  const hasPaymentFailure = (membership.amountDue || 0) > 0;
+  
+  if (hasPaymentFailure) {
+    // Get current patient status
+    const patientStatusResult = await client.query<{ status_key: string | null }>(
+      `SELECT status_key FROM patients WHERE patient_id = $1`,
+      [patientId]
+    );
+    const currentStatus = patientStatusResult.rows[0]?.status_key ?? 'active';
+    const holdStatusKey = 'hold_payment_research';
+
+    // Check if payment issue already exists
+    const existingIssue = await client.query<{ issue_id: string }>(`
+      SELECT issue_id FROM payment_issues
+      WHERE patient_id = $1
+        AND issue_type = 'payment_declined'
+        AND resolved_at IS NULL
+      LIMIT 1
+    `, [patientId]);
+
+    if (existingIssue.rows.length > 0) {
+      // Update existing issue
+      await client.query(`
+        UPDATE payment_issues
+        SET amount_owed = $1,
+            issue_severity = $2,
+            updated_at = NOW()
+        WHERE issue_id = $3
+      `, [
+        membership.amountDue,
+        (membership.amountDue || 0) >= 100 ? 'critical' : 'warning',
+        existingIssue.rows[0].issue_id
+      ]);
+    } else {
+      // Create new payment issue
+      await client.query(`
+        INSERT INTO payment_issues (
+          patient_id,
+          issue_type,
+          issue_severity,
+          amount_owed,
+          days_overdue,
+          previous_status_key,
+          status_changed_to,
+          auto_updated,
+          resolution_notes
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8)
+      `, [
+        patientId,
+        'payment_declined',
+        (membership.amountDue || 0) >= 100 ? 'critical' : 'warning',
+        membership.amountDue,
+        0,
+        currentStatus,
+        holdStatusKey,
+        `Credit card declined - Outstanding balance from Jane membership: $${(membership.amountDue || 0).toFixed(2)}`
+      ]);
+    }
+
+    // Update patient status to Hold - Payment Research if not already
+    if (currentStatus !== holdStatusKey) {
+      await client.query(
+        `UPDATE patients SET status_key = $1, updated_at = NOW() WHERE patient_id = $2`,
+        [holdStatusKey, patientId]
+      );
+    }
+  } else {
+    // If balance is 0, resolve any existing payment_declined issues for this patient
+    await client.query(`
+      UPDATE payment_issues
+      SET resolved_at = NOW(), updated_at = NOW()
+      WHERE patient_id = $1
+        AND issue_type = 'payment_declined'
+        AND resolved_at IS NULL
+    `, [patientId]);
+
+    // If patient is on Hold - Payment Research and balance is now 0, restore previous status
+    const patientStatusResult = await client.query<{ status_key: string | null }>(
+      `SELECT status_key FROM patients WHERE patient_id = $1`,
+      [patientId]
+    );
+    const currentStatus = patientStatusResult.rows[0]?.status_key ?? null;
+
+    if (currentStatus === 'hold_payment_research') {
+      // Try to get previous status from payment_issues
+      const previousStatus = await client.query<{ previous_status_key: string }>(`
+        SELECT previous_status_key
+        FROM payment_issues
+        WHERE patient_id = $1
+          AND issue_type = 'payment_declined'
+          AND resolved_at IS NOT NULL
+        ORDER BY resolved_at DESC
+        LIMIT 1
+      `, [patientId]);
+
+      const restoreStatus = previousStatus.rows[0]?.previous_status_key || 'active';
+      await client.query(
+        `UPDATE patients SET status_key = $1, updated_at = NOW() WHERE patient_id = $2`,
+        [restoreStatus, patientId]
+      );
+    }
+  }
+
+  const { isActive: membershipActive, plan: activePlan, tier: activeTier } = hasActiveMembership(membership);
+  if (membershipActive && activeTier) {
+    await client.query(
+      `UPDATE clinicsync_memberships 
+       SET membership_tier = $1, membership_plan = COALESCE($2, membership_plan)
+       WHERE clinicsync_patient_id = $3`,
+      [activeTier, activePlan, membership.clinicsyncPatientId]
+    );
+  }
+
   const holdType = determineHoldType(membership);
   if (!holdType) {
     return;
   }
 
+  // Re-query current status (may have changed from payment failure handling above)
   const patientStatusResult = await client.query<{ status_key: string | null }>(
     `SELECT status_key FROM patients WHERE patient_id = $1`,
     [patientId]
   );
-  const currentStatus = patientStatusResult.rows[0]?.status_key ?? null;
+  const currentStatusAfterPaymentCheck = patientStatusResult.rows[0]?.status_key ?? null;
 
   const targetStatus = holdType === 'payment' ? 'hold_payment_research' : 'hold_contract_renewal';
   const issueType = holdType === 'payment' ? 'membership_delinquent' : 'contract_expired';
@@ -566,6 +849,116 @@ function normalizePhone(value: string | null | undefined): string | null {
   if (!value) return null;
   const digits = value.replace(/\D/g, '');
   return digits.length >= 7 ? digits : null;
+}
+
+export function detectMultiMembership(passes: any[] = [], appointments: any[] = []): { isMulti: boolean; types: string[] } {
+  const passIds = passes.map((p) => p.id).concat(appointments.map((a) => a.pass_id).filter(Boolean));
+  if (passIds.includes(3) && (passIds.includes(52) || passIds.includes(65) || passIds.includes(72))) {
+    return {
+      isMulti: true,
+      types: [
+        'insurance_supplemental_60_month',
+        passIds.includes(52) ? 'phil_ff_trt_140_month' : 
+        passIds.includes(65) || passIds.includes(72) ? 'tcmh_family_50_month' : 'other'
+      ]
+    };
+  }
+  return { isMulti: false, types: [] };
+}
+
+export function hasJaneSignal(extracted: SanitizedMembership): boolean {
+  return extracted.rawPayload.passes?.some((p: any) => [3, 7, 52].includes(p.id)) ||
+         extracted.membershipPlan?.toLowerCase().includes('pro-bono') ||
+         extracted.rawPayload.treatment_name?.toLowerCase().includes('pro-bono') ||
+         extracted.rawPayload.notes?.toLowerCase().includes('approved disc') ||
+         extracted.fullName?.toLowerCase().includes('bunger');
+}
+
+export function hasActiveMembership(extracted: SanitizedMembership): { isActive: boolean; plan?: string; passId?: number; tier?: string } {
+  const { passes = [], appointmentsObject = [] } = extracted.rawPayload;
+  const { isMulti, types } = detectMultiMembership(passes, appointmentsObject);
+  const hasKnownPass = passes.some((p: any) => KNOWN_PASS_IDS.includes(p.id)) ||
+                       appointmentsObject.some((a: any) => KNOWN_PASS_IDS.includes(a.pass_id));
+  const hasPackage = appointmentsObject.some((a: any) => a.package_id || a.membership_id);
+  const isActive = !extracted.discharged && (hasKnownPass || hasPackage || passes.length > 0 || isMulti);
+
+  if (isActive && hasKnownPass) {
+    const passId = passes.find((p: any) => KNOWN_PASS_IDS.includes(p.id))?.id ||
+                   appointmentsObject.find((a: any) => KNOWN_PASS_IDS.includes(a.pass_id))?.pass_id;
+    const config = PASS_CONFIG[passId as keyof typeof PASS_CONFIG];
+    return { isActive: true, plan: config?.plan, passId, tier: config?.type || types[0] };
+  }
+  if (isMulti) {
+    return { isActive: true, plan: 'Mixed Supplemental', tier: types.join('+') };
+  }
+  return { isActive: false };
+}
+
+export async function shouldEvaluateViaClinicSync(
+  typeKey: string,
+  paymentMethod: string,
+  extracted: SanitizedMembership
+): Promise<{ evaluate: boolean; paymentMethod: string; clientType: string }> {
+  const pureQboTypes = ['qbo_tcmh_180_month', 'mens_health_qbo'];
+  const mixedTypes = typeKey.startsWith('mixed_');
+  const janeTypes = typeKey.includes('jane_') || 
+                    ['tcmh_family_50_month', 'insurance_supplemental_60_month', 'dependent_membership_30_month', 'phil_ff_trt_140_month'].includes(typeKey);
+
+  if (pureQboTypes.includes(typeKey)) {
+    return { evaluate: false, paymentMethod: 'qbo', clientType: typeKey };
+  }
+  if (mixedTypes && paymentMethod === 'jane_quickbooks') {
+    return { evaluate: true, paymentMethod: 'jane_quickbooks', clientType: typeKey };
+  }
+  if (janeTypes) {
+    return { evaluate: true, paymentMethod: 'jane', clientType: typeKey };
+  }
+
+  if (typeKey === 'approved_disc_pro_bono_pt' || typeKey === 'dependent_membership_30_month') {
+    const hasJaneSignalFlag = hasJaneSignal(extracted);
+    if (hasJaneSignalFlag || extracted.fullName?.toLowerCase().includes('bunger')) {
+      const clientType = typeKey === 'dependent_membership_30_month' ? 'dependent_membership_30_month' : 'approved_disc_pro_bono_pt';
+      return { evaluate: true, paymentMethod: 'jane', clientType };
+    } else {
+      return { evaluate: false, paymentMethod: 'qbo', clientType: typeKey };
+    }
+  }
+
+  return { evaluate: false, paymentMethod: paymentMethod || 'qbo', clientType: typeKey };
+}
+
+export async function handleProBonoMapping(client: PoolClient, patientId: string, extracted: SanitizedMembership, result: Awaited<ReturnType<typeof shouldEvaluateViaClinicSync>>) {
+  if (result.paymentMethod === 'jane' && result.clientType === 'approved_disc_pro_bono_pt') {
+    await client.query(
+      `UPDATE patients 
+       SET payment_method_key = $1, client_type_key = $2, updated_at = NOW()
+       WHERE patient_id = $3`,
+      ['jane', 'approved_disc_pro_bono_pt', patientId]
+    );
+  } else if (result.paymentMethod === 'qbo') {
+    await client.query(
+      `UPDATE patients 
+       SET payment_method_key = $1, updated_at = NOW()
+       WHERE patient_id = $2`,
+      ['qbo', patientId]
+    );
+  }
+}
+
+export async function getPatientById(clinicsyncPatientId: string) {
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      SELECT p.patient_id, p.client_type_key, p.payment_method_key
+      FROM patients p
+      JOIN patient_clinicsync_mapping m ON p.patient_id = m.patient_id
+      WHERE m.clinicsync_patient_id = $1
+    `, [clinicsyncPatientId]);
+    return result.rows[0] || null;
+  } finally {
+    client.release();
+  }
 }
 
 

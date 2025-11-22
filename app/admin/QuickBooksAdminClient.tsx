@@ -12,6 +12,17 @@ interface RevenueMetrics {
   totalPatientsOnRecurring: number;
 }
 
+interface ClinicSyncMetrics {
+  dailyRevenue: number;
+  weeklyRevenue: number;
+  monthlyRevenue: number;
+  totalMemberships: number;
+  activeMemberships: number;
+  paymentIssues: number;
+  unmatchedMemberships: number;
+  mappedMemberships: number;
+}
+
 interface PatientMatch {
   patient: {
     patient_id: string;
@@ -56,6 +67,7 @@ export default function QuickBooksAdminClient() {
   const [connecting, setConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'matching'>('overview');
+  const [clinicMetrics, setClinicMetrics] = useState<ClinicSyncMetrics | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -66,9 +78,10 @@ export default function QuickBooksAdminClient() {
 
   const loadData = async () => {
     try {
-      const [metricsResponse, issuesResponse] = await Promise.all([
+      const [metricsResponse, issuesResponse, clinicResponse] = await Promise.all([
         fetch('/ops/api/admin/quickbooks/metrics'),
-        fetch('/ops/api/admin/quickbooks/payment-issues')
+        fetch('/ops/api/admin/quickbooks/payment-issues'),
+        fetch('/ops/api/admin/memberships/metrics')
       ]);
 
       if (metricsResponse.ok) {
@@ -79,6 +92,11 @@ export default function QuickBooksAdminClient() {
       if (issuesResponse.ok) {
         const issuesData = await issuesResponse.json();
         setIssues(issuesData);
+      }
+
+      if (clinicResponse.ok) {
+        const clinicData = await clinicResponse.json();
+        setClinicMetrics(clinicData);
       }
     } catch (error) {
       console.error('Error loading data:', error);
@@ -163,6 +181,10 @@ export default function QuickBooksAdminClient() {
       style: 'currency',
       currency: 'USD'
     }).format(amount);
+  };
+
+  const formatNumber = (value: number) => {
+    return new Intl.NumberFormat('en-US').format(value);
   };
 
   if (loading && !metrics) {
@@ -283,6 +305,90 @@ export default function QuickBooksAdminClient() {
             <h3 className="text-lg font-semibold mb-2">Unmatched Patients</h3>
             <div className="text-3xl font-bold text-orange-600">
               {metrics.unmatchedPatients}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(patientMatches || clinicMetrics) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+          <div className="bg-white p-4 rounded-lg shadow border">
+            <div className="inline-flex items-center gap-2 text-sm font-semibold text-gray-900">
+              <span className={`inline-flex h-2.5 w-2.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
+              QuickBooks Connected
+            </div>
+            <p className="text-sm text-gray-500 mt-1">
+              {(patientMatches?.totalMappings ?? metrics?.totalPatientsOnRecurring ?? 0).toLocaleString()} patients mapped
+            </p>
+          </div>
+          {clinicMetrics && (
+            <div className="bg-white p-4 rounded-lg shadow border">
+              <div className="inline-flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <span className="inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
+                ClinicSync Connected
+              </div>
+              <p className="text-sm text-gray-500 mt-1">
+                {formatNumber(clinicMetrics.mappedMemberships)} patients mapped
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {clinicMetrics && (
+        <div className="mt-10">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+            <div>
+              <h2 className="text-2xl font-semibold">ClinicSync (Jane)</h2>
+              <p className="text-sm text-gray-600 mt-1">
+                Monitor Jane memberships and launch the auto-matching workflow for ClinicSync patients.
+              </p>
+            </div>
+            <button
+              onClick={() => router.push('/admin/membership-audit')}
+              className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 transition"
+            >
+              Auto-Match ClinicSync Patients
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="bg-white p-6 rounded-lg shadow border">
+              <h3 className="text-lg font-semibold mb-2">Daily Revenue</h3>
+              <div className="text-3xl font-bold text-green-600">
+                {formatCurrency(clinicMetrics.dailyRevenue)}
+              </div>
+            </div>
+            <div className="bg-white p-6 rounded-lg shadow border">
+              <h3 className="text-lg font-semibold mb-2">Weekly Revenue</h3>
+              <div className="text-3xl font-bold text-blue-600">
+                {formatCurrency(clinicMetrics.weeklyRevenue)}
+              </div>
+            </div>
+            <div className="bg-white p-6 rounded-lg shadow border">
+              <h3 className="text-lg font-semibold mb-2">Monthly Revenue</h3>
+              <div className="text-3xl font-bold text-purple-600">
+                {formatCurrency(clinicMetrics.monthlyRevenue)}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
+            <div className="bg-white p-6 rounded-lg shadow border">
+              <h3 className="text-lg font-semibold mb-2">Total Memberships</h3>
+              <div className="text-3xl font-bold text-indigo-600">{formatNumber(clinicMetrics.totalMemberships)}</div>
+            </div>
+            <div className="bg-white p-6 rounded-lg shadow border">
+              <h3 className="text-lg font-semibold mb-2">Active Memberships</h3>
+              <div className="text-3xl font-bold text-green-600">{formatNumber(clinicMetrics.activeMemberships)}</div>
+            </div>
+            <div className="bg-white p-6 rounded-lg shadow border">
+              <h3 className="text-lg font-semibold mb-2">Payment Issues</h3>
+              <div className="text-3xl font-bold text-red-600">{formatNumber(clinicMetrics.paymentIssues)}</div>
+            </div>
+            <div className="bg-white p-6 rounded-lg shadow border">
+              <h3 className="text-lg font-semibold mb-2">Unmatched Patients</h3>
+              <div className="text-3xl font-bold text-orange-600">{formatNumber(clinicMetrics.unmatchedMemberships)}</div>
             </div>
           </div>
         </div>
