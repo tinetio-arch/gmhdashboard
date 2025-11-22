@@ -23,11 +23,11 @@ export async function GET(req: NextRequest) {
     const dashboardPatients = await query<{
       patient_id: string;
       full_name: string;
-      email: string;
-      phone: string;
+      email: string | null;
+      phone_primary: string | null;
       payment_method_key: string;
     }>(`
-      SELECT patient_id, full_name, email, phone, payment_method_key
+      SELECT patient_id, full_name, email, phone_primary, payment_method_key
       FROM patients
       WHERE status_key NOT IN ('inactive', 'discharged')
     `);
@@ -80,12 +80,12 @@ export async function GET(req: NextRequest) {
         }
 
         // Check phone match
-        if (!matchReason && patient.phone && qbCustomer.PrimaryPhone?.FreeFormNumber) {
-          const patientPhone = patient.phone.replace(/\D/g, '');
+        if (!matchReason && patient.phone_primary && qbCustomer.PrimaryPhone?.FreeFormNumber) {
+          const patientPhone = patient.phone_primary.replace(/\D/g, '');
           const qbPhone = qbCustomer.PrimaryPhone.FreeFormNumber.replace(/\D/g, '');
 
           if (patientPhone === qbPhone) {
-            matchReason = `Phone match: ${patient.phone}`;
+            matchReason = `Phone match: ${patient.phone_primary}`;
             confidence = 'high';
           }
         }

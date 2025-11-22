@@ -46,6 +46,8 @@ export type QuickBooksPayment = {
   TotalAmt: number;
   CustomerRef: { value: string; name?: string };
   DepositToAccountRef?: { value: string };
+  PaymentMethodRef?: { value: string; name?: string };
+  DocNumber?: string;
 };
 
 export type QuickBooksSalesReceipt = {
@@ -53,8 +55,11 @@ export type QuickBooksSalesReceipt = {
   TxnDate?: string;
   CustomerRef?: { value: string; name?: string };
   TotalAmt?: number;
+  DocNumber?: string;
   PrivateNote?: string;
-  RecurringTxnId?: string;
+  RecurringInfo?: {
+    RecurringTxnId?: string;
+  };
   PaymentMethodRef?: { value: string; name?: string };
   CreditCardPayment?: {
     CreditChargeResponse?: {
@@ -353,7 +358,7 @@ export class QuickBooksClient {
         };
       }>(
         `GET`,
-        `/query?query=SELECT Id, TxnDate, CustomerRef, TotalAmt, PrivateNote, RecurringTxnId FROM SalesReceipt WHERE RecurringTxnId != '' ORDER BY TxnDate DESC MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`,
+        `/query?query=SELECT * FROM SalesReceipt ORDER BY TxnDate DESC MAXRESULTS ${maxResults} STARTPOSITION ${startPosition}`,
         { minorVersion: 65 }
       );
 
@@ -381,7 +386,7 @@ export class QuickBooksClient {
       filters.push(`TxnDate >= '${startDate.toISOString().split('T')[0]}'`);
     }
     const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-    const query = `SELECT Id, TxnDate, CustomerRef, TotalAmt, PrivateNote, RecurringTxnId FROM SalesReceipt ${whereClause} ORDER BY TxnDate DESC`;
+    const query = `SELECT * FROM SalesReceipt ${whereClause} ORDER BY TxnDate DESC`;
     const response = await this.request<{
       QueryResponse: {
         SalesReceipt?: QuickBooksSalesReceipt[];
@@ -402,6 +407,22 @@ export class QuickBooksClient {
     const since = new Date();
     since.setDate(since.getDate() - days);
     return this.getSalesReceipts(since);
+  }
+
+  async getSalesReceiptsForCustomer(customerId: string, days = 90): Promise<QuickBooksSalesReceipt[]> {
+    const filters: string[] = [`CustomerRef = '${customerId}'`];
+    if (days > 0) {
+      const since = new Date();
+      since.setDate(since.getDate() - days);
+      filters.push(`TxnDate >= '${since.toISOString().split('T')[0]}'`);
+    }
+    const query = `SELECT * FROM SalesReceipt WHERE ${filters.join(
+      ' AND '
+    )} ORDER BY TxnDate DESC`;
+    const response = await this.request<{
+      QueryResponse: { SalesReceipt?: QuickBooksSalesReceipt[] };
+    }>('GET', `/query?query=${encodeURIComponent(query)}`, { minorVersion: 73 });
+    return response.QueryResponse.SalesReceipt ?? [];
   }
 
   /**

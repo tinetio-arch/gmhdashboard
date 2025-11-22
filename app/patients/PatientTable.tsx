@@ -531,6 +531,7 @@ export default function PatientTable({
     'DOB',
     'Address',
     'Phone',
+    'Email',
     'Added By',
     'Date Added',
     'Last Modified',
@@ -820,6 +821,7 @@ export default function PatientTable({
               const statusCell = { ...cellStyles, backgroundColor: palette.statusColor };
               const paymentCell = { ...cellStyles, backgroundColor: palette.paymentColor };
               const typeCell = { ...cellStyles, backgroundColor: palette.typeColor };
+              const detailHref = `/patients/${row.id}`;
 
               return (
                 <tr
@@ -832,7 +834,15 @@ export default function PatientTable({
                     rowId={row.id}
                     field="patientName"
                     cellStyle={baseCell}
-                    display={renderText(row.patientName)}
+                    display={
+                      row.patientName ? (
+                        <Link href={detailHref} style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'none' }}>
+                          {row.patientName}
+                        </Link>
+                      ) : (
+                        renderText(row.patientName)
+                      )
+                    }
                     renderEditor={({ onBlur }) => (
                       <input
                         type="text"
@@ -1112,13 +1122,31 @@ export default function PatientTable({
                       />
                     )}
                   />
+                  <EditableCell
+                    rowId={row.id}
+                    field="email"
+                    cellStyle={{ ...compactCellStyle, whiteSpace: 'normal' as const }}
+                    display={renderText(row.email)}
+                    renderEditor={({ onBlur }) => (
+                      <input
+                        type="email"
+                        value={row.email}
+                        onChange={(event) =>
+                          updateRow(row.id, (current) => ({ ...current, email: event.target.value }))
+                        }
+                        onBlur={onBlur}
+                        autoFocus
+                        style={inputStyle}
+                      />
+                    )}
+                  />
                   <td style={compactCellStyle}>{renderText(row.addedBy)}</td>
                   <td style={compactCellStyle}>{formatDisplayDate(row.dateAdded)}</td>
                   <td style={compactCellStyle}>{formatDisplayDate(row.lastModified)}</td>
                   <td style={narrowCellStyle}>
                     {row.lastSupplyDate?.trim() ? (
                       <Link
-                        href={`/patients/${row.id}`}
+                        href={detailHref}
                         style={{
                           color: row.lastSupplyFromDea ? '#0284c7' : '#0f172a',
                           fontWeight: row.lastSupplyFromDea ? 600 : 500,

@@ -145,6 +145,15 @@ export async function reprocessClinicSyncMemberships(): Promise<void> {
       eventType: 'sync.reprocess'
     };
 
+    const { plan, passId, tier } = hasActiveMembership(sanitized);
+    if (plan && !sanitized.membershipPlan) {
+      sanitized.membershipPlan = plan;
+    }
+    if (typeof passId === 'number') {
+      sanitized.pass_id = passId;
+    }
+    sanitized.membershipTier = tier || sanitized.membershipTier;
+
     if (!row.patient_id) {
       continue;
     }
@@ -223,7 +232,7 @@ function normalizePayload(payload: ClinicSyncPayload, source?: string): Sanitize
     balanceOwing ||
     0;  // Default to 0 if neither is available
 
-  const sanitized = {
+  const sanitized: SanitizedMembership = {
     clinicsyncPatientId,
     fullName: stringValue(
       payload.name ||
@@ -280,8 +289,19 @@ function normalizePayload(payload: ClinicSyncPayload, source?: string): Sanitize
     eventType: source ? `clinicsync.${source}` : 'clinicsync.webhook'
   };
 
-  const { isActive, plan, passId, tier } = hasActiveMembership(sanitized);
+  const { isActive, plan, passId, tier, isMulti, allPlans, allPassIds } = hasActiveMembership(sanitized);
+  if (plan && !sanitized.membershipPlan) {
+    sanitized.membershipPlan = plan;
+  }
+  if (typeof passId === 'number') {
+    sanitized.pass_id = passId;
+  }
   sanitized.membershipTier = tier || sanitized.membershipTier;
+  
+  // Store multi-membership info in the sanitized object
+  (sanitized as any).isMultiMembership = isMulti;
+  (sanitized as any).allPlans = allPlans;
+  (sanitized as any).allPassIds = allPassIds;
 
   return sanitized;
 }
@@ -409,6 +429,7 @@ async function upsertClinicSyncMembership(
         membership_plan,
         membership_status,
         membership_tier,
+        pass_id,
         balance_owing,
         amount_due,
         last_payment_at,
@@ -418,13 +439,14 @@ async function upsertClinicSyncMembership(
         is_active,
         raw_payload
      ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14
      )
      ON CONFLICT (clinicsync_patient_id) DO UPDATE SET
         patient_id = COALESCE(EXCLUDED.patient_id, clinicsync_memberships.patient_id),
         membership_plan = EXCLUDED.membership_plan,
         membership_status = EXCLUDED.membership_status,
         membership_tier = EXCLUDED.membership_tier,
+        pass_id = COALESCE(EXCLUDED.pass_id, clinicsync_memberships.pass_id),
         balance_owing = EXCLUDED.balance_owing,
         amount_due = EXCLUDED.amount_due,
         last_payment_at = EXCLUDED.last_payment_at,
@@ -440,6 +462,7 @@ async function upsertClinicSyncMembership(
       membership.membershipPlan,
       membership.membershipStatus,
       membership.membershipTier,
+      membership.pass_id ?? null,
       membership.balanceOwing || null,
       membership.amountDue || null,
       membership.lastPaymentAt,
@@ -851,19 +874,31 @@ function normalizePhone(value: string | null | undefined): string | null {
   return digits.length >= 7 ? digits : null;
 }
 
-export function detectMultiMembership(passes: any[] = [], appointments: any[] = []): { isMulti: boolean; types: string[] } {
-  const passIds = passes.map((p) => p.id).concat(appointments.map((a) => a.pass_id).filter(Boolean));
-  if (passIds.includes(3) && (passIds.includes(52) || passIds.includes(65) || passIds.includes(72))) {
-    return {
-      isMulti: true,
-      types: [
-        'insurance_supplemental_60_month',
-        passIds.includes(52) ? 'phil_ff_trt_140_month' : 
-        passIds.includes(65) || passIds.includes(72) ? 'tcmh_family_50_month' : 'other'
-      ]
-    };
-  }
-  return { isMulti: false, types: [] };
+export function detectMultiMembership(passes: any[] = [], appointments: any[] = []): { isMulti: boolean; types: string[]; passIds: number[]; plans: string[] } {
+  const allPassIds = passes.map((p) => p.id).concat(appointments.map((a) => a.pass_id).filter(Boolean));
+  const uniquePassIds = [...new Set(allPassIds)].filter(id => KNOWN_PASS_IDS.includes(id));
+  
+  const plans: string[] = [];
+  const types: string[] = [];
+  
+  uniquePassIds.forEach(passId => {
+    const config = PASS_CONFIG[passId as keyof typeof PASS_CONFIG];
+    if (config) {
+      plans.push(config.plan);
+      types.push(config.type);
+    }
+  });
+  
+  // Check for specific combinations like Insurance Supplemental + TCMH
+  const hasInsuranceSupplemental = uniquePassIds.includes(3);
+  const hasTCMH = uniquePassIds.includes(52) || uniquePassIds.includes(65) || uniquePassIds.includes(72);
+  
+  return {
+    isMulti: uniquePassIds.length > 1,
+    types: [...new Set(types)],
+    passIds: uniquePassIds,
+    plans: [...new Set(plans)]
+  };
 }
 
 export function hasJaneSignal(extracted: SanitizedMembership): boolean {
@@ -874,24 +909,68 @@ export function hasJaneSignal(extracted: SanitizedMembership): boolean {
          extracted.fullName?.toLowerCase().includes('bunger');
 }
 
-export function hasActiveMembership(extracted: SanitizedMembership): { isActive: boolean; plan?: string; passId?: number; tier?: string } {
+export function hasActiveMembership(extracted: SanitizedMembership): { 
+  isActive: boolean; 
+  plan?: string; 
+  passId?: number; 
+  tier?: string;
+  isMulti?: boolean;
+  allPlans?: string[];
+  allPassIds?: number[];
+} {
   const { passes = [], appointmentsObject = [] } = extracted.rawPayload;
-  const { isMulti, types } = detectMultiMembership(passes, appointmentsObject);
-  const hasKnownPass = passes.some((p: any) => KNOWN_PASS_IDS.includes(p.id)) ||
-                       appointmentsObject.some((a: any) => KNOWN_PASS_IDS.includes(a.pass_id));
+  const { isMulti, types, passIds, plans } = detectMultiMembership(passes, appointmentsObject);
+  const hasKnownPass = passIds.length > 0;
   const hasPackage = appointmentsObject.some((a: any) => a.package_id || a.membership_id);
-  const isActive = !extracted.discharged && (hasKnownPass || hasPackage || passes.length > 0 || isMulti);
+  const outstandingAmount =
+    extracted.amountDue ||
+    extracted.balanceOwing ||
+    toNumber(extracted.rawPayload?.claims_amount_owing) ||
+    toNumber(extracted.rawPayload?.total_remaining_balance);
+  const hasUnpaidAppointment = appointmentsObject.some((a: any) =>
+    ['unpaid', 'payment_declined', 'payment_failed'].includes((a?.purchase_state ?? '').toLowerCase())
+  );
+  const isActive =
+    !extracted.discharged &&
+    (hasKnownPass || hasPackage || passes.length > 0 || isMulti || outstandingAmount > 0 || hasUnpaidAppointment);
 
   if (isActive && hasKnownPass) {
-    const passId = passes.find((p: any) => KNOWN_PASS_IDS.includes(p.id))?.id ||
-                   appointmentsObject.find((a: any) => KNOWN_PASS_IDS.includes(a.pass_id))?.pass_id;
-    const config = PASS_CONFIG[passId as keyof typeof PASS_CONFIG];
-    return { isActive: true, plan: config?.plan, passId, tier: config?.type || types[0] };
+    // For multiple memberships, combine the plans
+    if (isMulti && plans.length > 1) {
+      return { 
+        isActive: true, 
+        plan: plans.join(' + '), 
+        passId: passIds[0], // Primary pass ID
+        tier: types.join('+'),
+        isMulti: true,
+        allPlans: plans,
+        allPassIds: passIds
+      };
+    }
+    // Single membership
+    const config = PASS_CONFIG[passIds[0] as keyof typeof PASS_CONFIG];
+    return { 
+      isActive: true, 
+      plan: config?.plan, 
+      passId: passIds[0], 
+      tier: config?.type || types[0],
+      isMulti: false,
+      allPlans: [config?.plan].filter(Boolean),
+      allPassIds: passIds
+    };
   }
   if (isMulti) {
-    return { isActive: true, plan: 'Mixed Supplemental', tier: types.join('+') };
+    return { isActive: true, plan: 'Mixed Supplemental', tier: types.join('+'), isMulti: true };
   }
-  return { isActive: false };
+  if (!extracted.discharged && (outstandingAmount > 0 || hasUnpaidAppointment)) {
+    const derivedPlan =
+      extracted.membershipPlan ||
+      appointmentsObject.find((a: any) => a?.treatment_name)?.treatment_name ||
+      extracted.rawPayload?.treatment_name ||
+      'ClinicSync Outstanding';
+    return { isActive: true, plan: derivedPlan, tier: extracted.membershipTier || 'clinic_unpaid', isMulti: false };
+  }
+  return { isActive: false, isMulti: false };
 }
 
 export async function shouldEvaluateViaClinicSync(

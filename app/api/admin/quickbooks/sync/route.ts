@@ -3,6 +3,8 @@ import { requireApiUser } from '@/lib/auth';
 import { createQuickBooksClient } from '@/lib/quickbooks';
 import { query } from '@/lib/db';
 
+const DECLINED_STATUSES = new Set(['declined', 'error', 'failed', 'rejected', 'unknown']);
+
 export async function POST(req: NextRequest) {
   try {
     const user = await requireApiUser(req, 'admin');
@@ -152,6 +154,116 @@ export async function POST(req: NextRequest) {
                   WHERE patient_id = $1
                 `, [patientId]);
               }
+            }
+          }
+
+          // Sales receipts (recurring subscriptions)
+          const salesReceipts = await qbClient.getSalesReceiptsForCustomer(customer.Id, 365);
+          for (const receipt of salesReceipts) {
+            try {
+              const receiptDate = receipt.TxnDate ? new Date(receipt.TxnDate) : null;
+              const statusRaw = receipt.CreditCardPayment?.CreditChargeResponse?.Status ?? null;
+              const status = statusRaw ? statusRaw.toLowerCase() : null;
+              await query(
+                `INSERT INTO quickbooks_sales_receipts (
+                   qb_sales_receipt_id, qb_customer_id, patient_id, receipt_number,
+                   receipt_date, amount, status, payment_method, note, recurring_txn_id, qb_sync_date, updated_at
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
+                 ON CONFLICT (qb_sales_receipt_id) DO UPDATE SET
+                   amount = EXCLUDED.amount,
+                   status = EXCLUDED.status,
+                   payment_method = EXCLUDED.payment_method,
+                   note = EXCLUDED.note,
+                   receipt_date = EXCLUDED.receipt_date,
+                   recurring_txn_id = EXCLUDED.recurring_txn_id,
+                   qb_sync_date = NOW(),
+                   updated_at = NOW()`,
+                [
+                  receipt.Id,
+                  customer.Id,
+                  patientId,
+                  receipt.DocNumber ?? null,
+                  receiptDate,
+                  receipt.TotalAmt ?? 0,
+                  statusRaw ?? null,
+                  receipt.PaymentMethodRef?.name ?? receipt.PaymentMethodRef?.value ?? null,
+                  receipt.PrivateNote ?? null,
+                  receipt.RecurringInfo?.RecurringTxnId ?? null
+                ]
+              );
+
+              // Handle declined or unknown payment statuses
+              if (status && (DECLINED_STATUSES.has(status) || status.toLowerCase() === 'unknown')) {
+                const existingIssue = await query<{ issue_id: string }>(
+                  `SELECT issue_id FROM payment_issues
+                   WHERE patient_id = $1 AND qb_sales_receipt_id = $2 AND resolved_at IS NULL`,
+                  [patientId, receipt.Id]
+                );
+                if (existingIssue.length === 0) {
+                  const patientStatus = await query<{ status_key: string }>(
+                    `SELECT status_key FROM patients WHERE patient_id = $1`,
+                    [patientId]
+                  );
+                  await query(
+                    `INSERT INTO payment_issues (
+                       patient_id, issue_type, issue_severity, amount_owed,
+                       days_overdue, qb_sales_receipt_id, previous_status_key, auto_updated
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)`,
+                    [
+                      patientId,
+                      'payment_declined',
+                      'warning',
+                      Number(receipt.TotalAmt ?? 0),
+                      0,
+                      receipt.Id,
+                      patientStatus[0]?.status_key || 'active'
+                    ]
+                  );
+                  await query(
+                    `UPDATE patients
+                       SET status_key = 'hold_payment_research',
+                           updated_at = NOW()
+                     WHERE patient_id = $1`,
+                    [patientId]
+                  );
+                }
+              }
+            } catch (error) {
+              console.error(`Error processing sales receipt ${receipt.Id}:`, error);
+              totalFailed++;
+            }
+          }
+
+          // Payments (non-recurring or applied to invoices)
+          const payments = await qbClient.getPaymentsForCustomer(customer.Id);
+          for (const payment of payments) {
+            try {
+              await query(
+                `INSERT INTO quickbooks_payment_transactions (
+                   qb_payment_id, qb_customer_id, patient_id, payment_number,
+                   payment_date, amount, deposit_account, payment_method, qb_sync_date, updated_at
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+                 ON CONFLICT (qb_payment_id) DO UPDATE SET
+                   amount = EXCLUDED.amount,
+                   payment_date = EXCLUDED.payment_date,
+                   deposit_account = EXCLUDED.deposit_account,
+                   payment_method = EXCLUDED.payment_method,
+                   qb_sync_date = NOW(),
+                   updated_at = NOW()`,
+                [
+                  payment.Id,
+                  customer.Id,
+                  patientId,
+                  payment.DocNumber ?? null,
+                  payment.TxnDate ? new Date(payment.TxnDate) : null,
+                  payment.TotalAmt ?? 0,
+                  payment.DepositToAccountRef?.value ?? null,
+                  payment.PaymentMethodRef?.name ?? payment.PaymentMethodRef?.value ?? null
+                ]
+              );
+            } catch (error) {
+              console.error(`Error processing payment ${payment.Id}:`, error);
+              totalFailed++;
             }
           }
         } catch (error) {

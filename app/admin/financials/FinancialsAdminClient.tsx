@@ -52,7 +52,7 @@ interface PaymentIssue {
   created_at: string;
 }
 
-export default function QuickBooksAdminClient() {
+export default function FinancialsAdminClient() {
   const [metrics, setMetrics] = useState<RevenueMetrics | null>(null);
   const [issues, setIssues] = useState<PaymentIssue[]>([]);
   const [patientMatches, setPatientMatches] = useState<{
@@ -384,6 +384,38 @@ export default function QuickBooksAdminClient() {
                 className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 transition"
               >
                 Auto-Match ClinicSync Patients
+              </button>
+              <button
+                onClick={() => router.push('/admin/mapping-diagnostics')}
+                className="bg-yellow-600 text-white px-4 py-2 rounded hover:bg-yellow-700 transition"
+              >
+                Mapping Diagnostics
+              </button>
+              <button
+                onClick={async () => {
+                  setLoading(true);
+                  try {
+                    const response = await fetch('/ops/api/admin/update-mixed-payments', {
+                      method: 'POST'
+                    });
+                    if (response.ok) {
+                      const result = await response.json();
+                      alert(`Mixed payment detection completed: ${result.message}`);
+                      window.location.reload(); // Refresh to see updated data
+                    } else {
+                      const error = await response.json();
+                      alert(`Mixed payment detection failed: ${error.error}`);
+                    }
+                  } catch (error) {
+                    alert('Failed to detect mixed payments');
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition disabled:opacity-50"
+                disabled={loading}
+              >
+                {loading ? 'Detecting...' : 'Detect Mixed Payments'}
               </button>
             </div>
           </div>

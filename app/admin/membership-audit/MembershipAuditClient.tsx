@@ -697,8 +697,29 @@ export default function MembershipAuditClient({ data, quickbooksData, lookups }:
                     <td style={{ padding: '0.75rem' }}>{row.payment_method ?? 'QuickBooks'}</td>
                     <td style={{ padding: '0.75rem' }}>{row.phone_primary ?? '—'}</td>
                     <td style={{ padding: '0.75rem' }}>
-                      <a
-                        href="/ops/admin/quickbooks"
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Create a dummy row for intake form
+                          const intakeRow: NeedsDataRow = {
+                            norm_name: row.full_name.toLowerCase().replace(/[^a-z0-9]/g, ''),
+                            patient_name: row.full_name,
+                            plan_name: 'QuickBooks Patient',
+                            status: 'active',
+                            remaining_cycles: null,
+                            contract_end_date: null,
+                            outstanding_balance: null,
+                            category: null,
+                            purchase_date: null,
+                            service_start_date: null,
+                            issue: 'no_gmh_match',
+                            patient_id: null,
+                            matched_patient: null,
+                            clinicsync_patient_id: null,
+                            clinicsync_name: null
+                          };
+                          openIntake(intakeRow);
+                        }}
                         style={{
                           display: 'inline-flex',
                           alignItems: 'center',
@@ -706,11 +727,13 @@ export default function MembershipAuditClient({ data, quickbooksData, lookups }:
                           padding: '0.45rem 0.85rem',
                           borderRadius: '0.45rem',
                           border: '1px solid rgba(14,165,233,0.45)',
-                          color: '#0369a1'
+                          background: '#0ea5e9',
+                          color: '#ffffff',
+                          cursor: 'pointer'
                         }}
                       >
-                        Open QuickBooks Mapping
-                      </a>
+                        Map Patient
+                      </button>
                     </td>
                   </tr>
                 ))}

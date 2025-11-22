@@ -27,6 +27,7 @@ export async function GET(req: NextRequest) {
       FROM payment_issues pi
       JOIN patients p ON p.patient_id = pi.patient_id
       WHERE pi.resolved_at IS NULL
+        AND p.status_key NOT IN ('inactive', 'discharged')
       ORDER BY pi.days_overdue DESC, pi.amount_owed DESC
       LIMIT 50
     `);

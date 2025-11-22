@@ -24,6 +24,7 @@ const PAYMENT_COLOR_MAP: Record<string, string> = {
   'quickbooks': '#ffe599',
   'jane & quickbooks': '#a4c2f4',
   'jane and quickbooks': '#a4c2f4',
+  'jane_quickbooks': '#a4c2f4',
   'both': '#a4c2f4',
   'pro-bono': '#b6d7a8',
   'pro bono': '#b6d7a8'
@@ -40,6 +41,8 @@ const TYPE_COLOR_MAP: Record<string, string> = {
   'jane f&f/fr/veteran $140/month': '#ffd966',
   'qbo f&f/fr/veteran $140/month': '#ffd966',
   'mixed - primecare (jane) | qbo tcmh': '#76a5af',
+  'mixed primcare (jane) | qbo tcmh': '#76a5af',
+  'mixed_primcare_jane_qbo_tcmh': '#76a5af',
   "men's health (qbo)": '#f6b26b',
   'approved disc / pro-bono pt': '#a64d79'
 };
@@ -158,12 +161,17 @@ export function deriveRowColors(statusDisplay: string | null, clientTypeDisplay:
   let rowColor = STATUS_ROW_COLOR_MAP[statusKey] || '#ffffff';
 
   const clientKey = (clientTypeDisplay ?? '').toLowerCase().trim();
-  if (PRIMARY_CARE_TYPE_KEYS.has(clientKey) && (statusKey === 'active' || statusKey === 'active - pending')) {
+  const paymentKey = (paymentMethodDisplay ?? '').toLowerCase().trim();
+  
+  // Apply light blue for mixed payment methods (Jane & QuickBooks)
+  if (paymentKey.includes('jane') && paymentKey.includes('quickbooks')) {
+    rowColor = '#e6f3ff'; // Light blue for mixed payment patients
+  } else if (PRIMARY_CARE_TYPE_KEYS.has(clientKey) && (statusKey === 'active' || statusKey === 'active - pending')) {
     rowColor = PRIMARY_CARE_ROW_COLOR;
   }
 
   const statusColor = STATUS_ALERT_COLOR_MAP[statusKey] || rowColor;
-  const paymentColor = PAYMENT_COLOR_MAP[(paymentMethodDisplay ?? '').toLowerCase().trim()] || rowColor;
+  const paymentColor = PAYMENT_COLOR_MAP[paymentKey] || rowColor;
   const typeColor = TYPE_COLOR_MAP[clientKey] || rowColor;
 
   return { rowColor, statusColor, paymentColor, typeColor };
