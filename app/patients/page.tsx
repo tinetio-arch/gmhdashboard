@@ -6,7 +6,11 @@ import { fetchLookupSets } from '@/lib/lookups';
 import AddPatientForm from './AddPatientForm';
 import { requireUser } from '@/lib/auth';
 
-export default async function PatientsPage() {
+export default async function PatientsPage({
+  searchParams
+}: {
+  searchParams: { status?: string; search?: string }
+}) {
   const user = await requireUser('write');
   const [patients, lookups, professionalPatients] = await Promise.all([
     fetchPatientDataEntries(),
@@ -31,6 +35,8 @@ export default async function PatientsPage() {
         professionalPatients={professionalPatients}
         currentUserRole={user.role}
         currentUserEmail={userEmail}
+        initialStatusFilter={searchParams.status}
+        initialSearchQuery={searchParams.search}
       />
     </section>
   );

@@ -86,3 +86,4 @@ curl -X POST https://nowoptimal.com/ops/api/admin/clinicsync/test-detection \
 - Sales receipts with 'unknown' or 'declined' status automatically move patients to "Hold - Payment Research"
 - QuickBooks invoices 30+ days overdue create payment issues
 - Mixed payment patients (Jane & QuickBooks) are tracked in both systems
+

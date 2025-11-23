@@ -4,6 +4,8 @@ import { requireUser } from '@/lib/auth';
 import { fetchPatientById } from '@/lib/patientQueries';
 import { fetchDispensesForPatient } from '@/lib/inventoryQueries';
 import { fetchPatientFinancialData } from '@/lib/patientFinancials';
+import PatientDetailClient from './PatientDetailClient';
+import ClinicSyncMembershipsClient from './ClinicSyncMembershipsClient';
 
 export const dynamic = 'force-dynamic';
 
@@ -349,132 +351,18 @@ export default async function PatientDetailPage({ params }: PageProps) {
         )}
 
         {financials.clinicsync.memberships.length > 0 && (
-          <div style={{ overflowX: 'auto' }}>
-            <h3 style={{ margin: '0 0 0.75rem', fontSize: '1.1rem', color: '#0f172a' }}>ClinicSync Memberships</h3>
-            {/* Show active memberships count if multiple */}
-            {financials.clinicsync.memberships.filter(m => m.isActive).length > 1 && (
-              <div style={{ 
-                padding: '0.5rem 1rem', 
-                backgroundColor: '#dbeafe', 
-                borderRadius: '0.375rem',
-                marginBottom: '0.75rem',
-                color: '#1e40af',
-                fontSize: '0.875rem'
-              }}>
-                ℹ️ This patient has {financials.clinicsync.memberships.filter(m => m.isActive).length} active memberships
-              </div>
-            )}
-            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 720 }}>
-              <thead>
-                <tr>
-                  {['Plan', 'Pass ID', 'Tier', 'Status', 'Balance', 'Next Payment', 'End Date'].map((header) => (
-                    <th
-                      key={header}
-                      style={{
-                        padding: '0.65rem 0.9rem',
-                        textAlign: 'left',
-                        fontSize: '0.75rem',
-                        letterSpacing: '0.08em',
-                        textTransform: 'uppercase',
-                        color: '#475569',
-                        backgroundColor: '#f8fafc',
-                        borderBottom: '1px solid rgba(148,163,184,0.3)'
-                      }}
-                    >
-                      {header}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {financials.clinicsync.memberships.map((membership) => (
-                  <tr key={`${membership.clinicsyncId}-${membership.updatedAt ?? ''}`}
-                      style={{ 
-                        backgroundColor: membership.isActive ? 'transparent' : 'rgba(243, 244, 246, 0.5)'
-                      }}>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                      {membership.plan ?? membership.clinicsyncId}
-                      {!membership.isActive && membership.contractEnd && (
-                        <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.125rem' }}>
-                          Expired
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                      {membership.passId ?? '—'}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>{membership.tier ?? '—'}</td>
-                    <td
-                      style={{
-                        padding: '0.65rem 0.9rem',
-                        borderBottom: '1px solid rgba(148,163,184,0.15)',
-                        color: membership.isActive ? '#15803d' : '#64748b'
-                      }}
-                    >
-                      {membership.status ?? (membership.isActive ? 'active' : 'expired')}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                      {formatCurrency(membership.balanceOwing || membership.amountDue)}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                      {formatDate(membership.nextPaymentDue)}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                      {formatDate(membership.contractEnd)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ClinicSyncMembershipsClient 
+            memberships={financials.clinicsync.memberships}
+            patientId={params.id}
+          />
         )}
 
         {financials.paymentIssues.length > 0 && (
-          <div style={{ overflowX: 'auto' }}>
-            <h3 style={{ margin: '0 0 0.75rem', fontSize: '1.1rem', color: '#0f172a' }}>Open Payment Issues</h3>
-            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 560 }}>
-              <thead>
-                <tr>
-                  {['Issue', 'Severity', 'Amount Owed', 'Days Overdue', 'Created'].map((header) => (
-                    <th
-                      key={header}
-                      style={{
-                        padding: '0.65rem 0.9rem',
-                        textAlign: 'left',
-                        fontSize: '0.75rem',
-                        letterSpacing: '0.08em',
-                        textTransform: 'uppercase',
-                        color: '#475569',
-                        backgroundColor: '#f8fafc',
-                        borderBottom: '1px solid rgba(148,163,184,0.3)'
-                      }}
-                    >
-                      {header}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {financials.paymentIssues.map((issue) => (
-                  <tr key={issue.issueId}>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)', textTransform: 'capitalize' }}>
-                      {issue.issueType.replace('_', ' ')}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>{issue.severity}</td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)', color: '#dc2626' }}>
-                      {formatCurrency(issue.amountOwed)}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                      {issue.daysOverdue > 0 ? `${issue.daysOverdue} days` : '—'}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                      {formatDate(issue.createdAt)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <PatientDetailClient 
+            paymentIssues={financials.paymentIssues} 
+            patientId={params.id}
+            clinicsyncMemberships={financials.clinicsync.memberships}
+          />
         )}
       </div>
 

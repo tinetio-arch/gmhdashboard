@@ -13,6 +13,7 @@ export type OutstandingMembership = {
   status: string | null;
   outstandingBalance: string | null;
   contractEndDate: string | null;
+  paymentSource: 'Jane' | 'QuickBooks' | null;
 };
 
 const NORMALIZE_PATIENT_SQL =
@@ -46,42 +47,124 @@ export async function getMembershipStats(): Promise<MembershipStats> {
   };
 }
 
-export async function getOutstandingMemberships(limit = 8): Promise<OutstandingMembership[]> {
+export async function getJaneOutstandingMemberships(limit = 8): Promise<OutstandingMembership[]> {
   return query<OutstandingMembership>(
     `
-      WITH pkg AS (
-        SELECT
-          patient_name,
-          plan_name,
-          status,
-          outstanding_balance::numeric AS balance,
-          contract_end_date,
-          lower(norm_name) AS normalized_name
-        FROM jane_packages_import
-        WHERE COALESCE(outstanding_balance, 0)::numeric > 0
-      ),
-      patient_norm AS (
-        SELECT
-          patient_id,
-          ${NORMALIZE_PATIENT_SQL} AS normalized_name,
-          status_key
-        FROM patients
-      )
       SELECT
         pn.patient_id AS "patientId",
         pkg.patient_name AS "patientName",
         pkg.plan_name AS "planName",
         pkg.status,
-        pkg.balance::text AS "outstandingBalance",
-        pkg.contract_end_date::text AS "contractEndDate"
-      FROM pkg
-      LEFT JOIN patient_norm pn
-        ON pn.normalized_name = pkg.normalized_name
-      WHERE NOT (
-        COALESCE(pn.status_key, '') ILIKE 'inactive%'
-        OR COALESCE(pn.status_key, '') ILIKE 'discharg%'
+        pkg.outstanding_balance AS "outstandingBalance",
+        pkg.contract_end_date::text AS "contractEndDate",
+        'Jane' AS "paymentSource"
+      FROM jane_packages_import pkg
+      LEFT JOIN (
+        SELECT
+          patient_id,
+          ${NORMALIZE_PATIENT_SQL} AS normalized_name,
+          status_key
+        FROM patients
+      ) pn ON pn.normalized_name = lower(pkg.norm_name)
+      WHERE COALESCE(pkg.outstanding_balance, 0)::numeric > 0
+        AND NOT (
+          COALESCE(pn.status_key, '') ILIKE 'inactive%'
+          OR COALESCE(pn.status_key, '') ILIKE 'discharg%'
+        )
+      ORDER BY pkg.outstanding_balance::numeric DESC NULLS LAST, pkg.patient_name
+      LIMIT $1
+    `,
+    [limit]
+  );
+}
+
+export async function getQuickBooksOutstandingMemberships(limit = 8): Promise<OutstandingMembership[]> {
+  return query<OutstandingMembership>(
+    `
+      SELECT
+        p.patient_id AS "patientId",
+        p.full_name AS "patientName",
+        'QuickBooks Recurring' AS "planName",
+        p.status_key AS status,
+        COALESCE(pi.amount_owed, 0)::text AS "outstandingBalance",
+        NULL AS "contractEndDate",
+        'QuickBooks' AS "paymentSource"
+      FROM patients p
+      JOIN payment_issues pi ON p.patient_id = pi.patient_id
+      WHERE pi.resolved_at IS NULL
+        AND pi.issue_type IN ('payment_declined', 'payment_failed', 'insufficient_funds')
+        AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
+        AND NOT (
+          COALESCE(p.status_key, '') ILIKE 'inactive%'
+          OR COALESCE(p.status_key, '') ILIKE 'discharg%'
+        )
+      ORDER BY pi.amount_owed DESC NULLS LAST, p.full_name
+      LIMIT $1
+    `,
+    [limit]
+  );
+}
+
+export async function getOutstandingMemberships(limit = 8): Promise<OutstandingMembership[]> {
+  return query<OutstandingMembership>(
+    `
+      WITH jane_outstanding AS (
+        SELECT
+          pn.patient_id,
+          pkg.patient_name,
+          pkg.plan_name,
+          pkg.status,
+          pkg.outstanding_balance::numeric AS balance,
+          pkg.contract_end_date,
+          'Jane' AS payment_source
+        FROM jane_packages_import pkg
+        LEFT JOIN (
+          SELECT
+            patient_id,
+            ${NORMALIZE_PATIENT_SQL} AS normalized_name,
+            status_key
+          FROM patients
+        ) pn ON pn.normalized_name = lower(pkg.norm_name)
+        WHERE COALESCE(pkg.outstanding_balance, 0)::numeric > 0
+          AND NOT (
+            COALESCE(pn.status_key, '') ILIKE 'inactive%'
+            OR COALESCE(pn.status_key, '') ILIKE 'discharg%'
+          )
+      ),
+      qbo_outstanding AS (
+        SELECT
+          p.patient_id,
+          p.full_name AS patient_name,
+          'QuickBooks Recurring' AS plan_name,
+          p.status_key AS status,
+          COALESCE(pi.amount_owed, 0) AS balance,
+          NULL::date AS contract_end_date,
+          'QuickBooks' AS payment_source
+        FROM patients p
+        JOIN payment_issues pi ON p.patient_id = pi.patient_id
+        WHERE pi.resolved_at IS NULL
+          AND pi.issue_type IN ('payment_declined', 'payment_failed', 'insufficient_funds')
+          AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
+          AND NOT (
+            COALESCE(p.status_key, '') ILIKE 'inactive%'
+            OR COALESCE(p.status_key, '') ILIKE 'discharg%'
+          )
+      ),
+      combined AS (
+        SELECT * FROM jane_outstanding
+        UNION ALL
+        SELECT * FROM qbo_outstanding
       )
-      ORDER BY pkg.balance DESC NULLS LAST, pkg.patient_name
+      SELECT
+        patient_id AS "patientId",
+        patient_name AS "patientName",
+        plan_name AS "planName",
+        status,
+        balance::text AS "outstandingBalance",
+        contract_end_date::text AS "contractEndDate",
+        payment_source AS "paymentSource"
+      FROM combined
+      ORDER BY balance DESC NULLS LAST, patient_name
       LIMIT $1
     `,
     [limit]

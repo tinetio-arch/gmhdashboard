@@ -89,3 +89,4 @@ export async function getMixedPaymentPatientStats(): Promise<{
     mixedWithMultipleMemberships: parseInt(stats[0]?.mixed_multi_memberships || '0', 10)
   };
 }
+

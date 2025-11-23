@@ -53,6 +53,8 @@ type Props = {
   professionalPatients: ProfessionalPatient[];
   currentUserRole: UserRole;
   currentUserEmail: string;
+  initialStatusFilter?: string;
+  initialSearchQuery?: string;
 };
 
 type EditableCellProps = {
@@ -438,7 +440,9 @@ export default function PatientTable({
   lookups,
   professionalPatients,
   currentUserRole,
-  currentUserEmail
+  currentUserEmail,
+  initialStatusFilter,
+  initialSearchQuery
 }: Props) {
   const router = useRouter();
   const professionalMap = useMemo(() => {
@@ -455,8 +459,8 @@ export default function PatientTable({
   const [rows, setRows] = useState<EditablePatient[]>(() =>
     patients.map((row) => mapPatient(row, professionalMap.get(row.patient_id)))
   );
-  const [filterStatus, setFilterStatus] = useState<string>('all');
-  const [searchTerm, setSearchTerm] = useState('');
+  const [filterStatus, setFilterStatus] = useState<string>(initialStatusFilter || 'all');
+  const [searchTerm, setSearchTerm] = useState(initialSearchQuery || '');
   const [savingId, setSavingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [activeCell, setActiveCell] = useState<{ rowId: string; field: EditableFieldKey } | null>(null);
@@ -508,7 +512,19 @@ export default function PatientTable({
 
   const filteredRows = useMemo(() => {
     const matches = rows.filter((row) => {
-      const matchesStatus = filterStatus === 'all' || row.alertStatus?.toLowerCase() === filterStatus;
+      let matchesStatus = filterStatus === 'all';
+      if (!matchesStatus && filterStatus) {
+        const rowStatusKey = row.statusKey?.toLowerCase() || '';
+        if (filterStatus === 'hold_payment_research') {
+          matchesStatus = rowStatusKey === 'hold_payment_research';
+        } else if (filterStatus === 'hold_contract_renewal') {
+          matchesStatus = rowStatusKey === 'hold_contract_renewal';
+        } else if (filterStatus === 'inactive') {
+          matchesStatus = rowStatusKey === 'inactive' || rowStatusKey === 'discharged';
+        } else {
+          matchesStatus = rowStatusKey === filterStatus;
+        }
+      }
       const matchesSearch = !searchTerm || row.patientName.toLowerCase().includes(searchTerm.toLowerCase());
       return matchesStatus && matchesSearch;
     });

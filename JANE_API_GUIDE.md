@@ -158,3 +158,4 @@ For API issues, contact ClinicSync support with:
 - Your API key (first 8 chars)
 - Error messages from logs
 - Endpoint you're trying to access
+

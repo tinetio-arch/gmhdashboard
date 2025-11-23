@@ -47,6 +47,11 @@ export type PatientDataEntryRow = {
   membership_balance?: string | null;
   next_charge_date?: string | null;
   last_charge_date?: string | null;
+  // GoHighLevel sync fields
+  ghl_contact_id?: string | null;
+  ghl_sync_status?: string | null;
+  ghl_last_synced_at?: string | null;
+  ghl_sync_error?: string | null;
   last_controlled_dispense_at?: string | null;
   last_dea_drug?: string | null;
 };

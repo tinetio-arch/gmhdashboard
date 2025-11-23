@@ -7,13 +7,13 @@ import {
   fetchRecentlyEditedPatients,
   fetchRecentlyDispensedPatients
 } from '@/lib/metricsQueries';
-import { getMembershipStats, getOutstandingMemberships } from '@/lib/membershipStats';
+import { getMembershipStats, getJaneOutstandingMemberships, getQuickBooksOutstandingMemberships } from '@/lib/membershipStats';
 import { getTestosteroneInventoryByVendor, getPaymentFailureStats } from '@/lib/testosteroneInventory';
 // import { withBasePath } from '@/lib/basePath';
 // Server-side version of withBasePath
 function withBasePath(path: string): string {
-  const basePath = '/ops';
-  return path.startsWith('/') ? `${basePath}${path}` : `${basePath}/${path}`;
+  // No basePath needed - the app is already served at /ops via reverse proxy
+  return path;
 }
 import { requireUser, userHasRole } from '@/lib/auth';
 
@@ -30,10 +30,11 @@ export const metadata: Metadata = {
 export default async function HomePage() {
   const user = await requireUser('read');
   const showExecutiveEmbed = userHasRole(user, 'admin');
-  const [metrics, membershipStats, outstandingMemberships, recentlyEdited, recentlyDispensed, testosteroneInventory, paymentFailures] = await Promise.all([
+  const [metrics, membershipStats, janeOutstanding, qbOutstanding, recentlyEdited, recentlyDispensed, testosteroneInventory, paymentFailures] = await Promise.all([
     fetchDashboardMetrics(),
     getMembershipStats(),
-    getOutstandingMemberships(8),
+    getJaneOutstandingMemberships(8),
+    getQuickBooksOutstandingMemberships(8),
     fetchRecentlyEditedPatients(5),
     fetchRecentlyDispensedPatients(5),
     getTestosteroneInventoryByVendor().catch(err => {
@@ -462,11 +463,18 @@ export default async function HomePage() {
               </div>
             </div>
           </div>
-          {outstandingMemberships.length === 0 ? (
+          {janeOutstanding.length === 0 && qbOutstanding.length === 0 ? (
             <p style={{ color: '#16a34a', fontWeight: 600, margin: 0 }}>All balances cleared — great job.</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem' }}>
-              {outstandingMemberships.map((row) => (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+              {/* Jane Column */}
+              <div>
+                <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.95rem', color: '#1e40af' }}>Jane Patients</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem' }}>
+                  {janeOutstanding.length === 0 ? (
+                    <p style={{ color: '#64748b', fontSize: '0.85rem' }}>No outstanding Jane balances</p>
+                  ) : (
+                    janeOutstanding.map((row) => (
                 <div
                   key={`${row.patientName}-${row.planName ?? 'plan'}`}
                   style={{
@@ -506,7 +514,57 @@ export default async function HomePage() {
                     <p style={{ margin: '0.1rem 0 0', color: '#94a3b8', fontSize: '0.75rem' }}>Balance due</p>
                   </div>
                 </div>
-              ))}
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* QuickBooks Column */}
+              <div>
+                <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.95rem', color: '#ea580c' }}>QuickBooks Patients</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem' }}>
+                  {qbOutstanding.length === 0 ? (
+                    <p style={{ color: '#64748b', fontSize: '0.85rem' }}>No outstanding QuickBooks balances</p>
+                  ) : (
+                    qbOutstanding.map((row) => (
+                      <div
+                        key={`${row.patientName}-${row.planName ?? 'plan'}`}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'flex-start',
+                          paddingBottom: '0.65rem',
+                          borderBottom: '1px solid rgba(148, 163, 184, 0.15)'
+                        }}
+                      >
+                        <div>
+                          <p style={{ margin: 0, fontWeight: 600 }}>
+                            {row.patientId ? (
+                              <Link 
+                                href={withBasePath(`/patients/${row.patientId}`)} 
+                                style={{ color: '#0f172a', textDecoration: 'none' }}
+                              >
+                                {row.patientName}
+                              </Link>
+                            ) : (
+                              <span>{row.patientName}</span>
+                            )}
+                          </p>
+                          <p style={{ margin: '0.15rem 0 0', color: '#94a3b8', fontSize: '0.82rem' }}>
+                            {row.planName ?? 'Plan TBD'} · {row.status ?? 'status pending'}
+                          </p>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <p style={{ margin: 0, fontSize: '1.05rem', fontWeight: 600, color: '#b91c1c' }}>
+                            {formatCurrency(row.outstandingBalance)}
+                          </p>
+                          <p style={{ margin: '0.1rem 0 0', color: '#94a3b8', fontSize: '0.75rem' }}>Balance due</p>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </section>

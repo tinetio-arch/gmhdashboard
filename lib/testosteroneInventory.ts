@@ -103,17 +103,25 @@ export type PaymentFailureStats = {
 };
 
 export async function getPaymentFailureStats(): Promise<PaymentFailureStats> {
-  // Get Jane payment failures from clinicsync_memberships
+  // Get Jane payment failures from jane_packages_import
   const janeFailures = await query<{ count: string; total: string }>(`
+    WITH normalized_patients AS (
+      SELECT
+        patient_id,
+        lower(regexp_replace(regexp_replace(full_name, '^(mr\\.?|mrs\\.?|ms\\.?|dr\\.?|miss)\\s+', '', 'i'), '\\s+', ' ', 'g')) AS normalized_name,
+        status_key
+      FROM patients
+    )
     SELECT 
       COUNT(*) as count,
-      COALESCE(SUM(COALESCE(amount_due, balance_owing, 0)), 0) as total
-    FROM clinicsync_memberships cm
-    JOIN patients p ON cm.patient_id = p.patient_id
-    WHERE cm.is_active = true
-      AND (cm.amount_due > 0 OR cm.balance_owing > 0)
-      AND p.status_key NOT IN ('inactive', 'discharged')
-      AND (p.payment_method_key = 'jane' OR p.payment_method_key IS NULL)
+      COALESCE(SUM(pkg.outstanding_balance::numeric), 0) as total
+    FROM jane_packages_import pkg
+    LEFT JOIN normalized_patients pn ON pn.normalized_name = lower(pkg.norm_name)
+    WHERE COALESCE(pkg.outstanding_balance, 0)::numeric > 0
+      AND NOT (
+        COALESCE(pn.status_key, '') ILIKE 'inactive%'
+        OR COALESCE(pn.status_key, '') ILIKE 'discharg%'
+      )
   `);
 
   // Get QuickBooks payment failures from payment_issues

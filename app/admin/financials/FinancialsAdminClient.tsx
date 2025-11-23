@@ -68,6 +68,7 @@ export default function FinancialsAdminClient() {
   const [connected, setConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'matching'>('overview');
   const [clinicMetrics, setClinicMetrics] = useState<ClinicSyncMetrics | null>(null);
+  const [resolvingIssue, setResolvingIssue] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -156,6 +157,40 @@ export default function FinancialsAdminClient() {
       }
     } catch (error) {
       console.error('Error loading patient matches:', error);
+    }
+  };
+
+  const handleResolveIssue = async (issueId: string, patientId: string) => {
+    if (!confirm('Are you sure you want to mark this payment issue as resolved?')) {
+      return;
+    }
+
+    setResolvingIssue(issueId);
+    try {
+      const response = await fetch('/ops/api/admin/quickbooks/resolve-payment-issue', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ issueId, patientId }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        // Remove the resolved issue from the list
+        setIssues(issues.filter(issue => issue.issue_id !== issueId));
+        // Reload data to get updated metrics
+        loadData();
+        alert(result.message || 'Payment issue resolved successfully');
+      } else {
+        const error = await response.json();
+        alert(`Failed to resolve payment issue: ${error.error}`);
+      }
+    } catch (error) {
+      console.error('Error resolving payment issue:', error);
+      alert('Failed to resolve payment issue');
+    } finally {
+      setResolvingIssue(null);
     }
   };
 
@@ -530,8 +565,12 @@ export default function FinancialsAdminClient() {
                       >
                         View Patient
                       </button>
-                      <button className="text-green-600 hover:text-green-900">
-                        Mark Resolved
+                      <button 
+                        className="text-green-600 hover:text-green-900 disabled:opacity-50"
+                        onClick={() => handleResolveIssue(issue.issue_id, issue.patient_id)}
+                        disabled={resolvingIssue === issue.issue_id}
+                      >
+                        {resolvingIssue === issue.issue_id ? 'Resolving...' : 'Mark Resolved'}
                       </button>
                     </td>
                   </tr>
