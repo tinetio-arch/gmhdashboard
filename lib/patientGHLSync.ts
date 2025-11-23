@@ -148,25 +148,153 @@ async function ensureGHLTags(ghlClient: GHLClient, tagNames: string[]): Promise<
 }
 
 /**
+ * Normalize phone to E.164 format (+1XXXXXXXXXX)
+ */
+function normalizePhone(phone: string | null): string | undefined {
+  if (!phone) return undefined;
+  
+  // Remove all non-digits
+  const digits = phone.replace(/\D/g, '');
+  
+  if (digits.length === 0) return undefined;
+  if (digits.length < 10) return undefined; // Invalid
+  
+  // If 10 digits, assume US and prefix +1
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  
+  // If 11 digits starting with 1, prefix +
+  if (digits.length === 11 && digits[0] === '1') {
+    return `+${digits}`;
+  }
+  
+  // Default: assume US, take last 10 digits
+  return `+1${digits.slice(-10)}`;
+}
+
+/**
+ * Title case for names and addresses
+ */
+function toTitleCase(str: string | null): string {
+  if (!str) return '';
+  return str
+    .trim()
+    .split(/\s+/)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/**
+ * Parse full name into first and last (handle titles/suffixes)
+ */
+function parseName(fullName: string | null): { firstName: string; lastName: string } {
+  if (!fullName || !fullName.trim()) {
+    return { firstName: '', lastName: '' };
+  }
+  
+  let name = fullName.trim();
+  
+  // Remove common titles
+  const titles = ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Miss', 'Rev.', 'Prof.'];
+  for (const title of titles) {
+    const regex = new RegExp(`^${title}\\s+`, 'i');
+    name = name.replace(regex, '');
+  }
+  
+  const parts = name.split(/\s+/).filter(p => p.length > 0);
+  
+  if (parts.length === 0) return { firstName: '', lastName: '' };
+  if (parts.length === 1) return { firstName: toTitleCase(parts[0]), lastName: '' };
+  
+  return {
+    firstName: toTitleCase(parts[0]),
+    lastName: parts.slice(1).map(p => toTitleCase(p)).join(' ')
+  };
+}
+
+/**
+ * Clean and validate address (detect swapped state/ZIP)
+ */
+function cleanAddress(patient: PatientDataEntryRow): {
+  address1?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country: string;
+} {
+  let state = patient.state?.trim().toUpperCase() || '';
+  let postalCode = patient.postal_code?.trim() || '';
+  
+  // Detect swapped state/ZIP (state has 5 digits)
+  if (state.length === 5 && /^\d{5}$/.test(state)) {
+    const temp = state;
+    state = postalCode.length === 2 ? postalCode.toUpperCase() : 'AZ';
+    postalCode = temp;
+  }
+  
+  // Validate state (must be 2 letters)
+  if (state.length !== 2) {
+    state = 'AZ'; // Default to Arizona
+  }
+  
+  // Clean postal code (5 digits only)
+  postalCode = postalCode.replace(/\D/g, '').slice(0, 5);
+  
+  return {
+    address1: toTitleCase(patient.address_line1),
+    city: toTitleCase(patient.city),
+    state: state,
+    postalCode: postalCode || undefined,
+    country: 'US' // Always US
+  };
+}
+
+/**
  * Format patient data for GHL contact
+ * GMH DATA ALWAYS OVERWRITES GHL - NO MERGE!
  */
 function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> {
+  const { firstName, lastName } = parseName(patient.patient_name);
+  const addressData = cleanAddress(patient);
+  
   const contact: Partial<GHLContact> = {
-    firstName: patient.patient_name?.split(' ')[0] || '',
-    lastName: patient.patient_name?.split(' ').slice(1).join(' ') || '',
-    name: patient.patient_name || '',
+    firstName: firstName || undefined,
+    lastName: lastName || undefined,
+    name: patient.patient_name || undefined,
     email: patient.email || patient.qbo_customer_email || undefined,
-    phone: patient.phone_number || undefined,
-    address1: patient.address_line1 || undefined,
-    city: patient.city || undefined,
-    state: patient.state || undefined,
-    postalCode: patient.postal_code || undefined,
+    phone: normalizePhone(patient.phone_number),
+    ...addressData,
     source: 'GMH Dashboard',
     customFields: []
   };
 
-  // Add custom fields
+  // Add custom fields - USING YOUR EXISTING GHL FIELD IDs
   if (contact.customFields) {
+    // Lab dates - PRIORITY (Your existing fields)
+    if (patient.last_lab !== undefined) {
+      contact.customFields.push({
+        key: 'last_lab_date', // Date of Last Lab Test
+        value: patient.last_lab || '' // GMH value ALWAYS (even if empty)
+      });
+    }
+    if (patient.next_lab !== undefined) {
+      contact.customFields.push({
+        key: 'next_lab_date', // Date of Next Lab Test  
+        value: patient.next_lab || '' // GMH value ALWAYS (even if empty)
+      });
+    }
+    
+    // Method of Payment (Your existing field)
+    if (patient.method_of_payment !== undefined) {
+      contact.customFields.push({
+        key: 'method_of_payment', // Method of Payment
+        value: patient.method_of_payment || ''
+      });
+    }
+    
+    // TODO: Add more custom fields when we create them in GHL and get their IDs
+    // For now, keeping old generic approach for fields without IDs yet
     if (patient.status_key) {
       contact.customFields.push({
         key: 'patient_status',
@@ -189,18 +317,6 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
       contact.customFields.push({
         key: 'service_start_date',
         value: patient.service_start_date
-      });
-    }
-    if (patient.last_lab) {
-      contact.customFields.push({
-        key: 'last_lab_date',
-        value: patient.last_lab
-      });
-    }
-    if (patient.next_lab) {
-      contact.customFields.push({
-        key: 'next_lab_date',
-        value: patient.next_lab
       });
     }
   }
@@ -281,7 +397,16 @@ export async function syncPatientToGHL(
     const tagNames = await calculatePatientTags(patient);
     const tagIds = await ensureGHLTags(ghlClient, tagNames);
 
-    if (tagIds.length > 0) {
+    // CRITICAL: If patient is inactive, REMOVE ALL TAGS
+    if (patient.status_key === 'inactive') {
+      // Get all current tags on contact
+      const existingTags = ghlContact.tags || [];
+      if (existingTags.length > 0) {
+        console.log(`Removing all tags from inactive patient: ${patient.patient_name}`);
+        await ghlClient.removeTagsFromContact(ghlContact.id, existingTags);
+      }
+    } else if (tagIds.length > 0) {
+      // Active patient - manage tags normally
       // Get existing tags to avoid removing tags from other systems
       const existingTags = ghlContact.tags || [];
       
