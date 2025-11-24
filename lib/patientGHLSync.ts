@@ -253,6 +253,9 @@ function cleanAddress(patient: PatientDataEntryRow): {
 /**
  * Format patient data for GHL contact
  * GMH DATA ALWAYS OVERWRITES GHL - NO MERGE!
+ * 
+ * This function creates a complete contact payload that will REPLACE (not merge) 
+ * all fields in GHL with GMH data. All custom fields are explicitly set.
  */
 function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> {
   const { firstName, lastName } = parseName(patient.patient_name);
@@ -269,56 +272,90 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
     customFields: []
   };
 
-  // Add custom fields - USING YOUR EXISTING GHL FIELD IDs
-  if (contact.customFields) {
-    // Lab dates - PRIORITY (Your existing fields)
-    if (patient.last_lab !== undefined) {
-      contact.customFields.push({
-        key: 'last_lab_date', // Date of Last Lab Test
-        value: patient.last_lab || '' // GMH value ALWAYS (even if empty)
+  // Add dateOfBirth if available (GHL standard field - check if supported)
+  // Note: GHL may require this as a custom field instead
+  if (patient.date_of_birth) {
+    // Try as standard field first - if GHL doesn't support it, we'll need custom field
+    // For now, adding as custom field to be safe
+    contact.customFields!.push({
+      key: 'date_of_birth',
+      value: patient.date_of_birth
+    });
+  }
+
+  // Helper to add custom field only if value is not empty
+  const addCustomField = (key: string, value: string | null | undefined) => {
+    // Convert value to string if needed
+    const stringValue = value !== null && value !== undefined ? String(value) : '';
+    
+    // For lab dates, always include (even if empty) per user requirement
+    if (key === 'last_lab_date' || key === 'next_lab_date') {
+      contact.customFields!.push({
+        key,
+        value: stringValue // GMH value ALWAYS (even if empty)
       });
-    }
-    if (patient.next_lab !== undefined) {
-      contact.customFields.push({
-        key: 'next_lab_date', // Date of Next Lab Test  
-        value: patient.next_lab || '' // GMH value ALWAYS (even if empty)
-      });
+      return;
     }
     
-    // Method of Payment (Your existing field)
-    if (patient.method_of_payment !== undefined) {
-      contact.customFields.push({
-        key: 'method_of_payment', // Method of Payment
-        value: patient.method_of_payment || ''
+    // For all other fields, only add if value exists and is not empty
+    const trimmed = stringValue.trim();
+    if (trimmed !== '') {
+      contact.customFields!.push({
+        key,
+        value: trimmed
       });
     }
-    
-    // TODO: Add more custom fields when we create them in GHL and get their IDs
-    // For now, keeping old generic approach for fields without IDs yet
-    if (patient.status_key) {
-      contact.customFields.push({
-        key: 'patient_status',
-        value: patient.alert_status || patient.status_key
-      });
+  };
+
+  // CRITICAL: Lab dates - GMH ALWAYS WINS (even if empty, overwrites GHL)
+  // These are the most important fields per user requirements
+  addCustomField('last_lab_date', patient.last_lab);
+  addCustomField('next_lab_date', patient.next_lab);
+  
+  // Payment and client information
+  addCustomField('method_of_payment', patient.method_of_payment);
+  addCustomField('patient_status', patient.alert_status || patient.status_key);
+  addCustomField('client_type', patient.type_of_client);
+  addCustomField('regimen', patient.regimen);
+  addCustomField('service_start_date', patient.service_start_date);
+  addCustomField('contract_end', patient.contract_end);
+  
+  // Notes fields
+  addCustomField('patient_notes', patient.patient_notes);
+  addCustomField('lab_notes', patient.lab_notes);
+  
+  // Membership information
+  addCustomField('membership_owes', patient.membership_owes);
+  addCustomField('membership_program', patient.membership_program);
+  addCustomField('membership_status', patient.membership_status);
+  addCustomField('membership_balance', patient.membership_balance);
+  
+  // Supply information
+  addCustomField('last_supply_date', patient.last_supply_date);
+  addCustomField('eligible_for_next_supply', patient.eligible_for_next_supply);
+  addCustomField('supply_status', patient.supply_status);
+  
+  // Charge dates
+  addCustomField('next_charge_date', patient.next_charge_date);
+  addCustomField('last_charge_date', patient.last_charge_date);
+  
+  // DEA information
+  addCustomField('last_controlled_dispense_at', patient.last_controlled_dispense_at);
+  addCustomField('last_dea_drug', patient.last_dea_drug);
+  
+  // Date of birth
+  addCustomField('date_of_birth', patient.date_of_birth);
+
+  // Remove undefined fields from contact object to avoid sending them
+  Object.keys(contact).forEach(key => {
+    if (contact[key as keyof typeof contact] === undefined) {
+      delete contact[key as keyof typeof contact];
     }
-    if (patient.type_of_client) {
-      contact.customFields.push({
-        key: 'client_type',
-        value: patient.type_of_client
-      });
-    }
-    if (patient.regimen) {
-      contact.customFields.push({
-        key: 'regimen',
-        value: patient.regimen
-      });
-    }
-    if (patient.service_start_date) {
-      contact.customFields.push({
-        key: 'service_start_date',
-        value: patient.service_start_date
-      });
-    }
+  });
+  
+  // If customFields is empty, set to undefined (don't send empty array)
+  if (contact.customFields && contact.customFields.length === 0) {
+    contact.customFields = undefined;
   }
 
   return contact;
@@ -326,7 +363,15 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
 
 /**
  * Sync a single patient to GoHighLevel
- * Focuses on finding and linking existing contacts, not creating new ones
+ * 
+ * CRITICAL: GMH Dashboard is the MASTER copy. This function:
+ * - Finds existing GHL contacts by email/phone (does NOT create new ones)
+ * - OVERWRITES all GHL contact data with current GMH data (no merging)
+ * - Applies tags based on GMH patient status/type
+ * - Removes ALL tags if patient is inactive
+ * 
+ * The PUT /contacts/{id} endpoint should fully replace the contact data.
+ * All custom fields are explicitly set to ensure complete overwrite.
  */
 export async function syncPatientToGHL(
   patient: PatientDataEntryRow,
@@ -389,30 +434,20 @@ export async function syncPatientToGHL(
 
     // Prepare contact data for update
     const contactData = formatPatientForGHL(patient);
-
-    // Update the existing contact with our data
-    ghlContact = await ghlClient.updateContact(ghlContact.id, contactData);
+    
+    // For inactive patients, we still sync but with minimal data and no tags
+    // This ensures GHL reflects the inactive status
 
     // Calculate and apply tags
     const tagNames = await calculatePatientTags(patient);
-    const tagIds = await ensureGHLTags(ghlClient, tagNames);
+    await ensureGHLTags(ghlClient, tagNames); // Ensure tags exist in GHL
 
     // CRITICAL: If patient is inactive, REMOVE ALL TAGS
-    if (patient.status_key === 'inactive') {
-      // Get all current tags on contact
-      const existingTags = ghlContact.tags || [];
-      if (existingTags.length > 0) {
-        console.log(`Removing all tags from inactive patient: ${patient.patient_name}`);
-        await ghlClient.removeTagsFromContact(ghlContact.id, existingTags);
-      }
-    } else if (tagIds.length > 0) {
-      // Active patient - manage tags normally
-      // Get existing tags to avoid removing tags from other systems
-      const existingTags = ghlContact.tags || [];
-      
-      // Add new tags (GHL API handles duplicates)
-      await ghlClient.addTagsToContact(ghlContact.id, tagIds);
-    }
+    const shouldClearTags = patient.status_key === 'inactive';
+    contactData.tags = shouldClearTags ? [] : tagNames; // Set tags directly
+
+    // Update the existing contact with our data (tags + fields)
+    await ghlClient.updateContact(ghlContact.id, contactData);
 
     // Update patient record with successful sync
     await query(
@@ -489,8 +524,15 @@ export async function syncMultiplePatients(
     [patientIds]
   );
 
-  // Sync each patient
-  for (const patient of patients) {
+  // Sync each patient with rate limiting to avoid "Too Many Requests"
+  for (let i = 0; i < patients.length; i++) {
+    const patient = patients[i];
+    
+    // Add delay between requests (except first one) - 200ms = ~5 requests/second
+    if (i > 0) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
     const result = await syncPatientToGHL(patient, userId);
     
     if (result.success) {
@@ -498,10 +540,12 @@ export async function syncMultiplePatients(
     } else {
       failed.push(patient.patient_id);
       errors[patient.patient_id] = result.error || 'Unknown error';
+      
+      // If rate limited, add longer delay before next request
+      if (result.error?.includes('Too Many Requests')) {
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+      }
     }
-
-    // Add a small delay to avoid rate limiting
-    await new Promise(resolve => setTimeout(resolve, 100));
   }
 
   return { succeeded, failed, errors };

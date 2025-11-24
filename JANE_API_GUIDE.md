@@ -159,3 +159,4 @@ For API issues, contact ClinicSync support with:
 - Error messages from logs
 - Endpoint you're trying to access
 
+

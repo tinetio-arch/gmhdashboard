@@ -14,6 +14,7 @@ export type GHLContact = {
   firstName?: string;
   lastName?: string;
   name?: string;
+  locationId?: string;
   email?: string;
   phone?: string;
   address1?: string;
@@ -52,6 +53,38 @@ export type GHLOpportunity = {
   updatedAt?: string;
 };
 
+type GHLContactFilter = {
+  field: string;
+  operator:
+    | 'eq'
+    | 'not_eq'
+    | 'contains'
+    | 'not_contains'
+    | 'wildcard'
+    | 'not_wildcard'
+    | 'match'
+    | 'not_match'
+    | 'exists'
+    | 'not_exists'
+    | 'range'
+    | 'contains_set'
+    | 'contains_not_set'
+    | 'gt'
+    | 'gte'
+    | 'lt'
+    | 'lte'
+    | 'nested'
+    | 'nested_not'
+    | 'has_child'
+    | 'has_parent';
+  value?: unknown;
+};
+
+type GHLContactSearchResponse = {
+  contacts?: GHLContact[];
+  total?: number;
+};
+
 export class GHLClient {
   private config: GHLConfig;
   private baseUrl: string;
@@ -59,6 +92,31 @@ export class GHLClient {
   constructor(config: GHLConfig) {
     this.config = config;
     this.baseUrl = config.baseUrl || 'https://services.leadconnectorhq.com';
+  }
+
+  getLocationId(): string | undefined {
+    return this.config.locationId;
+  }
+
+  private requireLocationId(action: string): string {
+    if (!this.config.locationId) {
+      throw new Error(`GHL location ID is required to ${action}`);
+    }
+    return this.config.locationId;
+  }
+
+  private withLocation(path: string): string {
+    if (!this.config.locationId) {
+      return path;
+    }
+    const separator = path.includes('?') ? '&' : '?';
+    return `${path}${separator}locationId=${encodeURIComponent(this.config.locationId)}`;
+  }
+
+  private withLocationPath(path: string): string {
+    const locationId = this.requireLocationId('call this endpoint');
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    return `/locations/${locationId}${normalizedPath}`;
   }
 
   private async request<T>(
@@ -77,10 +135,6 @@ export class GHLClient {
       'Version': '2021-07-28',
     };
 
-    if (this.config.locationId) {
-      headers['Location-Id'] = this.config.locationId;
-    }
-
     const response = await fetch(url, {
       method,
       headers,
@@ -90,15 +144,28 @@ export class GHLClient {
     if (!response.ok) {
       const errorText = await response.text();
       let errorMessage = `GHL API error: ${response.status} ${response.statusText}`;
+      let errorDetails = '';
       
       try {
         const errorJson = JSON.parse(errorText);
-        errorMessage = errorJson.message || errorMessage;
+        errorMessage = errorJson.message || errorJson.error || errorMessage;
+        // Include validation errors if present
+        if (errorJson.errors) {
+          errorDetails = ` Errors: ${JSON.stringify(errorJson.errors)}`;
+        }
+        if (errorJson.validation) {
+          errorDetails = ` Validation: ${JSON.stringify(errorJson.validation)}`;
+        }
       } catch {
         errorMessage += ` - ${errorText}`;
       }
-      
-      throw new Error(errorMessage);
+
+      const fullError = `${errorMessage}${errorDetails}`;
+      console.error(`[GHL] ${method} ${endpoint} failed: ${fullError}`);
+      if (body) {
+        console.error(`[GHL] Request payload:`, JSON.stringify(body, null, 2));
+      }
+      throw new Error(fullError);
     }
 
     return response.json();
@@ -108,19 +175,22 @@ export class GHLClient {
    * Get a contact by ID
    */
   async getContact(contactId: string): Promise<GHLContact> {
-    return this.request<GHLContact>('GET', `/contacts/${contactId}`);
+    return this.request<GHLContact>('GET', this.withLocation(`/contacts/${contactId}`));
   }
 
   /**
    * Search for contacts by email
    */
   async findContactByEmail(email: string): Promise<GHLContact | null> {
+    if (!email) {
+      return null;
+    }
+
     try {
-      const response = await this.request<{ contacts: GHLContact[] }>(
-        'GET',
-        `/contacts/?email=${encodeURIComponent(email)}`
-      );
-      return response.contacts?.[0] || null;
+      const contacts = await this.searchContacts([
+        { field: 'email', operator: 'eq', value: email },
+      ]);
+      return contacts[0] || null;
     } catch (error) {
       if (error instanceof Error && error.message.includes('404')) {
         return null;
@@ -133,14 +203,21 @@ export class GHLClient {
    * Search for contacts by phone
    */
   async findContactByPhone(phone: string): Promise<GHLContact | null> {
+    if (!phone) {
+      return null;
+    }
+
     try {
       // Normalize phone number (remove non-digits)
       const normalizedPhone = phone.replace(/\D/g, '');
-      const response = await this.request<{ contacts: GHLContact[] }>(
-        'GET',
-        `/contacts/?phone=${encodeURIComponent(normalizedPhone)}`
-      );
-      return response.contacts?.[0] || null;
+      if (!normalizedPhone) {
+        return null;
+      }
+
+      const contacts = await this.searchContacts([
+        { field: 'phone', operator: 'eq', value: normalizedPhone },
+      ]);
+      return contacts[0] || null;
     } catch (error) {
       if (error instanceof Error && error.message.includes('404')) {
         return null;
@@ -153,35 +230,24 @@ export class GHLClient {
    * Create a new contact
    */
   async createContact(contact: Partial<GHLContact>): Promise<GHLContact> {
-    return this.request<GHLContact>('POST', '/contacts/', contact);
+    return this.request<GHLContact>('POST', this.withLocation('/contacts/'), contact);
   }
 
   /**
    * Update an existing contact
    */
   async updateContact(contactId: string, updates: Partial<GHLContact>): Promise<GHLContact> {
-    return this.request<GHLContact>('PATCH', `/contacts/${contactId}`, updates);
-  }
-
-  /**
-   * Add tags to a contact
-   */
-  async addTagsToContact(contactId: string, tagIds: string[]): Promise<void> {
-    await this.request('PUT', `/contacts/${contactId}/tags`, { tagIds });
-  }
-
-  /**
-   * Remove tags from a contact
-   */
-  async removeTagsFromContact(contactId: string, tagIds: string[]): Promise<void> {
-    await this.request('DELETE', `/contacts/${contactId}/tags`, { tagIds });
+    return this.request<GHLContact>('PUT', `/contacts/${contactId}`, updates);
   }
 
   /**
    * Get all tags
    */
   async getTags(): Promise<GHLTag[]> {
-    const response = await this.request<{ tags: GHLTag[] }>('GET', '/tags/');
+    const response = await this.request<{ tags: GHLTag[] }>(
+      'GET',
+      this.withLocationPath('/tags')
+    );
     return response.tags || [];
   }
 
@@ -197,7 +263,11 @@ export class GHLClient {
     }
 
     // Create new tag
-    const newTag = await this.request<GHLTag>('POST', '/tags/', { name: tagName });
+    const newTag = await this.request<GHLTag>(
+      'POST',
+      this.withLocationPath('/tags'),
+      { name: tagName }
+    );
     return newTag;
   }
 
@@ -230,6 +300,18 @@ export class GHLClient {
     }
 
     return this.updateContact(contactId, { customFields });
+  }
+
+  private async searchContacts(filters: GHLContactFilter[], pageLimit = 1, page = 1): Promise<GHLContact[]> {
+    const locationId = this.requireLocationId('search contacts');
+    const response = await this.request<GHLContactSearchResponse>('POST', '/contacts/search', {
+      locationId,
+      page,
+      pageLimit,
+      filters,
+    });
+
+    return response.contacts || [];
   }
 }
 

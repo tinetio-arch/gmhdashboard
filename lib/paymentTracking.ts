@@ -503,7 +503,15 @@ export async function syncPatientsToGHL(patientIds?: string[]): Promise<PaymentS
           // Add payment issue tag
           if (paymentIssueTag) {
             try {
-              await ghlClient.addTagsToContact(ghlContactId, [paymentIssueTag.id]);
+              // Get existing contact to preserve tags
+              const existingContact = await ghlClient.getContact(ghlContactId);
+              const existingTagNames = (existingContact.tags || []).map((t: any) => typeof t === 'string' ? t : t.name).filter(Boolean);
+              
+              // Add payment issue tag if not already present
+              if (!existingTagNames.includes(paymentIssueTag.name)) {
+                existingTagNames.push(paymentIssueTag.name);
+                await ghlClient.updateContact(ghlContactId, { tags: existingTagNames });
+              }
             } catch (error) {
               console.warn(`Could not add tag to contact ${ghlContactId}:`, error);
             }

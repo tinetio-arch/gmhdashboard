@@ -7,6 +7,7 @@ type ClinicSyncPayload = Record<string, any>;
 type ClinicSyncUpsertOptions = {
   source?: 'webhook' | 'sync' | string;
   skipWebhookLog?: boolean;
+  skipMembershipFilter?: boolean; // Allow bypassing membership filter for manual syncs
 };
 
 type SanitizedMembership = {
@@ -64,8 +65,15 @@ export async function upsertClinicSyncPatient(
      ))
   );
 
-  // If no membership data detected, still process but log it
+  // If no membership data detected, check if we should skip processing
   if (!hasMembership) {
+    // For webhook sources, we can optionally skip patients without membership data
+    if (options?.source === 'webhook' && !options?.skipMembershipFilter) {
+      console.log(`[ClinicSync] Skipping patient ${sanitized.clinicsyncPatientId} (${sanitized.fullName}) - no membership data in webhook payload`);
+      return { patientId: null, matchMethod: undefined };
+    }
+    
+    // For other sources (manual sync, etc.), still process but log it
     console.log(`[ClinicSync] Patient ${sanitized.clinicsyncPatientId} (${sanitized.fullName}) has no membership data in webhook payload`);
   }
 

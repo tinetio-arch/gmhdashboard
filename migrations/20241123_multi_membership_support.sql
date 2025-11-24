@@ -72,3 +72,4 @@ $$ LANGUAGE plpgsql;
 -- Run the function to update existing patients
 SELECT update_mixed_payment_patients();
 
+

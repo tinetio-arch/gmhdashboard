@@ -12,3 +12,4 @@ export default async function FinancialsAdminPage() {
   return <FinancialsAdminClient />;
 }
 
+

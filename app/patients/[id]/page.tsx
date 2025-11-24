@@ -6,6 +6,7 @@ import { fetchDispensesForPatient } from '@/lib/inventoryQueries';
 import { fetchPatientFinancialData } from '@/lib/patientFinancials';
 import PatientDetailClient from './PatientDetailClient';
 import ClinicSyncMembershipsClient from './ClinicSyncMembershipsClient';
+import GHLSyncStatus from './GHLSyncStatus';
 
 export const dynamic = 'force-dynamic';
 
@@ -129,6 +130,8 @@ export default async function PatientDetailPage({ params }: PageProps) {
           </p>
         </div>
       </div>
+
+      <GHLSyncStatus patientId={params.id} />
 
       <div
         style={{
