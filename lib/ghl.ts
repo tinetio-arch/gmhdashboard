@@ -179,7 +179,7 @@ export class GHLClient {
   }
 
   /**
-   * Search for contacts by email
+   * Search for contacts by email (case-insensitive)
    */
   async findContactByEmail(email: string): Promise<GHLContact | null> {
     if (!email) {
@@ -187,10 +187,115 @@ export class GHLClient {
     }
 
     try {
-      const contacts = await this.searchContacts([
+      // Try exact match first
+      let contacts = await this.searchContacts([
         { field: 'email', operator: 'eq', value: email },
       ]);
-      return contacts[0] || null;
+      
+      // If no exact match, try case-insensitive search
+      if (contacts.length === 0) {
+        contacts = await this.searchContacts([
+          { field: 'email', operator: 'contains', value: email.toLowerCase() },
+        ]);
+      }
+      
+      if (contacts.length === 0) {
+        return null;
+      }
+      
+      // Find the best match (exact email match preferred)
+      let contact = contacts.find(c => {
+        const cEmail = (c.email || '').toLowerCase();
+        return cEmail === email.toLowerCase();
+      }) || contacts[0];
+      
+      // If contact is still wrapped in a 'contact' property, unwrap it
+      if (contact && (contact as any).contact && !contact.id) {
+        contact = (contact as any).contact;
+      }
+      
+      // Log the contact structure for debugging
+      console.log(`[GHL] Found contact by email ${email}:`, JSON.stringify(contact, null, 2));
+      
+      // Extract ID from multiple possible locations
+      const contactId = contact.id || 
+                       (contact as any).contactId || 
+                       (contact as any)._id || 
+                       (contact as any).contact_id;
+      
+      if (contactId && !contact.id) {
+        // Set the id field if we found it elsewhere
+        contact.id = contactId;
+      }
+      
+      if (!contact.id) {
+        console.error(`[GHL] Contact found but missing ID field. Contact structure:`, JSON.stringify(contact, null, 2));
+      }
+      
+      return contact;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('404')) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Search for contacts by name (first and last name)
+   */
+  async findContactByName(firstName: string, lastName: string): Promise<GHLContact | null> {
+    if (!firstName && !lastName) {
+      return null;
+    }
+
+    try {
+      const filters: GHLContactFilter[] = [];
+      
+      if (lastName) {
+        filters.push({ field: 'lastName', operator: 'eq', value: lastName });
+      }
+      if (firstName) {
+        filters.push({ field: 'firstName', operator: 'eq', value: firstName });
+      }
+      
+      if (filters.length === 0) {
+        return null;
+      }
+
+      const contacts = await this.searchContacts(filters);
+      
+      if (contacts.length === 0) {
+        return null;
+      }
+      
+      // Find the best match (both first and last name match preferred)
+      let contact = contacts.find(c => {
+        const cFirst = (c.firstName || '').toLowerCase().trim();
+        const cLast = (c.lastName || '').toLowerCase().trim();
+        const matchFirst = !firstName || cFirst === firstName.toLowerCase().trim();
+        const matchLast = !lastName || cLast === lastName.toLowerCase().trim();
+        return matchFirst && matchLast;
+      }) || contacts[0];
+      
+      // If contact is still wrapped in a 'contact' property, unwrap it
+      if (contact && (contact as any).contact && !contact.id) {
+        contact = (contact as any).contact;
+      }
+      
+      console.log(`[GHL] Found contact by name ${firstName} ${lastName}:`, JSON.stringify(contact, null, 2));
+      
+      // Extract ID from multiple possible locations
+      const contactId = contact.id || 
+                       (contact as any).contactId || 
+                       (contact as any)._id || 
+                       (contact as any).contact_id;
+      
+      if (contactId && !contact.id) {
+        contact.id = contactId;
+      }
+      
+      return contact;
     } catch (error) {
       if (error instanceof Error && error.message.includes('404')) {
         return null;
@@ -217,7 +322,37 @@ export class GHLClient {
       const contacts = await this.searchContacts([
         { field: 'phone', operator: 'eq', value: normalizedPhone },
       ]);
-      return contacts[0] || null;
+      
+      if (contacts.length === 0) {
+        return null;
+      }
+      
+      let contact = contacts[0];
+      
+      // If contact is still wrapped in a 'contact' property, unwrap it
+      if (contact && (contact as any).contact && !contact.id) {
+        contact = (contact as any).contact;
+      }
+      
+      // Log the contact structure for debugging
+      console.log(`[GHL] Found contact by phone ${phone}:`, JSON.stringify(contact, null, 2));
+      
+      // Extract ID from multiple possible locations
+      const contactId = contact.id || 
+                       (contact as any).contactId || 
+                       (contact as any)._id || 
+                       (contact as any).contact_id;
+      
+      if (contactId && !contact.id) {
+        // Set the id field if we found it elsewhere
+        contact.id = contactId;
+      }
+      
+      if (!contact.id) {
+        console.error(`[GHL] Contact found but missing ID field. Contact structure:`, JSON.stringify(contact, null, 2));
+      }
+      
+      return contact;
     } catch (error) {
       if (error instanceof Error && error.message.includes('404')) {
         return null;
@@ -304,14 +439,52 @@ export class GHLClient {
 
   private async searchContacts(filters: GHLContactFilter[], pageLimit = 1, page = 1): Promise<GHLContact[]> {
     const locationId = this.requireLocationId('search contacts');
-    const response = await this.request<GHLContactSearchResponse>('POST', '/contacts/search', {
+    const response = await this.request<any>('POST', '/contacts/search', {
       locationId,
       page,
       pageLimit,
       filters,
     });
 
-    return response.contacts || [];
+    // GHL API may return contacts in different formats:
+    // 1. { contacts: [...] } - array of contacts
+    // 2. { contact: {...} } - single contact object (most common for search)
+    // 3. Array directly
+    // 4. Array of objects with nested { contact: {...} } structure
+    
+    let contacts: any[] = [];
+    
+    // First, check if response itself is wrapped in 'contact' property (most common case)
+    if (response.contact && !Array.isArray(response.contact)) {
+      // Single contact wrapped in 'contact' property
+      contacts = [response.contact];
+    } else if (Array.isArray(response)) {
+      contacts = response;
+    } else if (response.contacts && Array.isArray(response.contacts)) {
+      contacts = response.contacts;
+    } else if (response.id) {
+      // Single contact at root
+      contacts = [response];
+    } else {
+      console.error('[GHL] Unexpected search response structure:', JSON.stringify(response, null, 2));
+      return [];
+    }
+    
+    // Unwrap nested contact structures: if array items have a 'contact' property, extract it
+    const unwrappedContacts = contacts.map((item) => {
+      // If the item itself is a contact (has id), return it
+      if (item && (item.id || item.contactId)) {
+        return item;
+      }
+      // If the item has a nested 'contact' property, extract it
+      if (item && item.contact && (item.contact.id || item.contact.contactId)) {
+        return item.contact;
+      }
+      // Otherwise return as-is
+      return item;
+    }).filter(item => item && (item.id || item.contactId)); // Filter out invalid contacts
+    
+    return unwrappedContacts;
   }
 }
 

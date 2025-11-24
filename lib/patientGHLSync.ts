@@ -406,22 +406,60 @@ export async function syncPatientToGHL(
       }
     }
 
-    // If no existing contact found by ID, try to find by email or phone
-    if (!ghlContact) {
-      if (patient.email || patient.qbo_customer_email) {
+    // STEP 1: Try to find contact by email
+    if (!ghlContact && (patient.email || patient.qbo_customer_email)) {
+      console.log(`[GHL Sync] Step 1: Searching for contact by email: ${patient.email || patient.qbo_customer_email}`);
+      try {
         ghlContact = await ghlClient.findContactByEmail(
           patient.email || patient.qbo_customer_email || ''
         );
+        if (ghlContact) {
+          console.log(`[GHL Sync] Step 1 SUCCESS: Found contact by email`);
+        } else {
+          console.log(`[GHL Sync] Step 1: No contact found by email`);
+        }
+      } catch (error) {
+        console.error(`[GHL Sync] Step 1 ERROR: Failed to search by email:`, error);
       }
-      
-      if (!ghlContact && patient.phone_number) {
+    }
+    
+    // STEP 2: If not found by email, try to find by phone
+    if (!ghlContact && patient.phone_number) {
+      console.log(`[GHL Sync] Step 2: Searching for contact by phone: ${patient.phone_number}`);
+      try {
         ghlContact = await ghlClient.findContactByPhone(patient.phone_number);
+        if (ghlContact) {
+          console.log(`[GHL Sync] Step 2 SUCCESS: Found contact by phone`);
+        } else {
+          console.log(`[GHL Sync] Step 2: No contact found by phone`);
+        }
+      } catch (error) {
+        console.error(`[GHL Sync] Step 2 ERROR: Failed to search by phone:`, error);
       }
     }
 
-    // If still no contact found, return error (we only link existing contacts)
+    // STEP 3: If still no contact found, try searching by name as fallback
     if (!ghlContact) {
-      const errorMsg = `Contact not found in GHL. Email: ${patient.email || patient.qbo_customer_email || 'none'}, Phone: ${patient.phone_number || 'none'}`;
+      const { firstName, lastName } = parseName(patient.patient_name);
+      if (firstName || lastName) {
+        console.log(`[GHL Sync] Step 3: Trying name-based search: ${firstName} ${lastName}`);
+        try {
+          ghlContact = await ghlClient.findContactByName(firstName, lastName);
+          if (ghlContact) {
+            console.log(`[GHL Sync] Step 3 SUCCESS: Found contact by name`);
+          } else {
+            console.log(`[GHL Sync] Step 3: No contact found by name`);
+          }
+        } catch (error) {
+          console.error(`[GHL Sync] Step 3 ERROR: Failed to search by name:`, error);
+        }
+      }
+    }
+
+    // STEP 4: If still no contact found, return error (we only link existing contacts)
+    if (!ghlContact) {
+      const errorMsg = `Contact not found in GHL. Email: ${patient.email || patient.qbo_customer_email || 'none'}, Phone: ${patient.phone_number || 'none'}, Name: ${patient.patient_name || 'none'}`;
+      console.log(`[GHL Sync] Step 4: Contact not found - ${errorMsg}`);
       await query(
         `UPDATE patients 
          SET ghl_sync_status = 'error',
@@ -431,6 +469,39 @@ export async function syncPatientToGHL(
       );
       return { success: false, error: errorMsg };
     }
+
+    // STEP 5: Extract contact ID from multiple possible fields
+    // First, check if contact is still wrapped in a 'contact' property
+    let actualContact = ghlContact;
+    if ((ghlContact as any).contact && !ghlContact.id) {
+      actualContact = (ghlContact as any).contact;
+      console.log(`[GHL Sync] Step 4a: Unwrapped contact from nested structure`);
+    }
+    
+    console.log(`[GHL Sync] Step 4: Extracting contact ID from:`, JSON.stringify(actualContact, null, 2));
+    
+    // Try multiple possible ID fields
+    const contactId = 
+      actualContact.id || 
+      (actualContact as any).contactId || 
+      (actualContact as any)._id || 
+      (actualContact as any).contact_id;
+    
+    // STEP 6: Validate that we have a contact ID
+    if (!contactId) {
+      const errorMsg = `Contact found but missing ID. Email: ${patient.email || patient.qbo_customer_email || 'none'}, Phone: ${patient.phone_number || 'none'}`;
+      console.error('[GHL Sync] Step 5 ERROR: Contact object missing ID. Full contact:', JSON.stringify(ghlContact, null, 2));
+      await query(
+        `UPDATE patients 
+         SET ghl_sync_status = 'error',
+             ghl_sync_error = $1
+         WHERE patient_id = $2`,
+        [errorMsg, patient.patient_id]
+      );
+      return { success: false, error: errorMsg };
+    }
+    
+    console.log(`[GHL Sync] Step 5 SUCCESS: Extracted contact ID: ${contactId}`);
 
     // Prepare contact data for update
     const contactData = formatPatientForGHL(patient);
@@ -447,7 +518,7 @@ export async function syncPatientToGHL(
     contactData.tags = shouldClearTags ? [] : tagNames; // Set tags directly
 
     // Update the existing contact with our data (tags + fields)
-    await ghlClient.updateContact(ghlContact.id, contactData);
+    await ghlClient.updateContact(contactId, contactData);
 
     // Update patient record with successful sync
     await query(
@@ -458,7 +529,7 @@ export async function syncPatientToGHL(
            ghl_sync_error = NULL,
            ghl_tags = $2
        WHERE patient_id = $3`,
-      [ghlContact.id, JSON.stringify(tagNames), patient.patient_id]
+      [contactId, JSON.stringify(tagNames), patient.patient_id]
     );
 
     // Log sync history
@@ -469,17 +540,52 @@ export async function syncPatientToGHL(
       [
         patient.patient_id,
         'update',
-        ghlContact.id,
+        contactId,
         JSON.stringify({ contact: contactData, tags: tagNames }),
-        JSON.stringify({ success: true, contactId: ghlContact.id }),
+        JSON.stringify({ success: true, contactId: contactId }),
         userId || null
       ]
     );
 
-    return { success: true, ghlContactId: ghlContact.id };
+    return { success: true, ghlContactId: contactId };
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    
+    // Handle "duplicated contacts" error - this means the contact already exists in GHL
+    if (errorMessage.includes('duplicated contacts') || errorMessage.includes('duplicate')) {
+      // Try to find the existing contact and link to it
+      try {
+        let existingContact: GHLContact | null = null;
+        if (patient.email || patient.qbo_customer_email) {
+          existingContact = await ghlClient.findContactByEmail(
+            patient.email || patient.qbo_customer_email || ''
+          );
+        }
+        if (!existingContact && patient.phone_number) {
+          existingContact = await ghlClient.findContactByPhone(patient.phone_number);
+        }
+        
+        if (existingContact) {
+          const existingContactId = existingContact.id || (existingContact as any).contactId;
+          if (existingContactId) {
+            // Link to the existing contact
+            await query(
+              `UPDATE patients 
+               SET ghl_contact_id = $1,
+                   ghl_sync_status = 'synced',
+                   ghl_last_synced_at = NOW(),
+                   ghl_sync_error = NULL
+               WHERE patient_id = $2`,
+              [existingContactId, patient.patient_id]
+            );
+            return { success: true, ghlContactId: existingContactId };
+          }
+        }
+      } catch (linkError) {
+        console.error(`Failed to link duplicate contact for ${patient.patient_name}:`, linkError);
+      }
+    }
     
     // Update patient record with error
     await query(

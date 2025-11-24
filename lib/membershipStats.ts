@@ -81,24 +81,69 @@ export async function getJaneOutstandingMemberships(limit = 8): Promise<Outstand
 export async function getQuickBooksOutstandingMemberships(limit = 8): Promise<OutstandingMembership[]> {
   return query<OutstandingMembership>(
     `
+      WITH payment_issue_balances AS (
+        SELECT
+          p.patient_id,
+          p.full_name,
+          p.status_key,
+          p.payment_method_key,
+          COALESCE(SUM(pi.amount_owed), 0) AS total_owed
+        FROM patients p
+        JOIN payment_issues pi ON p.patient_id = pi.patient_id
+        WHERE pi.resolved_at IS NULL
+          AND pi.issue_type IN (
+            'payment_declined', 
+            'payment_failed', 
+            'insufficient_funds',
+            'overdue_invoice',
+            'outstanding_balance',
+            'failed_payment'
+          )
+          AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
+          AND NOT (
+            COALESCE(p.status_key, '') ILIKE 'inactive%'
+            OR COALESCE(p.status_key, '') ILIKE 'discharg%'
+          )
+        GROUP BY p.patient_id, p.full_name, p.status_key, p.payment_method_key
+      ),
+      invoice_balances AS (
+        SELECT
+          p.patient_id,
+          p.full_name,
+          p.status_key,
+          p.payment_method_key,
+          COALESCE(SUM(qp.balance), 0) AS total_owed
+        FROM patients p
+        JOIN quickbooks_payments qp ON p.patient_id = qp.patient_id
+        WHERE qp.balance > 0
+          AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
+          AND NOT (
+            COALESCE(p.status_key, '') ILIKE 'inactive%'
+            OR COALESCE(p.status_key, '') ILIKE 'discharg%'
+          )
+        GROUP BY p.patient_id, p.full_name, p.status_key, p.payment_method_key
+      ),
+      combined_balances AS (
+        SELECT
+          COALESCE(pib.patient_id, ib.patient_id) AS patient_id,
+          COALESCE(pib.full_name, ib.full_name) AS full_name,
+          COALESCE(pib.status_key, ib.status_key) AS status_key,
+          GREATEST(COALESCE(pib.total_owed, 0), COALESCE(ib.total_owed, 0)) AS total_owed
+        FROM payment_issue_balances pib
+        FULL OUTER JOIN invoice_balances ib ON pib.patient_id = ib.patient_id
+        WHERE COALESCE(pib.total_owed, 0) > 0 OR COALESCE(ib.total_owed, 0) > 0
+      )
       SELECT
-        p.patient_id AS "patientId",
-        p.full_name AS "patientName",
+        cb.patient_id AS "patientId",
+        cb.full_name AS "patientName",
         'QuickBooks Recurring' AS "planName",
-        p.status_key AS status,
-        COALESCE(pi.amount_owed, 0)::text AS "outstandingBalance",
+        cb.status_key AS status,
+        cb.total_owed::text AS "outstandingBalance",
         NULL AS "contractEndDate",
         'QuickBooks' AS "paymentSource"
-      FROM patients p
-      JOIN payment_issues pi ON p.patient_id = pi.patient_id
-      WHERE pi.resolved_at IS NULL
-        AND pi.issue_type IN ('payment_declined', 'payment_failed', 'insufficient_funds')
-        AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
-        AND NOT (
-          COALESCE(p.status_key, '') ILIKE 'inactive%'
-          OR COALESCE(p.status_key, '') ILIKE 'discharg%'
-        )
-      ORDER BY pi.amount_owed DESC NULLS LAST, p.full_name
+      FROM combined_balances cb
+      WHERE cb.total_owed > 0
+      ORDER BY cb.total_owed DESC NULLS LAST, cb.full_name
       LIMIT $1
     `,
     [limit]
@@ -143,7 +188,14 @@ export async function getOutstandingMemberships(limit = 8): Promise<OutstandingM
         FROM patients p
         JOIN payment_issues pi ON p.patient_id = pi.patient_id
         WHERE pi.resolved_at IS NULL
-          AND pi.issue_type IN ('payment_declined', 'payment_failed', 'insufficient_funds')
+          AND pi.issue_type IN (
+            'payment_declined', 
+            'payment_failed', 
+            'insufficient_funds',
+            'overdue_invoice',
+            'outstanding_balance',
+            'failed_payment'
+          )
           AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
           AND NOT (
             COALESCE(p.status_key, '') ILIKE 'inactive%'

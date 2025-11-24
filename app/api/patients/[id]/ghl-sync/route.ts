@@ -60,15 +60,27 @@ export async function GET(
       [patientId]
     );
 
-    // Parse tags from JSON
+    // Parse tags from JSON - ensure it's always an array
     let tags: string[] = [];
     if (patientSync?.ghl_tags) {
       try {
-        tags = JSON.parse(patientSync.ghl_tags);
-      } catch {
+        const parsed = JSON.parse(patientSync.ghl_tags);
+        // Handle both array and string formats
+        if (Array.isArray(parsed)) {
+          tags = parsed;
+        } else if (typeof parsed === 'string') {
+          tags = [parsed];
+        } else {
+          tags = [];
+        }
+      } catch (e) {
+        console.error('Error parsing ghl_tags:', e, 'Raw value:', patientSync.ghl_tags);
         tags = [];
       }
     }
+
+    // Get location ID from environment for GHL profile links
+    const ghlLocationId = process.env.GHL_LOCATION_ID || '';
 
     return NextResponse.json({
       success: true,
@@ -78,17 +90,35 @@ export async function GET(
         lastSyncedAt: patientSync?.ghl_last_synced_at || null,
         syncError: patientSync?.ghl_sync_error || null,
         tags: tags,
+        ghlLocationId: ghlLocationId, // Include location ID for profile links
       },
-      history: history.map((h) => ({
-        syncId: h.sync_id,
-        syncType: h.sync_type,
-        ghlContactId: h.ghl_contact_id,
-        syncPayload: h.sync_payload ? JSON.parse(h.sync_payload) : null,
-        syncResult: h.sync_result ? JSON.parse(h.sync_result) : null,
-        errorMessage: h.error_message,
-        createdAt: h.created_at,
-        createdBy: h.created_by,
-      })),
+      history: history.map((h) => {
+        let syncPayload = null;
+        let syncResult = null;
+        
+        try {
+          syncPayload = h.sync_payload ? JSON.parse(h.sync_payload) : null;
+        } catch (e) {
+          console.error('Error parsing sync_payload:', e);
+        }
+        
+        try {
+          syncResult = h.sync_result ? JSON.parse(h.sync_result) : null;
+        } catch (e) {
+          console.error('Error parsing sync_result:', e);
+        }
+        
+        return {
+          syncId: h.sync_id,
+          syncType: h.sync_type,
+          ghlContactId: h.ghl_contact_id,
+          syncPayload,
+          syncResult,
+          errorMessage: h.error_message,
+          createdAt: h.created_at,
+          createdBy: h.created_by,
+        };
+      }),
     });
   } catch (error) {
     console.error('GHL sync status error:', error);

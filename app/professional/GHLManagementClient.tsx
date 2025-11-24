@@ -148,9 +148,10 @@ export default function GHLManagementClient() {
   return (
     <div className="max-w-7xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold mb-2">GoHighLevel Management Center</h1>
+        <h1 className="text-3xl font-bold mb-2">GHL Management</h1>
         <p className="text-gray-600">
-          Manage and monitor your GoHighLevel integration. Link existing contacts, apply tags, and track sync status.
+          Monitor patient sync status, manage marketing tags, and track GoHighLevel integration performance. 
+          Every Jane patient should automatically sync to GHL with proper tagging.
         </p>
       </div>
 

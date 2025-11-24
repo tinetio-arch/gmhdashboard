@@ -34,7 +34,7 @@ export default async function RootLayout({
                 <h1 style={{ fontSize: '1.5rem', margin: 0 }}>GMH Control Center</h1>
                 <Link href="/">Dashboard</Link>
                 <Link href="/patients">Patients</Link>
-                <Link href="/professional">Professional</Link>
+                <Link href="/professional">GHL</Link>
                 <Link href="/dea">DEA Log</Link>
                 <Link href="/inventory">Inventory</Link>
                 {user && userHasRole(user, 'write') && <Link href="/transactions">Transactions</Link>}

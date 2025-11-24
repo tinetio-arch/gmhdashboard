@@ -116,8 +116,9 @@ export async function POST(req: NextRequest) {
               totalUpdated++;
             }
 
-            // Check for payment issues
-            if (paymentData.payment_status === 'overdue' && paymentData.days_overdue >= 30) {
+            // Check for payment issues - create for ANY invoice with outstanding balance
+            // Not just "overdue" status, but any balance > 0
+            if (paymentData.balance > 0) {
               // Check if issue already exists
               const existingIssue = await query<{ issue_id: string }>(`
                 SELECT issue_id FROM payment_issues
@@ -130,7 +131,15 @@ export async function POST(req: NextRequest) {
                   SELECT status_key FROM patients WHERE patient_id = $1
                 `, [patientId]);
 
-                // Create payment issue
+                // Determine severity based on balance and days overdue
+                const daysOverdue = paymentData.days_overdue || 0;
+                const severity = daysOverdue >= 60 || paymentData.balance >= 500 
+                  ? 'critical' 
+                  : daysOverdue >= 30 || paymentData.balance >= 200
+                    ? 'warning'
+                    : 'info';
+
+                // Create payment issue for any outstanding balance
                 await query(`
                   INSERT INTO payment_issues (
                     patient_id, issue_type, issue_severity, amount_owed,
@@ -138,21 +147,24 @@ export async function POST(req: NextRequest) {
                   ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                 `, [
                   patientId,
-                  'overdue_invoice',
-                  paymentData.days_overdue >= 60 ? 'critical' : 'warning',
+                  paymentData.payment_status === 'overdue' ? 'overdue_invoice' : 'outstanding_balance',
+                  severity,
                   paymentData.balance,
-                  paymentData.days_overdue,
+                  daysOverdue,
                   invoice.Id,
                   patientStatus[0]?.status_key || 'active'
                 ]);
 
-                // Update patient status to 'Hold - Payment Research'
-                await query(`
-                  UPDATE patients SET
-                    status_key = 'hold_payment_research',
-                    updated_at = NOW()
-                  WHERE patient_id = $1
-                `, [patientId]);
+                // Update patient status to 'Hold - Payment Research' if overdue or high balance
+                if (daysOverdue >= 30 || paymentData.balance >= 200) {
+                  await query(`
+                    UPDATE patients SET
+                      status_key = 'hold_payment_research',
+                      updated_at = NOW()
+                    WHERE patient_id = $1
+                      AND status_key != 'hold_payment_research'
+                  `, [patientId]);
+                }
               }
             }
           }

@@ -9,6 +9,7 @@ type GHLSyncStatus = {
   lastSyncedAt: string | null;
   syncError: string | null;
   tags: string[];
+  ghlLocationId?: string;
 };
 
 type GHLSyncHistoryEntry = {
@@ -120,11 +121,11 @@ export default function GHLSyncStatus({ patientId }: Props) {
 
   const statusColors = getStatusColor(syncStatus.syncStatus);
 
-  // Get GHL profile URL (if we have contact ID)
-  // Note: The exact URL format may vary based on GHL setup
-  // This is a common format, but may need adjustment based on your GHL configuration
-  const ghlProfileUrl = syncStatus.ghlContactId
-    ? `https://app.gohighlevel.com/contact/${syncStatus.ghlContactId}`
+  // Get GHL profile URL (if we have contact ID and location ID)
+  // Format: https://app.gohighlevel.com/v2/location/{locationId}/contacts/detail/{contactId}
+  const ghlLocationId = syncStatus.ghlLocationId || '';
+  const ghlProfileUrl = syncStatus.ghlContactId && ghlLocationId
+    ? `https://app.gohighlevel.com/v2/location/${ghlLocationId}/contacts/detail/${syncStatus.ghlContactId}`
     : null;
 
   return (
