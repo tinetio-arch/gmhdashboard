@@ -34,49 +34,109 @@ export type RecentlyDispensedPatient = {
 };
 
 export async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
-  const [counts] = await query<DashboardMetrics>(
-    `
-    SELECT
-      COUNT(*) AS "totalPatients",
-      COUNT(*) FILTER (WHERE status_key = 'active') AS "activePatients",
-      COUNT(*) FILTER (WHERE status_key LIKE 'hold_%') AS "holdPatients",
-      COUNT(*) FILTER (WHERE next_lab IS NOT NULL AND next_lab <= CURRENT_DATE + INTERVAL '30 days') AS "upcomingLabs",
-      COALESCE((
-        SELECT COUNT(*)
-        FROM dea_dispense_log_v
-        WHERE transaction_time >= CURRENT_DATE - INTERVAL '30 days'
-      ), 0) AS "controlledDispensesLast30",
-      COALESCE((
-        SELECT COUNT(*)
-        FROM provider_signature_queue_v
-        WHERE COALESCE(signature_status, 'awaiting_signature') <> 'signed'
-      ), 0) AS "pendingSignatures",
-      COALESCE((
-        SELECT EXTRACT(EPOCH FROM (NOW() - MAX(audit_week))) / 604800
-        FROM weekly_inventory_audits
-      ), 0) AS "weeksSinceAudit",
-      COUNT(*) FILTER (WHERE status_key = 'hold_payment_research') AS "holdPaymentResearch",
-      COUNT(*) FILTER (WHERE status_key = 'hold_contract_renewal') AS "holdContractRenewal",
-      COUNT(*) FILTER (
-        WHERE status_key IN ('inactive', 'inactive_patient', 'discharged')
-           OR status_key LIKE 'inactive%'
-      ) AS "inactivePatients"
-    FROM professional_patient_dashboard_v;
-    `
-  );
+  try {
+    const [counts] = await query<DashboardMetrics>(
+      `
+      SELECT
+        COUNT(*) AS "totalPatients",
+        COUNT(*) FILTER (WHERE status_key = 'active') AS "activePatients",
+        COUNT(*) FILTER (WHERE status_key LIKE 'hold_%') AS "holdPatients",
+        COUNT(*) FILTER (WHERE next_lab IS NOT NULL AND next_lab <= CURRENT_DATE + INTERVAL '30 days') AS "upcomingLabs",
+        COALESCE((
+          SELECT COUNT(*)
+          FROM dea_dispense_log_v
+          WHERE transaction_time >= CURRENT_DATE - INTERVAL '30 days'
+        ), 0) AS "controlledDispensesLast30",
+        COALESCE((
+          SELECT COUNT(*)
+          FROM provider_signature_queue_v
+          WHERE COALESCE(signature_status, 'awaiting_signature') <> 'signed'
+        ), 0) AS "pendingSignatures",
+        COALESCE((
+          SELECT EXTRACT(EPOCH FROM (NOW() - MAX(audit_week))) / 604800
+          FROM weekly_inventory_audits
+        ), 0) AS "weeksSinceAudit",
+        COUNT(*) FILTER (WHERE status_key = 'hold_payment_research') AS "holdPaymentResearch",
+        COUNT(*) FILTER (WHERE status_key = 'hold_contract_renewal') AS "holdContractRenewal",
+        COUNT(*) FILTER (
+          WHERE status_key IN ('inactive', 'inactive_patient', 'discharged')
+             OR status_key LIKE 'inactive%'
+        ) AS "inactivePatients"
+      FROM professional_patient_dashboard_v;
+      `
+    );
 
-  return counts ?? {
-    totalPatients: 0,
-    activePatients: 0,
-    holdPatients: 0,
-    upcomingLabs: 0,
-    controlledDispensesLast30: 0,
-    pendingSignatures: 0,
-    weeksSinceAudit: 0,
-    holdPaymentResearch: 0,
-    holdContractRenewal: 0,
-    inactivePatients: 0
-  };
+    return counts ?? {
+      totalPatients: 0,
+      activePatients: 0,
+      holdPatients: 0,
+      upcomingLabs: 0,
+      controlledDispensesLast30: 0,
+      pendingSignatures: 0,
+      weeksSinceAudit: 0,
+      holdPaymentResearch: 0,
+      holdContractRenewal: 0,
+      inactivePatients: 0
+    };
+  } catch (error: unknown) {
+    // Handle missing views/tables gracefully
+    console.error('Error fetching dashboard metrics:', error);
+    // Try to get basic patient counts without the problematic views
+    try {
+      const [basicCounts] = await query<{
+        totalPatients: number;
+        activePatients: number;
+        holdPatients: number;
+        upcomingLabs: number;
+        holdPaymentResearch: number;
+        holdContractRenewal: number;
+        inactivePatients: number;
+      }>(
+        `
+        SELECT
+          COUNT(*) AS "totalPatients",
+          COUNT(*) FILTER (WHERE status_key = 'active') AS "activePatients",
+          COUNT(*) FILTER (WHERE status_key LIKE 'hold_%') AS "holdPatients",
+          COUNT(*) FILTER (WHERE next_lab IS NOT NULL AND next_lab <= CURRENT_DATE + INTERVAL '30 days') AS "upcomingLabs",
+          COUNT(*) FILTER (WHERE status_key = 'hold_payment_research') AS "holdPaymentResearch",
+          COUNT(*) FILTER (WHERE status_key = 'hold_contract_renewal') AS "holdContractRenewal",
+          COUNT(*) FILTER (
+            WHERE status_key IN ('inactive', 'inactive_patient', 'discharged')
+               OR status_key LIKE 'inactive%'
+          ) AS "inactivePatients"
+        FROM professional_patient_dashboard_v;
+        `
+      );
+      return {
+        ...(basicCounts ?? {
+          totalPatients: 0,
+          activePatients: 0,
+          holdPatients: 0,
+          upcomingLabs: 0,
+          holdPaymentResearch: 0,
+          holdContractRenewal: 0,
+          inactivePatients: 0
+        }),
+        controlledDispensesLast30: 0,
+        pendingSignatures: 0,
+        weeksSinceAudit: 0
+      };
+    } catch (fallbackError: unknown) {
+      console.error('Error fetching basic metrics:', fallbackError);
+      return {
+        totalPatients: 0,
+        activePatients: 0,
+        holdPatients: 0,
+        upcomingLabs: 0,
+        controlledDispensesLast30: 0,
+        pendingSignatures: 0,
+        weeksSinceAudit: 0,
+        holdPaymentResearch: 0,
+        holdContractRenewal: 0,
+        inactivePatients: 0
+      };
+    }
+  }
 }
 
 export async function fetchRecentlyEditedPatients(limit = 5): Promise<RecentlyEditedPatient[]> {

@@ -104,38 +104,54 @@ export type PaymentFailureStats = {
 
 export async function getPaymentFailureStats(): Promise<PaymentFailureStats> {
   // Get Jane payment failures from jane_packages_import
-  const janeFailures = await query<{ count: string; total: string }>(`
-    WITH normalized_patients AS (
-      SELECT
-        patient_id,
-        lower(regexp_replace(regexp_replace(full_name, '^(mr\\.?|mrs\\.?|ms\\.?|dr\\.?|miss)\\s+', '', 'i'), '\\s+', ' ', 'g')) AS normalized_name,
-        status_key
-      FROM patients
-    )
-    SELECT 
-      COUNT(*) as count,
-      COALESCE(SUM(pkg.outstanding_balance::numeric), 0) as total
-    FROM jane_packages_import pkg
-    LEFT JOIN normalized_patients pn ON pn.normalized_name = lower(pkg.norm_name)
-    WHERE COALESCE(pkg.outstanding_balance, 0)::numeric > 0
-      AND NOT (
-        COALESCE(pn.status_key, '') ILIKE 'inactive%'
-        OR COALESCE(pn.status_key, '') ILIKE 'discharg%'
+  // Handle case where table doesn't exist yet
+  let janeFailures: { count: string; total: string }[] = [];
+  try {
+    janeFailures = await query<{ count: string; total: string }>(`
+      WITH normalized_patients AS (
+        SELECT
+          patient_id,
+          lower(regexp_replace(regexp_replace(full_name, '^(mr\\.?|mrs\\.?|ms\\.?|dr\\.?|miss)\\s+', '', 'i'), '\\s+', ' ', 'g')) AS normalized_name,
+          status_key
+        FROM patients
       )
-  `);
+      SELECT 
+        COUNT(*) as count,
+        COALESCE(SUM(pkg.outstanding_balance::numeric), 0) as total
+      FROM jane_packages_import pkg
+      LEFT JOIN normalized_patients pn ON pn.normalized_name = lower(pkg.norm_name)
+      WHERE COALESCE(pkg.outstanding_balance, 0)::numeric > 0
+        AND NOT (
+          COALESCE(pn.status_key, '') ILIKE 'inactive%'
+          OR COALESCE(pn.status_key, '') ILIKE 'discharg%'
+        )
+    `);
+  } catch (error: unknown) {
+    // Table doesn't exist yet, return empty results
+    console.error('Error fetching payment failures:', error);
+    janeFailures = [{ count: '0', total: '0' }];
+  }
 
   // Get QuickBooks payment failures from payment_issues
-  const qboFailures = await query<{ count: string; total: string }>(`
-    SELECT 
-      COUNT(DISTINCT pi.patient_id) as count,
-      COALESCE(SUM(pi.amount_owed), 0) as total
-    FROM payment_issues pi
-    JOIN patients p ON pi.patient_id = p.patient_id
-    WHERE pi.resolved_at IS NULL
-      AND p.status_key NOT IN ('inactive', 'discharged')
-      AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
-      AND pi.issue_type IN ('payment_declined', 'payment_failed', 'insufficient_funds')
-  `);
+  // Handle case where table doesn't exist yet
+  let qboFailures: { count: string; total: string }[] = [];
+  try {
+    qboFailures = await query<{ count: string; total: string }>(`
+      SELECT 
+        COUNT(DISTINCT pi.patient_id) as count,
+        COALESCE(SUM(pi.amount_owed), 0) as total
+      FROM payment_issues pi
+      JOIN patients p ON pi.patient_id = p.patient_id
+      WHERE pi.resolved_at IS NULL
+        AND p.status_key NOT IN ('inactive', 'discharged')
+        AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
+        AND pi.issue_type IN ('payment_declined', 'payment_failed', 'insufficient_funds')
+    `);
+  } catch (error: unknown) {
+    // Table doesn't exist yet, return empty results
+    console.error('Error fetching QuickBooks payment failures:', error);
+    qboFailures = [{ count: '0', total: '0' }];
+  }
 
   return {
     jane: {

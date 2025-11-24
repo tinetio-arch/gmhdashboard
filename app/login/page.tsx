@@ -9,7 +9,7 @@ export const metadata = {
 export default async function LoginPage() {
   const user = await getCurrentUser();
   if (user) {
-    redirect('/ops');
+    redirect('/');
   }
 
   return (

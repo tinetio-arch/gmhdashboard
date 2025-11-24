@@ -4,9 +4,10 @@ import { requireUser } from '@/lib/auth';
 import { fetchPatientById } from '@/lib/patientQueries';
 import { fetchDispensesForPatient } from '@/lib/inventoryQueries';
 import { fetchPatientFinancialData } from '@/lib/patientFinancials';
+import { query } from '@/lib/db';
+import { createGHLClient } from '@/lib/ghl';
 import PatientDetailClient from './PatientDetailClient';
 import ClinicSyncMembershipsClient from './ClinicSyncMembershipsClient';
-import GHLSyncStatus from './GHLSyncStatus';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,6 +44,29 @@ export default async function PatientDetailPage({ params }: PageProps) {
   if (!patient) {
     notFound();
   }
+
+  // Fetch GHL sync status directly
+  const [ghlSync] = await query<{
+    ghl_contact_id: string | null;
+    ghl_sync_status: string | null;
+    ghl_last_synced_at: string | null;
+    ghl_sync_error: string | null;
+    ghl_tags: string | null;
+  }>(
+    `SELECT 
+      ghl_contact_id,
+      ghl_sync_status,
+      ghl_last_synced_at,
+      ghl_sync_error,
+      ghl_tags
+    FROM patients
+    WHERE patient_id = $1`,
+    [params.id]
+  );
+
+  // Get GHL location ID from client or environment for profile links
+  const ghlClient = createGHLClient();
+  const ghlLocationId = ghlClient?.getLocationId() || process.env.GHL_LOCATION_ID || '';
 
   const financials = await fetchPatientFinancialData(params.id);
   const dispenses = await fetchDispensesForPatient(params.id, 200);
@@ -129,9 +153,80 @@ export default async function PatientDetailPage({ params }: PageProps) {
             {formatDate(patient.eligible_for_next_supply)}
           </p>
         </div>
+        <div>
+          <h2 style={{ margin: 0, fontSize: '1rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            GHL Sync Status
+          </h2>
+          <p style={{ margin: '0.35rem 0 0', fontSize: '1.15rem', fontWeight: 600, color: '#0f172a' }}>
+            {ghlSync?.ghl_contact_id ? (
+              <span style={{ 
+                color: ghlSync.ghl_sync_status === 'synced' ? '#059669' : 
+                       ghlSync.ghl_sync_status === 'error' ? '#dc2626' : 
+                       ghlSync.ghl_sync_status === 'syncing' ? '#d97706' : '#64748b',
+                textTransform: 'capitalize'
+              }}>
+                {ghlSync.ghl_sync_status === 'synced' ? '✓ Synced' : 
+                 ghlSync.ghl_sync_status === 'error' ? '✗ Error' : 
+                 ghlSync.ghl_sync_status === 'syncing' ? '⟳ Syncing' : 
+                 'Pending'}
+              </span>
+            ) : (
+              <span style={{ color: '#64748b' }}>Not Linked</span>
+            )}
+          </p>
+          {ghlSync?.ghl_contact_id && (
+            <>
+              <p style={{ margin: '0.15rem 0 0', fontSize: '0.875rem', color: '#64748b', fontFamily: 'monospace' }}>
+                ID: {ghlSync.ghl_contact_id.substring(0, 8)}...
+              </p>
+              {ghlLocationId ? (
+                <a
+                  href={`https://app.gohighlevel.com/v2/location/${ghlLocationId}/contacts/detail/${ghlSync.ghl_contact_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-block',
+                    marginTop: '0.5rem',
+                    padding: '0.375rem 0.75rem',
+                    fontSize: '0.875rem',
+                    fontWeight: 500,
+                    color: '#ffffff',
+                    backgroundColor: '#0284c7',
+                    borderRadius: '0.375rem',
+                    textDecoration: 'none',
+                  }}
+                >
+                  View in GHL →
+                </a>
+              ) : (
+                <a
+                  href={`https://app.gohighlevel.com/contacts/detail/${ghlSync.ghl_contact_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-block',
+                    marginTop: '0.5rem',
+                    padding: '0.375rem 0.75rem',
+                    fontSize: '0.875rem',
+                    fontWeight: 500,
+                    color: '#ffffff',
+                    backgroundColor: '#0284c7',
+                    borderRadius: '0.375rem',
+                    textDecoration: 'none',
+                  }}
+                >
+                  View in GHL →
+                </a>
+              )}
+            </>
+          )}
+          {ghlSync?.ghl_last_synced_at && (
+            <p style={{ margin: '0.15rem 0 0', fontSize: '0.75rem', color: '#94a3b8' }}>
+              {formatDate(ghlSync.ghl_last_synced_at)}
+            </p>
+          )}
+        </div>
       </div>
-
-      <GHLSyncStatus patientId={params.id} />
 
       <div
         style={{

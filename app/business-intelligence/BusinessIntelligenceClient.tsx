@@ -298,3 +298,4 @@ function formatCurrency(value: string | number | null): string {
   const parsed = Number(value);
   return formatter.format(Number.isFinite(parsed) ? parsed : 0);
 }
+

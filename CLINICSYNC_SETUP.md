@@ -88,3 +88,4 @@ curl -X POST https://nowoptimal.com/ops/api/admin/clinicsync/test-detection \
 - Mixed payment patients (Jane & QuickBooks) are tracked in both systems
 
 
+
