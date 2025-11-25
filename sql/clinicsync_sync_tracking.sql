@@ -49,3 +49,4 @@ ORDER BY sync_date DESC;
 COMMENT ON TABLE clinicsync_sync_tracking IS 'Tracks ClinicSync webhook activity and sync frequency';
 COMMENT ON VIEW clinicsync_sync_summary IS 'Summary view of ClinicSync sync activity with calculated metrics';
 
+

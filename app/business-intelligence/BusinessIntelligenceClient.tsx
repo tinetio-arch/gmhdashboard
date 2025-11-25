@@ -299,3 +299,4 @@ function formatCurrency(value: string | number | null): string {
   return formatter.format(Number.isFinite(parsed) ? parsed : 0);
 }
 
+
