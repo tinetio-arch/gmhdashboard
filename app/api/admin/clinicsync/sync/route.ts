@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { headers } from 'next/headers';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { upsertClinicSyncPatient, normalizePayload } from '@/lib/clinicsync';
@@ -13,9 +14,34 @@ const JANE_API_ENDPOINTS = [
   `${JANE_API_BASE}/api/passes`
 ];
 
+// Helper to check if request is from internal cron job
+async function isInternalRequest(): Promise<boolean> {
+  const headersList = headers();
+  const internalAuth = headersList.get('x-internal-auth');
+  return internalAuth === process.env.INTERNAL_AUTH_SECRET;
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const user = await requireApiUser(req, 'admin');
+    // Allow internal cron requests to bypass auth
+    let user;
+    if (await isInternalRequest()) {
+      // Get the first admin user from database for cron jobs
+      const adminUsers = await query<{ user_id: string; email: string; role: string; display_name: string | null; created_at: string; updated_at: string; is_active: boolean; is_provider: boolean; can_sign: boolean }>(
+        `SELECT user_id, email, role, display_name, created_at, updated_at, is_active, is_provider, can_sign 
+         FROM users 
+         WHERE role = 'admin' AND is_active = TRUE 
+         LIMIT 1`
+      );
+      if (adminUsers.length > 0) {
+        user = adminUsers[0];
+      } else {
+        // Fallback: use requireApiUser if no admin found
+        user = await requireApiUser(req, 'admin');
+      }
+    } else {
+      user = await requireApiUser(req, 'admin');
+    }
     const apiKey = process.env.CLINICSYNC_API_KEY;
     
     if (!apiKey) {
@@ -25,10 +51,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Start sync log - using 'jane' as sync_type since that's what the DB expects
+    // Start sync log - using 'clinicsync' as sync_type
     const syncLog = await query<{ sync_id: string }>(`
       INSERT INTO payment_sync_log (sync_type, sync_status, created_by)
-      VALUES ('jane', 'running', $1)
+      VALUES ('clinicsync', 'running', $1)
       RETURNING sync_id
     `, [user.user_id]);
 

@@ -6,6 +6,7 @@
 import { createGHLClient, type GHLClient, type GHLContact } from './ghl';
 import { query } from './db';
 import type { PatientDataEntryRow } from './patientQueries';
+import { normalizeTestosteroneVendor, TESTOSTERONE_VENDORS } from './testosterone';
 
 export type GHLSyncStatus = 'pending' | 'syncing' | 'synced' | 'error';
 
@@ -251,6 +252,33 @@ function cleanAddress(patient: PatientDataEntryRow): {
 }
 
 /**
+ * Format testosterone formulary for GHL based on the last dispensed drug
+ * Returns the GHL-formatted formulary string or null
+ */
+function formatTestosteroneFormularyForGHL(deaDrugName: string | null | undefined): string | null {
+  if (!deaDrugName) {
+    return null;
+  }
+  
+  const normalized = normalizeTestosteroneVendor(deaDrugName);
+  
+  if (!normalized) {
+    return null;
+  }
+  
+  // Map to GHL format
+  if (normalized === TESTOSTERONE_VENDORS[1]) {
+    // TopRX
+    return '(TOPRX) Testosterone Cypionate Cottonseed Oil (200mg/ml) - 10ML Vial Specific to Patient';
+  } else if (normalized === TESTOSTERONE_VENDORS[0]) {
+    // Carrie Boyd
+    return 'Miglyol 812 Oil Injection 200mg/ml (Pre-Filled Syringes)';
+  }
+  
+  return null;
+}
+
+/**
  * Format patient data for GHL contact
  * GMH DATA ALWAYS OVERWRITES GHL - NO MERGE!
  * 
@@ -316,7 +344,16 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
   addCustomField('method_of_payment', patient.method_of_payment);
   addCustomField('patient_status', patient.alert_status || patient.status_key);
   addCustomField('client_type', patient.type_of_client);
-  addCustomField('regimen', patient.regimen);
+  
+  // Regimen maps to "Current Injection Dose" in GHL
+  addCustomField('Current Injection Dose', patient.regimen);
+  
+  // Testosterone Formulary - determined from last dispensed testosterone
+  const testosteroneFormulary = formatTestosteroneFormularyForGHL(patient.last_dea_drug);
+  if (testosteroneFormulary) {
+    addCustomField('Testosterone Formulary', testosteroneFormulary);
+  }
+  
   addCustomField('service_start_date', patient.service_start_date);
   addCustomField('contract_end', patient.contract_end);
   
@@ -389,6 +426,9 @@ export async function syncPatientToGHL(
       [patient.patient_id]
     );
 
+    console.log(`[GHL Sync] Starting sync for patient: ${patient.patient_name} (ID: ${patient.patient_id})`);
+    console.log(`[GHL Sync] Search criteria - Email: ${patient.email || patient.qbo_customer_email || 'none'}, Phone: ${patient.phone_number || 'none'}`);
+
     let ghlContact: GHLContact | null = null;
 
     // Check if patient already has a GHL contact ID
@@ -456,18 +496,37 @@ export async function syncPatientToGHL(
       }
     }
 
-    // STEP 4: If still no contact found, return error (we only link existing contacts)
+    // STEP 4: If still no contact found, CREATE a new contact in GHL
+    let isNewContact = false;
+    let finalTagNames: string[] = [];
     if (!ghlContact) {
-      const errorMsg = `Contact not found in GHL. Email: ${patient.email || patient.qbo_customer_email || 'none'}, Phone: ${patient.phone_number || 'none'}, Name: ${patient.patient_name || 'none'}`;
-      console.log(`[GHL Sync] Step 4: Contact not found - ${errorMsg}`);
-      await query(
-        `UPDATE patients 
-         SET ghl_sync_status = 'error',
-             ghl_sync_error = $1
-         WHERE patient_id = $2`,
-        [errorMsg, patient.patient_id]
-      );
-      return { success: false, error: errorMsg };
+      console.log(`[GHL Sync] Step 4: No existing contact found, creating new contact in GHL`);
+      try {
+        // Calculate tags first so we can include them in the creation
+        finalTagNames = await calculatePatientTags(patient);
+        await ensureGHLTags(ghlClient, finalTagNames); // Ensure tags exist in GHL
+        
+        // Prepare contact data for creation (with tags included)
+        const contactData = formatPatientForGHL(patient);
+        const shouldClearTags = patient.status_key === 'inactive';
+        contactData.tags = shouldClearTags ? [] : finalTagNames;
+        
+        // Create the new contact in GHL
+        ghlContact = await ghlClient.createContact(contactData);
+        isNewContact = true;
+        console.log(`[GHL Sync] Step 4 SUCCESS: Created NEW contact in GHL (no existing contact found)`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`[GHL Sync] Step 4 ERROR: Failed to create contact:`, errorMessage);
+        await query(
+          `UPDATE patients 
+           SET ghl_sync_status = 'error',
+               ghl_sync_error = $1
+           WHERE patient_id = $2`,
+          [`Failed to create GHL contact: ${errorMessage}`, patient.patient_id]
+        );
+        return { success: false, error: `Failed to create GHL contact: ${errorMessage}` };
+      }
     }
 
     // STEP 5: Extract contact ID from multiple possible fields
@@ -503,22 +562,26 @@ export async function syncPatientToGHL(
     
     console.log(`[GHL Sync] Step 5 SUCCESS: Extracted contact ID: ${contactId}`);
 
-    // Prepare contact data for update
-    const contactData = formatPatientForGHL(patient);
-    
-    // For inactive patients, we still sync but with minimal data and no tags
-    // This ensures GHL reflects the inactive status
+    // If this is a newly created contact, we already set all the data including tags
+    // Otherwise, we need to update the existing contact with current GMH data
+    if (!isNewContact) {
+      // Prepare contact data for update
+      const contactData = formatPatientForGHL(patient);
+      
+      // For inactive patients, we still sync but with minimal data and no tags
+      // This ensures GHL reflects the inactive status
 
-    // Calculate and apply tags
-    const tagNames = await calculatePatientTags(patient);
-    await ensureGHLTags(ghlClient, tagNames); // Ensure tags exist in GHL
+      // Calculate and apply tags
+      finalTagNames = await calculatePatientTags(patient);
+      await ensureGHLTags(ghlClient, finalTagNames); // Ensure tags exist in GHL
 
-    // CRITICAL: If patient is inactive, REMOVE ALL TAGS
-    const shouldClearTags = patient.status_key === 'inactive';
-    contactData.tags = shouldClearTags ? [] : tagNames; // Set tags directly
+      // CRITICAL: If patient is inactive, REMOVE ALL TAGS
+      const shouldClearTags = patient.status_key === 'inactive';
+      contactData.tags = shouldClearTags ? [] : finalTagNames; // Set tags directly
 
-    // Update the existing contact with our data (tags + fields)
-    await ghlClient.updateContact(contactId, contactData);
+      // Update the existing contact with our data (tags + fields)
+      await ghlClient.updateContact(contactId, contactData);
+    }
 
     // Update patient record with successful sync
     await query(
@@ -529,8 +592,13 @@ export async function syncPatientToGHL(
            ghl_sync_error = NULL,
            ghl_tags = $2
        WHERE patient_id = $3`,
-      [contactId, JSON.stringify(tagNames), patient.patient_id]
+      [contactId, JSON.stringify(finalTagNames), patient.patient_id]
     );
+
+    console.log(`[GHL Sync] ✓ Sync completed successfully for ${patient.patient_name}`);
+    console.log(`[GHL Sync]   - Contact ID: ${contactId}`);
+    console.log(`[GHL Sync]   - Action: ${isNewContact ? 'CREATED new contact' : 'UPDATED existing contact'}`);
+    console.log(`[GHL Sync]   - Tags applied: ${finalTagNames.length} tags`);
 
     // Log sync history
     await query(

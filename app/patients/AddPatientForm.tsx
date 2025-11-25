@@ -20,6 +20,7 @@ type FormState = {
   paymentMethodKey: string | null;
   clientTypeKey: string | null;
   phoneNumber: string;
+  email: string;
   address: string;
   regimen: string;
   dateOfBirth: string;
@@ -61,6 +62,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
     paymentMethodKey: null,
     clientTypeKey: null,
     phoneNumber: '',
+    email: '',
     address: '',
     regimen: '',
     dateOfBirth: '',
@@ -113,6 +115,16 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
       setMessage('Service start date is required.');
       return;
     }
+    if (!form.email || !form.email.trim()) {
+      setMessage('Email is required.');
+      return;
+    }
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(form.email.trim())) {
+      setMessage('Please enter a valid email address.');
+      return;
+    }
     setSaving(true);
     setMessage(null);
     try {
@@ -125,6 +137,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
           paymentMethodKey: form.paymentMethodKey,
           clientTypeKey: form.clientTypeKey,
           phoneNumber: form.phoneNumber.trim() || null,
+          email: form.email.trim() || null,
           address: form.address.trim() || null,
           regimen: form.regimen.trim() || null,
           addedBy: currentUserEmail,
@@ -146,6 +159,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
         paymentMethodKey: null,
         clientTypeKey: null,
         phoneNumber: '',
+        email: '',
         address: '',
         regimen: '',
         dateOfBirth: '',
@@ -237,6 +251,18 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
             onChange={(event) => updateForm('phoneNumber', event.target.value)}
             style={inputStyle}
             placeholder="(555) 123-4567"
+            disabled={isDisabled}
+            required
+          />
+        </div>
+        <div style={{ flex: '1 1 200px' }}>
+          <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Email *</label>
+          <input
+            type="email"
+            value={form.email}
+            onChange={(event) => updateForm('email', event.target.value)}
+            style={inputStyle}
+            placeholder="jane.doe@example.com"
             disabled={isDisabled}
             required
           />
