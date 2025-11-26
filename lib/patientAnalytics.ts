@@ -176,17 +176,60 @@ export async function getPatientAnalyticsBreakdown(): Promise<PatientAnalyticsBr
     byMembershipPlan = [];
   }
 
-  // Calculate primary care vs men's health vs other
+  // Men's Health membership types - these are stored in client_type_lookup.display_name
+  const mensHealthMembershipTypes = [
+    'QBO TCMH $180/Month',
+    'QBO F&F/FR/Veteran $140/Month',
+    'Jane TCMH $180/Month',
+    'Jane F&F/FR/Veteran $140/Month',
+    'Approved Disc / Pro-Bono PT',
+    "Men's Health (QBO)"
+  ];
+  const mensHealthTypesSQL = mensHealthMembershipTypes.map(t => `'${t.replace(/'/g, "''")}'`).join(',');
+
+  // Get Men's Health patients by checking client_type_lookup.display_name
+  // This is where the membership types are actually stored
+  let mensHealthCount = 0;
+  try {
+    const mensHealthResult = await query<{ count: string }>(`
+      SELECT COUNT(DISTINCT p.patient_id) as count
+      FROM patients p
+      LEFT JOIN client_type_lookup ct ON ct.type_key = p.client_type_key
+      WHERE p.patient_id IS NOT NULL
+        AND NOT (
+          COALESCE(p.status_key, '') ILIKE 'inactive%'
+          OR COALESCE(p.status_key, '') ILIKE 'discharg%'
+        )
+        AND ct.display_name IN (${mensHealthTypesSQL})
+    `);
+    mensHealthCount = parseInt(mensHealthResult[0]?.count || '0');
+  } catch (error) {
+    console.error('Error fetching Men\'s Health count:', error);
+    // Fallback: count from byClientType if display_name matches
+    mensHealthCount = byClientType
+      .filter(row => mensHealthMembershipTypes.includes(row.display_name))
+      .reduce((sum, row) => sum + parseInt(row.count || '0'), 0);
+  }
+
+  // Calculate primary care - includes Insurance Supplemental
+  // Insurance Supplemental should be counted as Primary Care (it's already marked is_primary_care in DB)
+  const mensHealthDisplayNames = new Set(mensHealthMembershipTypes);
   const primaryCareCount = byClientType
-    .filter(row => row.is_primary_care)
+    .filter(row => {
+      // Include if marked as primary care OR if it's Insurance Supplemental
+      const isInsuranceSupplemental = row.display_name?.includes('Ins. Supp.') || row.display_name?.includes('Insurance Supplemental');
+      return row.is_primary_care || isInsuranceSupplemental;
+    })
     .reduce((sum, row) => sum + parseInt(row.count || '0'), 0);
   
-  const mensHealthCount = byClientType
-    .filter(row => row.client_type_key === 'mens_health_qbo')
-    .reduce((sum, row) => sum + parseInt(row.count || '0'), 0);
-  
+  // Calculate "Other" - everything that's not primary care and not men's health
   const otherCount = byClientType
-    .filter(row => !row.is_primary_care && row.client_type_key !== 'mens_health_qbo')
+    .filter(row => {
+      const isPrimaryCare = row.is_primary_care;
+      const isInsuranceSupplemental = row.display_name?.includes('Ins. Supp.') || row.display_name?.includes('Insurance Supplemental');
+      const isMensHealth = mensHealthDisplayNames.has(row.display_name || '');
+      return !isPrimaryCare && !isInsuranceSupplemental && !isMensHealth;
+    })
     .reduce((sum, row) => sum + parseInt(row.count || '0'), 0);
 
   return {

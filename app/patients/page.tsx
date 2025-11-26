@@ -9,7 +9,7 @@ import { requireUser } from '@/lib/auth';
 export default async function PatientsPage({
   searchParams
 }: {
-  searchParams: { status?: string; search?: string }
+  searchParams: { status?: string; search?: string; labs_due?: string }
 }) {
   const user = await requireUser('write');
   const [patients, lookups, professionalPatients] = await Promise.all([
@@ -37,6 +37,7 @@ export default async function PatientsPage({
         currentUserEmail={userEmail}
         initialStatusFilter={searchParams.status}
         initialSearchQuery={searchParams.search}
+        initialLabsDueFilter={searchParams.labs_due}
       />
     </section>
   );

@@ -458,6 +458,60 @@ export class GHLClient {
   }
 
   /**
+   * Get opportunities for a contact or location
+   * Note: GHL API may require locationId and contactId in query params
+   */
+  async getOpportunities(filters?: {
+    contactId?: string;
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+  }): Promise<GHLOpportunity[]> {
+    const locationId = this.requireLocationId('get opportunities');
+    if (!locationId) {
+      throw new Error('Location ID required to get opportunities');
+    }
+
+    const params = new URLSearchParams();
+    params.append('locationId', locationId);
+    
+    if (filters?.contactId) {
+      params.append('contactId', filters.contactId);
+    }
+    if (filters?.status) {
+      params.append('status', filters.status);
+    }
+    if (filters?.startDate) {
+      params.append('startDate', filters.startDate);
+    }
+    if (filters?.endDate) {
+      params.append('endDate', filters.endDate);
+    }
+    if (filters?.limit) {
+      params.append('limit', String(filters.limit));
+    }
+
+    const endpoint = `/opportunities/?${params.toString()}`;
+    const response = await this.request<{ opportunities?: GHLOpportunity[]; opportunity?: GHLOpportunity }>(
+      'GET',
+      endpoint
+    );
+
+    // GHL API may return opportunities in different formats
+    if (Array.isArray(response)) {
+      return response;
+    }
+    if (response.opportunities && Array.isArray(response.opportunities)) {
+      return response.opportunities;
+    }
+    if (response.opportunity) {
+      return [response.opportunity];
+    }
+    return [];
+  }
+
+  /**
    * Update contact status (e.g., mark as ineligible)
    */
   async updateContactStatus(contactId: string, status: string): Promise<GHLContact> {
@@ -481,7 +535,7 @@ export class GHLClient {
     return this.updateContact(contactId, { customFields });
   }
 
-  private async searchContacts(filters: GHLContactFilter[], pageLimit = 1, page = 1): Promise<GHLContact[]> {
+  async searchContacts(filters: GHLContactFilter[], pageLimit = 1, page = 1): Promise<GHLContact[]> {
     const locationId = this.requireLocationId('search contacts');
     const response = await this.request<any>('POST', '/contacts/search', {
       locationId,

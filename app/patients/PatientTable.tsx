@@ -55,6 +55,7 @@ type Props = {
   currentUserEmail: string;
   initialStatusFilter?: string;
   initialSearchQuery?: string;
+  initialLabsDueFilter?: string;
 };
 
 type EditableCellProps = {
@@ -442,7 +443,8 @@ export default function PatientTable({
   currentUserRole,
   currentUserEmail,
   initialStatusFilter,
-  initialSearchQuery
+  initialSearchQuery,
+  initialLabsDueFilter
 }: Props) {
   const router = useRouter();
   const professionalMap = useMemo(() => {
@@ -461,6 +463,7 @@ export default function PatientTable({
   );
   const [filterStatus, setFilterStatus] = useState<string>(initialStatusFilter || 'all');
   const [searchTerm, setSearchTerm] = useState(initialSearchQuery || '');
+  const [labsDueDays, setLabsDueDays] = useState<string>(initialLabsDueFilter || '');
   const [savingId, setSavingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [activeCell, setActiveCell] = useState<{ rowId: string; field: EditableFieldKey } | null>(null);
@@ -526,11 +529,27 @@ export default function PatientTable({
         }
       }
       const matchesSearch = !searchTerm || row.patientName.toLowerCase().includes(searchTerm.toLowerCase());
-      return matchesStatus && matchesSearch;
+      
+      // Filter by labs due
+      let matchesLabsDue = !labsDueDays;
+      if (labsDueDays && row.nextLab) {
+        const days = parseInt(labsDueDays, 10);
+        if (!isNaN(days)) {
+          const nextLabDate = parseDate(row.nextLab);
+          if (nextLabDate) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const daysUntil = Math.ceil((nextLabDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+            matchesLabsDue = daysUntil >= 0 && daysUntil <= days;
+          }
+        }
+      }
+      
+      return matchesStatus && matchesSearch && matchesLabsDue;
     });
     matches.sort(comparePatients);
     return matches;
-  }, [rows, filterStatus, searchTerm]);
+  }, [rows, filterStatus, searchTerm, labsDueDays]);
 
   const headerLabels = [
     'Patient Name',

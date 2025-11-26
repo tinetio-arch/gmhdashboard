@@ -29,10 +29,10 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
     .reduce((sum, row) => sum + parseFloat(row.outstanding_balance || '0'), 0);
   
   const qbOutstanding = quickbooksData.overdueInvoices
-    .reduce((sum, row) => sum + parseFloat(row.amount_due || '0'), 0);
+    .reduce((sum, row) => sum + parseFloat((row as any).amount_due || (row as any).balance || '0'), 0);
 
   // Get patients needing intake
-  const needsIntake = data.needsData.filter(row => !row.gmh_patient_id);
+  const needsIntake = data.needsData.filter(row => !(row as any).gmh_patient_id && !(row as any).patient_id);
 
   // Get duplicates
   const duplicates = data.duplicates;
@@ -228,14 +228,14 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
                       }}>
                         <div>
                           <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: '0.25rem' }}>
-                            {row.customer_name}
+                            {row.patient_name || 'Unknown Patient'}
                           </div>
                           <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
                             Invoice #{row.invoice_number}
                           </div>
                         </div>
                         <div style={{ fontWeight: 700, color: '#dc2626', fontSize: '1rem' }}>
-                          {formatCurrency(row.amount_due)}
+                          {formatCurrency(row.balance.toString())}
                         </div>
                       </div>
                     ))}
@@ -297,24 +297,21 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
                     background: '#f8fafc'
                   }}>
                     <div style={{ fontWeight: 600, marginBottom: '0.5rem', color: '#0f172a' }}>
-                      {group.normalized_name} ({group.patients.length} records)
+                      {group.patient_name || group.norm_name || 'Unknown'} ({group.memberships.length} records)
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      {group.patients.map((patient, pIdx) => (
+                      {group.memberships.map((membership, pIdx) => (
                         <div key={pIdx} style={{
                           padding: '0.5rem',
                           background: '#ffffff',
                           borderRadius: '0.5rem',
                           fontSize: '0.85rem'
                         }}>
-                          <Link 
-                            href={withBasePath(`/patients/${patient.patient_id}`)}
-                            style={{ color: '#3b82f6', textDecoration: 'none', fontWeight: 600 }}
-                          >
-                            {patient.full_name}
-                          </Link>
+                          <span style={{ fontWeight: 600, color: '#0f172a' }}>
+                            {membership.patient_name || 'Unknown'}
+                          </span>
                           <span style={{ color: '#64748b', marginLeft: '0.5rem' }}>
-                            • {patient.status_key || 'No status'} • {patient.phone_primary || 'No phone'}
+                            • {membership.plan_name || 'No plan'} • {membership.status || 'No status'}
                           </span>
                         </div>
                       ))}
@@ -342,9 +339,9 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
                         borderBottom: '1px solid #e2e8f0',
                         fontSize: '0.9rem'
                       }}>
-                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{row.customer_name}</div>
+                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{row.customerName}</div>
                         <div style={{ color: '#64748b', fontSize: '0.85rem' }}>
-                          {formatCurrency(row.amount)} • {row.frequency || 'Unknown frequency'}
+                          {formatCurrency((row.amount || 0).toString())} • {row.templateName || 'Unknown frequency'}
                         </div>
                       </div>
                     ))}
@@ -361,9 +358,9 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
                         borderBottom: '1px solid #e2e8f0',
                         fontSize: '0.9rem'
                       }}>
-                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{row.customer_name}</div>
+                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{row.full_name || 'Unknown'}</div>
                         <div style={{ color: '#64748b', fontSize: '0.85rem' }}>
-                          {row.email || 'No email'} • {row.phone || 'No phone'}
+                          {row.email || 'No email'} • {row.phone_primary || 'No phone'}
                         </div>
                       </div>
                     ))}

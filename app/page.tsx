@@ -1,5 +1,6 @@
 export const dynamic = 'force-dynamic';
 
+import React from 'react';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import {
@@ -13,6 +14,8 @@ import { getTestosteroneInventoryByVendor, getPaymentFailureStats } from '@/lib/
 import { fetchInventorySummary } from '@/lib/inventoryQueries';
 import { getPatientAnalyticsBreakdown } from '@/lib/patientAnalytics';
 import { requireUser, userHasRole } from '@/lib/auth';
+import DashboardClient from './DashboardClient';
+import { getTotalJaneRevenue } from '@/lib/janeRevenueQueries';
 
 function withBasePath(path: string): string {
   return path;
@@ -121,7 +124,8 @@ export default async function HomePage() {
     testosteroneInventory,
     paymentFailures,
     inventorySummary,
-    analytics
+    analytics,
+    janeRevenue
   ] = await Promise.all([
     fetchDashboardMetrics(),
     getJaneOutstandingMemberships(8),
@@ -142,6 +146,15 @@ export default async function HomePage() {
       byPaymentMethod: [],
       byClientTypeAndPayment: [],
       byMembershipPlan: []
+    })),
+    getTotalJaneRevenue().catch(() => ({
+      totalRevenue: 0,
+      totalPayments: 0,
+      totalPurchased: 0,
+      outstandingBalance: 0,
+      totalPatients: 0,
+      averageRevenuePerPatient: 0,
+      revenueByMonth: []
     }))
   ]);
 
@@ -168,6 +181,7 @@ export default async function HomePage() {
   const totalPaymentFailures = paymentFailures.jane.count + paymentFailures.quickbooks.count;
 
   return (
+    <DashboardClient>
     <section style={{ 
         padding: '1.5rem 2rem',
         backgroundColor: '#f8fafc',
@@ -190,6 +204,110 @@ export default async function HomePage() {
         <p style={{ color: '#64748b', fontSize: '1rem', maxWidth: '48rem' }}>
           Real-time business intelligence across all systems. Click any metric to drill down into details.
         </p>
+      </div>
+
+      {/* Operational Metrics - Moved to Top */}
+      <div style={{ marginBottom: '2rem' }}>
+        <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
+          🏥 Operational Metrics
+        </h2>
+        <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+          <ClickableMetricCard
+            href="/patients"
+            label="Total Patients"
+            value={metrics.totalPatients}
+            subLabel={`${metrics.activePatients} active, ${metrics.holdPatients} on hold`}
+            icon="👥"
+            gradient="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
+            borderColor="#667eea"
+            shadowColor="rgba(102, 126, 234, 0.3)"
+          />
+
+          <ClickableMetricCard
+            href="/patients?status=active"
+            label="Active Patients"
+            value={metrics.activePatients}
+            subLabel="Currently receiving care"
+            icon="✅"
+            gradient="linear-gradient(135deg, #10b981 0%, #059669 100%)"
+            borderColor="#10b981"
+            shadowColor="rgba(16, 185, 129, 0.3)"
+          />
+
+          <ClickableMetricCard
+            href="/patients?status=hold_payment_research"
+            label="Hold - Payment Research"
+            value={metrics.holdPaymentResearch}
+            subLabel="Requires card follow-up"
+            icon="🔍"
+            gradient="linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
+            borderColor="#f59e0b"
+            shadowColor="rgba(245, 158, 11, 0.3)"
+          />
+
+          <ClickableMetricCard
+            href="/patients?status=hold_contract_renewal"
+            label="Hold - Contract Renewal"
+            value={metrics.holdContractRenewal}
+            subLabel="Less than 2 cycles remaining"
+            icon="📋"
+            gradient="linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
+            borderColor="#f59e0b"
+            shadowColor="rgba(245, 158, 11, 0.3)"
+          />
+
+          <ClickableMetricCard
+            href="/patients?labs_due=30"
+            label="Labs Due ≤30 Days"
+            value={metrics.upcomingLabs}
+            subLabel="Requires scheduling"
+            icon="🧪"
+            gradient="linear-gradient(135deg, #ea580c 0%, #c2410c 100%)"
+            borderColor="#ea580c"
+            shadowColor="rgba(234, 88, 12, 0.3)"
+          />
+
+          <ClickableMetricCard
+            href="/dea"
+            label="Controlled Dispenses (30d)"
+            value={metrics.controlledDispensesLast30}
+            subLabel="DEA compliance tracking"
+            icon="💊"
+            gradient="linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)"
+            borderColor="#3b82f6"
+            shadowColor="rgba(59, 130, 246, 0.3)"
+          />
+
+          <ClickableMetricCard
+            href="/provider/signatures"
+            label="Pending Signatures"
+            value={pendingSignatures}
+            subLabel={pendingSignatures > 0 ? "Action required" : "All signed"}
+            icon="✍️"
+            gradient={pendingSignatures > 0
+              ? "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
+              : "linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)"}
+            borderColor={pendingSignatures > 0 ? "#f59e0b" : "#6366f1"}
+            shadowColor={pendingSignatures > 0
+              ? "rgba(245, 158, 11, 0.3)"
+              : "rgba(99, 102, 241, 0.3)"}
+          />
+
+          <ClickableMetricCard
+            href="/audit"
+            label="Weeks Since Audit"
+            value={weeksSinceAudit}
+            subLabel={auditOverdue ? "⚠️ Overdue" : "✅ Current"}
+            icon="📊"
+            gradient={auditOverdue
+              ? "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
+              : "linear-gradient(135deg, #10b981 0%, #059669 100%)"}
+            borderColor={auditOverdue ? "#ef4444" : "#10b981"}
+            shadowColor={auditOverdue
+              ? "rgba(239, 68, 68, 0.3)"
+              : "rgba(16, 185, 129, 0.3)"}
+          />
+        </div>
       </div>
 
       {/* Executive Summary KPIs - Top Priority */}
@@ -241,6 +359,17 @@ export default async function HomePage() {
             shadowColor={pendingSignatures > 0
               ? "rgba(245, 158, 11, 0.3)"
               : "rgba(99, 102, 241, 0.3)"}
+          />
+
+          <ClickableMetricCard
+            href="/jane-revenue"
+            label="Jane Total Revenue"
+            value={formatCurrency(janeRevenue.totalRevenue)}
+            subLabel={`${janeRevenue.totalPatients} patients • ${formatCurrency(janeRevenue.averageRevenuePerPatient)} avg`}
+            icon="💰"
+            gradient="linear-gradient(135deg, #10b981 0%, #059669 100%)"
+            borderColor="#10b981"
+            shadowColor="rgba(16, 185, 129, 0.3)"
           />
         </div>
       </div>
@@ -389,94 +518,6 @@ export default async function HomePage() {
         </div>
       </div>
 
-      {/* Patient Breakdown by Service Type & Payment Method */}
-      <div style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
-          👥 Patient Breakdown by Service Type & Payment Method
-        </h2>
-        <Link
-          href={withBasePath("/admin/membership-audit")}
-          style={{
-            padding: '2rem',
-            borderRadius: '1rem',
-            background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
-            border: '2px solid #0ea5e9',
-            boxShadow: '0 10px 40px rgba(14, 165, 233, 0.2)',
-            textDecoration: 'none',
-            color: 'inherit',
-            display: 'block',
-            transition: 'all 0.3s ease'
-          }}
-        >
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '2rem', marginBottom: '1.5rem' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.5rem', fontWeight: 600, textTransform: 'uppercase' }}>
-                Primary Care
-              </div>
-              <div style={{ fontSize: '3rem', fontWeight: 800, color: '#0369a1', marginBottom: '0.5rem' }}>
-                {analytics.primaryCare}
-              </div>
-              <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                {analytics.totalPatients > 0 ? ((analytics.primaryCare / analytics.totalPatients) * 100).toFixed(1) : '0'}% of total
-              </div>
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.5rem', fontWeight: 600, textTransform: 'uppercase' }}>
-                Men's Health
-              </div>
-              <div style={{ fontSize: '3rem', fontWeight: 800, color: '#92400e', marginBottom: '0.5rem' }}>
-                {analytics.mensHealth}
-              </div>
-              <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                {analytics.totalPatients > 0 ? ((analytics.mensHealth / analytics.totalPatients) * 100).toFixed(1) : '0'}% of total
-              </div>
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.5rem', fontWeight: 600, textTransform: 'uppercase' }}>
-                Other Services
-              </div>
-              <div style={{ fontSize: '3rem', fontWeight: 800, color: '#7c2d92', marginBottom: '0.5rem' }}>
-                {analytics.other}
-              </div>
-              <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                {analytics.totalPatients > 0 ? ((analytics.other / analytics.totalPatients) * 100).toFixed(1) : '0'}% of total
-              </div>
-            </div>
-          </div>
-          <div style={{ 
-            display: 'grid', 
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: '1rem',
-            marginTop: '1.5rem'
-          }}>
-            {analytics.byClientTypeAndPayment.slice(0, 12).map((row, idx) => (
-              <div
-                key={`${row.clientTypeKey}-${row.paymentMethodKey}-${idx}`}
-                style={{
-                  padding: '1rem',
-                  borderRadius: '0.75rem',
-                  backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                  border: '1px solid rgba(14, 165, 233, 0.2)'
-                }}
-              >
-                <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem', fontWeight: 500 }}>
-                  {row.clientTypeName}
-                </div>
-                <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginBottom: '0.5rem' }}>
-                  {row.paymentMethodName}
-                </div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#0369a1' }}>
-                  {row.count}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div style={{ textAlign: 'center', marginTop: '1rem', color: '#0369a1', fontWeight: 600, fontSize: '0.9rem' }}>
-            Click to view full breakdown →
-          </div>
-        </Link>
-      </div>
-
       {/* Outstanding Balances - Simplified */}
       <div style={{ marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
@@ -607,247 +648,186 @@ export default async function HomePage() {
         </div>
       </div>
 
-      {/* Operational Metrics */}
+      {/* Patient Breakdown by Service Type - Side by Side */}
       <div style={{ marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
-          🏥 Operational Metrics
+          👥 Patient Breakdown by Service Type
         </h2>
-        <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))' }}>
-          <ClickableMetricCard
-            href="/patients"
-            label="Total Patients"
-            value={metrics.totalPatients}
-            subLabel={`${metrics.activePatients} active, ${metrics.holdPatients} on hold`}
-            icon="👥"
-            gradient="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
-            borderColor="#667eea"
-            shadowColor="rgba(102, 126, 234, 0.3)"
-          />
-
-          <ClickableMetricCard
-            href="/patients?status=active"
-            label="Active Patients"
-            value={metrics.activePatients}
-            subLabel="Currently receiving care"
-            icon="✅"
-            gradient="linear-gradient(135deg, #10b981 0%, #059669 100%)"
-            borderColor="#10b981"
-            shadowColor="rgba(16, 185, 129, 0.3)"
-          />
-
-          <ClickableMetricCard
-            href="/patients?status=hold_payment_research"
-            label="Hold - Payment Research"
-            value={metrics.holdPaymentResearch}
-            subLabel="Requires card follow-up"
-            icon="🔍"
-            gradient="linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
-            borderColor="#f59e0b"
-            shadowColor="rgba(245, 158, 11, 0.3)"
-          />
-
-          <ClickableMetricCard
-            href="/patients?status=hold_contract_renewal"
-            label="Hold - Contract Renewal"
-            value={metrics.holdContractRenewal}
-            subLabel="Less than 2 cycles remaining"
-            icon="📋"
-            gradient="linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
-            borderColor="#f59e0b"
-            shadowColor="rgba(245, 158, 11, 0.3)"
-          />
-
-          <ClickableMetricCard
-            href="/patients"
-            label="Labs Due ≤30 Days"
-            value={metrics.upcomingLabs}
-            subLabel="Requires scheduling"
-            icon="🧪"
-            gradient="linear-gradient(135deg, #ea580c 0%, #c2410c 100%)"
-            borderColor="#ea580c"
-            shadowColor="rgba(234, 88, 12, 0.3)"
-          />
-
-          <ClickableMetricCard
-            href="/dea"
-            label="Controlled Dispenses (30d)"
-            value={metrics.controlledDispensesLast30}
-            subLabel="DEA compliance tracking"
-            icon="💊"
-            gradient="linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)"
-            borderColor="#3b82f6"
-            shadowColor="rgba(59, 130, 246, 0.3)"
-          />
-
-          <ClickableMetricCard
-            href="/provider/signatures"
-            label="Pending Signatures"
-            value={pendingSignatures}
-            subLabel={pendingSignatures > 0 ? "Action required" : "All signed"}
-            icon="✍️"
-            gradient={pendingSignatures > 0
-              ? "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
-              : "linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)"}
-            borderColor={pendingSignatures > 0 ? "#f59e0b" : "#6366f1"}
-            shadowColor={pendingSignatures > 0
-              ? "rgba(245, 158, 11, 0.3)"
-              : "rgba(99, 102, 241, 0.3)"}
-          />
-
-          <ClickableMetricCard
-            href="/audit"
-            label="Weeks Since Audit"
-            value={weeksSinceAudit}
-            subLabel={auditOverdue ? "⚠️ Overdue" : "✅ Current"}
-            icon="📊"
-            gradient={auditOverdue
-              ? "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
-              : "linear-gradient(135deg, #10b981 0%, #059669 100%)"}
-            borderColor={auditOverdue ? "#ef4444" : "#10b981"}
-            shadowColor={auditOverdue
-              ? "rgba(239, 68, 68, 0.3)"
-              : "rgba(16, 185, 129, 0.3)"}
-          />
-        </div>
-      </div>
-
-          {testosteroneInventory && Array.isArray(testosteroneInventory) && testosteroneInventory.map((inventory) => {
-            const isCarrieBoyd = inventory.vendor.includes('Carrie Boyd');
-            const vendorShort = isCarrieBoyd ? 'Carrie Boyd (30ML)' : 'TopRX (10ML)';
-            const dispensingCount = inventory.vialDetails?.filter(v => v.isDispensing).length || 0;
-            
-            return (
-              <Link
-                key={inventory.vendor}
-                href={withBasePath("/inventory")}
-                style={{
-                  padding: '1.75rem',
-                  borderRadius: '1rem',
-                  background: inventory.lowInventory 
-                    ? 'linear-gradient(135deg, #fee2e2 0%, #fef2f2 100%)'
-                    : 'linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)',
-                  border: inventory.lowInventory ? '2px solid #ef4444' : '2px solid #10b981',
-                  boxShadow: inventory.lowInventory
-                    ? '0 10px 40px rgba(239, 68, 68, 0.2)'
-                    : '0 10px 40px rgba(16, 185, 129, 0.2)',
-                  textDecoration: 'none',
-                  color: 'inherit',
-                  position: 'relative',
-                  transition: 'all 0.3s ease',
-                  display: 'block'
-                }}
-              >
-                {inventory.lowInventory && (
-                  <div style={{
-                    position: 'absolute',
-                    top: '-10px',
-                    right: '12px',
-                    background: '#ef4444',
-                    color: 'white',
-                    padding: '4px 12px',
-                    borderRadius: '6px',
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    boxShadow: '0 4px 12px rgba(239, 68, 68, 0.4)'
-                  }}>
-                    ⚠️ ORDER ALERT
-                  </div>
-                )}
-                <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, textAlign: 'center' }}>
-                  {vendorShort}
-                </div>
-                <div style={{ textAlign: 'center', marginBottom: '0.75rem' }}>
-                  <div style={{ fontSize: '3rem', fontWeight: 800, color: inventory.lowInventory ? '#dc2626' : '#0f172a', lineHeight: 1 }}>
-                    {inventory.activeVials}
-                  </div>
-                  <div style={{ fontSize: '0.9rem', color: '#64748b', fontWeight: 500, marginTop: '0.25rem' }}>
-                    active vials
-                  </div>
-                </div>
-                <div style={{ 
-                  padding: '0.75rem',
-                  borderRadius: '0.5rem',
-                  backgroundColor: 'rgba(255, 255, 255, 0.7)',
-                  marginBottom: '0.5rem',
-                  textAlign: 'center'
-                }}>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 700, color: inventory.lowInventory ? '#dc2626' : '#059669', marginBottom: '0.25rem' }}>
-                    {inventory.totalRemainingMl.toFixed(1)} mL
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: '#64748b' }}>Total Remaining</div>
-                </div>
-                {dispensingCount > 0 && (
-                  <div style={{ 
-                    padding: '0.5rem',
-                    borderRadius: '0.5rem',
-                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                    textAlign: 'center',
-                    marginBottom: '0.5rem'
-                  }}>
-                    <div style={{ fontSize: '0.85rem', color: '#1e40af', fontWeight: 600 }}>
-                      {dispensingCount} vial{dispensingCount !== 1 ? 's' : ''} actively dispensing
+        <div style={{ 
+          display: 'grid', 
+          gridTemplateColumns: '1fr 1fr',
+          gap: '1.5rem'
+        }}>
+          {/* Primary Care Patient Breakdown */}
+          <Link
+            href={withBasePath("/admin/membership-audit")}
+            style={{
+              padding: '2rem',
+              borderRadius: '1rem',
+              background: 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)',
+              border: '2px solid #3b82f6',
+              boxShadow: '0 10px 40px rgba(59, 130, 246, 0.2)',
+              textDecoration: 'none',
+              color: 'inherit',
+              display: 'block',
+              transition: 'all 0.3s ease'
+            }}
+          >
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+              <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.5rem', fontWeight: 600, textTransform: 'uppercase' }}>
+                🏥 Primary Care
+              </div>
+              <div style={{ fontSize: '3.5rem', fontWeight: 800, color: '#1e40af', marginBottom: '0.5rem' }}>
+                {analytics.primaryCare}
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                {analytics.totalPatients > 0 ? ((analytics.primaryCare / analytics.totalPatients) * 100).toFixed(1) : '0'}% of total
+              </div>
+            </div>
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: '0.75rem',
+              marginTop: '1.5rem'
+            }}>
+              {(() => {
+                const primaryCareRows = analytics.byClientTypeAndPayment.filter(row => {
+                  const isInsuranceSupplemental = row.clientTypeName?.includes('Ins. Supp.') || row.clientTypeName?.includes('Insurance Supplemental');
+                  return row.isPrimaryCare || isInsuranceSupplemental;
+                });
+                return primaryCareRows.map((row, idx) => (
+                  <div
+                    key={`primary-${row.clientTypeKey}-${row.paymentMethodKey}-${idx}`}
+                    style={{
+                      padding: '0.875rem',
+                      borderRadius: '0.75rem',
+                      backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                      border: '1px solid rgba(59, 130, 246, 0.3)',
+                      boxShadow: '0 2px 8px rgba(59, 130, 246, 0.1)'
+                    }}
+                  >
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', marginBottom: '0.25rem', fontWeight: 500 }}>
+                      {row.clientTypeName}
+                    </div>
+                    <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginBottom: '0.4rem' }}>
+                      {row.paymentMethodName}
+                    </div>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#1e40af' }}>
+                      {row.count}
                     </div>
                   </div>
-                )}
-                {inventory.vialDetails && inventory.vialDetails.length > 0 && (
-                  <div style={{ 
-                    marginTop: '0.75rem',
-                    padding: '0.75rem',
-                    borderRadius: '0.5rem',
-                    backgroundColor: 'rgba(255, 255, 255, 0.5)',
-                    maxHeight: '150px',
-                    overflowY: 'auto'
-                  }}>
-                    <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600, marginBottom: '0.5rem', textAlign: 'center' }}>
-                      Top Vials
+                ));
+              })()}
+            </div>
+            <div style={{ textAlign: 'center', marginTop: '1rem', color: '#1e40af', fontWeight: 600, fontSize: '0.85rem' }}>
+              View full breakdown →
+            </div>
+          </Link>
+
+          {/* Men's Health Patient Breakdown */}
+          <Link
+            href={withBasePath("/admin/membership-audit")}
+            style={{
+              padding: '2rem',
+              borderRadius: '1rem',
+              background: 'linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)',
+              border: '2px solid #ea580c',
+              boxShadow: '0 10px 40px rgba(234, 88, 12, 0.2)',
+              textDecoration: 'none',
+              color: 'inherit',
+              display: 'block',
+              transition: 'all 0.3s ease'
+            }}
+          >
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+              <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.5rem', fontWeight: 600, textTransform: 'uppercase' }}>
+                💪 Men's Health
+              </div>
+              <div style={{ fontSize: '3.5rem', fontWeight: 800, color: '#c2410c', marginBottom: '0.5rem' }}>
+                {analytics.mensHealth}
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                {analytics.totalPatients > 0 ? ((analytics.mensHealth / analytics.totalPatients) * 100).toFixed(1) : '0'}% of total
+              </div>
+            </div>
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: '0.75rem',
+              marginTop: '1.5rem'
+            }}>
+              {(() => {
+                const mensHealthTypes = [
+                  'QBO TCMH $180/Month',
+                  'QBO F&F/FR/Veteran $140/Month',
+                  'Jane TCMH $180/Month',
+                  'Jane F&F/FR/Veteran $140/Month',
+                  'Approved Disc / Pro-Bono PT',
+                  "Men's Health (QBO)"
+                ];
+                const mensHealthRows = analytics.byClientTypeAndPayment.filter(row => 
+                  mensHealthTypes.includes(row.clientTypeName || '')
+                );
+                
+                // Group by membership type (consolidate payment methods)
+                const groupedByMembership: Map<string, Array<{ method: string; count: number }>> = new Map();
+                
+                mensHealthRows.forEach(row => {
+                  const membershipType = row.clientTypeName || 'Unknown';
+                  if (!groupedByMembership.has(membershipType)) {
+                    groupedByMembership.set(membershipType, []);
+                  }
+                  const existing = groupedByMembership.get(membershipType)!;
+                  existing.push({ method: row.paymentMethodName || 'Unknown', count: row.count });
+                });
+                
+                // Convert to array and sort by total count
+                const groupedRows = Array.from(groupedByMembership.entries())
+                  .map(([membershipType, paymentMethods]) => {
+                    const totalCount = paymentMethods.reduce((sum, pm) => sum + pm.count, 0);
+                    return {
+                      clientTypeName: membershipType,
+                      totalCount,
+                      paymentBreakdown: paymentMethods
+                    };
+                  })
+                  .sort((a, b) => b.totalCount - a.totalCount);
+                
+                return groupedRows.map((row, idx) => (
+                  <div
+                    key={`menshealth-${idx}`}
+                    style={{
+                      padding: '0.875rem',
+                      borderRadius: '0.75rem',
+                      backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                      border: '1px solid rgba(234, 88, 12, 0.3)',
+                      boxShadow: '0 2px 8px rgba(234, 88, 12, 0.1)'
+                    }}
+                  >
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', marginBottom: '0.25rem', fontWeight: 500 }}>
+                      {row.clientTypeName}
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                      {inventory.vialDetails.slice(0, 5).map((vial, idx) => (
-                        <div key={idx} style={{ 
-                          display: 'flex', 
-                          justifyContent: 'space-between', 
-                          alignItems: 'center',
-                          fontSize: '0.75rem',
-                          padding: '0.25rem 0'
-                        }}>
-                          <span style={{ fontWeight: 600, color: '#0f172a' }}>{vial.externalId}</span>
-                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                            {vial.isDispensing && (
-                              <span style={{ 
-                                fontSize: '0.65rem',
-                                padding: '2px 6px',
-                                borderRadius: '4px',
-                                backgroundColor: '#3b82f6',
-                                color: 'white',
-                                fontWeight: 600
-                              }}>ACTIVE</span>
-                            )}
-                            <span style={{ color: '#64748b', fontWeight: 500 }}>{vial.remainingMl.toFixed(1)}mL</span>
-                          </div>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#c2410c', marginBottom: '0.4rem' }}>
+                      {row.totalCount}
+                    </div>
+                    <div style={{ fontSize: '0.65rem', color: '#94a3b8' }}>
+                      {row.paymentBreakdown.map((pb, pIdx) => (
+                        <div key={pIdx} style={{ marginBottom: '0.2rem' }}>
+                          {pb.method}: {pb.count}
                         </div>
                       ))}
                     </div>
                   </div>
-                )}
-                {inventory.lowInventory && (
-                  <div style={{ 
-                    marginTop: '0.75rem',
-                    padding: '0.5rem',
-                    borderRadius: '0.5rem',
-                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                    color: '#dc2626',
-                    fontSize: '0.85rem',
-                    fontWeight: 600,
-                    textAlign: 'center'
-                  }}>
-                    Low inventory - order immediately
-                  </div>
-                )}
-              </Link>
-            );
-          })}
+                ));
+              })()}
+            </div>
+            <div style={{ textAlign: 'center', marginTop: '1rem', color: '#c2410c', fontWeight: 600, fontSize: '0.85rem' }}>
+              View full breakdown →
+            </div>
+          </Link>
         </div>
       </div>
+
 
       {/* System Integration Health */}
       <div style={{ marginBottom: '2rem' }}>
@@ -1154,5 +1134,6 @@ export default async function HomePage() {
 
       <div style={{ marginTop: '3rem' }} />
     </section>
+    </DashboardClient>
   );
 }
