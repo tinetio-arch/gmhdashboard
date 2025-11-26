@@ -474,17 +474,34 @@ export class GHLClient {
     const unwrappedContacts = contacts.map((item) => {
       // If the item itself is a contact (has id), return it
       if (item && (item.id || item.contactId)) {
+        // Ensure id field is set
+        if (!item.id && item.contactId) {
+          item.id = item.contactId;
+        }
         return item;
       }
       // If the item has a nested 'contact' property, extract it
       if (item && item.contact && (item.contact.id || item.contact.contactId)) {
-        return item.contact;
+        const contact = item.contact;
+        if (!contact.id && contact.contactId) {
+          contact.id = contact.contactId;
+        }
+        return contact;
       }
       // Otherwise return as-is
+      console.warn('[GHL] Contact missing id/contactId:', JSON.stringify(item));
       return item;
     }).filter(item => item && (item.id || item.contactId)); // Filter out invalid contacts
     
-    return unwrappedContacts;
+    // Final safety check: ensure all contacts have an id field
+    const validContacts = unwrappedContacts.map((contact) => {
+      if (!contact.id && contact.contactId) {
+        contact.id = contact.contactId;
+      }
+      return contact;
+    });
+    
+    return validContacts;
   }
 }
 

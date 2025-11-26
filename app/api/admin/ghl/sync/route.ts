@@ -11,6 +11,7 @@ import { fetchPatientDataEntries } from '@/lib/patientQueries';
  * - { patientId: string } - Sync single patient
  * - { patientIds: string[] } - Sync multiple patients
  * - { syncAll: true } - Sync all patients needing sync
+ * - { syncAll: true, forceAll: true } - Force resync ALL patients (including already synced ones)
  */
 export async function POST(request: NextRequest) {
   try {
@@ -57,10 +58,12 @@ export async function POST(request: NextRequest) {
 
     // Sync all patients needing sync
     if (body.syncAll === true) {
-      const results = await syncAllPatientsToGHL(user.user_id);
+      const forceAll = body.forceAll === true; // Force resync all patients regardless of status
+      const results = await syncAllPatientsToGHL(user.user_id, forceAll);
       
       return NextResponse.json({
         success: true,
+        forceAll,
         results
       });
     }

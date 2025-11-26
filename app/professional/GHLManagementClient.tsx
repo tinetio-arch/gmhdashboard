@@ -100,7 +100,7 @@ export default function GHLManagementClient() {
       const response = await fetch(withBasePath('/api/admin/ghl/sync'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ syncAll: true })
+        body: JSON.stringify({ syncAll: true, forceAll: true })
       });
 
       const data = await response.json();

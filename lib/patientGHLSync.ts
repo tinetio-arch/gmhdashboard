@@ -309,8 +309,9 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
 
   // CRITICAL: Lab dates - GMH ALWAYS WINS (even if empty, overwrites GHL)
   // These are the most important fields per user requirements
-  addCustomField('last_lab_date', patient.last_lab);
-  addCustomField('next_lab_date', patient.next_lab);
+  // Use the correct GHL custom field IDs (not names)
+  addCustomField('M9UY8UHBU8vI4lKBWN7w', patient.last_lab);      // Date of Last Lab Test
+  addCustomField('cMaBe12wckOiBAYb6T3e', patient.next_lab);      // Date of Next Lab Test
   
   // Payment and client information
   addCustomField('method_of_payment', patient.method_of_payment);
@@ -398,11 +399,29 @@ export async function syncPatientToGHL(
     );
 
     if (existingSync[0]?.ghl_contact_id) {
-      // Try to get existing contact
-      try {
-        ghlContact = await ghlClient.getContact(existingSync[0].ghl_contact_id);
-      } catch (error) {
-        console.log('Contact not found in GHL by ID, will search by email/phone');
+      // Try to get existing contact - but only if ID is valid
+      const contactId = existingSync[0].ghl_contact_id;
+      if (contactId && contactId !== 'undefined' && contactId.trim() !== '') {
+        try {
+          ghlContact = await ghlClient.getContact(contactId);
+          if (ghlContact) {
+            console.log(`[GHL Sync] Found existing contact by stored ID: ${contactId}`);
+          }
+        } catch (error) {
+          console.log(`[GHL Sync] Contact not found in GHL by stored ID (${contactId}), will search by email/phone`);
+          // Clear the invalid contact ID from database
+          await query(
+            `UPDATE patients SET ghl_contact_id = NULL WHERE patient_id = $1`,
+            [patient.patient_id]
+          );
+        }
+      } else {
+        console.log(`[GHL Sync] Invalid contact ID stored (${contactId}), will search by email/phone`);
+        // Clear the invalid contact ID from database
+        await query(
+          `UPDATE patients SET ghl_contact_id = NULL WHERE patient_id = $1`,
+          [patient.patient_id]
+        );
       }
     }
 
@@ -456,18 +475,32 @@ export async function syncPatientToGHL(
       }
     }
 
-    // STEP 4: If still no contact found, return error (we only link existing contacts)
+    // STEP 4: If still no contact found, CREATE A NEW CONTACT
     if (!ghlContact) {
-      const errorMsg = `Contact not found in GHL. Email: ${patient.email || patient.qbo_customer_email || 'none'}, Phone: ${patient.phone_number || 'none'}, Name: ${patient.patient_name || 'none'}`;
-      console.log(`[GHL Sync] Step 4: Contact not found - ${errorMsg}`);
-      await query(
-        `UPDATE patients 
-         SET ghl_sync_status = 'error',
-             ghl_sync_error = $1
-         WHERE patient_id = $2`,
-        [errorMsg, patient.patient_id]
-      );
-      return { success: false, error: errorMsg };
+      console.log(`[GHL Sync] Step 4: Contact not found - creating new contact in GHL for ${patient.patient_name}`);
+      
+      const contactData = formatPatientForGHL(patient);
+      const tagNames = await calculatePatientTags(patient);
+      await ensureGHLTags(ghlClient, tagNames);
+      contactData.tags = tagNames;
+      
+      try {
+        // Create the contact in GHL
+        const createdContact = await ghlClient.createContact(contactData);
+        console.log(`[GHL Sync] Step 4a: Successfully created new contact in GHL: ${createdContact.id}`);
+        ghlContact = createdContact;
+      } catch (createError) {
+        const errorMsg = `Failed to create contact in GHL: ${createError instanceof Error ? createError.message : 'Unknown error'}`;
+        console.error(`[GHL Sync] Step 4 ERROR: ${errorMsg}`);
+        await query(
+          `UPDATE patients 
+           SET ghl_sync_status = 'error',
+               ghl_sync_error = $1
+           WHERE patient_id = $2`,
+          [errorMsg, patient.patient_id]
+        );
+        return { success: false, error: errorMsg };
+      }
     }
 
     // STEP 5: Extract contact ID from multiple possible fields
@@ -658,6 +691,28 @@ export async function syncMultiplePatients(
 }
 
 /**
+ * Get ALL patients for forced resync (ignores sync status)
+ */
+export async function getAllPatientsForForcedResync(limit = 500): Promise<PatientGHLSync[]> {
+  return query<PatientGHLSync>(
+    `SELECT 
+      patient_id,
+      patient_name,
+      email,
+      phone_primary,
+      ghl_contact_id,
+      ghl_sync_status,
+      ghl_last_synced_at,
+      ghl_sync_error,
+      COALESCE(ghl_tags, '[]'::jsonb) as ghl_tags
+     FROM patient_ghl_sync_v
+     ORDER BY patient_id DESC
+     LIMIT $1`,
+    [limit]
+  );
+}
+
+/**
  * Get patients that need syncing
  */
 export async function getPatientsNeedingSync(limit = 100): Promise<PatientGHLSync[]> {
@@ -692,13 +747,17 @@ export async function getPatientsNeedingSync(limit = 100): Promise<PatientGHLSyn
 /**
  * Sync all patients that need syncing
  */
-export async function syncAllPatientsToGHL(userId?: string): Promise<{
+export async function syncAllPatientsToGHL(userId?: string, forceAll: boolean = false): Promise<{
   total: number;
   succeeded: number;
   failed: number;
   errors: string[];
 }> {
-  const patientsToSync = await getPatientsNeedingSync(500); // Sync up to 500 at a time
+  // If forceAll is true, resync ALL patients regardless of sync status
+  // Otherwise, only sync patients that need syncing
+  const patientsToSync = forceAll 
+    ? await getAllPatientsForForcedResync(500)
+    : await getPatientsNeedingSync(500);
   
   if (patientsToSync.length === 0) {
     return { total: 0, succeeded: 0, failed: 0, errors: [] };

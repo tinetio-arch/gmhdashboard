@@ -50,3 +50,4 @@ COMMENT ON TABLE clinicsync_sync_tracking IS 'Tracks ClinicSync webhook activity
 COMMENT ON VIEW clinicsync_sync_summary IS 'Summary view of ClinicSync sync activity with calculated metrics';
 
 
+
