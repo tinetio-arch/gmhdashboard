@@ -286,14 +286,49 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
   // Helper to add custom field only if value is not empty
   const addCustomField = (key: string, value: string | null | undefined) => {
     // Convert value to string if needed
-    const stringValue = value !== null && value !== undefined ? String(value) : '';
+    let stringValue = value !== null && value !== undefined ? String(value) : '';
     
-    // For lab dates, always include (even if empty) per user requirement
-    if (key === 'last_lab_date' || key === 'next_lab_date') {
+    // For lab date fields, format as mm-dd-yyyy for GHL
+    if (key === 'M9UY8UHBU8vI4lKBWN7w' || key === 'cMaBe12wckOiBAYb6T3e') {
+      if (stringValue && stringValue.trim()) {
+        try {
+          // Handle ISO format dates (YYYY-MM-DD) directly to avoid timezone issues
+          const isoDateMatch = stringValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+          if (isoDateMatch) {
+            // Directly use the date parts from ISO format (YYYY-MM-DD)
+            const year = isoDateMatch[1];
+            const month = isoDateMatch[2];
+            const day = isoDateMatch[3];
+            stringValue = `${month}-${day}-${year}`;
+            console.log(`[GHL Sync] Formatted ISO date to: ${stringValue}`);
+          } else {
+            // Try parsing as a date for other formats
+            const dateObj = new Date(stringValue);
+            if (!isNaN(dateObj.getTime())) {
+              // Successfully parsed as a date - format as mm-dd-yyyy
+              const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+              const day = String(dateObj.getUTCDate()).padStart(2, '0');
+              const year = dateObj.getUTCFullYear();
+              stringValue = `${month}-${day}-${year}`;
+              console.log(`[GHL Sync] Formatted date to: ${stringValue}`);
+            } else {
+              // Date parsing failed - leave as is
+              console.log(`[GHL Sync] Date parsing failed for: ${stringValue}`);
+            }
+          }
+        } catch (e) {
+          console.error(`[GHL Sync] Date formatting error:`, e, `for value: ${stringValue}`);
+        }
+      }
+      
+      // GHL updateContact expects `field` (or `id`) for existing custom fields
+      // Try both `field` and `id` to ensure GHL accepts it
       contact.customFields!.push({
-        key,
-        value: stringValue // GMH value ALWAYS (even if empty)
+        field: key,  // Primary identifier
+        id: key,     // Also include id for compatibility
+        value: stringValue || '' // Always send value, even if empty (to clear field)
       });
+      console.log(`[GHL Sync] Added lab date field: field=${key}, value=${stringValue || '(empty)'}`);
       return;
     }
     
@@ -307,11 +342,13 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
     }
   };
 
-  // CRITICAL: Lab dates - GMH ALWAYS WINS (even if empty, overwrites GHL)
-  // These are the most important fields per user requirements
-  // Use the correct GHL custom field IDs (not names)
-  addCustomField('M9UY8UHBU8vI4lKBWN7w', patient.last_lab);      // Date of Last Lab Test
-  addCustomField('cMaBe12wckOiBAYb6T3e', patient.next_lab);      // Date of Next Lab Test
+    // CRITICAL: Lab dates - GMH ALWAYS WINS (even if empty, overwrites GHL)
+    // These are the most important fields per user requirements
+    // Use the correct GHL custom field IDs (not names)
+    console.log(`[GHL Sync] Adding lab dates for ${patient.patient_name}: last_lab=${patient.last_lab}, next_lab=${patient.next_lab}`);
+    // Use the actual GHL field IDs so the date formatting logic triggers and fields update correctly
+    addCustomField('M9UY8UHBU8vI4lKBWN7w', patient.last_lab);      // Date of Last Lab Test
+    addCustomField('cMaBe12wckOiBAYb6T3e', patient.next_lab);      // Date of Next Lab Test
   
   // Payment and client information
   addCustomField('method_of_payment', patient.method_of_payment);
@@ -551,7 +588,14 @@ export async function syncPatientToGHL(
     contactData.tags = shouldClearTags ? [] : tagNames; // Set tags directly
 
     // Update the existing contact with our data (tags + fields)
-    await ghlClient.updateContact(contactId, contactData);
+    console.log(`[GHL Sync] Updating contact ${contactId} with custom fields:`, JSON.stringify(contactData.customFields));
+    try {
+      const updateResult = await ghlClient.updateContact(contactId, contactData);
+      console.log(`[GHL Sync] Successfully updated contact ${contactId}:`, JSON.stringify(updateResult, null, 2));
+    } catch (updateError) {
+      console.error(`[GHL Sync] ERROR updating contact ${contactId}:`, updateError);
+      throw updateError; // Re-throw to be caught by outer catch block
+    }
 
     // Update patient record with successful sync
     await query(

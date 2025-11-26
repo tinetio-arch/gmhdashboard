@@ -59,12 +59,27 @@ export async function POST(request: NextRequest) {
     // Sync all patients needing sync
     if (body.syncAll === true) {
       const forceAll = body.forceAll === true; // Force resync all patients regardless of status
-      const results = await syncAllPatientsToGHL(user.user_id, forceAll);
+      
+      // Return immediately and run sync in background to avoid timeout
+      // Store the sync job ID for tracking
+      const syncJobId = Date.now().toString();
+      
+      // Run sync in background without awaiting
+      (async () => {
+        try {
+          const results = await syncAllPatientsToGHL(user.user_id, forceAll);
+          console.log(`[GHL Sync] Background job ${syncJobId} completed:`, results);
+        } catch (error) {
+          console.error(`[GHL Sync] Background job ${syncJobId} failed:`, error);
+        }
+      })();
       
       return NextResponse.json({
         success: true,
         forceAll,
-        results
+        message: 'Sync started in background',
+        syncJobId,
+        results: { total: 0, succeeded: 0, failed: 0, errors: [] }
       });
     }
 

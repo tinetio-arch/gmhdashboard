@@ -27,7 +27,9 @@ export type GHLContact = {
   assignedTo?: string;
   status?: string;
   customFields?: Array<{
-    key: string;
+    key?: string;
+    id?: string;
+    field?: string;
     value: string;
   }>;
   createdAt?: string;
@@ -98,10 +100,9 @@ export class GHLClient {
     return this.config.locationId;
   }
 
-  private requireLocationId(action: string): string {
-    if (!this.config.locationId) {
-      throw new Error(`GHL location ID is required to ${action}`);
-    }
+  private requireLocationId(action: string): string | undefined {
+    // Location ID is optional - GHL API keys are location-scoped
+    // If not provided, the API will use the location from the API key
     return this.config.locationId;
   }
 
@@ -135,19 +136,36 @@ export class GHLClient {
       'Version': '2021-07-28',
     };
 
+    // Log full request for PUT /contacts (updates)
+    if (method === 'PUT' && endpoint.includes('/contacts/')) {
+      console.log(`[GHL] ${method} ${endpoint}`);
+      if (body) {
+        const bodyStr = JSON.stringify(body, null, 2);
+        console.log(`[GHL] Full request body:`, bodyStr);
+        // Specifically log customFields if present
+        if ((body as any).customFields) {
+          console.log(`[GHL] Custom fields count: ${(body as any).customFields.length}`);
+          (body as any).customFields.forEach((field: any, idx: number) => {
+            console.log(`[GHL]   Custom field ${idx + 1}:`, JSON.stringify(field));
+          });
+        }
+      }
+    }
+
     const response = await fetch(url, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
     });
 
+    const responseText = await response.text();
+    
     if (!response.ok) {
-      const errorText = await response.text();
       let errorMessage = `GHL API error: ${response.status} ${response.statusText}`;
       let errorDetails = '';
       
       try {
-        const errorJson = JSON.parse(errorText);
+        const errorJson = JSON.parse(responseText);
         errorMessage = errorJson.message || errorJson.error || errorMessage;
         // Include validation errors if present
         if (errorJson.errors) {
@@ -157,7 +175,7 @@ export class GHLClient {
           errorDetails = ` Validation: ${JSON.stringify(errorJson.validation)}`;
         }
       } catch {
-        errorMessage += ` - ${errorText}`;
+        errorMessage += ` - ${responseText}`;
       }
 
       const fullError = `${errorMessage}${errorDetails}`;
@@ -168,7 +186,24 @@ export class GHLClient {
       throw new Error(fullError);
     }
 
-    return response.json();
+    let result: T;
+    try {
+      result = JSON.parse(responseText);
+      // Log response for PUT /contacts
+      if (method === 'PUT' && endpoint.includes('/contacts/')) {
+        console.log(`[GHL] Response status: ${response.status}`);
+        if ((result as any).customFields) {
+          console.log(`[GHL] Response customFields count: ${(result as any).customFields.length}`);
+          (result as any).customFields.slice(0, 5).forEach((field: any, idx: number) => {
+            console.log(`[GHL]   Response field ${idx + 1}:`, JSON.stringify(field));
+          });
+        }
+      }
+    } catch {
+      throw new Error(`Failed to parse GHL API response: ${responseText.substring(0, 200)}`);
+    }
+
+    return result;
   }
 
   /**
@@ -372,7 +407,16 @@ export class GHLClient {
    * Update an existing contact
    */
   async updateContact(contactId: string, updates: Partial<GHLContact>): Promise<GHLContact> {
-    return this.request<GHLContact>('PUT', `/contacts/${contactId}`, updates);
+    // Log the full payload being sent for debugging
+    if (updates.customFields && updates.customFields.length > 0) {
+      console.log(`[GHL] Updating contact ${contactId} with ${updates.customFields.length} custom fields:`);
+      updates.customFields.forEach((field, idx) => {
+        console.log(`[GHL]   Field ${idx + 1}:`, JSON.stringify(field));
+      });
+    }
+    const result = await this.request<GHLContact>('PUT', `/contacts/${contactId}`, updates);
+    console.log(`[GHL] Successfully updated contact ${contactId}. Response customFields:`, result.customFields?.slice(0, 3));
+    return result;
   }
 
   /**

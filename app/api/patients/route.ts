@@ -55,19 +55,24 @@ export async function POST(request: NextRequest) {
       lastDeaDrug: body.lastDeaDrug ?? null
     });
 
-    // Sync the newly created patient to GHL
-    try {
-      const patientForSync = await fetchPatientById(created.patient_id);
-      if (patientForSync) {
-        await syncPatientToGHL(patientForSync, user.email);
-        console.log(`[API] Successfully synced new patient ${created.patient_id} to GHL`);
+    // Sync the newly created patient to GHL asynchronously (don't block response)
+    // Fire and forget - don't await, let it run in background
+    (async () => {
+      try {
+        const patientForSync = await fetchPatientById(created.patient_id);
+        if (patientForSync) {
+          // Pass undefined for userId since created_by expects UUID, not email
+          await syncPatientToGHL(patientForSync, undefined);
+          console.log(`[API] Successfully synced new patient ${created.patient_id} to GHL`);
+        }
+      } catch (ghlError) {
+        // Log the error but don't fail the patient creation
+        console.error(`[API] Failed to sync new patient ${created.patient_id} to GHL:`, ghlError);
+        // The patient is still created successfully, GHL sync can be retried later
       }
-    } catch (ghlError) {
-      // Log the error but don't fail the patient creation
-      console.error(`[API] Failed to sync new patient ${created.patient_id} to GHL:`, ghlError);
-      // The patient is still created successfully, GHL sync can be retried later
-    }
+    })();
 
+    // Return immediately without waiting for GHL sync
     return NextResponse.json({ data: created });
   } catch (error) {
     console.error('Failed to create patient', error);
