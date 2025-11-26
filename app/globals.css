@@ -43,3 +43,27 @@ nav a {
 nav a:hover {
   color: #0ea5e9;
 }
+
+/* Dashboard clickable card hover effects */
+a[href*="/patients"],
+a[href*="/admin"],
+a[href*="/provider"],
+a[href*="/inventory"],
+a[href*="/dea"],
+a[href*="/audit"],
+a[href*="/professional"],
+a[href*="/transactions"] {
+  transition: all 0.3s ease;
+}
+
+a[href*="/patients"]:hover,
+a[href*="/admin"]:hover,
+a[href*="/provider"]:hover,
+a[href*="/inventory"]:hover,
+a[href*="/dea"]:hover,
+a[href*="/audit"]:hover,
+a[href*="/professional"]:hover,
+a[href*="/transactions"]:hover {
+  transform: translateY(-4px) !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.15) !important;
+}

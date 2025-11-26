@@ -234,9 +234,23 @@ export async function fetchInventory(): Promise<VialRow[]> {
 export async function fetchInventorySummary(): Promise<InventorySummary> {
   const [row] = await query<{ active_vials: unknown; expired_vials: unknown; total_remaining_ml: unknown }>(
     `SELECT
-        COUNT(*) FILTER (WHERE status = 'Active') AS active_vials,
+        -- Count only vials with remaining volume > 0 (actual usable inventory)
+        COUNT(*) FILTER (
+          WHERE status = 'Active' 
+          AND remaining_volume_ml IS NOT NULL 
+          AND remaining_volume_ml::numeric > 0
+        ) AS active_vials,
         COUNT(*) FILTER (WHERE status = 'Expired') AS expired_vials,
-        COALESCE(SUM(remaining_volume_ml), 0) AS total_remaining_ml
+        -- Sum only remaining volume from active vials with volume > 0
+        COALESCE(SUM(
+          CASE 
+            WHEN status = 'Active' 
+            AND remaining_volume_ml IS NOT NULL 
+            AND remaining_volume_ml::numeric > 0
+            THEN remaining_volume_ml::numeric
+            ELSE 0
+          END
+        ), 0) AS total_remaining_ml
      FROM vials`
   );
   return {
@@ -647,6 +661,15 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
     const vialRow = vialLookup.rows[0];
 
     let patientId = input.patientId ?? null;
+    let patientInfo: {
+      patient_name: string | null;
+      phone_primary: string | null;
+      address_line1: string | null;
+      city: string | null;
+      state: string | null;
+      postal_code: string | null;
+    } | null = null;
+
     if (!patientId && input.patientName) {
       const patientLookup = await client.query<{ patient_id: string }>(
         `SELECT patient_id
@@ -657,6 +680,34 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
       );
       if (patientLookup.rowCount) {
         patientId = patientLookup.rows[0].patient_id;
+      }
+    }
+
+    // Fetch patient info for DEA transaction preservation
+    if (patientId) {
+      const patientData = await client.query<{
+        full_name: string | null;
+        phone_primary: string | null;
+        address_line1: string | null;
+        city: string | null;
+        state: string | null;
+        postal_code: string | null;
+      }>(
+        `SELECT full_name, phone_primary, address_line1, city, state, postal_code
+           FROM patients
+          WHERE patient_id = $1`,
+        [patientId]
+      );
+      if (patientData.rowCount) {
+        const p = patientData.rows[0];
+        patientInfo = {
+          patient_name: p.full_name,
+          phone_primary: p.phone_primary,
+          address_line1: p.address_line1,
+          city: p.city,
+          state: p.state,
+          postal_code: p.postal_code
+        };
       }
     }
 
@@ -781,6 +832,12 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
             dispense_id,
             vial_id,
             patient_id,
+            patient_name,
+            phone_primary,
+            address_line1,
+            city,
+            state,
+            postal_code,
             prescriber,
             dea_drug_name,
             dea_drug_code,
@@ -791,7 +848,7 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
             source_system,
             notes
           )
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
           ON CONFLICT (dispense_id)
           DO UPDATE SET
             quantity_dispensed = EXCLUDED.quantity_dispensed,
@@ -801,6 +858,13 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
             transaction_time = EXCLUDED.transaction_time,
             prescriber = COALESCE(EXCLUDED.prescriber, dea_transactions.prescriber),
             notes = COALESCE(EXCLUDED.notes, dea_transactions.notes),
+            -- Preserve patient info: only update if new values are provided
+            patient_name = COALESCE(EXCLUDED.patient_name, dea_transactions.patient_name),
+            phone_primary = COALESCE(EXCLUDED.phone_primary, dea_transactions.phone_primary),
+            address_line1 = COALESCE(EXCLUDED.address_line1, dea_transactions.address_line1),
+            city = COALESCE(EXCLUDED.city, dea_transactions.city),
+            state = COALESCE(EXCLUDED.state, dea_transactions.state),
+            postal_code = COALESCE(EXCLUDED.postal_code, dea_transactions.postal_code),
             updated_at = NOW()
           RETURNING dea_tx_id
         `,
@@ -808,6 +872,12 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
           dispenseId,
           vialRow.vial_id,
           patientId,
+          patientInfo?.patient_name ?? null,
+          patientInfo?.phone_primary ?? null,
+          patientInfo?.address_line1 ?? null,
+          patientInfo?.city ?? null,
+          patientInfo?.state ?? null,
+          patientInfo?.postal_code ?? null,
           input.prescriber ?? null,
           input.deaDrugName ?? vialRow.dea_drug_name,
           input.deaDrugCode ?? vialRow.dea_drug_code,

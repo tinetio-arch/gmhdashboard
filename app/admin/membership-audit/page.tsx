@@ -4,7 +4,9 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 import { getMembershipAuditData, getQuickBooksAuditData } from '@/lib/membershipAudit';
 import { fetchLookupSets } from '@/lib/lookups';
-import MembershipAuditClient from './MembershipAuditClient';
+import { getPatientAnalyticsBreakdown } from '@/lib/patientAnalytics';
+import SimplifiedAuditClient from './SimplifiedAuditClient';
+import AnalyticsSection from './AnalyticsSection';
 
 export default async function MembershipAuditPage() {
   const user = await getCurrentUser();
@@ -12,12 +14,19 @@ export default async function MembershipAuditPage() {
     redirect('/unauthorized');
   }
 
-  const [data, lookups, quickbooksData] = await Promise.all([
+  const [data, lookups, quickbooksData, analytics] = await Promise.all([
     getMembershipAuditData(),
     fetchLookupSets(),
-    getQuickBooksAuditData()
+    getQuickBooksAuditData(),
+    getPatientAnalyticsBreakdown()
   ]);
-  return <MembershipAuditClient data={data} lookups={lookups} quickbooksData={quickbooksData} />;
+  
+  return (
+    <>
+      <AnalyticsSection analytics={analytics} />
+      <SimplifiedAuditClient data={data} lookups={lookups} quickbooksData={quickbooksData} />
+    </>
+  );
 }
 
 

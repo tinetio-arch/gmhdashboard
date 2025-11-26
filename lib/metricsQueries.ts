@@ -38,10 +38,24 @@ export async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
     const [counts] = await query<DashboardMetrics>(
       `
       SELECT
-        COUNT(*) AS "totalPatients",
+        -- Only count patients that are NOT inactive or deleted
+        COUNT(*) FILTER (
+          WHERE NOT (
+            COALESCE(status_key, '') ILIKE 'inactive%'
+            OR COALESCE(status_key, '') ILIKE 'discharg%'
+            OR status_key IN ('inactive', 'inactive_patient', 'discharged')
+          )
+        ) AS "totalPatients",
         COUNT(*) FILTER (WHERE status_key = 'active') AS "activePatients",
         COUNT(*) FILTER (WHERE status_key LIKE 'hold_%') AS "holdPatients",
-        COUNT(*) FILTER (WHERE next_lab IS NOT NULL AND next_lab <= CURRENT_DATE + INTERVAL '30 days') AS "upcomingLabs",
+        COUNT(*) FILTER (
+          WHERE next_lab IS NOT NULL 
+            AND next_lab <= CURRENT_DATE + INTERVAL '30 days'
+            AND NOT (
+              COALESCE(status_key, '') ILIKE 'inactive%'
+              OR COALESCE(status_key, '') ILIKE 'discharg%'
+            )
+        ) AS "upcomingLabs",
         COALESCE((
           SELECT COUNT(*)
           FROM dea_dispense_log_v
