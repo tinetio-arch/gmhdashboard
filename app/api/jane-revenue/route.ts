@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 import {
   getTotalJaneRevenue,
   getJanePatientRevenue,
@@ -11,7 +11,7 @@ import {
 
 export async function GET(request: NextRequest) {
   try {
-    await requireUser();
+    await requireApiUser(request, 'read');
   } catch {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

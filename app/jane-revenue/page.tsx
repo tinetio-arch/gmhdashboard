@@ -111,9 +111,9 @@ export default function JaneRevenuePage() {
       <div style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h1 style={{ fontSize: '2rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            💰 Jane Revenue Analytics
+            💰 Jane Total Revenue Analytics
           </h1>
-          <p style={{ color: '#666' }}>Real-time revenue tracking from ClinicSync Pro webhooks</p>
+          <p style={{ color: '#666' }}>Complete revenue tracking - All services, memberships, and payments from ClinicSync Pro webhooks</p>
         </div>
         <Link 
           href="/ops" 
@@ -158,14 +158,14 @@ export default function JaneRevenuePage() {
             borderRadius: '0.75rem',
             boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
           }}>
-            <div style={{ color: '#166534', fontSize: '0.875rem', fontWeight: '600', marginBottom: '0.5rem' }}>
+                <div style={{ color: '#166534', fontSize: '0.875rem', fontWeight: '600', marginBottom: '0.5rem' }}>
               Total Lifetime Revenue
             </div>
             <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#15803d' }}>
               {formatCurrency(summary.totalRevenue)}
             </div>
             <div style={{ color: '#666', fontSize: '0.875rem', marginTop: '0.5rem' }}>
-              From {summary.totalPatients} patients
+              All services + memberships from {summary.totalPatients} patients
             </div>
           </div>
 

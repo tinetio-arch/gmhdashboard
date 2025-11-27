@@ -14,8 +14,8 @@ import { getTestosteroneInventoryByVendor, getPaymentFailureStats } from '@/lib/
 import { fetchInventorySummary } from '@/lib/inventoryQueries';
 import { getPatientAnalyticsBreakdown } from '@/lib/patientAnalytics';
 import { requireUser, userHasRole } from '@/lib/auth';
-import DashboardClient from './DashboardClient';
-import { getTotalJaneRevenue } from '@/lib/janeRevenueQueries';
+import { getTotalJaneRevenue, getJaneRevenueMonthly } from '@/lib/janeRevenueQueries';
+import { getMembershipMonthlyRevenue, type MembershipRevenueSummary } from '@/lib/membershipRevenue';
 
 function withBasePath(path: string): string {
   return path;
@@ -125,7 +125,9 @@ export default async function HomePage() {
     paymentFailures,
     inventorySummary,
     analytics,
-    janeRevenue
+    janeRevenue,
+    janeRevenueMonthly,
+    membershipRevenue
   ] = await Promise.all([
     fetchDashboardMetrics(),
     getJaneOutstandingMemberships(8),
@@ -155,6 +157,28 @@ export default async function HomePage() {
       totalPatients: 0,
       averageRevenuePerPatient: 0,
       revenueByMonth: []
+    })),
+    (async () => {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setMonth(startDate.getMonth() - 6); // Last 6 months
+      return getJaneRevenueMonthly(startDate, endDate).catch(() => []);
+    })(),
+    getMembershipMonthlyRevenue().catch((): MembershipRevenueSummary => ({
+      totalMonthlyRevenue: 0,
+      totalAnnualRevenue: 0,
+      primaryCareMemberships: {
+        monthlyRevenue: 0,
+        annualRevenue: 0,
+        memberCount: 0,
+        memberships: []
+      },
+      mensHealthMemberships: {
+        monthlyRevenue: 0,
+        annualRevenue: 0,
+        memberCount: 0,
+        memberships: []
+      }
     }))
   ]);
 
@@ -181,7 +205,7 @@ export default async function HomePage() {
   const totalPaymentFailures = paymentFailures.jane.count + paymentFailures.quickbooks.count;
 
   return (
-    <DashboardClient>
+    <>
     <section style={{ 
         padding: '1.5rem 2rem',
         backgroundColor: '#f8fafc',
@@ -371,8 +395,381 @@ export default async function HomePage() {
             borderColor="#10b981"
             shadowColor="rgba(16, 185, 129, 0.3)"
           />
+          <ClickableMetricCard
+            href="#membership-revenue"
+            label="Primary Care MRR"
+            value={formatCurrency(membershipRevenue.primaryCareMemberships.monthlyRevenue)}
+            subLabel={`${membershipRevenue.primaryCareMemberships.memberCount} members • ${formatCurrency(membershipRevenue.primaryCareMemberships.annualRevenue)} annual`}
+            icon="🏥"
+            gradient="linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)"
+            borderColor="#3b82f6"
+            shadowColor="rgba(59, 130, 246, 0.3)"
+          />
+          <ClickableMetricCard
+            href="#membership-revenue"
+            label="Men's Health MRR"
+            value={formatCurrency(membershipRevenue.mensHealthMemberships.monthlyRevenue)}
+            subLabel={`${membershipRevenue.mensHealthMemberships.memberCount} members • ${formatCurrency(membershipRevenue.mensHealthMemberships.annualRevenue)} annual`}
+            icon="💪"
+            gradient="linear-gradient(135deg, #f97316 0%, #ea580c 100%)"
+            borderColor="#f97316"
+            shadowColor="rgba(249, 115, 22, 0.3)"
+          />
         </div>
       </div>
+
+      {/* Membership Revenue Breakdown - Primary Care | Men's Health */}
+      {membershipRevenue.totalMonthlyRevenue > 0 && (
+        <div id="membership-revenue" style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
+            📅 Monthly Membership Revenue (MRR)
+          </h2>
+          
+          {/* Total Summary */}
+          <div style={{
+            marginBottom: '1rem',
+            padding: '1rem',
+            backgroundColor: 'white',
+            border: '2px solid #8b5cf6',
+            borderRadius: '0.5rem',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            boxShadow: '0 2px 4px rgba(139, 92, 246, 0.15)'
+          }}>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem' }}>Total Monthly Recurring Revenue</div>
+              <div style={{ fontSize: '1.75rem', fontWeight: 'bold', color: '#8b5cf6' }}>
+                {formatCurrency(membershipRevenue.totalMonthlyRevenue)}
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem' }}>Projected Annual</div>
+              <div style={{ fontSize: '1.25rem', color: '#059669', fontWeight: 600 }}>
+                {formatCurrency(membershipRevenue.totalAnnualRevenue)}
+              </div>
+            </div>
+          </div>
+
+          {/* Two Column Layout: Primary Care | Men's Health */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: '1rem'
+          }}>
+            {/* LEFT COLUMN: Primary Care Memberships */}
+            <div style={{
+              backgroundColor: 'white',
+              border: '2px solid #3b82f6',
+              borderRadius: '0.75rem',
+              padding: '1rem',
+              boxShadow: '0 2px 4px rgba(59, 130, 246, 0.15)',
+              display: 'flex',
+              flexDirection: 'column'
+            }}>
+              {/* Primary Care Header & Summary */}
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '0.75rem',
+                paddingBottom: '0.75rem',
+                borderBottom: '2px solid #3b82f6'
+              }}>
+                <div style={{
+                  fontSize: '0.875rem',
+                  color: '#3b82f6',
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em'
+                }}>
+                  🏥 Primary Care
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#2563eb', lineHeight: '1.2' }}>
+                    {formatCurrency(membershipRevenue.primaryCareMemberships.monthlyRevenue)}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.125rem' }}>
+                    {membershipRevenue.primaryCareMemberships.memberCount} members
+                  </div>
+                </div>
+              </div>
+
+              {/* Primary Care Membership Cards - Color-coded by Jane (green) vs QuickBooks (orange) */}
+              {membershipRevenue.primaryCareMemberships.memberships.length > 0 ? (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.5rem',
+                  flex: 1
+                }}>
+                  {membershipRevenue.primaryCareMemberships.memberships.map((membership, idx) => (
+                    <div
+                      key={`pc-${idx}`}
+                      style={{
+                        padding: '0.75rem',
+                        backgroundColor: membership.isJane ? '#f0fdf4' : '#fffbeb',
+                        border: `2px solid ${membership.isJane ? '#10b981' : '#f59e0b'}`,
+                        borderRadius: '0.5rem',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ 
+                          fontSize: '0.75rem', 
+                          color: membership.isJane ? '#059669' : '#d97706', 
+                          marginBottom: '0.125rem', 
+                          fontWeight: 600 
+                        }}>
+                          {membership.membershipType}
+                        </div>
+                        <div style={{ fontSize: '0.65rem', color: '#64748b' }}>
+                          {membership.patientCount} members × {formatCurrency(membership.monthlyPrice)}/mo
+                          <span style={{ 
+                            marginLeft: '0.5rem', 
+                            color: membership.isJane ? '#10b981' : '#f59e0b',
+                            fontWeight: 600
+                          }}>
+                            {membership.isJane ? '💚 Jane' : '📊 QBO'}
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ 
+                        fontSize: '1rem', 
+                        fontWeight: 'bold', 
+                        color: membership.isJane ? '#059669' : '#d97706', 
+                        marginLeft: '0.5rem' 
+                      }}>
+                        {formatCurrency(membership.monthlyRevenue)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ padding: '1rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.875rem' }}>
+                  No Primary Care memberships
+                </div>
+              )}
+
+              {/* Primary Care Annual Total */}
+              <div style={{
+                marginTop: '0.75rem',
+                paddingTop: '0.75rem',
+                borderTop: '1px solid #bfdbfe',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '0.7rem', color: '#64748b', marginBottom: '0.125rem' }}>Annual Revenue</div>
+                <div style={{ fontSize: '0.875rem', color: '#2563eb', fontWeight: 600 }}>
+                  {formatCurrency(membershipRevenue.primaryCareMemberships.annualRevenue)}
+                </div>
+              </div>
+            </div>
+
+            {/* RIGHT COLUMN: Men's Health Memberships */}
+            <div style={{
+              backgroundColor: 'white',
+              border: '2px solid #f97316',
+              borderRadius: '0.75rem',
+              padding: '1rem',
+              boxShadow: '0 2px 4px rgba(249, 115, 22, 0.15)',
+              display: 'flex',
+              flexDirection: 'column'
+            }}>
+              {/* Men's Health Header & Summary */}
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '0.75rem',
+                paddingBottom: '0.75rem',
+                borderBottom: '2px solid #f97316'
+              }}>
+                <div style={{
+                  fontSize: '0.875rem',
+                  color: '#f97316',
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em'
+                }}>
+                  💪 Men's Health
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#ea580c', lineHeight: '1.2' }}>
+                    {formatCurrency(membershipRevenue.mensHealthMemberships.monthlyRevenue)}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.125rem' }}>
+                    {membershipRevenue.mensHealthMemberships.memberCount} members
+                  </div>
+                </div>
+              </div>
+
+              {/* Men's Health Membership Cards - Color-coded by Jane (green) vs QuickBooks (orange) */}
+              {membershipRevenue.mensHealthMemberships.memberships.length > 0 ? (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.5rem',
+                  flex: 1
+                }}>
+                  {membershipRevenue.mensHealthMemberships.memberships.map((membership, idx) => (
+                    <div
+                      key={`mh-${idx}`}
+                      style={{
+                        padding: '0.75rem',
+                        backgroundColor: membership.isJane ? '#f0fdf4' : '#fffbeb',
+                        border: `2px solid ${membership.isJane ? '#10b981' : '#f59e0b'}`,
+                        borderRadius: '0.5rem',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ 
+                          fontSize: '0.75rem', 
+                          color: membership.isJane ? '#059669' : '#d97706', 
+                          marginBottom: '0.125rem', 
+                          fontWeight: 600 
+                        }}>
+                          {membership.membershipType}
+                        </div>
+                        <div style={{ fontSize: '0.65rem', color: '#64748b' }}>
+                          {membership.patientCount} members × {formatCurrency(membership.monthlyPrice)}/mo
+                          <span style={{ 
+                            marginLeft: '0.5rem', 
+                            color: membership.isJane ? '#10b981' : '#f59e0b',
+                            fontWeight: 600
+                          }}>
+                            {membership.isJane ? '💚 Jane' : '📊 QBO'}
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ 
+                        fontSize: '1rem', 
+                        fontWeight: 'bold', 
+                        color: membership.isJane ? '#059669' : '#d97706', 
+                        marginLeft: '0.5rem' 
+                      }}>
+                        {formatCurrency(membership.monthlyRevenue)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ padding: '1rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.875rem' }}>
+                  No Men's Health memberships
+                </div>
+              )}
+
+              {/* Men's Health Annual Total */}
+              <div style={{
+                marginTop: '0.75rem',
+                paddingTop: '0.75rem',
+                borderTop: '1px solid #fed7aa',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '0.7rem', color: '#64748b', marginBottom: '0.125rem' }}>Annual Revenue</div>
+                <div style={{ fontSize: '0.875rem', color: '#ea580c', fontWeight: 600 }}>
+                  {formatCurrency(membershipRevenue.mensHealthMemberships.annualRevenue)}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Jane Revenue Breakdown */}
+      {janeRevenue.totalRevenue > 0 && (
+        <div style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
+            💰 Jane Total Revenue - All Services & Memberships
+          </h2>
+          <div style={{
+            backgroundColor: 'white',
+            border: '1px solid #e5e7eb',
+            borderRadius: '0.75rem',
+            padding: '1.5rem',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+          }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: '1rem',
+              marginBottom: '1.5rem'
+            }}>
+              <div>
+                <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Total Lifetime Revenue</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#059669' }}>
+                  {formatCurrency(janeRevenue.totalRevenue)}
+                </div>
+                <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.25rem' }}>All services + memberships</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Total Payments</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#2563eb' }}>
+                  {formatCurrency(janeRevenue.totalPayments)}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Outstanding</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: janeRevenue.outstandingBalance > 0 ? '#dc2626' : '#059669' }}>
+                  {formatCurrency(janeRevenue.outstandingBalance)}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Avg per Patient</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#0f172a' }}>
+                  {formatCurrency(janeRevenue.averageRevenuePerPatient)}
+                </div>
+              </div>
+            </div>
+
+            {Array.isArray(janeRevenueMonthly) && janeRevenueMonthly.length > 0 && (
+              <>
+                <div style={{
+                  fontSize: '0.875rem',
+                  color: '#64748b',
+                  marginBottom: '0.75rem',
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em'
+                }}>
+                  Last 6 Months
+                </div>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                  gap: '0.75rem'
+                }}>
+                  {janeRevenueMonthly.slice(0, 6).reverse().map((month: { month: string; revenue: number; paymentCount: number; patientCount: number }, idx: number) => (
+                    <div
+                      key={idx}
+                      style={{
+                        padding: '1rem',
+                        backgroundColor: '#f9fafb',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '0.5rem'
+                      }}
+                    >
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem', fontWeight: 600 }}>
+                        {month.month}
+                      </div>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#059669', marginBottom: '0.25rem' }}>
+                        {formatCurrency(month.revenue)}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                        {month.paymentCount || 0} payments • {month.patientCount || 0} patients
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Inventory & Supply Chain - Moved to Top */}
       <div style={{ marginBottom: '2rem' }}>
@@ -1134,6 +1531,6 @@ export default async function HomePage() {
 
       <div style={{ marginTop: '3rem' }} />
     </section>
-    </DashboardClient>
+    </>
   );
 }

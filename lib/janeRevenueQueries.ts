@@ -33,25 +33,38 @@ export type JanePatientRevenue = {
 };
 
 /**
- * Get total Jane revenue from ClinicSync webhook data
+ * Get total Jane revenue from ALL ClinicSync webhook data
+ * IMPORTANT: This extracts revenue from ALL webhooks, not just mapped patients
+ * This gives you complete Jane revenue including patients not yet in your system
  */
 export async function getTotalJaneRevenue(
   startDate?: Date,
   endDate?: Date
 ): Promise<JaneRevenueSummary> {
-  // Get all Jane patients
-  const janePatients = await query<{
-    patient_id: string;
-    full_name: string;
-    clinicsync_patient_id: string | null;
+  // Get ALL unique ClinicSync patient IDs from webhooks (not just mapped ones)
+  // This captures revenue from ALL Jane patients, including those not in your system yet
+  const allWebhookPatients = await query<{
+    clinicsync_patient_id: string;
   }>(
-    `SELECT DISTINCT p.patient_id, p.full_name, cm.clinicsync_patient_id
-     FROM patients p
-     LEFT JOIN patient_clinicsync_mapping cm ON cm.patient_id = p.patient_id
+    `SELECT DISTINCT clinicsync_patient_id
+     FROM clinicsync_webhook_events
+     WHERE payload IS NOT NULL
+       AND clinicsync_patient_id IS NOT NULL`
+  );
+
+  // Get mapped patient IDs for comparison
+  const mappedPatientIds = await query<{
+    clinicsync_patient_id: string;
+  }>(
+    `SELECT DISTINCT cm.clinicsync_patient_id
+     FROM patient_clinicsync_mapping cm
+     INNER JOIN patients p ON p.patient_id = cm.patient_id
      WHERE p.payment_method_key IN ('jane', 'jane_quickbooks')
        AND NOT (COALESCE(p.status_key, '') ILIKE 'inactive%' OR COALESCE(p.status_key, '') ILIKE 'discharg%')
        AND cm.clinicsync_patient_id IS NOT NULL`
   );
+
+  const mappedSet = new Set(mappedPatientIds.map(p => p.clinicsync_patient_id));
 
   // Get latest webhook for each patient
   const patientRevenues: Array<{
@@ -204,7 +217,7 @@ export async function getJanePatientRevenue(): Promise<JanePatientRevenue[]> {
  * This allows us to calculate daily/weekly/monthly revenue
  */
 export async function extractPaymentEvents(): Promise<Array<{
-  patientId: string;
+  patientId: string | null;
   patientName: string;
   clinicsyncPatientId: string;
   paymentDate: string | null;
@@ -212,21 +225,18 @@ export async function extractPaymentEvents(): Promise<Array<{
   appointmentDate: string | null;
   visitNumber: number | null;
 }>> {
-  const janePatients = await query<{
-    patient_id: string;
-    full_name: string;
-    clinicsync_patient_id: string | null;
+  // Get ALL unique ClinicSync patient IDs from webhooks (not just mapped ones)
+  const allWebhookPatients = await query<{
+    clinicsync_patient_id: string;
   }>(
-    `SELECT DISTINCT p.patient_id, p.full_name, cm.clinicsync_patient_id
-     FROM patients p
-     INNER JOIN patient_clinicsync_mapping cm ON cm.patient_id = p.patient_id
-     WHERE p.payment_method_key IN ('jane', 'jane_quickbooks')
-       AND NOT (COALESCE(p.status_key, '') ILIKE 'inactive%' OR COALESCE(p.status_key, '') ILIKE 'discharg%')
-       AND cm.clinicsync_patient_id IS NOT NULL`
+    `SELECT DISTINCT clinicsync_patient_id
+     FROM clinicsync_webhook_events
+     WHERE payload IS NOT NULL
+       AND clinicsync_patient_id IS NOT NULL`
   );
 
   const paymentEvents: Array<{
-    patientId: string;
+    patientId: string | null;
     patientName: string;
     clinicsyncPatientId: string;
     paymentDate: string | null;
@@ -235,8 +245,9 @@ export async function extractPaymentEvents(): Promise<Array<{
     visitNumber: number | null;
   }> = [];
 
-  for (const patient of janePatients) {
-    if (!patient.clinicsync_patient_id) continue;
+  for (const webhookPatient of allWebhookPatients) {
+    const clinicsyncPatientId = webhookPatient.clinicsync_patient_id;
+    if (!clinicsyncPatientId) continue;
 
     const webhooks = await query<{
       payload: any;
@@ -246,7 +257,7 @@ export async function extractPaymentEvents(): Promise<Array<{
        WHERE clinicsync_patient_id = $1
          AND payload IS NOT NULL
        LIMIT 1`,
-      [patient.clinicsync_patient_id]
+      [clinicsyncPatientId]
     );
 
     if (webhooks.length === 0) continue;
@@ -281,10 +292,33 @@ export async function extractPaymentEvents(): Promise<Array<{
       // Payment date is typically the same as appointment date for Jane
       const paymentDate = appointmentDate;
 
+      // Get patient name from payload or system
+      const patientName = payload.first_name && payload.last_name
+        ? `${payload.first_name} ${payload.last_name}`
+        : payload.patient_name
+        ? payload.patient_name
+        : `ClinicSync Patient ${clinicsyncPatientId}`;
+
+      // Try to find patient ID in system
+      const mappedPatient = await query<{
+        patient_id: string;
+        full_name: string;
+      }>(
+        `SELECT p.patient_id, p.full_name
+         FROM patient_clinicsync_mapping cm
+         INNER JOIN patients p ON p.patient_id = cm.patient_id
+         WHERE cm.clinicsync_patient_id = $1
+         LIMIT 1`,
+        [clinicsyncPatientId]
+      );
+
+      const patientId = mappedPatient.length > 0 ? mappedPatient[0].patient_id : null;
+      const systemPatientName = mappedPatient.length > 0 ? mappedPatient[0].full_name : null;
+
       paymentEvents.push({
-        patientId: patient.patient_id,
-        patientName: patient.full_name,
-        clinicsyncPatientId: patient.clinicsync_patient_id,
+        patientId: patientId,
+        patientName: systemPatientName || patientName,
+        clinicsyncPatientId: clinicsyncPatientId,
         paymentDate: paymentDate ? new Date(paymentDate).toISOString().split('T')[0] : null, // YYYY-MM-DD format
         paymentAmount,
         appointmentDate: appointmentDate ? new Date(appointmentDate).toISOString().split('T')[0] : null,
