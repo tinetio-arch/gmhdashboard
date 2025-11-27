@@ -16,6 +16,7 @@ import { getPatientAnalyticsBreakdown } from '@/lib/patientAnalytics';
 import { requireUser, userHasRole } from '@/lib/auth';
 import { getTotalJaneRevenue, getJaneRevenueMonthly } from '@/lib/janeRevenueQueries';
 import { getMembershipMonthlyRevenue, type MembershipRevenueSummary } from '@/lib/membershipRevenue';
+import { getAllIntegrationStatuses, type IntegrationStatus } from '@/lib/integrationStatus';
 
 function withBasePath(path: string): string {
   return path;
@@ -128,7 +129,8 @@ export default async function HomePage() {
     analytics,
     janeRevenue,
     janeRevenueMonthly,
-    membershipRevenue
+    membershipRevenue,
+    integrationStatuses
   ] = await Promise.all([
     fetchDashboardMetrics(),
     getJaneOutstandingMemberships(8),
@@ -180,7 +182,40 @@ export default async function HomePage() {
         memberCount: 0,
         memberships: []
       }
-    }))
+    })),
+    getAllIntegrationStatuses().catch((error) => {
+      console.error('Error fetching integration statuses:', error);
+      // Return placeholder statuses so user can see there was an error
+      return [
+        {
+          name: 'QuickBooks',
+          connected: false,
+          status: 'critical' as const,
+          lastChecked: null,
+          error: error.message || 'Failed to check status',
+          healthScore: null,
+          canRefresh: false,
+        },
+        {
+          name: 'Jane (ClinicSync)',
+          connected: false,
+          status: 'critical' as const,
+          lastChecked: null,
+          error: 'Status check failed',
+          healthScore: null,
+          canRefresh: false,
+        },
+        {
+          name: 'GoHighLevel',
+          connected: false,
+          status: 'critical' as const,
+          lastChecked: null,
+          error: 'Status check failed',
+          healthScore: null,
+          canRefresh: false,
+        }
+      ];
+    })
   ]);
 
   const pendingSignatures = metrics.pendingSignatures ?? 0;
@@ -230,6 +265,107 @@ export default async function HomePage() {
           Real-time business intelligence across all systems. Click any metric to drill down into details.
         </p>
       </div>
+
+      {/* Integration Status - Critical Alerts First */}
+      {integrationStatuses && (
+        <div style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
+            🔌 Integration Status
+          </h2>
+          <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+            {integrationStatuses.map((integration) => {
+              const statusColors = {
+                healthy: { bg: '#10b981', border: '#059669', text: '#ffffff' },
+                warning: { bg: '#f59e0b', border: '#d97706', text: '#ffffff' },
+                critical: { bg: '#ef4444', border: '#dc2626', text: '#ffffff' },
+                unknown: { bg: '#6b7280', border: '#4b5563', text: '#ffffff' },
+              };
+              const colors = statusColors[integration.status] || statusColors.unknown;
+              const statusIcon = {
+                healthy: '✅',
+                warning: '⚠️',
+                critical: '🚨',
+                unknown: '❓',
+              }[integration.status] || '❓';
+
+              return (
+                <div
+                  key={integration.name}
+                  style={{
+                    padding: '1.5rem',
+                    borderRadius: '1rem',
+                    background: `linear-gradient(135deg, ${colors.bg} 0%, ${colors.border} 100%)`,
+                    border: `2px solid ${colors.border}`,
+                    boxShadow: `0 10px 40px rgba(${colors.bg === '#ef4444' ? '239, 68, 68' : colors.bg === '#f59e0b' ? '245, 158, 11' : '16, 185, 129'}, 0.3)`,
+                    color: colors.text,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 700 }}>
+                      {statusIcon} {integration.name}
+                    </div>
+                    <div style={{ 
+                      fontSize: '0.85rem', 
+                      padding: '0.25rem 0.75rem', 
+                      borderRadius: '0.5rem',
+                      backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                      fontWeight: 600,
+                      textTransform: 'uppercase'
+                    }}>
+                      {integration.status}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '0.5rem' }}>
+                    {integration.connected ? 'Connected' : 'Disconnected'}
+                  </div>
+                  {integration.error && (
+                    <div style={{ fontSize: '0.85rem', opacity: 0.9, marginBottom: '0.5rem' }}>
+                      ⚠️ {integration.error}
+                    </div>
+                  )}
+                  {integration.healthScore !== null && (
+                    <div style={{ fontSize: '0.85rem', opacity: 0.9 }}>
+                      Health: {integration.healthScore}%
+                    </div>
+                  )}
+                  {integration.lastChecked && (
+                    <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '0.5rem' }}>
+                      Last checked: {new Date(integration.lastChecked).toLocaleString('en-US', {
+                        timeZone: 'America/Phoenix',
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: true
+                      })}
+                    </div>
+                  )}
+                  {!integration.connected && integration.name === 'QuickBooks' && (
+                    <a
+                      href="/ops/admin/quickbooks"
+                      style={{
+                        display: 'inline-block',
+                        marginTop: '0.75rem',
+                        padding: '0.5rem 1rem',
+                        backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                        borderRadius: '0.5rem',
+                        color: colors.text,
+                        textDecoration: 'none',
+                        fontWeight: 600,
+                        fontSize: '0.85rem',
+                      }}
+                    >
+                      Fix Connection →
+                    </a>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Operational Metrics - Moved to Top */}
       <div style={{ marginBottom: '2rem' }}>

@@ -67,3 +67,4 @@
 - Page auto-refreshes after successful actions
 - Error messages display in modals if something fails
 
+

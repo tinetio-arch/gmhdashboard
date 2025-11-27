@@ -117,3 +117,4 @@ After implementing the UI:
 4. **Undo Functionality** - Ability to undo recent resolutions
 5. **Auto-matching** - Suggest matches based on fuzzy name/email matching
 
+

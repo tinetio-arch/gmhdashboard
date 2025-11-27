@@ -96,3 +96,4 @@ node scripts/run-migration.js migrations/20250126_membership_audit_tables.sql
 - Page auto-refreshes after actions to show updated data
 - Errors are displayed in modals if something fails
 
+

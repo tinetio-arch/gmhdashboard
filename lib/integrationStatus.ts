@@ -1,0 +1,229 @@
+/**
+ * Integration Status Monitoring
+ * Provides status for all integrations (QuickBooks, Jane/ClinicSync, GHL)
+ */
+
+import { getQuickBooksHealthStatus, needsConnectionAttention } from '@/lib/quickbooksHealth';
+import { query } from '@/lib/db';
+
+export type IntegrationStatus = {
+  name: string;
+  connected: boolean;
+  status: 'healthy' | 'warning' | 'critical' | 'unknown';
+  lastChecked: Date | null;
+  error: string | null;
+  healthScore: number | null;
+  canRefresh: boolean;
+};
+
+/**
+ * Get QuickBooks integration status
+ */
+async function getQuickBooksStatus(): Promise<IntegrationStatus> {
+  try {
+    const health = await getQuickBooksHealthStatus();
+    const attention = await needsConnectionAttention();
+    
+    let status: 'healthy' | 'warning' | 'critical' | 'unknown' = 'unknown';
+    if (health.connected && !attention.needsAttention) {
+      status = 'healthy';
+    } else if (attention.severity === 'critical') {
+      status = 'critical';
+    } else if (attention.severity === 'warning') {
+      status = 'warning';
+    }
+
+    return {
+      name: 'QuickBooks',
+      connected: health.connected,
+      status,
+      lastChecked: health.lastChecked,
+      error: health.error,
+      healthScore: health.healthScore,
+      canRefresh: health.canRefresh,
+    };
+  } catch (error: any) {
+    return {
+      name: 'QuickBooks',
+      connected: false,
+      status: 'critical',
+      lastChecked: null,
+      error: error.message || 'Failed to check QuickBooks status',
+      healthScore: null,
+      canRefresh: false,
+    };
+  }
+}
+
+/**
+ * Get Jane/ClinicSync integration status
+ */
+async function getJaneStatus(): Promise<IntegrationStatus> {
+  try {
+    // Check if we have active memberships (indicates data is flowing)
+    // This is more reliable than checking webhook events table structure
+    let hasActiveData = false;
+    let hasRecentActivity = false;
+    let latestActivity: Date | null = null;
+    
+    try {
+      const activeMemberships = await query<{ count: number }>(
+        `SELECT COUNT(*) as count
+         FROM clinicsync_memberships
+         WHERE status IS NOT NULL 
+           AND status != 'inactive'
+           AND status != 'discharged'`
+      );
+      hasActiveData = (activeMemberships[0]?.count || 0) > 0;
+    } catch (err) {
+      console.error('Error checking active memberships:', err);
+    }
+
+    // Try to check webhook events with multiple possible column names
+    try {
+      // Try created_at first
+      const recentWebhooks = await query<{ count: number; latest: Date | null }>(
+        `SELECT 
+           COUNT(*) as count,
+           MAX(created_at) as latest
+         FROM clinicsync_webhook_events
+         WHERE created_at > NOW() - INTERVAL '24 hours'`
+      );
+      hasRecentActivity = (recentWebhooks[0]?.count || 0) > 0;
+      latestActivity = recentWebhooks[0]?.latest ? new Date(recentWebhooks[0].latest) : null;
+    } catch (err: any) {
+      // If created_at doesn't exist, try other column names or just check if table has data
+      if (err.message?.includes('created_at')) {
+        try {
+          // Fallback: just check if table exists and has any data
+          const anyWebhooks = await query<{ count: number }>(
+            `SELECT COUNT(*) as count FROM clinicsync_webhook_events LIMIT 1`
+          );
+          hasRecentActivity = (anyWebhooks[0]?.count || 0) > 0;
+        } catch (fallbackErr) {
+          console.error('Error checking webhook events (fallback):', fallbackErr);
+        }
+      }
+    }
+
+    // Determine status
+    let status: 'healthy' | 'warning' | 'critical' | 'unknown' = 'unknown';
+    if (hasRecentActivity && hasActiveData) {
+      status = 'healthy';
+    } else if (hasActiveData) {
+      status = 'healthy'; // Has active memberships is good enough
+    } else if (hasRecentActivity) {
+      status = 'warning'; // Has webhooks but no active memberships
+    } else {
+      status = 'critical'; // No data at all
+    }
+
+    return {
+      name: 'Jane (ClinicSync)',
+      connected: hasRecentActivity || hasActiveData,
+      status,
+      lastChecked: latestActivity,
+      error: hasActiveData || hasRecentActivity ? null : 'No active memberships or webhook activity found',
+      healthScore: hasActiveData ? 100 : (hasRecentActivity ? 75 : 0),
+      canRefresh: false,
+    };
+  } catch (error: any) {
+    return {
+      name: 'Jane (ClinicSync)',
+      connected: false,
+      status: 'critical',
+      lastChecked: null,
+      error: error.message || 'Failed to check Jane status',
+      healthScore: null,
+      canRefresh: false,
+    };
+  }
+}
+
+/**
+ * Get GHL integration status
+ */
+async function getGHLStatus(): Promise<IntegrationStatus> {
+  try {
+    // Check if GHL API key is configured
+    const hasApiKey = !!process.env.GHL_API_KEY;
+    
+    if (!hasApiKey) {
+      return {
+        name: 'GoHighLevel',
+        connected: false,
+        status: 'critical',
+        lastChecked: null,
+        error: 'GHL API key not configured',
+        healthScore: null,
+        canRefresh: false,
+      };
+    }
+
+    // Check recent sync activity
+    const recentSyncs = await query<{ count: number; latest: Date }>(
+      `SELECT 
+         COUNT(*) as count,
+         MAX(created_at) as latest
+       FROM ghl_sync_history
+       WHERE created_at > NOW() - INTERVAL '24 hours'`
+    );
+
+    const hasRecentActivity = recentSyncs[0]?.count > 0;
+    const latestActivity = recentSyncs[0]?.latest;
+
+    // Check if we have mapped contacts
+    const mappedContacts = await query<{ count: number }>(
+      `SELECT COUNT(*) as count
+       FROM patients
+       WHERE ghl_contact_id IS NOT NULL`
+    );
+
+    const hasMappedContacts = (mappedContacts[0]?.count || 0) > 0;
+
+    let status: 'healthy' | 'warning' | 'critical' | 'unknown' = 'unknown';
+    if (hasRecentActivity && hasMappedContacts) {
+      status = 'healthy';
+    } else if (hasMappedContacts && !hasRecentActivity) {
+      status = 'warning';
+    } else if (hasApiKey) {
+      status = 'warning'; // Configured but no activity
+    } else {
+      status = 'critical';
+    }
+
+    return {
+      name: 'GoHighLevel',
+      connected: hasApiKey && (hasRecentActivity || hasMappedContacts),
+      status,
+      lastChecked: latestActivity ? new Date(latestActivity) : null,
+      error: hasRecentActivity ? null : 'No sync activity in last 24 hours',
+      healthScore: hasRecentActivity ? 100 : (hasMappedContacts ? 50 : 0),
+      canRefresh: false,
+    };
+  } catch (error: any) {
+    return {
+      name: 'GoHighLevel',
+      connected: false,
+      status: 'critical',
+      lastChecked: null,
+      error: error.message || 'Failed to check GHL status',
+      healthScore: null,
+      canRefresh: false,
+    };
+  }
+}
+
+/**
+ * Get all integration statuses
+ */
+export async function getAllIntegrationStatuses(): Promise<IntegrationStatus[]> {
+  const [quickbooks, jane, ghl] = await Promise.all([
+    getQuickBooksStatus(),
+    getJaneStatus(),
+    getGHLStatus(),
+  ]);
+
+  return [quickbooks, jane, ghl];
+}
+

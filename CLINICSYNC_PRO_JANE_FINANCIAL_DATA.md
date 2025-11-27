@@ -190,3 +190,4 @@ If we can't find the fields, we could:
 
 **Next Action:** Update our investigation tools to look for ClinicSync Pro-specific field names and structures!
 
+

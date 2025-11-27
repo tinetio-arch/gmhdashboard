@@ -673,3 +673,4 @@ All financial metrics should link to detailed views:
 - `payment_method_lookup` - Payment method definitions
 - `client_type_lookup` - Client type definitions
 
+

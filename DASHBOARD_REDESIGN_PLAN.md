@@ -301,3 +301,4 @@ Each item clickable → Detail page
 4. Iterate based on feedback
 5. Continue through phases
 
+

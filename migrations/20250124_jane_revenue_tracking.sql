@@ -32,3 +32,4 @@ COMMENT ON COLUMN jane_revenue_snapshots.snapshot_date IS 'Date of the snapshot 
 COMMENT ON COLUMN jane_revenue_snapshots.total_payment_amount IS 'Total lifetime revenue at time of snapshot';
 COMMENT ON COLUMN jane_revenue_snapshots.total_visits IS 'Total completed visits at time of snapshot';
 
+

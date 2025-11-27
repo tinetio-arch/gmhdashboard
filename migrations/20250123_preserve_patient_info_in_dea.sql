@@ -52,3 +52,4 @@ LEFT JOIN patients p ON p.patient_id = d.patient_id
 LEFT JOIN vials v ON v.vial_id = d.vial_id
 LEFT JOIN dea_transactions dt ON dt.dispense_id = d.dispense_id;
 
+

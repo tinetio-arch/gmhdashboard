@@ -1,36 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
-import { query } from '@/lib/db';
+import { getQuickBooksHealthStatus } from '@/lib/quickbooksHealth';
 
 export async function GET(req: NextRequest) {
   try {
-    const user = await requireApiUser(req, 'admin');
+    const user = await requireApiUser(req, 'read');
 
-    // Check if we have valid OAuth tokens
-    const tokens = await query<{
-      expires_at: Date;
-    }>(`
-      SELECT expires_at
-      FROM quickbooks_oauth_tokens
-      WHERE realm_id IS NOT NULL
-      ORDER BY updated_at DESC
-      LIMIT 1
-    `);
+    // Get comprehensive health status (includes actual API test)
+    const health = await getQuickBooksHealthStatus();
 
-    if (tokens.length === 0) {
-      return NextResponse.json({ connected: false });
-    }
-
-    const token = tokens[0];
-    const now = new Date();
-    const expiresAt = new Date(token.expires_at);
-    const connected = expiresAt > now;
-
-    return NextResponse.json({ connected });
+    return NextResponse.json({
+      connected: health.connected,
+      lastChecked: health.lastChecked.toISOString(),
+      lastSuccessfulCheck: health.lastSuccessfulCheck?.toISOString() || null,
+      error: health.error,
+      tokenExpiresAt: health.tokenExpiresAt?.toISOString() || null,
+      canRefresh: health.canRefresh,
+      healthScore: health.healthScore,
+    });
   } catch (error) {
     console.error('Error checking QuickBooks connection:', error);
     return NextResponse.json(
-      { error: 'Failed to check connection status' },
+      { 
+        connected: false,
+        error: error instanceof Error ? error.message : 'Failed to check connection status',
+        healthScore: 0
+      },
       { status: 500 }
     );
   }
