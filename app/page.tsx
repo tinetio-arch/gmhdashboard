@@ -113,6 +113,7 @@ function ClickableMetricCard({
 export default async function HomePage() {
   const user = await requireUser('read');
   const showExecutiveEmbed = userHasRole(user, 'admin');
+  const isOwner = user.email === 'admin@nowoptimal.com'; // Only owner can see MRR details
   
   const [
     metrics,
@@ -334,92 +335,57 @@ export default async function HomePage() {
         </div>
       </div>
 
-      {/* Executive Summary KPIs - Top Priority */}
-      <div style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
-          📊 Executive Summary
-        </h2>
-        <div style={{ 
-          display: 'grid', 
-          gap: '1rem', 
-          gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))'
-        }}>
-          <ClickableMetricCard
-            href="/patients?status=active"
-            label="Active Patients"
-            value={metrics.activePatients}
-            subLabel={`${metrics.totalPatients} total (${metrics.holdPatients} on hold)`}
-            icon="👥"
-            gradient="linear-gradient(135deg, #10b981 0%, #059669 100%)"
-            borderColor="#10b981"
-            shadowColor="rgba(16, 185, 129, 0.3)"
-          />
-          
-          <ClickableMetricCard
-            href="/admin/membership-audit?filter=outstanding"
-            label="Outstanding Balances"
-            value={formatCurrency(totalOutstanding)}
-            subLabel={`${combinedOutstanding.length} patients with balances`}
-            icon="💰"
-            gradient={totalOutstanding > 0 
-              ? "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
-              : "linear-gradient(135deg, #10b981 0%, #059669 100%)"}
-            borderColor={totalOutstanding > 0 ? "#ef4444" : "#10b981"}
-            shadowColor={totalOutstanding > 0 
-              ? "rgba(239, 68, 68, 0.3)"
-              : "rgba(16, 185, 129, 0.3)"}
-          />
-
-          <ClickableMetricCard
-            href="/provider/signatures"
-            label="Pending Signatures"
-            value={pendingSignatures}
-            subLabel={pendingSignatures > 0 ? "Action required" : "All signed"}
-            icon="✍️"
-            gradient={pendingSignatures > 0
-              ? "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
-              : "linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)"}
-            borderColor={pendingSignatures > 0 ? "#f59e0b" : "#6366f1"}
-            shadowColor={pendingSignatures > 0
-              ? "rgba(245, 158, 11, 0.3)"
-              : "rgba(99, 102, 241, 0.3)"}
-          />
-
-          <ClickableMetricCard
-            href="/jane-revenue"
-            label="Jane Total Revenue"
-            value={formatCurrency(janeRevenue.totalRevenue)}
-            subLabel={`${janeRevenue.totalPatients} patients • ${formatCurrency(janeRevenue.averageRevenuePerPatient)} avg`}
-            icon="💰"
-            gradient="linear-gradient(135deg, #10b981 0%, #059669 100%)"
-            borderColor="#10b981"
-            shadowColor="rgba(16, 185, 129, 0.3)"
-          />
-          <ClickableMetricCard
-            href="#membership-revenue"
-            label="Primary Care MRR"
-            value={formatCurrency(membershipRevenue.primaryCareMemberships.monthlyRevenue)}
-            subLabel={`${membershipRevenue.primaryCareMemberships.memberCount} members • ${formatCurrency(membershipRevenue.primaryCareMemberships.annualRevenue)} annual`}
-            icon="🏥"
-            gradient="linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)"
-            borderColor="#3b82f6"
-            shadowColor="rgba(59, 130, 246, 0.3)"
-          />
-          <ClickableMetricCard
-            href="#membership-revenue"
-            label="Men's Health MRR"
-            value={formatCurrency(membershipRevenue.mensHealthMemberships.monthlyRevenue)}
-            subLabel={`${membershipRevenue.mensHealthMemberships.memberCount} members • ${formatCurrency(membershipRevenue.mensHealthMemberships.annualRevenue)} annual`}
-            icon="💪"
-            gradient="linear-gradient(135deg, #f97316 0%, #ea580c 100%)"
-            borderColor="#f97316"
-            shadowColor="rgba(249, 115, 22, 0.3)"
-          />
+      {/* Executive Summary KPIs - Owner Only */}
+      {isOwner && (
+        <div style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
+            📊 Executive Summary
+          </h2>
+          <div style={{ 
+            display: 'grid', 
+            gap: '1rem', 
+            gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))'
+          }}>
+            <ClickableMetricCard
+              href="/admin/membership-audit?filter=outstanding"
+              label="Outstanding Balances"
+              value={formatCurrency(totalOutstanding)}
+              subLabel={`${combinedOutstanding.length} patients with balances`}
+              icon="💰"
+              gradient={totalOutstanding > 0 
+                ? "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
+                : "linear-gradient(135deg, #10b981 0%, #059669 100%)"}
+              borderColor={totalOutstanding > 0 ? "#ef4444" : "#10b981"}
+              shadowColor={totalOutstanding > 0 
+                ? "rgba(239, 68, 68, 0.3)"
+                : "rgba(16, 185, 129, 0.3)"}
+            />
+            <ClickableMetricCard
+              href="#membership-revenue"
+              label="Primary Care MRR"
+              value={formatCurrency(membershipRevenue.primaryCareMemberships.monthlyRevenue)}
+              subLabel={`${membershipRevenue.primaryCareMemberships.memberCount} members • ${formatCurrency(membershipRevenue.primaryCareMemberships.annualRevenue)} annual`}
+              icon="🏥"
+              gradient="linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)"
+              borderColor="#3b82f6"
+              shadowColor="rgba(59, 130, 246, 0.3)"
+            />
+            <ClickableMetricCard
+              href="#membership-revenue"
+              label="Men's Health MRR"
+              value={formatCurrency(membershipRevenue.mensHealthMemberships.monthlyRevenue)}
+              subLabel={`${membershipRevenue.mensHealthMemberships.memberCount} members • ${formatCurrency(membershipRevenue.mensHealthMemberships.annualRevenue)} annual`}
+              icon="💪"
+              gradient="linear-gradient(135deg, #f97316 0%, #ea580c 100%)"
+              borderColor="#f97316"
+              shadowColor="rgba(249, 115, 22, 0.3)"
+            />
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Membership Revenue Breakdown - Primary Care | Men's Health */}
-      {membershipRevenue.totalMonthlyRevenue > 0 && (
+      {/* Membership Revenue Breakdown - Primary Care | Men's Health - Owner Only */}
+      {isOwner && membershipRevenue.totalMonthlyRevenue > 0 && (
         <div id="membership-revenue" style={{ marginBottom: '2rem' }}>
           <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
             📅 Monthly Membership Revenue (MRR)
@@ -680,96 +646,6 @@ export default async function HomePage() {
         </div>
       )}
 
-      {/* Jane Revenue Breakdown */}
-      {janeRevenue.totalRevenue > 0 && (
-        <div style={{ marginBottom: '2rem' }}>
-          <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
-            💰 Jane Total Revenue - All Services & Memberships
-          </h2>
-          <div style={{
-            backgroundColor: 'white',
-            border: '1px solid #e5e7eb',
-            borderRadius: '0.75rem',
-            padding: '1.5rem',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
-          }}>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-              gap: '1rem',
-              marginBottom: '1.5rem'
-            }}>
-              <div>
-                <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Total Lifetime Revenue</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#059669' }}>
-                  {formatCurrency(janeRevenue.totalRevenue)}
-                </div>
-                <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.25rem' }}>All services + memberships</div>
-              </div>
-              <div>
-                <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Total Payments</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#2563eb' }}>
-                  {formatCurrency(janeRevenue.totalPayments)}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Outstanding</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: janeRevenue.outstandingBalance > 0 ? '#dc2626' : '#059669' }}>
-                  {formatCurrency(janeRevenue.outstandingBalance)}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Avg per Patient</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#0f172a' }}>
-                  {formatCurrency(janeRevenue.averageRevenuePerPatient)}
-                </div>
-              </div>
-            </div>
-
-            {Array.isArray(janeRevenueMonthly) && janeRevenueMonthly.length > 0 && (
-              <>
-                <div style={{
-                  fontSize: '0.875rem',
-                  color: '#64748b',
-                  marginBottom: '0.75rem',
-                  fontWeight: 600,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em'
-                }}>
-                  Last 6 Months
-                </div>
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                  gap: '0.75rem'
-                }}>
-                  {janeRevenueMonthly.slice(0, 6).reverse().map((month: { month: string; revenue: number; paymentCount: number; patientCount: number }, idx: number) => (
-                    <div
-                      key={idx}
-                      style={{
-                        padding: '1rem',
-                        backgroundColor: '#f9fafb',
-                        border: '1px solid #e5e7eb',
-                        borderRadius: '0.5rem'
-                      }}
-                    >
-                      <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem', fontWeight: 600 }}>
-                        {month.month}
-                      </div>
-                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#059669', marginBottom: '0.25rem' }}>
-                        {formatCurrency(month.revenue)}
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                        {month.paymentCount || 0} payments • {month.patientCount || 0} patients
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Inventory & Supply Chain - Moved to Top */}
       <div style={{ marginBottom: '2rem' }}>

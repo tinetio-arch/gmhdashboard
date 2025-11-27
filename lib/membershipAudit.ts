@@ -30,10 +30,23 @@ type NeedsDataRow = AuditBase & {
 
 type InactiveRow = AuditBase;
 
-type DuplicateMembershipGroup = {
+export type DuplicatePatientRecord = {
+  patient_id: string;
+  patient_name: string;
+  email: string | null;
+  phone_primary: string | null;
+  status_key: string | null;
+  payment_method_key: string | null;
+  client_type_key: string | null;
+  has_active_membership: boolean;
+};
+
+export type DuplicateMembershipGroup = {
   patient_name: string;
   norm_name: string;
   memberships: AuditBase[];
+  // Actual patient records (if found)
+  patients?: DuplicatePatientRecord[];
 };
 
 export type MembershipAuditData = {
@@ -247,29 +260,73 @@ export async function getMembershipAuditData(): Promise<MembershipAuditData> {
     ORDER BY patient_name;
   `;
 
+  // Enhanced duplicate query: Find both duplicate patients AND duplicate membership packages
   const duplicatesQuery = `
-    SELECT
-      lower(norm_name) AS norm_name,
-      MIN(patient_name) AS patient_name,
-      json_agg(
-        json_build_object(
-          'patient_name', patient_name,
-          'plan_name', plan_name,
-          'status', status,
-          'remaining_cycles', remaining_cycles::text,
-          'contract_end_date', contract_end_date::text,
-          'outstanding_balance', outstanding_balance::text,
-          'category', category,
-          'norm_name', lower(norm_name),
-          'purchase_date', purchase_date::text,
-          'service_start_date', start_date::text
-        )
-        ORDER BY plan_name
-      ) AS memberships
-    FROM jane_packages_import
-    GROUP BY lower(norm_name)
-    HAVING COUNT(*) > 1
-    ORDER BY MIN(patient_name);
+    WITH duplicate_packages AS (
+      SELECT
+        lower(norm_name) AS norm_name,
+        MIN(patient_name) AS patient_name,
+        json_agg(
+          json_build_object(
+            'patient_name', patient_name,
+            'plan_name', plan_name,
+            'status', status,
+            'remaining_cycles', remaining_cycles::text,
+            'contract_end_date', contract_end_date::text,
+            'outstanding_balance', outstanding_balance::text,
+            'category', category,
+            'norm_name', lower(norm_name),
+            'purchase_date', purchase_date::text,
+            'service_start_date', start_date::text
+          )
+          ORDER BY plan_name
+        ) AS memberships
+      FROM jane_packages_import
+      GROUP BY lower(norm_name)
+      HAVING COUNT(*) > 1
+    ),
+    duplicate_patients AS (
+      SELECT
+        ${NORMALIZE_PATIENT_SQL} AS normalized_name,
+        COUNT(*) AS patient_count,
+        json_agg(
+          json_build_object(
+            'patient_id', patient_id::text,
+            'patient_name', full_name,
+            'email', email,
+            'phone_primary', phone_primary,
+            'status_key', status_key,
+            'payment_method_key', payment_method_key,
+            'client_type_key', client_type_key,
+            'has_active_membership', EXISTS(
+              SELECT 1 FROM jane_packages_import jpi
+              WHERE lower(jpi.norm_name) = ${NORMALIZE_PATIENT_SQL}
+                AND COALESCE(jpi.status, '') <> ''
+                AND lower(jpi.status) NOT LIKE 'inactive%'
+                AND lower(jpi.status) NOT LIKE 'discharg%'
+            )
+          )
+          ORDER BY 
+            CASE WHEN status_key = 'active' THEN 1 ELSE 2 END,
+            full_name
+        ) AS patients
+      FROM patients
+      WHERE status_key NOT IN ('inactive', 'discharged')
+      GROUP BY ${NORMALIZE_PATIENT_SQL}
+      HAVING COUNT(*) > 1
+    ),
+    combined_duplicates AS (
+      SELECT
+        COALESCE(dp.norm_name, dup.normalized_name) AS norm_name,
+        COALESCE(dp.patient_name, (dup.patients->0->>'patient_name')) AS patient_name,
+        COALESCE(dp.memberships, '[]'::json) AS memberships,
+        COALESCE(dup.patients, '[]'::json) AS patients
+      FROM duplicate_packages dp
+      FULL OUTER JOIN duplicate_patients dup ON dp.norm_name = dup.normalized_name
+      WHERE dp.norm_name IS NOT NULL OR dup.normalized_name IS NOT NULL
+    )
+    SELECT * FROM combined_duplicates
+    ORDER BY patient_name;
   `;
 
   const [readyRows, needsRows, inactiveRows, duplicateRows] = await Promise.all([

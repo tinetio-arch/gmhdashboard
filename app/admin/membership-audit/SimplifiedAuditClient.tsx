@@ -2,9 +2,12 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import type { MembershipAuditData, QuickBooksAuditData } from '@/lib/membershipAudit';
+import { useRouter } from 'next/navigation';
+import type { MembershipAuditData, QuickBooksAuditData, DuplicateMembershipGroup, QuickBooksRecurringRow, QuickBooksPatientRow } from '@/lib/membershipAudit';
 import type { LookupSets } from '@/lib/lookups';
 import { withBasePath } from '@/lib/basePath';
+import MapQuickBooksModal from './MapQuickBooksModal';
+import ResolveDuplicateModal from './ResolveDuplicateModal';
 
 type Props = {
   data: MembershipAuditData;
@@ -21,7 +24,96 @@ function formatCurrency(value: string | null | undefined): string {
 }
 
 export default function SimplifiedAuditClient({ data, quickbooksData, lookups }: Props) {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<'outstanding' | 'needs-intake' | 'duplicates' | 'quickbooks'>('outstanding');
+  
+  // Modal state
+  const [mapModalOpen, setMapModalOpen] = useState(false);
+  const [selectedQBRecurring, setSelectedQBRecurring] = useState<QuickBooksRecurringRow | null>(null);
+  const [selectedQBPatient, setSelectedQBPatient] = useState<QuickBooksPatientRow | null>(null);
+  
+  const [duplicateModalOpen, setDuplicateModalOpen] = useState(false);
+  const [selectedDuplicateGroup, setSelectedDuplicateGroup] = useState<DuplicateMembershipGroup | null>(null);
+
+  // Action handlers
+  const handleMapQuickBooks = async (patientId: string) => {
+    const qbCustomerId = selectedQBRecurring?.qbCustomerId || (selectedQBPatient ? 'unknown' : null);
+    if (!qbCustomerId || qbCustomerId === 'unknown') {
+      throw new Error('QuickBooks customer ID is required');
+    }
+
+    const response = await fetch('/api/admin/membership-audit/map-quickbooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        qbCustomerId,
+        patientId,
+        matchMethod: 'manual'
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to map patient');
+    }
+
+    // Refresh the page to show updated data
+    router.refresh();
+  };
+
+  const handleResolveDuplicate = async (
+    primaryPatientId: string, 
+    duplicatePatientIds: string[], 
+    action: 'merge' | 'remove',
+    disableMembershipPackages: boolean
+  ) => {
+    if (!selectedDuplicateGroup) return;
+
+    const response = await fetch('/api/admin/membership-audit/resolve-duplicate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        primaryPatientId,
+        duplicatePatientIds,
+        action,
+        normName: selectedDuplicateGroup.norm_name,
+        disableMembershipPackages
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to resolve duplicates');
+    }
+
+    // Refresh the page to show updated data
+    router.refresh();
+  };
+
+  const openMapModalForRecurring = (row: QuickBooksRecurringRow) => {
+    setSelectedQBRecurring(row);
+    setSelectedQBPatient(null);
+    setMapModalOpen(true);
+  };
+
+  const openMapModalForPatient = (row: QuickBooksPatientRow) => {
+    setSelectedQBPatient(row);
+    setSelectedQBRecurring(null);
+    setMapModalOpen(true);
+  };
+
+  const openDuplicateModal = (group: DuplicateMembershipGroup) => {
+    setSelectedDuplicateGroup(group);
+    setDuplicateModalOpen(true);
+  };
+
+  const closeModals = () => {
+    setMapModalOpen(false);
+    setDuplicateModalOpen(false);
+    setSelectedQBRecurring(null);
+    setSelectedQBPatient(null);
+    setSelectedDuplicateGroup(null);
+  };
 
   // Calculate outstanding balances
   const janeOutstanding = data.readyToMap
@@ -294,28 +386,50 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
                     padding: '1rem',
                     borderRadius: '0.75rem',
                     border: '1px solid #e2e8f0',
-                    background: '#f8fafc'
+                    background: '#f8fafc',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    gap: '1rem'
                   }}>
-                    <div style={{ fontWeight: 600, marginBottom: '0.5rem', color: '#0f172a' }}>
-                      {group.patient_name || group.norm_name || 'Unknown'} ({group.memberships.length} records)
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, marginBottom: '0.5rem', color: '#0f172a' }}>
+                        {group.patient_name || group.norm_name || 'Unknown'} ({group.memberships.length} records)
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        {group.memberships.map((membership, pIdx) => (
+                          <div key={pIdx} style={{
+                            padding: '0.5rem',
+                            background: '#ffffff',
+                            borderRadius: '0.5rem',
+                            fontSize: '0.85rem'
+                          }}>
+                            <span style={{ fontWeight: 600, color: '#0f172a' }}>
+                              {membership.patient_name || 'Unknown'}
+                            </span>
+                            <span style={{ color: '#64748b', marginLeft: '0.5rem' }}>
+                              • {membership.plan_name || 'No plan'} • {membership.status || 'No status'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      {group.memberships.map((membership, pIdx) => (
-                        <div key={pIdx} style={{
-                          padding: '0.5rem',
-                          background: '#ffffff',
-                          borderRadius: '0.5rem',
-                          fontSize: '0.85rem'
-                        }}>
-                          <span style={{ fontWeight: 600, color: '#0f172a' }}>
-                            {membership.patient_name || 'Unknown'}
-                          </span>
-                          <span style={{ color: '#64748b', marginLeft: '0.5rem' }}>
-                            • {membership.plan_name || 'No plan'} • {membership.status || 'No status'}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                    <button
+                      onClick={() => openDuplicateModal(group)}
+                      style={{
+                        padding: '0.5rem 1rem',
+                        borderRadius: '0.5rem',
+                        border: 'none',
+                        backgroundColor: '#f59e0b',
+                        color: '#ffffff',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        fontSize: '0.85rem',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      Resolve
+                    </button>
                   </div>
                 ))}
               </div>
@@ -337,12 +451,34 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
                       <div key={idx} style={{
                         padding: '0.75rem',
                         borderBottom: '1px solid #e2e8f0',
-                        fontSize: '0.9rem'
+                        fontSize: '0.9rem',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '1rem'
                       }}>
-                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{row.customerName}</div>
-                        <div style={{ color: '#64748b', fontSize: '0.85rem' }}>
-                          {formatCurrency((row.amount || 0).toString())} • {row.templateName || 'Unknown frequency'}
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600, color: '#0f172a' }}>{row.customerName}</div>
+                          <div style={{ color: '#64748b', fontSize: '0.85rem' }}>
+                            {formatCurrency((row.amount || 0).toString())} • {row.templateName || 'Unknown frequency'}
+                          </div>
                         </div>
+                        <button
+                          onClick={() => openMapModalForRecurring(row)}
+                          style={{
+                            padding: '0.5rem 1rem',
+                            borderRadius: '0.5rem',
+                            border: 'none',
+                            backgroundColor: '#3b82f6',
+                            color: '#ffffff',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            fontSize: '0.85rem',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          Map Patient
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -356,11 +492,27 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
                       <div key={idx} style={{
                         padding: '0.75rem',
                         borderBottom: '1px solid #e2e8f0',
-                        fontSize: '0.9rem'
+                        fontSize: '0.9rem',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '1rem'
                       }}>
-                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{row.full_name || 'Unknown'}</div>
-                        <div style={{ color: '#64748b', fontSize: '0.85rem' }}>
-                          {row.email || 'No email'} • {row.phone_primary || 'No phone'}
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600, color: '#0f172a' }}>{row.full_name || 'Unknown'}</div>
+                          <div style={{ color: '#64748b', fontSize: '0.85rem' }}>
+                            {row.email || 'No email'} • {row.phone_primary || 'No phone'}
+                          </div>
+                        </div>
+                        <div style={{
+                          padding: '0.5rem 1rem',
+                          borderRadius: '0.5rem',
+                          backgroundColor: '#f1f5f9',
+                          color: '#64748b',
+                          fontSize: '0.85rem',
+                          fontStyle: 'italic'
+                        }}>
+                          Need QB Customer Search
                         </div>
                       </div>
                     ))}
@@ -371,6 +523,29 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
           )}
         </div>
       </div>
+
+      {/* Modals */}
+      {selectedQBRecurring && (
+        <MapQuickBooksModal
+          isOpen={mapModalOpen}
+          onClose={closeModals}
+          qbCustomerId={selectedQBRecurring.qbCustomerId}
+          qbCustomerName={selectedQBRecurring.customerName}
+          qbEmail={selectedQBRecurring.email || null}
+          qbPhone={selectedQBRecurring.phone || null}
+          onMap={handleMapQuickBooks}
+        />
+      )}
+
+      {/* Note: Unmapped patients (GMH patients without QB mapping) need a different flow - 
+          they need to search for QB customers. This will be added in a future update. */}
+
+      <ResolveDuplicateModal
+        isOpen={duplicateModalOpen}
+        onClose={closeModals}
+        duplicateGroup={selectedDuplicateGroup}
+        onResolve={handleResolveDuplicate}
+      />
     </div>
   );
 }
