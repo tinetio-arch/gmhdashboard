@@ -313,8 +313,8 @@ export default async function HomePage() {
         </p>
       </div>
 
-      {/* Integration Status - Critical Alerts First */}
-      {integrationStatuses && (
+      {/* Integration Status - Critical Alerts First - Admin Only */}
+      {isOwner && integrationStatuses && (
         <div style={{ marginBottom: '2rem' }}>
           <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
             🔌 Integration Status
@@ -433,13 +433,15 @@ export default async function HomePage() {
         <PaymentCheckerButton />
       </div>
 
-      <QuickBooksCard
-        metrics={quickBooksDashboardMetrics}
-        paymentIssues={quickBooksPaymentIssues}
-        unmatchedPatients={quickBooksUnmatchedPatients}
-        paymentStats={paymentFailures.quickbooks}
-        connection={quickBooksConnection}
-      />
+      {isOwner && (
+        <QuickBooksCard
+          metrics={quickBooksDashboardMetrics}
+          paymentIssues={quickBooksPaymentIssues}
+          unmatchedPatients={quickBooksUnmatchedPatients}
+          paymentStats={paymentFailures.quickbooks}
+          connection={quickBooksConnection}
+        />
+      )}
 
       {/* Operational Metrics - Moved to Top */}
       <div style={{ marginBottom: '2rem' }}>

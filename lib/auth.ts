@@ -259,22 +259,26 @@ async function getSession(rawToken: string): Promise<{ user: PublicUser; expires
 }
 
 export function setSessionCookie(response: NextResponse, token: string, expires: Date): void {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+  const cookiePath = basePath || '/';
   response.cookies.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: true,
-    sameSite: 'strict',
-    path: '/',
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: cookiePath,
     expires
   });
 }
 
 export function clearSessionCookie(response: NextResponse): void {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+  const cookiePath = basePath || '/';
   response.cookies.set(SESSION_COOKIE_NAME, '', {
     httpOnly: true,
-    secure: true,
-    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
     expires: new Date(0),
-    path: '/'
+    path: cookiePath
   });
 }
 

@@ -309,18 +309,19 @@ export async function getCombinedOutstandingMemberships(limit = 50): Promise<Com
         WHERE pn.patient_id IS NOT NULL
           AND COALESCE(pkg.outstanding_balance, 0)::numeric > 0
       ),
-      invoice_balances AS (
+      sales_receipt_balances AS (
         SELECT
           patient_id,
-          SUM(balance) AS total_invoice_balance
-        FROM quickbooks_payments
-        WHERE balance > 0
+          SUM(amount) AS total_receipt_balance
+        FROM quickbooks_sales_receipts
+        WHERE amount > 0
+          AND LOWER(COALESCE(status, '')) IN ('unknown', 'declined', 'error', 'failed', 'rejected')
         GROUP BY patient_id
       ),
-      all_payment_issues AS (
+      payment_issue_totals AS (
         SELECT
           patient_id,
-          SUM(amount_owed) AS total_issue_balance
+          SUM(amount_owed) AS total_issue_amount
         FROM payment_issues
         WHERE resolved_at IS NULL
           AND amount_owed > 0
@@ -339,41 +340,32 @@ export async function getCombinedOutstandingMemberships(limit = 50): Promise<Com
           p.patient_id,
           p.full_name AS patient_name,
           p.status_key AS status,
-          -- Use invoice balance as primary, add payment issues only if they're not tied to invoices
-          COALESCE(ib.total_invoice_balance, 0) + 
-          COALESCE(
-            (SELECT SUM(pi.amount_owed)
-             FROM payment_issues pi
-             WHERE pi.patient_id = p.patient_id
-               AND pi.resolved_at IS NULL
-               AND pi.amount_owed > 0
-               AND pi.qb_invoice_id IS NULL
-               AND pi.issue_type IN (
-                 'payment_declined', 
-                 'payment_failed', 
-                 'insufficient_funds',
-                 'failed_payment'
-               )
-            ), 0
+          -- QuickBooks ONLY uses sales receipts, not invoices
+          -- For outstanding balances, use payment issues as primary source (they're created from sales receipts with status 'unknown')
+          -- Also include sales receipts with declined status as fallback
+          -- Use the greater of the two to avoid double-counting (payment issues are usually created from declined sales receipts)
+          GREATEST(
+            COALESCE(pit.total_issue_amount, 0),
+            COALESCE(srb.total_receipt_balance, 0)
           ) AS qb_balance
         FROM patients p
-        LEFT JOIN invoice_balances ib ON p.patient_id = ib.patient_id
+        LEFT JOIN payment_issue_totals pit ON p.patient_id = pit.patient_id
+        LEFT JOIN sales_receipt_balances srb ON p.patient_id = srb.patient_id
         WHERE p.patient_id IS NOT NULL
-          AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
+          -- Include patients with QuickBooks payment method OR patients with QuickBooks sales receipts/payment issues
+          AND (
+            p.payment_method_key IN ('qbo', 'quickbooks') 
+            OR p.payment_method_key = 'jane_quickbooks'
+            OR EXISTS (SELECT 1 FROM quickbooks_sales_receipts WHERE patient_id = p.patient_id)
+            OR EXISTS (SELECT 1 FROM payment_issues WHERE patient_id = p.patient_id AND resolved_at IS NULL)
+          )
           AND NOT (
             COALESCE(p.status_key, '') ILIKE 'inactive%'
             OR COALESCE(p.status_key, '') ILIKE 'discharg%'
           )
           AND (
-            COALESCE(ib.total_invoice_balance, 0) > 0
-            OR EXISTS (
-              SELECT 1
-              FROM payment_issues pi
-              WHERE pi.patient_id = p.patient_id
-                AND pi.resolved_at IS NULL
-                AND pi.amount_owed > 0
-                AND pi.qb_invoice_id IS NULL
-            )
+            COALESCE(pit.total_issue_amount, 0) > 0
+            OR COALESCE(srb.total_receipt_balance, 0) > 0
           )
       ),
       combined AS (

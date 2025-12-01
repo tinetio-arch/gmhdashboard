@@ -55,3 +55,4 @@ COMMENT ON VIEW clinicsync_sync_summary IS 'Summary view of ClinicSync sync acti
 
 
 
+

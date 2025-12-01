@@ -25,8 +25,15 @@ async function getQuickBooksStatus(): Promise<IntegrationStatus> {
     const attention = await needsConnectionAttention();
     
     let status: 'healthy' | 'warning' | 'critical' | 'unknown' = 'unknown';
-    if (health.connected && !attention.needsAttention) {
-      status = 'healthy';
+    // If connected, show as healthy unless it's a critical issue
+    // This prioritizes showing green when syncing is working
+    if (health.connected) {
+      if (attention.severity === 'critical') {
+        status = 'critical';
+      } else {
+        // Connected and working - show as healthy even if there are minor warnings
+        status = 'healthy';
+      }
     } else if (attention.severity === 'critical') {
       status = 'critical';
     } else if (attention.severity === 'warning') {
