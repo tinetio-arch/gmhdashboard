@@ -3,6 +3,41 @@
  * Handles authentication and data operations with Go-High-Level API
  */
 
+const GHL_DEBUG_ENABLED = process.env.GHL_DEBUG === 'true';
+
+function anonymizeEmail(email?: string | null): string {
+  if (!email) return 'n/a';
+  const [local, domain] = email.split('@');
+  if (!domain) {
+    return `${local?.slice(0, 2) ?? ''}***`;
+  }
+  const safeLocal = local ? `${local.slice(0, 2)}***` : '***';
+  return `${safeLocal}@${domain}`;
+}
+
+function summarizePayload(body: unknown): string {
+  if (!body || typeof body !== 'object') {
+    return 'payload=none';
+  }
+  const payload = body as Record<string, unknown>;
+  const topLevelKeys = Object.keys(payload);
+  const customFieldCount = Array.isArray((payload as any).customFields)
+    ? (payload as any).customFields.length
+    : 0;
+  return `keys=${topLevelKeys.join(',') || 'none'}; customFields=${customFieldCount}`;
+}
+
+function contactSummary(contact: Partial<GHLContact> | null | undefined): string {
+  if (!contact) return 'contact=undefined';
+  const id =
+    (contact as any)?.id ??
+    (contact as any)?.contactId ??
+    (contact as any)?._id ??
+    (contact as any)?.contact_id ??
+    'unknown';
+  return `id=${id}; email=${anonymizeEmail(contact.email)}`;
+}
+
 export type GHLConfig = {
   apiKey: string;
   locationId?: string;
@@ -90,10 +125,20 @@ type GHLContactSearchResponse = {
 export class GHLClient {
   private config: GHLConfig;
   private baseUrl: string;
+  private readonly debugEnabled: boolean;
+  private locationAccessBlocked = false;
+  private detectedLocationId?: string;
 
   constructor(config: GHLConfig) {
     this.config = config;
     this.baseUrl = config.baseUrl || 'https://services.leadconnectorhq.com';
+    this.debugEnabled = GHL_DEBUG_ENABLED;
+  }
+
+  private debugLog(...args: unknown[]): void {
+    if (this.debugEnabled) {
+      console.log(...args);
+    }
   }
 
   getLocationId(): string | undefined {
@@ -107,7 +152,7 @@ export class GHLClient {
   }
 
   private withLocation(path: string): string {
-    if (!this.config.locationId) {
+    if (!this.config.locationId || this.locationAccessBlocked) {
       return path;
     }
     const separator = path.includes('?') ? '&' : '?';
@@ -117,7 +162,63 @@ export class GHLClient {
   private withLocationPath(path: string): string {
     const locationId = this.requireLocationId('call this endpoint');
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    if (!locationId || this.locationAccessBlocked) {
+      return normalizedPath;
+    }
     return `/locations/${locationId}${normalizedPath}`;
+  }
+
+  private async detectAccessibleLocationId(): Promise<string | undefined> {
+    if (this.detectedLocationId && !this.locationAccessBlocked) {
+      return this.detectedLocationId;
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/locations/`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+          'Version': '2021-07-28',
+        },
+      });
+
+      if (!response.ok) {
+        this.debugLog(`[GHL] Location discovery failed: ${response.status} ${response.statusText}`);
+        return undefined;
+      }
+
+      const payload = await response.json();
+      const candidate =
+        payload?.data?.[0] ??
+        payload?.locations?.[0] ??
+        payload?.location ??
+        payload?.[0];
+
+      const locationId =
+        candidate?.id ??
+        candidate?.locationId ??
+        candidate?.location_id ??
+        candidate?.uid ??
+        candidate?.value;
+
+      if (locationId) {
+        this.detectedLocationId = String(locationId);
+        this.config.locationId = this.detectedLocationId;
+        this.locationAccessBlocked = false;
+        return this.detectedLocationId;
+      }
+
+      this.debugLog('[GHL] Location discovery returned no usable locations.');
+    } catch (error) {
+      this.debugLog(
+        `[GHL] Location discovery encountered an error: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+
+    return undefined;
   }
 
   private async request<T>(
@@ -129,36 +230,78 @@ export class GHLClient {
       throw new Error('GHL API key is required');
     }
 
-    const url = `${this.baseUrl}${endpoint}`;
+    const url = new URL(`${this.baseUrl}${endpoint}`);
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${this.config.apiKey}`,
       'Content-Type': 'application/json',
       'Version': '2021-07-28',
     };
 
-    // Log full request for PUT /contacts (updates)
-    if (method === 'PUT' && endpoint.includes('/contacts/')) {
-      console.log(`[GHL] ${method} ${endpoint}`);
-      if (body) {
-        const bodyStr = JSON.stringify(body, null, 2);
-        console.log(`[GHL] Full request body:`, bodyStr);
-        // Specifically log customFields if present
-        if ((body as any).customFields) {
-          console.log(`[GHL] Custom fields count: ${(body as any).customFields.length}`);
-          (body as any).customFields.forEach((field: any, idx: number) => {
-            console.log(`[GHL]   Custom field ${idx + 1}:`, JSON.stringify(field));
-          });
-        }
-      }
+    const executeFetch = async (targetUrl: URL) =>
+      fetch(targetUrl.toString(), {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+
+    const bodySummary = summarizePayload(body);
+
+    if (method === 'PUT' && endpoint.includes('/contacts/') && this.debugEnabled) {
+      this.debugLog(`[GHL] ${method} ${endpoint} (${bodySummary})`);
     }
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let response = await executeFetch(url);
+    let responseText = await response.text();
 
-    const responseText = await response.text();
+    const locationAccessError =
+      !response.ok &&
+      response.status === 403 &&
+      responseText.toLowerCase().includes('does not have access to this location');
+
+    if (locationAccessError) {
+      const refreshedLocationId = await this.detectAccessibleLocationId();
+
+      if (refreshedLocationId) {
+        if (url.pathname.includes('/locations/')) {
+          url.pathname = url.pathname.replace(/\/locations\/[^/]+/, `/locations/${refreshedLocationId}`);
+        }
+        if (url.searchParams.has('locationId')) {
+          url.searchParams.set('locationId', refreshedLocationId);
+        }
+
+        response = await executeFetch(url);
+        responseText = await response.text();
+      }
+
+      if (
+        (!response.ok || response.status === 403) &&
+        responseText.toLowerCase().includes('does not have access to this location')
+      ) {
+        const retryUrl = new URL(url.toString());
+        const hadLocationParam = retryUrl.searchParams.has('locationId');
+        const hadLocationPath = retryUrl.pathname.includes('/locations/');
+
+        console.warn(
+          '[GHL] Location access still denied after refresh. Removing explicit location from subsequent requests.'
+        );
+
+        if (hadLocationParam) {
+          retryUrl.searchParams.delete('locationId');
+        }
+        if (hadLocationPath) {
+          retryUrl.pathname = retryUrl.pathname.replace(/\/locations\/[^/]+/, '');
+          if (!retryUrl.pathname) {
+            retryUrl.pathname = '/';
+          }
+        }
+
+        this.locationAccessBlocked = true;
+        this.config.locationId = undefined;
+
+        response = await executeFetch(retryUrl);
+        responseText = await response.text();
+      }
+    }
     
     if (!response.ok) {
       let errorMessage = `GHL API error: ${response.status} ${response.statusText}`;
@@ -179,9 +322,9 @@ export class GHLClient {
       }
 
       const fullError = `${errorMessage}${errorDetails}`;
-      console.error(`[GHL] ${method} ${endpoint} failed: ${fullError}`);
-      if (body) {
-        console.error(`[GHL] Request payload:`, JSON.stringify(body, null, 2));
+      console.error(`[GHL] ${method} ${endpoint} failed: ${fullError} (${bodySummary})`);
+      if (body && this.debugEnabled) {
+        this.debugLog(`[GHL] Request payload (debug):`, JSON.stringify(body, null, 2));
       }
       throw new Error(fullError);
     }
@@ -189,14 +332,10 @@ export class GHLClient {
     let result: T;
     try {
       result = JSON.parse(responseText);
-      // Log response for PUT /contacts
-      if (method === 'PUT' && endpoint.includes('/contacts/')) {
-        console.log(`[GHL] Response status: ${response.status}`);
+      if (method === 'PUT' && endpoint.includes('/contacts/') && this.debugEnabled) {
+        this.debugLog(`[GHL] Response status: ${response.status}`);
         if ((result as any).customFields) {
-          console.log(`[GHL] Response customFields count: ${(result as any).customFields.length}`);
-          (result as any).customFields.slice(0, 5).forEach((field: any, idx: number) => {
-            console.log(`[GHL]   Response field ${idx + 1}:`, JSON.stringify(field));
-          });
+          this.debugLog(`[GHL] Response customFields count: ${(result as any).customFields.length}`);
         }
       }
     } catch {
@@ -249,8 +388,7 @@ export class GHLClient {
         contact = (contact as any).contact;
       }
       
-      // Log the contact structure for debugging
-      console.log(`[GHL] Found contact by email ${email}:`, JSON.stringify(contact, null, 2));
+      this.debugLog(`[GHL] Found contact by email: ${contactSummary(contact)}`);
       
       // Extract ID from multiple possible locations
       const contactId = contact.id || 
@@ -318,7 +456,7 @@ export class GHLClient {
         contact = (contact as any).contact;
       }
       
-      console.log(`[GHL] Found contact by name ${firstName} ${lastName}:`, JSON.stringify(contact, null, 2));
+      this.debugLog(`[GHL] Found contact by name: ${contactSummary(contact)}`);
       
       // Extract ID from multiple possible locations
       const contactId = contact.id || 
@@ -369,8 +507,7 @@ export class GHLClient {
         contact = (contact as any).contact;
       }
       
-      // Log the contact structure for debugging
-      console.log(`[GHL] Found contact by phone ${phone}:`, JSON.stringify(contact, null, 2));
+      this.debugLog(`[GHL] Found contact by phone: ${contactSummary(contact)}`);
       
       // Extract ID from multiple possible locations
       const contactId = contact.id || 
@@ -409,13 +546,10 @@ export class GHLClient {
   async updateContact(contactId: string, updates: Partial<GHLContact>): Promise<GHLContact> {
     // Log the full payload being sent for debugging
     if (updates.customFields && updates.customFields.length > 0) {
-      console.log(`[GHL] Updating contact ${contactId} with ${updates.customFields.length} custom fields:`);
-      updates.customFields.forEach((field, idx) => {
-        console.log(`[GHL]   Field ${idx + 1}:`, JSON.stringify(field));
-      });
+      this.debugLog(`[GHL] Updating contact ${contactId} with ${updates.customFields.length} custom fields`);
     }
     const result = await this.request<GHLContact>('PUT', `/contacts/${contactId}`, updates);
-    console.log(`[GHL] Successfully updated contact ${contactId}. Response customFields:`, result.customFields?.slice(0, 3));
+    this.debugLog(`[GHL] Successfully updated contact ${contactId}. Response summary: ${contactSummary(result)}`);
     return result;
   }
 

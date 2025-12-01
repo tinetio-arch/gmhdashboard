@@ -2,6 +2,13 @@ import type { PoolClient } from 'pg';
 import { getPool, query } from './db';
 import { PASS_CONFIG, KNOWN_PASS_IDS } from './passConfig';
 
+const CLINICSYNC_DEBUG = process.env.CLINICSYNC_DEBUG === 'true';
+const clinicDebugLog = (...args: unknown[]): void => {
+  if (CLINICSYNC_DEBUG) {
+    console.log(...args);
+  }
+};
+
 type ClinicSyncPayload = Record<string, any>;
 
 type ClinicSyncUpsertOptions = {
@@ -69,12 +76,16 @@ export async function upsertClinicSyncPatient(
   if (!hasMembership) {
     // For webhook sources, we can optionally skip patients without membership data
     if (options?.source === 'webhook' && !options?.skipMembershipFilter) {
-      console.log(`[ClinicSync] Skipping patient ${sanitized.clinicsyncPatientId} (${sanitized.fullName}) - no membership data in webhook payload`);
+      clinicDebugLog(
+        `[ClinicSync] Skipping patient ${sanitized.clinicsyncPatientId} (${sanitized.fullName}) - no membership data in webhook payload`
+      );
       return { patientId: null, matchMethod: undefined };
     }
     
     // For other sources (manual sync, etc.), still process but log it
-    console.log(`[ClinicSync] Patient ${sanitized.clinicsyncPatientId} (${sanitized.fullName}) has no membership data in webhook payload`);
+    clinicDebugLog(
+      `[ClinicSync] Patient ${sanitized.clinicsyncPatientId} (${sanitized.fullName}) has no membership data in webhook payload`
+    );
   }
 
   const pool = getPool();
@@ -583,7 +594,7 @@ async function applyMembershipImpact(
       [patientId]
     );
 
-    console.log(`[ClinicSync] 🚨 Membership cancelled detected: ${patientName} → Set to inactive`);
+    clinicDebugLog(`[ClinicSync] 🚨 Membership cancelled detected: ${patientName} → Set to inactive`);
     // Return early - don't process payment failures or other holds if cancelled
     return;
   }

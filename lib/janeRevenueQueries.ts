@@ -41,30 +41,27 @@ export async function getTotalJaneRevenue(
   startDate?: Date,
   endDate?: Date
 ): Promise<JaneRevenueSummary> {
-  // Get ALL unique ClinicSync patient IDs from webhooks (not just mapped ones)
-  // This captures revenue from ALL Jane patients, including those not in your system yet
-  const allWebhookPatients = await query<{
+  // Build a list of unique ClinicSync patients along with any mapped patient info.
+  const janePatients = await query<{
     clinicsync_patient_id: string;
+    patient_id: string | null;
+    full_name: string | null;
   }>(
-    `SELECT DISTINCT clinicsync_patient_id
-     FROM clinicsync_webhook_events
-     WHERE payload IS NOT NULL
-       AND clinicsync_patient_id IS NOT NULL`
+    `WITH distinct_patients AS (
+       SELECT DISTINCT clinicsync_patient_id
+       FROM clinicsync_webhook_events
+       WHERE payload IS NOT NULL
+         AND clinicsync_patient_id IS NOT NULL
+     )
+     SELECT
+       dp.clinicsync_patient_id,
+       cm.patient_id,
+       p.full_name
+     FROM distinct_patients dp
+     LEFT JOIN patient_clinicsync_mapping cm
+       ON cm.clinicsync_patient_id = dp.clinicsync_patient_id
+     LEFT JOIN patients p ON p.patient_id = cm.patient_id`
   );
-
-  // Get mapped patient IDs for comparison
-  const mappedPatientIds = await query<{
-    clinicsync_patient_id: string;
-  }>(
-    `SELECT DISTINCT cm.clinicsync_patient_id
-     FROM patient_clinicsync_mapping cm
-     INNER JOIN patients p ON p.patient_id = cm.patient_id
-     WHERE p.payment_method_key IN ('jane', 'jane_quickbooks')
-       AND NOT (COALESCE(p.status_key, '') ILIKE 'inactive%' OR COALESCE(p.status_key, '') ILIKE 'discharg%')
-       AND cm.clinicsync_patient_id IS NOT NULL`
-  );
-
-  const mappedSet = new Set(mappedPatientIds.map(p => p.clinicsync_patient_id));
 
   // Get latest webhook for each patient
   const patientRevenues: Array<{
@@ -76,10 +73,13 @@ export async function getTotalJaneRevenue(
     purchased: number;
     balance: number;
     visits: number;
-    lastWebhookDate: string;
+    lastWebhookDate: string | null;
   }> = [];
 
   for (const patient of janePatients) {
+    const clinicsyncPatientId = patient.clinicsync_patient_id;
+    if (!clinicsyncPatientId) continue;
+
     if (!patient.clinicsync_patient_id) continue;
 
     // Get most recent webhook for this patient
@@ -87,20 +87,29 @@ export async function getTotalJaneRevenue(
     const webhooks = await query<{
       payload: any;
       event_type: string;
+      created_at: string | null;
     }>(
-      `SELECT payload, event_type
+      `SELECT payload, event_type, created_at
        FROM clinicsync_webhook_events
        WHERE clinicsync_patient_id = $1
          AND payload IS NOT NULL
+       ORDER BY created_at DESC
        LIMIT 1`,
-      [patient.clinicsync_patient_id]
+      [clinicsyncPatientId]
     );
 
     if (webhooks.length === 0) continue;
 
-    const payload = typeof webhooks[0].payload === 'string'
-      ? JSON.parse(webhooks[0].payload)
-      : webhooks[0].payload;
+    const rawPayload = webhooks[0].payload;
+    const payload = typeof rawPayload === 'string'
+      ? JSON.parse(rawPayload)
+      : rawPayload || {};
+
+    const patientName =
+      patient.full_name ||
+      (payload.first_name && payload.last_name
+        ? `${payload.first_name} ${payload.last_name}`
+        : payload.patient_name || `ClinicSync Patient ${clinicsyncPatientId}`);
 
     // Extract financial data
     const totalPaymentAmount = parseFloat(payload.total_payment_amount || payload.total_payment_made || '0') || 0;
@@ -112,15 +121,15 @@ export async function getTotalJaneRevenue(
     // Use total_payment_amount as the primary revenue metric
     // This represents total lifetime revenue from Jane
     patientRevenues.push({
-      patientId: patient.patient_id,
-      patientName: patient.full_name,
-      clinicsyncPatientId: patient.clinicsync_patient_id,
+      patientId: patient.patient_id ?? clinicsyncPatientId,
+      patientName,
+      clinicsyncPatientId,
       revenue: totalPaymentAmount || totalPaymentMade || totalPurchased, // Fallback chain
       payments: totalPaymentMade,
       purchased: totalPurchased,
       balance: outstandingBalance,
       visits: totalVisits,
-      lastWebhookDate: new Date().toISOString() // TODO: Extract actual timestamp from webhook
+      lastWebhookDate: webhooks[0].created_at ?? null
     });
   }
 
@@ -217,7 +226,7 @@ export async function getJanePatientRevenue(): Promise<JanePatientRevenue[]> {
  * This allows us to calculate daily/weekly/monthly revenue
  */
 export async function extractPaymentEvents(): Promise<Array<{
-  patientId: string | null;
+  patientId: string;
   patientName: string;
   clinicsyncPatientId: string;
   paymentDate: string | null;
@@ -236,7 +245,7 @@ export async function extractPaymentEvents(): Promise<Array<{
   );
 
   const paymentEvents: Array<{
-    patientId: string | null;
+    patientId: string;
     patientName: string;
     clinicsyncPatientId: string;
     paymentDate: string | null;
@@ -271,13 +280,27 @@ export async function extractPaymentEvents(): Promise<Array<{
     const totalPaymentAmount = parseFloat(payload.total_payment_amount || payload.total_payment_made || '0') || 0;
     const paidAppointments = appointments.filter((appt: any) => appt.patient_paid === true || appt.purchase_state === 'paid');
     const avgPaymentPerAppointment = paidAppointments.length > 0 ? totalPaymentAmount / paidAppointments.length : 0;
+
+    const mappedPatient = await query<{
+      patient_id: string;
+      full_name: string;
+    }>(
+      `SELECT p.patient_id, p.full_name
+       FROM patient_clinicsync_mapping cm
+       INNER JOIN patients p ON p.patient_id = cm.patient_id
+       WHERE cm.clinicsync_patient_id = $1
+       LIMIT 1`,
+      [clinicsyncPatientId]
+    );
+
+    const mappedPatientRecord = mappedPatient[0];
+    const mappedPatientId = mappedPatientRecord?.patient_id ?? null;
+    const mappedPatientName = mappedPatientRecord?.full_name ?? null;
     
-    appointments.forEach((appt: any, idx: number) => {
+    for (let idx = 0; idx < appointments.length; idx++) {
+      const appt = appointments[idx];
       // Only include appointments that were paid
-      if (!(appt.patient_paid === true || appt.purchase_state === 'paid')) return;
-      
-      // Skip if no clinicsync patient ID
-      if (!patient.clinicsync_patient_id) return;
+      if (!(appt.patient_paid === true || appt.purchase_state === 'paid')) continue;
       
       // Use average payment per appointment (since we don't have individual payment amounts)
       const paymentAmount = avgPaymentPerAppointment;
@@ -298,44 +321,44 @@ export async function extractPaymentEvents(): Promise<Array<{
         : payload.patient_name
         ? payload.patient_name
         : `ClinicSync Patient ${clinicsyncPatientId}`;
-
-      // Try to find patient ID in system
-      const mappedPatient = await query<{
-        patient_id: string;
-        full_name: string;
-      }>(
-        `SELECT p.patient_id, p.full_name
-         FROM patient_clinicsync_mapping cm
-         INNER JOIN patients p ON p.patient_id = cm.patient_id
-         WHERE cm.clinicsync_patient_id = $1
-         LIMIT 1`,
-        [clinicsyncPatientId]
-      );
-
-      const patientId = mappedPatient.length > 0 ? mappedPatient[0].patient_id : null;
-      const systemPatientName = mappedPatient.length > 0 ? mappedPatient[0].full_name : null;
+      const displayName = mappedPatientName || patientName;
 
       paymentEvents.push({
-        patientId: patientId,
-        patientName: systemPatientName || patientName,
+      patientId: mappedPatientId ?? clinicsyncPatientId,
+        patientName: displayName,
         clinicsyncPatientId: clinicsyncPatientId,
         paymentDate: paymentDate ? new Date(paymentDate).toISOString().split('T')[0] : null, // YYYY-MM-DD format
         paymentAmount,
         appointmentDate: appointmentDate ? new Date(appointmentDate).toISOString().split('T')[0] : null,
         visitNumber: idx + 1
       });
-    });
+    }
 
     // Also check last_payment_reminder for most recent payment
     if (payload.last_payment_reminder) {
-      const lastPaymentAmount = parseFloat(payload.last_payment_reminder.amount || payload.total_payment_amount || '0') || 0;
-      if (lastPaymentAmount > 0 && paymentEvents.length === 0) {
+      const reminder = payload.last_payment_reminder;
+      const reminderAmount = parseFloat(
+        (typeof reminder === 'object' && reminder !== null ? reminder.amount : reminder) ||
+          payload.total_payment_amount ||
+          '0'
+      ) || 0;
+
+      const reminderDate =
+        typeof reminder === 'object' && reminder !== null
+          ? reminder.date || null
+          : typeof reminder === 'string'
+            ? reminder
+            : null;
+
+      const hasExistingEvents = paymentEvents.some(event => event.clinicsyncPatientId === clinicsyncPatientId);
+
+      if (reminderAmount > 0 && !hasExistingEvents) {
         paymentEvents.push({
-          patientId: patient.patient_id,
-          patientName: patient.full_name,
-          clinicsyncPatientId: patient.clinicsync_patient_id,
-          paymentDate: payload.last_payment_reminder.date || payload.last_payment_reminder,
-          paymentAmount: lastPaymentAmount,
+          patientId: mappedPatientId ?? clinicsyncPatientId,
+          patientName: mappedPatientName || (payload.patient_name ?? `ClinicSync Patient ${clinicsyncPatientId}`),
+          clinicsyncPatientId,
+          paymentDate: reminderDate,
+          paymentAmount: reminderAmount,
           appointmentDate: null,
           visitNumber: null
         });

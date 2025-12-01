@@ -5,6 +5,7 @@ import { createQuickBooksClient } from '@/lib/quickbooks';
 import { query } from '@/lib/db';
 
 const DECLINED_STATUSES = new Set(['declined', 'error', 'failed', 'rejected', 'unknown']);
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Helper to check if request is from internal cron job
 async function isInternalRequest(): Promise<boolean> {
@@ -45,11 +46,18 @@ export async function POST(req: NextRequest) {
     }
 
     // Start sync log
+    const createdBy =
+      typeof user?.user_id === 'string' && UUID_REGEX.test(user.user_id) ? user.user_id : null;
+
+    if (!createdBy && user?.user_id) {
+      console.warn(`[QuickBooks Sync] Ignoring non-UUID user_id for created_by: ${user.user_id}`);
+    }
+
     const syncLog = await query<{ sync_id: string }>(`
       INSERT INTO payment_sync_log (sync_type, sync_status, created_by)
       VALUES ('quickbooks', 'running', $1)
       RETURNING sync_id
-    `, [user.user_id]);
+    `, [createdBy]);
 
     const syncId = syncLog[0].sync_id;
 

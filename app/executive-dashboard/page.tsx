@@ -17,6 +17,13 @@ export const metadata: Metadata = {
   description: 'Executive-level business intelligence and operations overview',
 };
 
+type InventorySummaryCard = {
+  vendor: string;
+  activeVials: number;
+  totalRemainingMl: number;
+  lowInventory: boolean;
+};
+
 function withBasePath(path: string): string {
   return path;
 }
@@ -45,7 +52,7 @@ export default async function ExecutiveDashboardPage() {
     getQuickBooksOutstandingMemberships(10),
     fetchRecentlyEditedPatients(8),
     fetchRecentlyDispensedPatients(8),
-    Promise.resolve([]), // Testosterone inventory - not available
+    Promise.resolve<InventorySummaryCard[]>([]), // Testosterone inventory - not available
     Promise.resolve({ jane: { count: 0, totalAmount: 0 }, quickbooks: { count: 0, totalAmount: 0 } }), // Payment failures - not available
     // ClinicSync status
     query(`

@@ -177,3 +177,4 @@ GET /api/admin/ghl/debug-contact?action=jane-patients&limit=5
 This will show us the actual structure of GHL contact responses and help us find where the data is stored!
 
 
+

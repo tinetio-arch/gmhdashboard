@@ -7,6 +7,13 @@ import { createGHLClient, type GHLClient, type GHLContact } from './ghl';
 import { query } from './db';
 import type { PatientDataEntryRow } from './patientQueries';
 
+const GHL_SYNC_DEBUG = process.env.GHL_DEBUG === 'true';
+const debugLog = (...args: unknown[]): void => {
+  if (GHL_SYNC_DEBUG) {
+    console.log(...args);
+  }
+};
+
 export type GHLSyncStatus = 'pending' | 'syncing' | 'synced' | 'error';
 
 export type GHLTagMapping = {
@@ -300,7 +307,7 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
             const month = isoDateMatch[2];
             const day = isoDateMatch[3];
             stringValue = `${month}-${day}-${year}`;
-            console.log(`[GHL Sync] Formatted ISO date to: ${stringValue}`);
+            debugLog(`[GHL Sync] Formatted ISO date to: ${stringValue}`);
           } else {
             // Try parsing as a date for other formats
             const dateObj = new Date(stringValue);
@@ -310,10 +317,10 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
               const day = String(dateObj.getUTCDate()).padStart(2, '0');
               const year = dateObj.getUTCFullYear();
               stringValue = `${month}-${day}-${year}`;
-              console.log(`[GHL Sync] Formatted date to: ${stringValue}`);
+              debugLog(`[GHL Sync] Formatted date to: ${stringValue}`);
             } else {
               // Date parsing failed - leave as is
-              console.log(`[GHL Sync] Date parsing failed for: ${stringValue}`);
+              debugLog(`[GHL Sync] Date parsing failed for: ${stringValue}`);
             }
           }
         } catch (e) {
@@ -328,7 +335,7 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
         id: key,     // Also include id for compatibility
         value: stringValue || '' // Always send value, even if empty (to clear field)
       });
-      console.log(`[GHL Sync] Added lab date field: field=${key}, value=${stringValue || '(empty)'}`);
+      debugLog(`[GHL Sync] Added lab date field: field=${key}, value=${stringValue || '(empty)'}`);
       return;
     }
     
@@ -345,7 +352,7 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
     // CRITICAL: Lab dates - GMH ALWAYS WINS (even if empty, overwrites GHL)
     // These are the most important fields per user requirements
     // Use the correct GHL custom field IDs (not names)
-    console.log(`[GHL Sync] Adding lab dates for ${patient.patient_name}: last_lab=${patient.last_lab}, next_lab=${patient.next_lab}`);
+    debugLog(`[GHL Sync] Adding lab dates for ${patient.patient_name}: last_lab=${patient.last_lab}, next_lab=${patient.next_lab}`);
     // Use the actual GHL field IDs so the date formatting logic triggers and fields update correctly
     addCustomField('M9UY8UHBU8vI4lKBWN7w', patient.last_lab);      // Date of Last Lab Test
     addCustomField('cMaBe12wckOiBAYb6T3e', patient.next_lab);      // Date of Next Lab Test
@@ -442,10 +449,10 @@ export async function syncPatientToGHL(
         try {
           ghlContact = await ghlClient.getContact(contactId);
           if (ghlContact) {
-            console.log(`[GHL Sync] Found existing contact by stored ID: ${contactId}`);
+            debugLog(`[GHL Sync] Found existing contact by stored ID: ${contactId}`);
           }
         } catch (error) {
-          console.log(`[GHL Sync] Contact not found in GHL by stored ID (${contactId}), will search by email/phone`);
+          debugLog(`[GHL Sync] Contact not found in GHL by stored ID (${contactId}), will search by email/phone`);
           // Clear the invalid contact ID from database
           await query(
             `UPDATE patients SET ghl_contact_id = NULL WHERE patient_id = $1`,
@@ -453,7 +460,7 @@ export async function syncPatientToGHL(
           );
         }
       } else {
-        console.log(`[GHL Sync] Invalid contact ID stored (${contactId}), will search by email/phone`);
+        debugLog(`[GHL Sync] Invalid contact ID stored (${contactId}), will search by email/phone`);
         // Clear the invalid contact ID from database
         await query(
           `UPDATE patients SET ghl_contact_id = NULL WHERE patient_id = $1`,
@@ -464,15 +471,15 @@ export async function syncPatientToGHL(
 
     // STEP 1: Try to find contact by email
     if (!ghlContact && (patient.email || patient.qbo_customer_email)) {
-      console.log(`[GHL Sync] Step 1: Searching for contact by email: ${patient.email || patient.qbo_customer_email}`);
+      debugLog(`[GHL Sync] Step 1: Searching for contact by email: ${patient.email || patient.qbo_customer_email}`);
       try {
         ghlContact = await ghlClient.findContactByEmail(
           patient.email || patient.qbo_customer_email || ''
         );
         if (ghlContact) {
-          console.log(`[GHL Sync] Step 1 SUCCESS: Found contact by email`);
+          debugLog(`[GHL Sync] Step 1 SUCCESS: Found contact by email`);
         } else {
-          console.log(`[GHL Sync] Step 1: No contact found by email`);
+          debugLog(`[GHL Sync] Step 1: No contact found by email`);
         }
       } catch (error) {
         console.error(`[GHL Sync] Step 1 ERROR: Failed to search by email:`, error);
@@ -481,13 +488,13 @@ export async function syncPatientToGHL(
     
     // STEP 2: If not found by email, try to find by phone
     if (!ghlContact && patient.phone_number) {
-      console.log(`[GHL Sync] Step 2: Searching for contact by phone: ${patient.phone_number}`);
+      debugLog(`[GHL Sync] Step 2: Searching for contact by phone: ${patient.phone_number}`);
       try {
         ghlContact = await ghlClient.findContactByPhone(patient.phone_number);
         if (ghlContact) {
-          console.log(`[GHL Sync] Step 2 SUCCESS: Found contact by phone`);
+          debugLog(`[GHL Sync] Step 2 SUCCESS: Found contact by phone`);
         } else {
-          console.log(`[GHL Sync] Step 2: No contact found by phone`);
+          debugLog(`[GHL Sync] Step 2: No contact found by phone`);
         }
       } catch (error) {
         console.error(`[GHL Sync] Step 2 ERROR: Failed to search by phone:`, error);
@@ -498,13 +505,13 @@ export async function syncPatientToGHL(
     if (!ghlContact) {
       const { firstName, lastName } = parseName(patient.patient_name);
       if (firstName || lastName) {
-        console.log(`[GHL Sync] Step 3: Trying name-based search: ${firstName} ${lastName}`);
+        debugLog(`[GHL Sync] Step 3: Trying name-based search: ${firstName} ${lastName}`);
         try {
           ghlContact = await ghlClient.findContactByName(firstName, lastName);
           if (ghlContact) {
-            console.log(`[GHL Sync] Step 3 SUCCESS: Found contact by name`);
+            debugLog(`[GHL Sync] Step 3 SUCCESS: Found contact by name`);
           } else {
-            console.log(`[GHL Sync] Step 3: No contact found by name`);
+            debugLog(`[GHL Sync] Step 3: No contact found by name`);
           }
         } catch (error) {
           console.error(`[GHL Sync] Step 3 ERROR: Failed to search by name:`, error);
@@ -514,7 +521,7 @@ export async function syncPatientToGHL(
 
     // STEP 4: If still no contact found, CREATE A NEW CONTACT
     if (!ghlContact) {
-      console.log(`[GHL Sync] Step 4: Contact not found - creating new contact in GHL for ${patient.patient_name}`);
+      debugLog(`[GHL Sync] Step 4: Contact not found - creating new contact in GHL for ${patient.patient_name}`);
       
       const contactData = formatPatientForGHL(patient);
       const tagNames = await calculatePatientTags(patient);
@@ -524,7 +531,7 @@ export async function syncPatientToGHL(
       try {
         // Create the contact in GHL
         const createdContact = await ghlClient.createContact(contactData);
-        console.log(`[GHL Sync] Step 4a: Successfully created new contact in GHL: ${createdContact.id}`);
+        debugLog(`[GHL Sync] Step 4a: Successfully created new contact in GHL: ${createdContact.id}`);
         ghlContact = createdContact;
       } catch (createError) {
         const errorMsg = `Failed to create contact in GHL: ${createError instanceof Error ? createError.message : 'Unknown error'}`;
@@ -545,10 +552,12 @@ export async function syncPatientToGHL(
     let actualContact = ghlContact;
     if ((ghlContact as any).contact && !ghlContact.id) {
       actualContact = (ghlContact as any).contact;
-      console.log(`[GHL Sync] Step 4a: Unwrapped contact from nested structure`);
+      debugLog(`[GHL Sync] Step 4a: Unwrapped contact from nested structure`);
     }
     
-    console.log(`[GHL Sync] Step 4: Extracting contact ID from:`, JSON.stringify(actualContact, null, 2));
+    if (GHL_SYNC_DEBUG) {
+      console.log(`[GHL Sync] Step 4: Extracting contact ID from:`, JSON.stringify(actualContact, null, 2));
+    }
     
     // Try multiple possible ID fields
     const contactId = 
@@ -571,7 +580,7 @@ export async function syncPatientToGHL(
       return { success: false, error: errorMsg };
     }
     
-    console.log(`[GHL Sync] Step 5 SUCCESS: Extracted contact ID: ${contactId}`);
+    debugLog(`[GHL Sync] Step 5 SUCCESS: Extracted contact ID: ${contactId}`);
 
     // Prepare contact data for update
     const contactData = formatPatientForGHL(patient);
@@ -588,10 +597,14 @@ export async function syncPatientToGHL(
     contactData.tags = shouldClearTags ? [] : tagNames; // Set tags directly
 
     // Update the existing contact with our data (tags + fields)
-    console.log(`[GHL Sync] Updating contact ${contactId} with custom fields:`, JSON.stringify(contactData.customFields));
+    if (GHL_SYNC_DEBUG) {
+      console.log(`[GHL Sync] Updating contact ${contactId} with custom fields:`, JSON.stringify(contactData.customFields));
+    }
     try {
       const updateResult = await ghlClient.updateContact(contactId, contactData);
-      console.log(`[GHL Sync] Successfully updated contact ${contactId}:`, JSON.stringify(updateResult, null, 2));
+      if (GHL_SYNC_DEBUG) {
+        console.log(`[GHL Sync] Successfully updated contact ${contactId}:`, JSON.stringify(updateResult, null, 2));
+      }
     } catch (updateError) {
       console.error(`[GHL Sync] ERROR updating contact ${contactId}:`, updateError);
       throw updateError; // Re-throw to be caught by outer catch block
