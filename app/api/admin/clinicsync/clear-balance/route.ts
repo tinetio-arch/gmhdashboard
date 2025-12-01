@@ -16,6 +16,12 @@ export async function POST(req: NextRequest) {
       `UPDATE clinicsync_memberships 
        SET amount_due = 0,
            balance_owing = 0,
+           raw_payload = jsonb_set(
+             jsonb_set(COALESCE(raw_payload, '{}'::jsonb), '{amount_due}', '0'::jsonb, true),
+             '{balance_owing}',
+             '0'::jsonb,
+             true
+           ),
            updated_at = NOW()
        WHERE patient_id = $1 
          AND clinicsync_patient_id = $2`,
@@ -78,13 +84,22 @@ export async function POST(req: NextRequest) {
         [user.email, patientId]
       );
 
-      // Log the status change
-      await query(
-        `INSERT INTO patient_status_activity_log 
-         (patient_id, previous_status, new_status, changed_by_user_id, change_reason, created_at)
-         VALUES ($1, 'hold_payment_research', 'active', $2, 'ClinicSync balance cleared - charge cleared in Jane', NOW())`,
-        [patientId, user.user_id]
-      );
+      // Log the status change (best-effort)
+      try {
+        await query(
+          `INSERT INTO patient_status_activity_log 
+           (patient_id, previous_status, new_status, changed_by_user_id, change_reason, created_at)
+           VALUES ($1, 'hold_payment_research', 'active', $2, 'ClinicSync balance cleared - charge cleared in Jane', NOW())`,
+          [patientId, user.user_id]
+        );
+      } catch (error: unknown) {
+        if ((error as { code?: string })?.code !== '42P01') {
+          throw error;
+        }
+        console.warn(
+          '[ClinicSync] patient_status_activity_log table missing when logging balance clear; continuing without audit entry.'
+        );
+      }
     }
 
     return NextResponse.json({ 

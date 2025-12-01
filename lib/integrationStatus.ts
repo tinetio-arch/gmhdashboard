@@ -68,15 +68,24 @@ async function getJaneStatus(): Promise<IntegrationStatus> {
     
     try {
       const activeMemberships = await query<{ count: number }>(
-        `SELECT COUNT(*) as count
-         FROM clinicsync_memberships
-         WHERE status IS NOT NULL 
-           AND status != 'inactive'
-           AND status != 'discharged'`
+        `SELECT COUNT(*) AS count
+           FROM clinicsync_memberships
+          WHERE COALESCE(membership_status, '') NOT IN ('inactive', 'discharged')`
       );
       hasActiveData = (activeMemberships[0]?.count || 0) > 0;
-    } catch (err) {
-      console.error('Error checking active memberships:', err);
+    } catch (err: any) {
+      if (err?.message?.includes('membership_status')) {
+        try {
+          const fallbackMemberships = await query<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM clinicsync_memberships`
+          );
+          hasActiveData = (fallbackMemberships[0]?.count || 0) > 0;
+        } catch (fallbackErr) {
+          console.error('Error checking active memberships (fallback):', fallbackErr);
+        }
+      } else {
+        console.error('Error checking active memberships:', err);
+      }
     }
 
     // Try to check webhook events with multiple possible column names

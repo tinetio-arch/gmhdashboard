@@ -19,13 +19,19 @@ export async function GET(req: NextRequest) {
       timestamp: string;
     } = {
       quickbooks: null,
-      clinicsync: null,
+      clinicsync: {
+        skipped: true,
+        message:
+          'Bulk ClinicSync sync disabled. Use /api/admin/clinicsync/reprocess to refresh webhook data.',
+      },
       timestamp: new Date().toISOString()
     };
 
+    const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3400/ops';
+
     // Sync QuickBooks data
     try {
-      const qbResponse = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3400'}/api/admin/quickbooks/sync`, {
+      const qbResponse = await fetch(`${baseUrl}/api/admin/quickbooks/sync`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -43,28 +49,9 @@ export async function GET(req: NextRequest) {
       results.quickbooks = { error: `QuickBooks sync error: ${error}` };
     }
 
-    // Sync ClinicSync data
-    try {
-      const csResponse = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3400'}/api/admin/clinicsync/sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-internal-auth': process.env.INTERNAL_AUTH_SECRET || ''
-        }
-      });
-      
-      if (csResponse.ok) {
-        results.clinicsync = await csResponse.json();
-      } else {
-        results.clinicsync = { error: `ClinicSync sync failed: ${csResponse.status}` };
-      }
-    } catch (error) {
-      results.clinicsync = { error: `ClinicSync sync error: ${error}` };
-    }
-
     // Check for payment issues and update statuses
     try {
-      const checkResponse = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3400'}/api/admin/quickbooks/check-payment-failures`, {
+      const checkResponse = await fetch(`${baseUrl}/api/admin/quickbooks/check-payment-failures`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

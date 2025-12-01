@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { headers } from 'next/headers';
 import { requireApiUser } from '@/lib/auth';
 import { createQuickBooksClient } from '@/lib/quickbooks';
 import { query } from '@/lib/db';
@@ -8,33 +7,16 @@ const DECLINED_STATUSES = new Set(['declined', 'error', 'failed', 'rejected', 'u
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Helper to check if request is from internal cron job
-async function isInternalRequest(): Promise<boolean> {
-  const headersList = headers();
+function isInternalRequest(req: NextRequest): boolean {
+  const headersList = req.headers;
   const internalAuth = headersList.get('x-internal-auth');
   return internalAuth === process.env.INTERNAL_AUTH_SECRET;
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // Allow internal cron requests to bypass auth
-    let user;
-    if (await isInternalRequest()) {
-      // Get the first admin user from database for cron jobs
-      const adminUsers = await query<{ user_id: string; email: string; role: string; display_name: string | null; created_at: string; updated_at: string; is_active: boolean; is_provider: boolean; can_sign: boolean }>(
-        `SELECT user_id, email, role, display_name, created_at, updated_at, is_active, is_provider, can_sign 
-         FROM users 
-         WHERE role = 'admin' AND is_active = TRUE 
-         LIMIT 1`
-      );
-      if (adminUsers.length > 0) {
-        user = adminUsers[0];
-      } else {
-        // Fallback: use requireApiUser if no admin found
-        user = await requireApiUser(req, 'admin');
-      }
-    } else {
-      user = await requireApiUser(req, 'admin');
-    }
+    const internal = isInternalRequest(req);
+    const user = internal ? null : await requireApiUser(req, 'admin');
 
     // Create QuickBooks client
     const qbClient = await createQuickBooksClient();

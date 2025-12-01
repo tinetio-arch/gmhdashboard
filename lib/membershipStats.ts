@@ -309,51 +309,82 @@ export async function getCombinedOutstandingMemberships(limit = 50): Promise<Com
         WHERE pn.patient_id IS NOT NULL
           AND COALESCE(pkg.outstanding_balance, 0)::numeric > 0
       ),
+      invoice_balances AS (
+        SELECT
+          patient_id,
+          SUM(balance) AS total_invoice_balance
+        FROM quickbooks_payments
+        WHERE balance > 0
+        GROUP BY patient_id
+      ),
+      all_payment_issues AS (
+        SELECT
+          patient_id,
+          SUM(amount_owed) AS total_issue_balance
+        FROM payment_issues
+        WHERE resolved_at IS NULL
+          AND amount_owed > 0
+          AND issue_type IN (
+            'payment_declined', 
+            'payment_failed', 
+            'insufficient_funds',
+            'failed_payment',
+            'overdue_invoice',
+            'outstanding_balance'
+          )
+        GROUP BY patient_id
+      ),
       qb_balances AS (
         SELECT
           p.patient_id,
           p.full_name AS patient_name,
           p.status_key AS status,
-          COALESCE(SUM(
-            CASE 
-              WHEN pi.amount_owed > 0 THEN pi.amount_owed
-              WHEN qp.balance > 0 THEN qp.balance
-              ELSE 0
-            END
-          ), 0) AS qb_balance
+          -- Use invoice balance as primary, add payment issues only if they're not tied to invoices
+          COALESCE(ib.total_invoice_balance, 0) + 
+          COALESCE(
+            (SELECT SUM(pi.amount_owed)
+             FROM payment_issues pi
+             WHERE pi.patient_id = p.patient_id
+               AND pi.resolved_at IS NULL
+               AND pi.amount_owed > 0
+               AND pi.qb_invoice_id IS NULL
+               AND pi.issue_type IN (
+                 'payment_declined', 
+                 'payment_failed', 
+                 'insufficient_funds',
+                 'failed_payment'
+               )
+            ), 0
+          ) AS qb_balance
         FROM patients p
-        LEFT JOIN payment_issues pi ON p.patient_id = pi.patient_id
-          AND pi.resolved_at IS NULL
-          AND pi.issue_type IN (
-            'payment_declined', 
-            'payment_failed', 
-            'insufficient_funds',
-            'overdue_invoice',
-            'outstanding_balance',
-            'failed_payment'
-          )
-        LEFT JOIN quickbooks_payments qp ON p.patient_id = qp.patient_id
-          AND qp.balance > 0
+        LEFT JOIN invoice_balances ib ON p.patient_id = ib.patient_id
         WHERE p.patient_id IS NOT NULL
           AND (p.payment_method_key IN ('qbo', 'quickbooks') OR p.payment_method_key = 'jane_quickbooks')
           AND NOT (
             COALESCE(p.status_key, '') ILIKE 'inactive%'
             OR COALESCE(p.status_key, '') ILIKE 'discharg%'
           )
-        GROUP BY p.patient_id, p.full_name, p.status_key
-        HAVING COALESCE(SUM(
-          CASE 
-            WHEN pi.amount_owed > 0 THEN pi.amount_owed
-            WHEN qp.balance > 0 THEN qp.balance
-            ELSE 0
-          END
-        ), 0) > 0
+          AND (
+            COALESCE(ib.total_invoice_balance, 0) > 0
+            OR EXISTS (
+              SELECT 1
+              FROM payment_issues pi
+              WHERE pi.patient_id = p.patient_id
+                AND pi.resolved_at IS NULL
+                AND pi.amount_owed > 0
+                AND pi.qb_invoice_id IS NULL
+            )
+          )
       ),
       combined AS (
         SELECT
           COALESCE(j.patient_id, qb.patient_id) AS patient_id,
           COALESCE(j.patient_name, qb.patient_name) AS patient_name,
-          j.plan_name,
+          CASE 
+            WHEN j.patient_id IS NOT NULL AND qb.patient_id IS NOT NULL THEN 'Mixed (Jane + QuickBooks)'
+            WHEN j.patient_id IS NOT NULL THEN j.plan_name
+            ELSE 'QuickBooks Recurring'
+          END AS plan_name,
           COALESCE(j.status, qb.status) AS status,
           COALESCE(j.jane_balance, 0) AS jane_balance,
           COALESCE(qb.qb_balance, 0) AS qb_balance,

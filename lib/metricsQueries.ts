@@ -9,6 +9,7 @@ export type DashboardMetrics = {
   pendingSignatures: number;
   weeksSinceAudit: number;
   holdPaymentResearch: number;
+  holdPatientResearch: number;
   holdContractRenewal: number;
   inactivePatients: number;
 };
@@ -71,6 +72,7 @@ export async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
           FROM weekly_inventory_audits
         ), 0) AS "weeksSinceAudit",
         COUNT(*) FILTER (WHERE status_key = 'hold_payment_research') AS "holdPaymentResearch",
+        COUNT(*) FILTER (WHERE status_key = 'hold_patient_research') AS "holdPatientResearch",
         COUNT(*) FILTER (WHERE status_key = 'hold_contract_renewal') AS "holdContractRenewal",
         COUNT(*) FILTER (
           WHERE status_key IN ('inactive', 'inactive_patient', 'discharged')
@@ -89,6 +91,7 @@ export async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
       pendingSignatures: 0,
       weeksSinceAudit: 0,
       holdPaymentResearch: 0,
+      holdPatientResearch: 0,
       holdContractRenewal: 0,
       inactivePatients: 0
     };
@@ -103,6 +106,7 @@ export async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
         holdPatients: number;
         upcomingLabs: number;
         holdPaymentResearch: number;
+        holdPatientResearch: number;
         holdContractRenewal: number;
         inactivePatients: number;
       }>(
@@ -113,6 +117,7 @@ export async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
           COUNT(*) FILTER (WHERE status_key LIKE 'hold_%') AS "holdPatients",
           COUNT(*) FILTER (WHERE next_lab IS NOT NULL AND next_lab <= CURRENT_DATE + INTERVAL '30 days') AS "upcomingLabs",
           COUNT(*) FILTER (WHERE status_key = 'hold_payment_research') AS "holdPaymentResearch",
+          COUNT(*) FILTER (WHERE status_key = 'hold_patient_research') AS "holdPatientResearch",
           COUNT(*) FILTER (WHERE status_key = 'hold_contract_renewal') AS "holdContractRenewal",
           COUNT(*) FILTER (
             WHERE status_key IN ('inactive', 'inactive_patient', 'discharged')
@@ -128,6 +133,7 @@ export async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
           holdPatients: 0,
           upcomingLabs: 0,
           holdPaymentResearch: 0,
+        holdPatientResearch: 0,
           holdContractRenewal: 0,
           inactivePatients: 0
         }),
@@ -146,6 +152,7 @@ export async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
         pendingSignatures: 0,
         weeksSinceAudit: 0,
         holdPaymentResearch: 0,
+        holdPatientResearch: 0,
         holdContractRenewal: 0,
         inactivePatients: 0
       };

@@ -17,6 +17,14 @@ import { requireUser, userHasRole } from '@/lib/auth';
 import { getTotalJaneRevenue, getJaneRevenueMonthly } from '@/lib/janeRevenueQueries';
 import { getMembershipMonthlyRevenue, type MembershipRevenueSummary } from '@/lib/membershipRevenue';
 import { getAllIntegrationStatuses, type IntegrationStatus } from '@/lib/integrationStatus';
+import QuickBooksCard from './components/QuickBooksCard';
+import {
+  getQuickBooksDashboardMetrics,
+  getQuickBooksPaymentIssues,
+  getQuickBooksUnmatchedPatients,
+} from '@/lib/quickbooksDashboard';
+import ClinicSyncAdminActions from './components/ClinicSyncAdminActions';
+import PaymentCheckerButton from './components/PaymentCheckerButton';
 
 function withBasePath(path: string): string {
   return path;
@@ -130,7 +138,10 @@ export default async function HomePage() {
     janeRevenue,
     janeRevenueMonthly,
     membershipRevenue,
-    integrationStatuses
+    integrationStatuses,
+    quickBooksDashboardMetrics,
+    quickBooksPaymentIssues,
+    quickBooksUnmatchedPatients,
   ] = await Promise.all([
     fetchDashboardMetrics(),
     getJaneOutstandingMemberships(8),
@@ -215,12 +226,37 @@ export default async function HomePage() {
           canRefresh: false,
         }
       ];
-    })
+    }),
+    getQuickBooksDashboardMetrics().catch((error) => {
+      console.error('Error fetching QuickBooks dashboard metrics:', error);
+      return null;
+    }),
+    getQuickBooksPaymentIssues(20).catch((error) => {
+      console.error('Error fetching QuickBooks payment issues:', error);
+      return [];
+    }),
+    getQuickBooksUnmatchedPatients(20).catch((error) => {
+      console.error('Error fetching QuickBooks unmatched patients:', error);
+      return [];
+    }),
   ]);
 
-  const pendingSignatures = metrics.pendingSignatures ?? 0;
-  const weeksSinceAudit = Number.isFinite(metrics.weeksSinceAudit)
-    ? Number(metrics.weeksSinceAudit.toFixed(1))
+  const quickBooksIntegration = integrationStatuses.find((integration) => integration.name === 'QuickBooks');
+  const quickBooksLastChecked = quickBooksIntegration?.lastChecked ?? null;
+  const quickBooksConnection = {
+    connected: quickBooksIntegration?.connected ?? false,
+    status: quickBooksIntegration?.status ?? null,
+    error: quickBooksIntegration?.error ?? null,
+    lastChecked: quickBooksLastChecked
+      ? typeof quickBooksLastChecked === 'string'
+        ? quickBooksLastChecked
+        : quickBooksLastChecked.toISOString()
+      : null,
+  };
+
+  const pendingSignatures = metrics?.pendingSignatures ?? 0;
+  const weeksSinceAudit = Number.isFinite(metrics?.weeksSinceAudit)
+    ? Number((metrics?.weeksSinceAudit ?? 0).toFixed(1))
     : 0;
   const auditOverdue = weeksSinceAudit >= 1;
 
@@ -237,8 +273,19 @@ export default async function HomePage() {
   };
 
   // Calculate total outstanding from combined outstanding memberships
-  const totalOutstanding = combinedOutstanding.reduce((sum, r) => sum + parseFloat(r.totalBalance || '0'), 0);
-  const totalPaymentFailures = paymentFailures.jane.count + paymentFailures.quickbooks.count;
+  const combinedOutstandingSafe = Array.isArray(combinedOutstanding) ? combinedOutstanding : [];
+  const totalOutstanding = combinedOutstandingSafe.reduce(
+    (sum, r) => sum + parseFloat(r.totalBalance || '0'),
+    0
+  );
+
+  const paymentFailuresSafe =
+    paymentFailures && typeof paymentFailures === 'object'
+      ? paymentFailures
+      : { jane: { count: 0, totalAmount: 0 }, quickbooks: { count: 0, totalAmount: 0 } };
+
+  const totalPaymentFailures =
+    (paymentFailuresSafe?.jane?.count ?? 0) + (paymentFailuresSafe?.quickbooks?.count ?? 0);
 
   return (
     <>
@@ -328,6 +375,20 @@ export default async function HomePage() {
                       Health: {integration.healthScore}%
                     </div>
                   )}
+                  {integration.name === 'Jane (ClinicSync)' && (
+                    <div
+                      style={{
+                        marginTop: '1rem',
+                        backgroundColor: 'rgba(255,255,255,0.92)',
+                        borderRadius: '0.75rem',
+                        padding: '1rem',
+                        boxShadow: '0 6px 20px rgba(15, 23, 42, 0.15)',
+                        color: '#0f172a',
+                      }}
+                    >
+                      <ClinicSyncAdminActions />
+                    </div>
+                  )}
                   {integration.lastChecked && (
                     <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '0.5rem' }}>
                       Last checked: {new Date(integration.lastChecked).toLocaleString('en-US', {
@@ -367,6 +428,19 @@ export default async function HomePage() {
         </div>
       )}
 
+      {/* Payment Checker - Manual Button */}
+      <div style={{ marginBottom: '2rem' }}>
+        <PaymentCheckerButton />
+      </div>
+
+      <QuickBooksCard
+        metrics={quickBooksDashboardMetrics}
+        paymentIssues={quickBooksPaymentIssues}
+        unmatchedPatients={quickBooksUnmatchedPatients}
+        paymentStats={paymentFailures.quickbooks}
+        connection={quickBooksConnection}
+      />
+
       {/* Operational Metrics - Moved to Top */}
       <div style={{ marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
@@ -400,10 +474,21 @@ export default async function HomePage() {
             label="Hold - Payment Research"
             value={metrics.holdPaymentResearch}
             subLabel="Requires card follow-up"
-            icon="🔍"
-            gradient="linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
-            borderColor="#f59e0b"
-            shadowColor="rgba(245, 158, 11, 0.3)"
+            icon="💳"
+            gradient="linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
+            borderColor="#ef4444"
+            shadowColor="rgba(239, 68, 68, 0.3)"
+          />
+
+          <ClickableMetricCard
+            href="/patients?status=hold_patient_research"
+            label="Hold - Patient Research"
+            value={metrics.holdPatientResearch}
+            subLabel="Care team outreach needed"
+            icon="🧠"
+            gradient="linear-gradient(135deg, #fb7185 0%, #f43f5e 100%)"
+            borderColor="#f43f5e"
+            shadowColor="rgba(244, 63, 94, 0.3)"
           />
 
           <ClickableMetricCard
@@ -412,9 +497,9 @@ export default async function HomePage() {
             value={metrics.holdContractRenewal}
             subLabel="Less than 2 cycles remaining"
             icon="📋"
-            gradient="linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
-            borderColor="#f59e0b"
-            shadowColor="rgba(245, 158, 11, 0.3)"
+            gradient="linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
+            borderColor="#ef4444"
+            shadowColor="rgba(239, 68, 68, 0.3)"
           />
 
           <ClickableMetricCard
@@ -423,9 +508,9 @@ export default async function HomePage() {
             value={metrics.upcomingLabs}
             subLabel="Requires scheduling"
             icon="🧪"
-            gradient="linear-gradient(135deg, #ea580c 0%, #c2410c 100%)"
-            borderColor="#ea580c"
-            shadowColor="rgba(234, 88, 12, 0.3)"
+            gradient="linear-gradient(135deg, #facc15 0%, #f59e0b 100%)"
+            borderColor="#facc15"
+            shadowColor="rgba(250, 204, 21, 0.3)"
           />
 
           <ClickableMetricCard
@@ -1237,134 +1322,6 @@ export default async function HomePage() {
         </div>
       </div>
 
-
-      {/* System Integration Health */}
-      <div style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', color: '#0f172a', fontWeight: 700 }}>
-          🔗 System Integration Health
-        </h2>
-        <div style={{ 
-          display: 'grid', 
-          gap: '1rem', 
-          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))'
-        }}>
-          <Link
-            href={withBasePath("/admin/clinicsync")}
-            style={{
-              padding: '1.75rem',
-              borderRadius: '1rem',
-              background: 'linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%)',
-              border: '2px solid #0ea5e9',
-              boxShadow: '0 10px 40px rgba(14, 165, 233, 0.2)',
-              textDecoration: 'none',
-              color: 'inherit',
-              transition: 'all 0.3s ease',
-              display: 'block'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-              <div style={{ 
-                width: '12px', 
-                height: '12px', 
-                borderRadius: '50%', 
-                backgroundColor: '#10b981',
-                boxShadow: '0 0 8px rgba(16, 185, 129, 0.4)'
-              }} />
-              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: '#0c4a6e' }}>
-                Jane EMR / ClinicSync
-              </h3>
-            </div>
-            <div style={{ display: 'grid', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#075985', fontSize: '0.9rem' }}>Status:</span>
-                <span style={{ color: '#059669', fontWeight: 600, fontSize: '0.9rem' }}>✅ Connected</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#075985', fontSize: '0.9rem' }}>Last Sync:</span>
-                <span style={{ color: '#0c4a6e', fontWeight: 500, fontSize: '0.9rem' }}>Active</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link
-            href={withBasePath("/admin/quickbooks")}
-            style={{
-              padding: '1.75rem',
-              borderRadius: '1rem',
-              background: 'linear-gradient(135deg, #fef3c7 0%, #fffbeb 100%)',
-              border: '2px solid #f59e0b',
-              boxShadow: '0 10px 40px rgba(245, 158, 11, 0.2)',
-              textDecoration: 'none',
-              color: 'inherit',
-              transition: 'all 0.3s ease',
-              display: 'block'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-              <div style={{ 
-                width: '12px', 
-                height: '12px', 
-                borderRadius: '50%', 
-                backgroundColor: '#10b981',
-                boxShadow: '0 0 8px rgba(16, 185, 129, 0.4)'
-              }} />
-              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: '#92400e' }}>
-                QuickBooks Online
-              </h3>
-            </div>
-            <div style={{ display: 'grid', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#a16207', fontSize: '0.9rem' }}>Status:</span>
-                <span style={{ color: '#059669', fontWeight: 600, fontSize: '0.9rem' }}>✅ Connected</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#a16207', fontSize: '0.9rem' }}>Payment Issues:</span>
-                <span style={{ color: paymentFailures.quickbooks.count > 0 ? '#dc2626' : '#059669', fontWeight: 600, fontSize: '0.9rem' }}>
-                  {paymentFailures.quickbooks.count}
-                </span>
-              </div>
-            </div>
-          </Link>
-
-          <Link
-            href={withBasePath("/professional")}
-            style={{
-              padding: '1.75rem',
-              borderRadius: '1rem',
-              background: 'linear-gradient(135deg, #f3e8ff 0%, #faf5ff 100%)',
-              border: '2px solid #a855f7',
-              boxShadow: '0 10px 40px rgba(168, 85, 247, 0.2)',
-              textDecoration: 'none',
-              color: 'inherit',
-              transition: 'all 0.3s ease',
-              display: 'block'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-              <div style={{ 
-                width: '12px', 
-                height: '12px', 
-                borderRadius: '50%', 
-                backgroundColor: '#10b981',
-                boxShadow: '0 0 8px rgba(16, 185, 129, 0.4)'
-              }} />
-              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: '#7c2d92' }}>
-                GoHighLevel CRM
-              </h3>
-            </div>
-            <div style={{ display: 'grid', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#9333ea', fontSize: '0.9rem' }}>Status:</span>
-                <span style={{ color: '#059669', fontWeight: 600, fontSize: '0.9rem' }}>✅ Connected</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#9333ea', fontSize: '0.9rem' }}>Synced Patients:</span>
-                <span style={{ color: '#7c2d92', fontWeight: 600, fontSize: '0.9rem' }}>Active</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      </div>
 
       {/* Recent Activity */}
       <div style={{ marginBottom: '2rem' }}>

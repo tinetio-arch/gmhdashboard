@@ -126,7 +126,60 @@ export async function upsertClinicSyncPatient(
   }
 }
 
-export async function reprocessClinicSyncMemberships(): Promise<void> {
+type ReprocessOptions = {
+  clinicsyncPatientIds?: string[];
+  limit?: number;
+  skipWithoutPatient?: boolean;
+  paymentMethodKeys?: string[];
+  paymentMethodLike?: string[];
+};
+
+export async function reprocessClinicSyncMemberships(options: ReprocessOptions = {}): Promise<{
+  processed: number;
+  skipped: number;
+}> {
+  const {
+    clinicsyncPatientIds,
+    limit,
+    skipWithoutPatient = true,
+    paymentMethodKeys,
+    paymentMethodLike,
+  } = options;
+
+  const params: unknown[] = [];
+  const conditions: string[] = [];
+  let joinClause = '';
+
+  if (clinicsyncPatientIds && clinicsyncPatientIds.length > 0) {
+    params.push(clinicsyncPatientIds);
+    conditions.push(`cm.clinicsync_patient_id = ANY($${params.length})`);
+  }
+
+  const paymentConditions: string[] = [];
+
+  if (paymentMethodKeys && paymentMethodKeys.length > 0) {
+    params.push(paymentMethodKeys);
+    paymentConditions.push(`p.payment_method_key = ANY($${params.length})`);
+  }
+
+  if (paymentMethodLike && paymentMethodLike.length > 0) {
+    params.push(paymentMethodLike.map((pattern) => pattern.toLowerCase()));
+    paymentConditions.push(`LOWER(COALESCE(p.payment_method, '')) LIKE ANY($${params.length})`);
+  }
+
+  if (paymentConditions.length > 0) {
+    joinClause = 'INNER JOIN patients p ON p.patient_id = cm.patient_id';
+    conditions.push(`(${paymentConditions.join(' OR ')})`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  let limitClause = '';
+  if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+    params.push(Math.floor(limit));
+    limitClause = `LIMIT $${params.length}`;
+  }
+
   const rows = await query<{
     clinicsync_patient_id: string;
     patient_id: string | null;
@@ -140,7 +193,20 @@ export async function reprocessClinicSyncMemberships(): Promise<void> {
     service_start_date: string | null;
     contract_end_date: string | null;
     raw_payload: any;
-  }>(`SELECT * FROM clinicsync_memberships`);
+  }>(
+    `
+      SELECT cm.*
+      FROM clinicsync_memberships cm
+      ${joinClause}
+      ${whereClause}
+      ORDER BY cm.updated_at DESC NULLS LAST
+      ${limitClause}
+    `,
+    params
+  );
+
+  let processed = 0;
+  let skipped = 0;
 
   for (const row of rows) {
     const sanitized: SanitizedMembership = {
@@ -174,6 +240,14 @@ export async function reprocessClinicSyncMemberships(): Promise<void> {
     sanitized.membershipTier = tier || sanitized.membershipTier;
 
     if (!row.patient_id) {
+      skipped += 1;
+      if (skipWithoutPatient) {
+        continue;
+      }
+    }
+
+    if (!row.patient_id) {
+      // No mapped patient; nothing further to update.
       continue;
     }
 
@@ -184,15 +258,21 @@ export async function reprocessClinicSyncMemberships(): Promise<void> {
       await upsertMembershipSummary(client, row.patient_id, sanitized);
       await applyMembershipImpact(client, row.patient_id, sanitized);
       await client.query('COMMIT');
+      processed += 1;
     } catch (error) {
       await client.query('ROLLBACK');
-      console.error('ClinicSync reprocess error:', error);
+      console.error(
+        `[ClinicSync] Reprocess error for ${row.clinicsync_patient_id} (${row.patient_id}):`,
+        error
+      );
+      skipped += 1;
     } finally {
       client.release();
     }
   }
-}
 
+  return { processed, skipped };
+}
 function normalizePayload(payload: ClinicSyncPayload, source?: string): SanitizedMembership {
   const clinicsyncPatientId =
     stringValue(payload.patient_number) ||
@@ -561,32 +641,42 @@ async function applyMembershipImpact(
     ['cancelled', 'canceled', 'inactive', 'discharged', 'terminated', 'ended'].includes(membershipStatus);
   
   if (isCancelled && currentStatus !== 'inactive') {
-    // Log the cancellation detection
-    await client.query(`
-      INSERT INTO patient_status_activity_log (
-        patient_id,
-        patient_name,
-        source_system,
-        change_type,
-        previous_status,
-        new_status,
-        reason,
-        metadata
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-    `, [
-      patientId,
-      patientName,
-      'jane',
-      'membership_cancelled',
-      currentStatus,
-      'inactive',
-      `Membership cancelled in Jane - Status: ${membership.membershipStatus || 'discharged'}`,
-      JSON.stringify({
-        membership_plan: membership.membershipPlan,
-        membership_status: membership.membershipStatus,
-        discharged: membership.discharged,
-      })
-    ]);
+    // Log the cancellation detection (best-effort – skip if log table missing)
+    try {
+      await client.query(
+        `INSERT INTO patient_status_activity_log (
+          patient_id,
+          patient_name,
+          source_system,
+          change_type,
+          previous_status,
+          new_status,
+          reason,
+          metadata
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          patientId,
+          patientName,
+          'jane',
+          'membership_cancelled',
+          currentStatus,
+          'inactive',
+          `Membership cancelled in Jane - Status: ${membership.membershipStatus || 'discharged'}`,
+          JSON.stringify({
+            membership_plan: membership.membershipPlan,
+            membership_status: membership.membershipStatus,
+            discharged: membership.discharged,
+          }),
+        ]
+      );
+    } catch (error: unknown) {
+      if ((error as { code?: string })?.code !== '42P01') {
+        throw error;
+      }
+      clinicDebugLog(
+        '[ClinicSync] patient_status_activity_log table missing when logging cancellation; continuing without audit entry.'
+      );
+    }
 
     // Update patient status to inactive
     await client.query(
