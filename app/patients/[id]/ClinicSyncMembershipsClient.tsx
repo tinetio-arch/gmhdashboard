@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { withBasePath } from '@/lib/basePath';
 
 type ClinicSyncMembership = {
   clinicsyncId: string;
@@ -61,7 +62,7 @@ export default function ClinicSyncMembershipsClient({ memberships, patientId }: 
     setResolvingMembership(membershipId);
     
     try {
-      const response = await fetch('/ops/api/admin/clinicsync/clear-balance', {
+      const response = await fetch(withBasePath('/api/admin/clinicsync/clear-balance'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

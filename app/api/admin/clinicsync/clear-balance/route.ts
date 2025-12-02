@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     const user = await requireApiUser(req, 'admin');
@@ -11,8 +13,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Both patientId and membershipId are required' }, { status: 400 });
     }
 
+    // Check if the membership exists first
+    const existingMembership = await query<{ clinicsync_patient_id: string; patient_id: string | null }>(
+      `SELECT clinicsync_patient_id, patient_id 
+       FROM clinicsync_memberships 
+       WHERE clinicsync_patient_id = $1`,
+      [membershipId]
+    );
+
+    if (existingMembership.length === 0) {
+      console.error(`[Clear Balance] Membership not found: clinicsync_patient_id=${membershipId}`);
+      return NextResponse.json({ error: 'Membership not found' }, { status: 404 });
+    }
+
     // Clear the balance on the membership
-    await query(
+    const updateResult = await query(
       `UPDATE clinicsync_memberships 
        SET amount_due = 0,
            balance_owing = 0,
@@ -27,6 +42,26 @@ export async function POST(req: NextRequest) {
          AND clinicsync_patient_id = $2`,
       [patientId, membershipId]
     );
+
+    if (updateResult.length === 0) {
+      console.error(`[Clear Balance] No rows updated. patient_id=${patientId}, clinicsync_patient_id=${membershipId}`);
+      // Try updating by clinicsync_patient_id only as fallback
+      await query(
+        `UPDATE clinicsync_memberships 
+         SET amount_due = 0,
+             balance_owing = 0,
+             patient_id = COALESCE(patient_id, $1),
+             raw_payload = jsonb_set(
+               jsonb_set(COALESCE(raw_payload, '{}'::jsonb), '{amount_due}', '0'::jsonb, true),
+               '{balance_owing}',
+               '0'::jsonb,
+               true
+             ),
+             updated_at = NOW()
+         WHERE clinicsync_patient_id = $2`,
+        [patientId, membershipId]
+      );
+    }
 
     // Also clear the balance in jane_packages_import if it exists
     const [patientInfo] = await query<{ full_name: string }>(
@@ -78,10 +113,9 @@ export async function POST(req: NextRequest) {
       await query(
         `UPDATE patients 
          SET status_key = 'active',
-             last_modified = NOW(),
-             last_modified_by = $1
-         WHERE patient_id = $2`,
-        [user.email, patientId]
+             last_modified = NOW()
+         WHERE patient_id = $1`,
+        [patientId]
       );
 
       // Log the status change (best-effort)
