@@ -138,7 +138,9 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
         })
       });
       if (!response.ok) {
-        throw new Error('Failed to create patient');
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData?.error || `Failed to create patient (${response.status})`;
+        throw new Error(errorMessage);
       }
       setForm({
         patientName: '',
@@ -157,8 +159,9 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
       setMessage('Patient added successfully.');
       router.refresh();
     } catch (error) {
-      console.error(error);
-      setMessage('Unable to add patient.');
+      console.error('Error creating patient:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unable to add patient. Please check all required fields are filled.';
+      setMessage(errorMessage);
     } finally {
       setSaving(false);
     }

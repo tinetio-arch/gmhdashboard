@@ -76,7 +76,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ data: created });
   } catch (error) {
     console.error('Failed to create patient', error);
-    return NextResponse.json({ error: 'Failed to create patient' }, { status: 500 });
+    const errorMessage = error instanceof Error ? error.message : 'Failed to create patient';
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
 
