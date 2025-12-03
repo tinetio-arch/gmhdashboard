@@ -1,35 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
-import { deleteDispense } from '@/lib/inventoryQueries';
+import { fetchDispenseHistory } from '@/lib/inventoryQueries';
 
 export const dynamic = 'force-dynamic';
 
-export async function DELETE(
+export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
     const user = await requireApiUser(request, 'write');
-    
-    const dispenseId = params.id;
-    
+    const { id: dispenseId } = params;
+
     if (!dispenseId) {
       return NextResponse.json({ error: 'Dispense ID is required.' }, { status: 400 });
     }
 
-    await deleteDispense(dispenseId, {
-      userId: user.user_id,
-      role: user.role,
-    });
+    const history = await fetchDispenseHistory(dispenseId);
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ history });
   } catch (error: any) {
-    console.error('[API] Error deleting dispense transaction:', error);
+    console.error('[API] Error fetching dispense history:', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to delete dispense transaction.' },
+      { error: error.message || 'Failed to fetch dispense history.' },
       { status: 500 }
     );
   }
 }
-
 
