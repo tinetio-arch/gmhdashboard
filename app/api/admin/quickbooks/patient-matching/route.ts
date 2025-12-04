@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Get all QuickBooks customers
-    const qbCustomers = await qbClient.getCustomers();
+    const qbCustomers = await qbClient.getCustomers() as any[];
 
     // Get all dashboard patients
     const dashboardPatients = await query<{
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
     // Find potential matches
     const potentialMatches: Array<{
       patient: typeof dashboardPatients[0];
-      qbCustomer: typeof qbCustomers[0];
+      qbCustomer: any;
       matchReason: string;
       confidence: 'high' | 'medium' | 'low';
     }> = [];
@@ -100,7 +100,7 @@ export async function GET(req: NextRequest) {
           const qbWords = qbName.split(/\s+/);
 
           const commonWords = patientWords.filter(word =>
-            word.length > 2 && qbWords.some(qbWord =>
+            word.length > 2 && qbWords.some((qbWord: string) =>
               qbWord.includes(word) || word.includes(qbWord)
             )
           );
@@ -136,14 +136,32 @@ export async function GET(req: NextRequest) {
     // Get QBO customers with recurring transactions but no dashboard mapping
     const recurringCustomers = await qbClient.getActiveRecurringTransactions();
     const recurringCustomerIds = new Set(recurringCustomers.map(r => r.CustomerRef?.value).filter(Boolean));
-    const unmappedRecurringCustomers = qbCustomers.filter(c =>
+    const unmappedRecurringCustomers = (qbCustomers as any[]).filter((c: any) =>
       recurringCustomerIds.has(c.Id) && !mappedQbCustomerIds.has(c.Id)
     );
+
+    // Return all customers for mapping (not just potential matches)
+    const allCustomers = qbCustomers.map((c: any) => ({
+      Id: c.Id,
+      DisplayName: c.DisplayName,
+      PrimaryEmailAddr: c.PrimaryEmailAddr,
+      PrimaryPhone: c.PrimaryPhone
+    }));
+
+    // Format unmapped recurring customers with full details for intake
+    // We'll fetch full customer details (including address) when intake is triggered
+    const unmappedRecurringForIntake = unmappedRecurringCustomers.map((c: any) => ({
+      Id: c.Id,
+      DisplayName: c.DisplayName,
+      PrimaryEmailAddr: c.PrimaryEmailAddr?.Address || null,
+      PrimaryPhone: c.PrimaryPhone?.FreeFormNumber || null
+    }));
 
     return NextResponse.json({
       potentialMatches: potentialMatches.slice(0, 50), // Limit to top 50
       unmappedQuickBooksPatients,
-      unmappedRecurringCustomers,
+      unmappedRecurringCustomers: unmappedRecurringForIntake,
+      allCustomers, // Include all customers for manual mapping
       totalQbCustomers: qbCustomers.length,
       totalDashboardPatients: dashboardPatients.length,
       totalMappings: existingMappings.length

@@ -625,15 +625,34 @@ async function applyMembershipImpact(
   const currentStatus = patientInfo.rows[0]?.status_key ?? 'active';
   const patientName = patientInfo.rows[0]?.full_name ?? 'Unknown';
 
-  await client.query(
-    `UPDATE patients
-        SET service_start_date = COALESCE($2, service_start_date),
-            contract_end_date = COALESCE($3, contract_end_date),
-            membership_owes = $4,
-            updated_at = NOW()
-      WHERE patient_id = $1`,
-    [patientId, membership.memberSince, membership.contractEndDate, membership.balanceOwing || null]
-  );
+  // Only update contract_end_date if:
+  // 1. Patient's contract_end_date is NULL, OR
+  // 2. ClinicSync contract_end_date is NEWER (meaning it's a renewal)
+  // This prevents overwriting manually updated contract dates with old ones from ClinicSync
+  if (membership.contractEndDate) {
+    await client.query(
+      `UPDATE patients
+          SET service_start_date = COALESCE($2, service_start_date),
+              contract_end_date = CASE 
+                WHEN contract_end_date IS NULL THEN $3::date
+                WHEN $3::date > contract_end_date THEN $3::date
+                ELSE contract_end_date
+              END,
+              membership_owes = $4,
+              updated_at = NOW()
+        WHERE patient_id = $1`,
+      [patientId, membership.memberSince, membership.contractEndDate, membership.balanceOwing || null]
+    );
+  } else {
+    await client.query(
+      `UPDATE patients
+          SET service_start_date = COALESCE($2, service_start_date),
+              membership_owes = $3,
+              updated_at = NOW()
+        WHERE patient_id = $1`,
+      [patientId, membership.memberSince, membership.balanceOwing || null]
+    );
+  }
 
   // Check for membership cancellation (Jane) - do this BEFORE other status changes
   const membershipStatus = (membership.membershipStatus || '').toLowerCase();
@@ -804,26 +823,66 @@ async function applyMembershipImpact(
     );
   }
 
-  const holdType = determineHoldType(membership);
+  // Get patient's current contract_end_date and check for resolved contract issues
+  const patientContractInfo = await client.query<{ 
+    status_key: string | null;
+    contract_end_date: string | null;
+    has_resolved_contract_issue: boolean;
+  }>(
+    `SELECT 
+      p.status_key,
+      p.contract_end_date,
+      EXISTS(
+        SELECT 1 FROM payment_issues 
+        WHERE patient_id = p.patient_id 
+          AND issue_type = 'contract_expired' 
+          AND resolved_at IS NOT NULL
+      ) AS has_resolved_contract_issue
+     FROM patients p
+     WHERE p.patient_id = $1`,
+    [patientId]
+  );
+  const patientData = patientContractInfo.rows[0];
+  const currentStatusAfterPaymentCheck = patientData?.status_key ?? null;
+  const patientContractEndDate = patientData?.contract_end_date;
+  const hasResolvedContractIssue = patientData?.has_resolved_contract_issue ?? false;
+
+  // Determine hold type, but check patient's actual contract_end_date for contract expiration
+  let holdType = determineHoldType(membership);
+  
+  // If it's a contract hold, verify against patient's actual contract_end_date
+  // If patient has a newer contract date or a resolved contract issue, don't set to hold
+  if (holdType === 'contract') {
+    // Check if patient's contract_end_date is in the future (new contract active)
+    if (patientContractEndDate) {
+      const patientContractDate = new Date(patientContractEndDate);
+      if (patientContractDate.getTime() > Date.now()) {
+        // Patient has a valid future contract - don't set to hold
+        holdType = null;
+      }
+    }
+    
+    // If there's a resolved contract_expired issue, don't create a new one
+    if (hasResolvedContractIssue) {
+      holdType = null;
+    }
+  }
+
   if (!holdType) {
     return;
   }
 
-  // Re-query current status (may have changed from payment failure handling above)
-  const patientStatusResult = await client.query<{ status_key: string | null }>(
-    `SELECT status_key FROM patients WHERE patient_id = $1`,
-    [patientId]
-  );
-  const currentStatusAfterPaymentCheck = patientStatusResult.rows[0]?.status_key ?? null;
-
   const targetStatus = holdType === 'payment' ? 'hold_payment_research' : 'hold_contract_renewal';
   const issueType = holdType === 'payment' ? 'membership_delinquent' : 'contract_expired';
+  
+  // For contract expiration, use patient's actual contract_end_date if available, otherwise ClinicSync's
+  const contractDateToUse = patientContractEndDate || membership.contractEndDate;
   const daysOverdue =
-    holdType === 'contract' && membership.contractEndDate
+    holdType === 'contract' && contractDateToUse
       ? Math.max(
           0,
           Math.floor(
-            (Date.now() - new Date(membership.contractEndDate).getTime()) / (1000 * 60 * 60 * 24)
+            (Date.now() - new Date(contractDateToUse).getTime()) / (1000 * 60 * 60 * 24)
           )
         )
       : null;

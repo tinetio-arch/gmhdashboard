@@ -24,6 +24,7 @@ import {
   getQuickBooksUnmatchedPatients,
 } from '@/lib/quickbooksDashboard';
 import ClinicSyncAdminActions from './components/ClinicSyncAdminActions';
+import GHLAdminActions from './components/GHLAdminActions';
 import PaymentCheckerButton from './components/PaymentCheckerButton';
 
 function withBasePath(path: string): string {
@@ -387,6 +388,20 @@ export default async function HomePage() {
                       }}
                     >
                       <ClinicSyncAdminActions />
+                    </div>
+                  )}
+                  {integration.name === 'GoHighLevel' && (
+                    <div
+                      style={{
+                        marginTop: '1rem',
+                        backgroundColor: 'rgba(255,255,255,0.92)',
+                        borderRadius: '0.75rem',
+                        padding: '1rem',
+                        boxShadow: '0 6px 20px rgba(15, 23, 42, 0.15)',
+                        color: '#0f172a',
+                      }}
+                    >
+                      <GHLAdminActions />
                     </div>
                   )}
                   {integration.lastChecked && (

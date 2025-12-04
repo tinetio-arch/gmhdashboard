@@ -290,7 +290,7 @@ export async function getCombinedOutstandingMemberships(limit = 50): Promise<Com
           pn.full_name AS patient_name,
           pkg.plan_name,
           pn.status_key AS status,
-          pkg.outstanding_balance::numeric AS jane_balance,
+          COALESCE(pkg.outstanding_balance, 0)::numeric AS jane_balance,
           pkg.contract_end_date
         FROM jane_packages_import pkg
         INNER JOIN (
@@ -308,15 +308,37 @@ export async function getCombinedOutstandingMemberships(limit = 50): Promise<Com
         ) pn ON pn.normalized_name = lower(pkg.norm_name)
         WHERE pn.patient_id IS NOT NULL
           AND COALESCE(pkg.outstanding_balance, 0)::numeric > 0
+          -- Exclude if balance was manually cleared in ClinicSync
+          AND NOT EXISTS (
+            SELECT 1 FROM clinicsync_memberships cm
+            WHERE cm.patient_id = pn.patient_id
+              AND cm.is_active = TRUE
+              AND COALESCE(cm.balance_owing, cm.amount_due, 999999)::numeric = 0
+          )
+          -- Exclude if all payment issues for this patient are resolved
+          AND EXISTS (
+            SELECT 1 FROM payment_issues pi
+            WHERE pi.patient_id = pn.patient_id
+              AND pi.resolved_at IS NULL
+              AND pi.issue_type IN ('payment_declined', 'membership_delinquent', 'outstanding_balance')
+              AND pi.amount_owed > 0
+          )
       ),
       sales_receipt_balances AS (
         SELECT
-          patient_id,
-          SUM(amount) AS total_receipt_balance
-        FROM quickbooks_sales_receipts
-        WHERE amount > 0
-          AND LOWER(COALESCE(status, '')) IN ('unknown', 'declined', 'error', 'failed', 'rejected')
-        GROUP BY patient_id
+          qsr.patient_id,
+          SUM(qsr.amount) AS total_receipt_balance
+        FROM quickbooks_sales_receipts qsr
+        WHERE qsr.amount > 0
+          AND LOWER(COALESCE(qsr.status, '')) IN ('unknown', 'declined', 'error', 'failed', 'rejected')
+          -- Exclude sales receipts that have resolved payment issues
+          AND NOT EXISTS (
+            SELECT 1 FROM payment_issues pi
+            WHERE pi.patient_id = qsr.patient_id
+              AND pi.qb_sales_receipt_id = qsr.qb_sales_receipt_id
+              AND pi.resolved_at IS NOT NULL
+          )
+        GROUP BY qsr.patient_id
       ),
       payment_issue_totals AS (
         SELECT

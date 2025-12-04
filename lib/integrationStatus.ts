@@ -158,6 +158,8 @@ async function getJaneStatus(): Promise<IntegrationStatus> {
 
 /**
  * Get GHL integration status
+ * This function also serves as a "keepalive" - it makes an actual API call to GHL
+ * to prevent the token from expiring due to 90-day inactivity
  */
 async function getGHLStatus(): Promise<IntegrationStatus> {
   try {
@@ -174,6 +176,32 @@ async function getGHLStatus(): Promise<IntegrationStatus> {
         healthScore: null,
         canRefresh: false,
       };
+    }
+
+    // IMPORTANT: Make an actual API call to GHL to keep the token active
+    // GoHighLevel deletes tokens that haven't been used in 90 days
+    // This lightweight call (getting tags) will prevent token expiration
+    let apiConnected = false;
+    let apiError: string | null = null;
+    try {
+      const { createGHLClient } = await import('./ghl');
+      const client = createGHLClient();
+      if (client) {
+        // Make a lightweight API call to test the connection and keep token active
+        await client.getTags();
+        apiConnected = true;
+      } else {
+        apiError = 'Failed to create GHL client';
+      }
+    } catch (error: any) {
+      apiError = error.message || 'GHL API connection failed';
+      // Check if it's a token error
+      if (apiError && (apiError.includes('Invalid Private Integration token') || 
+          apiError.includes('token') || 
+          apiError.includes('unauthorized') ||
+          apiError.includes('401'))) {
+        apiError = 'GHL API token expired or invalid - please regenerate in GoHighLevel';
+      }
     }
 
     // Check recent sync activity
@@ -198,23 +226,25 @@ async function getGHLStatus(): Promise<IntegrationStatus> {
     const hasMappedContacts = (mappedContacts[0]?.count || 0) > 0;
 
     let status: 'healthy' | 'warning' | 'critical' | 'unknown' = 'unknown';
-    if (hasRecentActivity && hasMappedContacts) {
+    if (apiError) {
+      status = 'critical';
+    } else if (apiConnected && hasRecentActivity && hasMappedContacts) {
       status = 'healthy';
-    } else if (hasMappedContacts && !hasRecentActivity) {
+    } else if (apiConnected && hasMappedContacts && !hasRecentActivity) {
       status = 'warning';
-    } else if (hasApiKey) {
-      status = 'warning'; // Configured but no activity
+    } else if (apiConnected) {
+      status = 'warning'; // Configured and connected but no activity
     } else {
       status = 'critical';
     }
 
     return {
       name: 'GoHighLevel',
-      connected: hasApiKey && (hasRecentActivity || hasMappedContacts),
+      connected: apiConnected,
       status,
-      lastChecked: latestActivity ? new Date(latestActivity) : null,
-      error: hasRecentActivity ? null : 'No sync activity in last 24 hours',
-      healthScore: hasRecentActivity ? 100 : (hasMappedContacts ? 50 : 0),
+      lastChecked: new Date(), // Always update lastChecked when we make the API call (keeps token active)
+      error: apiError || (hasRecentActivity ? null : 'No sync activity in last 24 hours'),
+      healthScore: apiConnected ? (hasRecentActivity ? 100 : (hasMappedContacts ? 50 : 25)) : 0,
       canRefresh: false,
     };
   } catch (error: any) {

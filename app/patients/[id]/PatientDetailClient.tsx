@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { withBasePath } from '@/lib/basePath';
 
 type PaymentIssue = {
   issueId: string;
@@ -60,28 +61,42 @@ export default function PatientDetailClient({ paymentIssues, patientId, clinicsy
     });
   };
 
-  const handleResolve = async (issueId: string) => {
+  const handleResolve = async (issueId: string, issueType: string) => {
     // First confirmation - are they sure?
     if (!confirm('Are you sure you want to mark this payment issue as resolved?')) {
       return;
     }
 
-    // Second confirmation - was it cleared in the financial system?
-    const clearedInSystem = confirm(
-      'Have you cleared this charge in the financial system (QuickBooks/Jane)?\n\n' +
-      'Click OK if the charge has been cleared in the system.\n' +
-      'Click Cancel if you need to clear it in the system first.'
-    );
+    // For contract_expired issues, different confirmation message
+    if (issueType === 'contract_expired') {
+      const newContractActive = confirm(
+        'Has a new contract been activated for this patient?\n\n' +
+        'Click OK if a new contract is now active.\n' +
+        'Click Cancel if you need to set up the new contract first.'
+      );
 
-    if (!clearedInSystem) {
-      alert('Please clear the charge in QuickBooks or Jane first, then try again.');
-      return;
+      if (!newContractActive) {
+        alert('Please set up the new contract first, then try again.');
+        return;
+      }
+    } else {
+      // For payment issues, confirm it was cleared in the financial system
+      const clearedInSystem = confirm(
+        'Have you cleared this charge in the financial system (QuickBooks/Jane)?\n\n' +
+        'Click OK if the charge has been cleared in the system.\n' +
+        'Click Cancel if you need to clear it in the system first.'
+      );
+
+      if (!clearedInSystem) {
+        alert('Please clear the charge in QuickBooks or Jane first, then try again.');
+        return;
+      }
     }
 
     setResolvingIssue(issueId);
     
     try {
-      const response = await fetch('/ops/api/admin/quickbooks/resolve-payment-issue', {
+      const response = await fetch(withBasePath('/api/admin/quickbooks/resolve-payment-issue'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -89,7 +104,9 @@ export default function PatientDetailClient({ paymentIssues, patientId, clinicsy
         body: JSON.stringify({ 
           issueId,
           updatePatientStatus: true,
-          resolutionNote: 'Charge cleared in financial system and confirmed by user'
+          resolutionNote: issueType === 'contract_expired' 
+            ? 'Contract expiration issue resolved - new contract active'
+            : 'Charge cleared in financial system and confirmed by user'
         }),
       });
 
@@ -179,13 +196,43 @@ export default function PatientDetailClient({ paymentIssues, patientId, clinicsy
                   {formatDate(issue.createdAt)}
                 </td>
                 <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                  {matchingMembership ? (
+                  {/* For contract_expired issues, always show Mark Resolved button */}
+                  {/* For other issues with matching membership, show Clear Balance message */}
+                  {issue.issueType === 'contract_expired' ? (
+                    <button
+                      onClick={() => handleResolve(issue.issueId, issue.issueType)}
+                      disabled={resolvingIssue === issue.issueId}
+                      style={{
+                        padding: '0.375rem 0.75rem',
+                        fontSize: '0.875rem',
+                        fontWeight: 500,
+                        color: '#ffffff',
+                        backgroundColor: resolvingIssue === issue.issueId ? '#94a3b8' : '#15803d',
+                        border: 'none',
+                        borderRadius: '0.375rem',
+                        cursor: resolvingIssue === issue.issueId ? 'not-allowed' : 'pointer',
+                        transition: 'background-color 0.2s',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (resolvingIssue !== issue.issueId) {
+                          e.currentTarget.style.backgroundColor = '#14532d';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (resolvingIssue !== issue.issueId) {
+                          e.currentTarget.style.backgroundColor = '#15803d';
+                        }
+                      }}
+                    >
+                      {resolvingIssue === issue.issueId ? 'Resolving...' : 'Mark Resolved'}
+                    </button>
+                  ) : matchingMembership ? (
                     <div style={{ fontSize: '0.875rem', color: '#6b7280', fontStyle: 'italic' }}>
                       Use "Clear Balance" above
                     </div>
                   ) : (
                     <button
-                      onClick={() => handleResolve(issue.issueId)}
+                      onClick={() => handleResolve(issue.issueId, issue.issueType)}
                       disabled={resolvingIssue === issue.issueId}
                       style={{
                         padding: '0.375rem 0.75rem',

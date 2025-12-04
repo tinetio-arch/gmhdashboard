@@ -113,8 +113,10 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
     ),
     query<{ count: number }>(
       `SELECT COUNT(*) AS count
-         FROM payment_issues
-        WHERE resolved_at IS NULL`,
+         FROM payment_issues pi
+         JOIN patients p ON p.patient_id = pi.patient_id
+        WHERE pi.resolved_at IS NULL
+          AND ${QUICKBOOKS_METHOD_FILTER}`,
     ),
     query<{ count: number }>(
       `SELECT COUNT(*) AS count
@@ -167,6 +169,7 @@ export async function getQuickBooksPaymentIssues(limit = 10): Promise<QuickBooks
       JOIN patients p ON p.patient_id = pi.patient_id
       WHERE pi.resolved_at IS NULL
         AND p.status_key NOT IN ('inactive', 'discharged')
+        AND ${QUICKBOOKS_METHOD_FILTER}
       ORDER BY pi.days_overdue DESC NULLS LAST,
                pi.amount_owed DESC NULLS LAST,
                pi.created_at DESC

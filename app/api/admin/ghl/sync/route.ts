@@ -56,6 +56,40 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Sync pending patients only
+    if (body.syncPending === true) {
+      const { getPatientsNeedingSync } = await import('@/lib/patientGHLSync');
+      const pendingPatients = await getPatientsNeedingSync(500);
+      const patientIds = pendingPatients.map(p => p.patient_id);
+      
+      if (patientIds.length === 0) {
+        return NextResponse.json({
+          success: true,
+          message: 'No patients need syncing',
+          results: { total: 0, succeeded: 0, failed: 0, errors: [] }
+        });
+      }
+      
+      // Return immediately and run sync in background to avoid timeout
+      const syncJobId = Date.now().toString();
+      
+      (async () => {
+        try {
+          const results = await syncMultiplePatients(patientIds, user.user_id);
+          console.log(`[GHL Sync] Background job ${syncJobId} completed:`, results);
+        } catch (error) {
+          console.error(`[GHL Sync] Background job ${syncJobId} failed:`, error);
+        }
+      })();
+      
+      return NextResponse.json({
+        success: true,
+        message: `Sync started for ${patientIds.length} pending patients in background`,
+        syncJobId,
+        results: { total: patientIds.length, succeeded: 0, failed: 0, errors: [] }
+      });
+    }
+
     // Sync all patients needing sync
     if (body.syncAll === true) {
       const forceAll = body.forceAll === true; // Force resync all patients regardless of status

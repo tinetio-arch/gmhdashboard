@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { deletePatient, updatePatient, fetchPatientById } from '@/lib/patientQueries';
 import { syncPatientToGHL } from '@/lib/patientGHLSync';
+import { query } from '@/lib/db';
 
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
   const user = await requireApiUser(request, 'write');
@@ -44,18 +45,39 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       lastDeaDrug: body.lastDeaDrug ?? null
     });
 
-    // Sync the updated patient to GHL
-    try {
-      const patientForSync = await fetchPatientById(params.id);
-      if (patientForSync) {
-        await syncPatientToGHL(patientForSync, user.email);
-        console.log(`[API] Successfully synced updated patient ${params.id} to GHL`);
+    // Sync the updated patient to GHL asynchronously (don't block response)
+    (async () => {
+      try {
+        const patientForSync = await fetchPatientById(params.id);
+        if (patientForSync) {
+          const syncResult = await syncPatientToGHL(patientForSync, user.user_id);
+          if (syncResult.success) {
+            console.log(`[API] ✅ Successfully synced updated patient ${patientForSync.patient_name} (${params.id}) to GHL. Contact ID: ${syncResult.ghlContactId || 'N/A'}`);
+          } else {
+            console.error(`[API] ❌ Failed to sync updated patient ${patientForSync.patient_name} (${params.id}) to GHL: ${syncResult.error}`);
+          }
+        } else {
+          console.error(`[API] ⚠️  Could not fetch patient ${params.id} for GHL sync`);
+        }
+      } catch (ghlError) {
+        // Log the error but don't fail the patient update
+        const errorMsg = ghlError instanceof Error ? ghlError.message : String(ghlError);
+        console.error(`[API] ❌ Failed to sync updated patient ${params.id} to GHL:`, errorMsg);
+        // The patient is still updated successfully, GHL sync can be retried later
+        // Update patient record with error status
+        try {
+          await query(
+            `UPDATE patients 
+             SET ghl_sync_status = 'error',
+                 ghl_sync_error = $1
+             WHERE patient_id = $2`,
+            [errorMsg.substring(0, 500), params.id]
+          );
+        } catch (updateError) {
+          console.error(`[API] Failed to update patient sync error status:`, updateError);
+        }
       }
-    } catch (ghlError) {
-      // Log the error but don't fail the patient update
-      console.error(`[API] Failed to sync updated patient ${params.id} to GHL:`, ghlError);
-      // The patient is still updated successfully, GHL sync can be retried later
-    }
+    })();
 
     return NextResponse.json({ data: updated });
   } catch (error) {

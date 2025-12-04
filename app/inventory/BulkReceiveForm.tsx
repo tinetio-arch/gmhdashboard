@@ -103,6 +103,14 @@ export default function BulkReceiveForm({ onCompleted, currentUserRole }: Props)
           notes: notes || null
         })
       });
+      
+      // Check content type before parsing JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text();
+        throw new Error(`Server returned non-JSON response (${response.status}): ${text.substring(0, 200)}`);
+      }
+      
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(payload?.error ?? 'Unable to receive vials.');

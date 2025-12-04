@@ -3,6 +3,7 @@ import { requireApiUser } from '@/lib/auth';
 import { createPatient, fetchPatientDataEntries } from '@/lib/patientQueries';
 import { syncPatientToGHL } from '@/lib/patientGHLSync';
 import { fetchPatientById } from '@/lib/patientQueries';
+import { query } from '@/lib/db';
 
 export async function GET(request: NextRequest) {
   await requireApiUser(request, 'read');
@@ -61,14 +62,33 @@ export async function POST(request: NextRequest) {
       try {
         const patientForSync = await fetchPatientById(created.patient_id);
         if (patientForSync) {
-          // Pass undefined for userId since created_by expects UUID, not email
-          await syncPatientToGHL(patientForSync, undefined);
-          console.log(`[API] Successfully synced new patient ${created.patient_id} to GHL`);
+          // Pass user email for audit trail
+          const syncResult = await syncPatientToGHL(patientForSync, user.user_id);
+          if (syncResult.success) {
+            console.log(`[API] ✅ Successfully synced new patient ${created.patient_name} (${created.patient_id}) to GHL. Contact ID: ${syncResult.ghlContactId || 'N/A'}`);
+          } else {
+            console.error(`[API] ❌ Failed to sync new patient ${created.patient_name} (${created.patient_id}) to GHL: ${syncResult.error}`);
+          }
+        } else {
+          console.error(`[API] ⚠️  Could not fetch patient ${created.patient_id} for GHL sync`);
         }
       } catch (ghlError) {
         // Log the error but don't fail the patient creation
-        console.error(`[API] Failed to sync new patient ${created.patient_id} to GHL:`, ghlError);
+        const errorMsg = ghlError instanceof Error ? ghlError.message : String(ghlError);
+        console.error(`[API] ❌ Failed to sync new patient ${created.patient_name} (${created.patient_id}) to GHL:`, errorMsg);
         // The patient is still created successfully, GHL sync can be retried later
+        // Update patient record with error status
+        try {
+          await query(
+            `UPDATE patients 
+             SET ghl_sync_status = 'error',
+                 ghl_sync_error = $1
+             WHERE patient_id = $2`,
+            [errorMsg.substring(0, 500), created.patient_id]
+          );
+        } catch (updateError) {
+          console.error(`[API] Failed to update patient sync error status:`, updateError);
+        }
       }
     })();
 

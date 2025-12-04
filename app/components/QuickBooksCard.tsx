@@ -7,6 +7,13 @@ import type {
   QuickBooksUnmatchedPatient,
 } from '@/lib/quickbooksDashboard';
 
+type QuickBooksUnmappedCustomer = {
+  Id: string;
+  DisplayName: string;
+  PrimaryEmailAddr: string | null;
+  PrimaryPhone: string | null;
+};
+
 type QuickBooksCardProps = {
   metrics: QuickBooksDashboardMetrics | null;
   paymentIssues: QuickBooksPaymentIssue[];
@@ -43,13 +50,15 @@ export default function QuickBooksCard({
   connection,
 }: QuickBooksCardProps) {
   const [syncing, setSyncing] = useState(false);
-  const [checking, setChecking] = useState(false);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [resolvingIssueId, setResolvingIssueId] = useState<string | null>(null);
   const [mappingPatientId, setMappingPatientId] = useState<string | null>(null);
+  const [intakingCustomerId, setIntakingCustomerId] = useState<string | null>(null);
   const [qbCustomers, setQbCustomers] = useState<Array<{ Id: string; DisplayName: string }>>([]);
+  const [unmappedRecurringCustomers, setUnmappedRecurringCustomers] = useState<QuickBooksUnmappedCustomer[]>([]);
   const [loadingCustomers, setLoadingCustomers] = useState(false);
+  const [intaking, setIntaking] = useState(false);
 
   const handleSync = async () => {
     setOperationMessage(null);
@@ -78,38 +87,6 @@ export default function QuickBooksCard({
     }
   };
 
-  const handlePaymentCheck = async () => {
-    setOperationMessage(null);
-    setOperationError(null);
-    setChecking(true);
-    try {
-      const response = await fetch('/ops/api/admin/quickbooks/check-payment-failures', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body?.details || `Payment check failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
-      const summary = result?.summary ?? {};
-      setOperationMessage(
-        `Payment check complete: ${summary.issuesCreated ?? 0} new issues, ${
-          summary.issuesResolved ?? 0
-        } resolved, ${summary.patientsPlacedOnHold ?? 0} patients placed on hold.`,
-      );
-      // Refresh page to show updated data
-      setTimeout(() => window.location.reload(), 2000);
-    } catch (error) {
-      setOperationError(
-        error instanceof Error ? error.message : 'Payment failure check failed. Please try again.',
-      );
-    } finally {
-      setChecking(false);
-    }
-  };
 
   const handleResolveIssue = async (issueId: string) => {
     setResolvingIssueId(issueId);
@@ -138,17 +115,49 @@ export default function QuickBooksCard({
     if (qbCustomers.length > 0) return; // Already loaded
     setLoadingCustomers(true);
     try {
+      // Try to get all QuickBooks customers from the API
       const response = await fetch('/ops/api/admin/quickbooks/patient-matching');
       if (!response.ok) throw new Error('Failed to load customers');
       const data = await response.json();
-      // Extract customers from potential matches or unmapped recurring customers
-      const customers = [
-        ...(data.potentialMatches?.map((m: any) => m.qbCustomer) || []),
-        ...(data.unmappedRecurringCustomers || []),
-      ];
-      setQbCustomers(customers);
+      
+      // Extract customers from multiple sources
+      const customers = new Map<string, { Id: string; DisplayName: string }>();
+      
+      // Add from potential matches
+      if (data.potentialMatches) {
+        data.potentialMatches.forEach((m: any) => {
+          if (m.qbCustomer) {
+            customers.set(m.qbCustomer.Id, m.qbCustomer);
+          }
+        });
+      }
+      
+      // Add from unmapped recurring customers
+      if (data.unmappedRecurringCustomers) {
+        data.unmappedRecurringCustomers.forEach((c: any) => {
+          if (c.Id) {
+            customers.set(c.Id, c);
+          }
+        });
+      }
+      
+      // Add from all customers list if available
+      if (data.allCustomers) {
+        data.allCustomers.forEach((c: any) => {
+          if (c.Id) {
+            customers.set(c.Id, c);
+          }
+        });
+      }
+      
+      setQbCustomers(Array.from(customers.values()));
+      
+      // Store unmapped recurring customers for intake
+      if (data.unmappedRecurringCustomers) {
+        setUnmappedRecurringCustomers(data.unmappedRecurringCustomers);
+      }
     } catch (error) {
-      setOperationError('Failed to load QuickBooks customers.');
+      setOperationError('Failed to load QuickBooks customers. Please try syncing QuickBooks first.');
     } finally {
       setLoadingCustomers(false);
     }
@@ -172,6 +181,73 @@ export default function QuickBooksCard({
       setTimeout(() => window.location.reload(), 1500);
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : 'Failed to map patient.');
+    }
+  };
+
+  const handleIntakeCustomer = async (customer: QuickBooksUnmappedCustomer) => {
+    if (!confirm(`Create a new patient from QuickBooks customer "${customer.DisplayName}"?\n\nThis will:\n1. Create a new patient record\n2. Automatically map them to this QuickBooks customer\n3. Set payment method to QuickBooks`)) {
+      return;
+    }
+
+    setIntaking(true);
+    setIntakingCustomerId(customer.Id);
+    setOperationMessage(null);
+    setOperationError(null);
+
+    try {
+      // Address will be added later if needed - not critical for intake
+      const address = null;
+
+      // Create patient from QuickBooks customer
+      const createResponse = await fetch('/ops/api/patients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patientName: customer.DisplayName,
+          email: customer.PrimaryEmailAddr || null,
+          phoneNumber: customer.PrimaryPhone || null,
+          address: address,
+          paymentMethodKey: 'quickbooks',
+          statusKey: 'active'
+        }),
+      });
+
+      if (!createResponse.ok) {
+        const body = await createResponse.json().catch(() => ({}));
+        throw new Error(body?.error || 'Failed to create patient');
+      }
+
+      const patientData = await createResponse.json();
+      const newPatientId = patientData.data?.patient_id;
+
+      if (!newPatientId) {
+        throw new Error('Patient created but no patient ID returned');
+      }
+
+      // Automatically map the new patient to the QuickBooks customer
+      const mapResponse = await fetch('/ops/api/admin/quickbooks/patient-matching', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          patientId: newPatientId, 
+          qbCustomerId: customer.Id, 
+          matchMethod: 'intake' 
+        }),
+      });
+
+      if (!mapResponse.ok) {
+        const body = await mapResponse.json().catch(() => ({}));
+        throw new Error(body?.error || 'Patient created but mapping failed');
+      }
+
+      setOperationMessage(`Patient "${customer.DisplayName}" created and mapped successfully!`);
+      setIntakingCustomerId(null);
+      setTimeout(() => window.location.reload(), 2000);
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : 'Failed to intake customer.');
+      setIntakingCustomerId(null);
+    } finally {
+      setIntaking(false);
     }
   };
 
@@ -265,22 +341,6 @@ export default function QuickBooksCard({
               }}
             >
               {syncing ? 'Syncing…' : 'Sync QuickBooks'}
-            </button>
-            <button
-              onClick={handlePaymentCheck}
-              disabled={checking}
-              style={{
-                padding: '0.6rem 1rem',
-                borderRadius: '0.6rem',
-                background: checking ? '#94a3b8' : '#dc2626',
-                color: '#ffffff',
-                fontWeight: 600,
-                border: 'none',
-                cursor: checking ? 'wait' : 'pointer',
-                boxShadow: '0 10px 20px rgba(220, 38, 38, 0.25)',
-              }}
-            >
-              {checking ? 'Checking…' : 'Run Payment Check'}
             </button>
             <a
               href="/ops/admin/quickbooks"
@@ -499,6 +559,61 @@ export default function QuickBooksCard({
                   )}
                 </div>
               )}
+            </div>
+          ))}
+        </CardPanel>
+
+        <CardPanel
+          title="QuickBooks Customers Needing Intake"
+          emptyMessage="All QuickBooks recurring customers have been added to the system."
+          footer={
+            <div style={{ fontSize: '0.75rem', color: '#92400e', fontStyle: 'italic' }}>
+              These are QuickBooks customers with recurring transactions but no patient record
+            </div>
+          }
+        >
+          {unmappedRecurringCustomers.slice(0, 5).map((customer) => (
+            <div
+              key={customer.Id}
+              style={{
+                padding: '0.75rem',
+                borderRadius: '0.75rem',
+                background: '#fff',
+                border: '1px solid rgba(59, 130, 246, 0.2)',
+                marginBottom: '0.5rem',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, color: '#1e40af', marginBottom: '0.2rem' }}>{customer.DisplayName}</div>
+                  <div style={{ fontSize: '0.8rem', color: '#1e3a8a' }}>
+                    {customer.PrimaryEmailAddr || 'No email on file'}
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#1e3a8a' }}>
+                    {customer.PrimaryPhone || 'No phone on file'}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    handleLoadCustomers();
+                    handleIntakeCustomer(customer);
+                  }}
+                  disabled={intaking && intakingCustomerId === customer.Id}
+                  style={{
+                    padding: '0.35rem 0.75rem',
+                    borderRadius: '0.4rem',
+                    background: intaking && intakingCustomerId === customer.Id ? '#94a3b8' : '#3b82f6',
+                    color: '#ffffff',
+                    fontWeight: 600,
+                    border: 'none',
+                    cursor: intaking && intakingCustomerId === customer.Id ? 'wait' : 'pointer',
+                    fontSize: '0.75rem',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {intaking && intakingCustomerId === customer.Id ? 'Intaking...' : 'Intake'}
+                </button>
+              </div>
             </div>
           ))}
         </CardPanel>

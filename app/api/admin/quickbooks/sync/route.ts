@@ -3,6 +3,9 @@ import { requireApiUser } from '@/lib/auth';
 import { createQuickBooksClient } from '@/lib/quickbooks';
 import { query } from '@/lib/db';
 
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300; // 5 minutes for long-running sync
+
 const DECLINED_STATUSES = new Set(['declined', 'error', 'failed', 'rejected', 'unknown']);
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -44,12 +47,63 @@ export async function POST(req: NextRequest) {
     const syncId = syncLog[0].sync_id;
 
     try {
-      let totalProcessed = 0;
-      let totalUpdated = 0;
-      let totalFailed = 0;
+      // For non-internal requests, run sync in background and return immediately
+      if (!internal) {
+        // Start sync in background (fire and forget)
+        (async () => {
+          try {
+            await performSync(qbClient, syncId, createdBy);
+          } catch (error) {
+            console.error('[QuickBooks Sync] Background sync error:', error);
+            await query(`
+              UPDATE payment_sync_log SET
+                sync_status = 'failed',
+                error_message = $1,
+                completed_at = NOW()
+              WHERE sync_id = $2
+            `, [error instanceof Error ? error.message : 'Unknown error', syncId]);
+          }
+        })();
 
-      // Sync customers and payments
-      const customers = await qbClient.getCustomers();
+        return NextResponse.json({
+          success: true,
+          message: 'QuickBooks sync started in the background. This may take several minutes.',
+          syncId
+        });
+      }
+
+      // For internal requests, run synchronously
+      const result = await performSync(qbClient, syncId, createdBy);
+      return NextResponse.json(result);
+    } catch (error) {
+      // Update sync log as failed
+      await query(`
+        UPDATE payment_sync_log SET
+          sync_status = 'failed',
+          error_message = $1,
+          completed_at = NOW()
+        WHERE sync_id = $2
+      `, [error instanceof Error ? error.message : 'Unknown error', syncId]);
+
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error syncing QuickBooks data:', error);
+    return NextResponse.json(
+      { error: 'Failed to sync QuickBooks data' },
+      { status: 500 }
+    );
+  }
+}
+
+async function performSync(qbClient: any, syncId: string, createdBy: string | null) {
+  try {
+    let totalProcessed = 0;
+    let totalUpdated = 0;
+    let totalFailed = 0;
+
+    // Sync customers and payments
+    const customers = await qbClient.getCustomers();
 
       for (const customer of customers) {
         try {
@@ -300,38 +354,36 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Update sync log as completed
-      await query(`
-        UPDATE payment_sync_log SET
-          sync_status = 'completed',
-          records_processed = $1,
-          records_updated = $2,
-          records_failed = $3,
-          completed_at = NOW()
-        WHERE sync_id = $4
-      `, [totalProcessed, totalUpdated, totalFailed, syncId]);
+    // Update sync log as completed
+    await query(`
+      UPDATE payment_sync_log SET
+        sync_status = 'completed',
+        records_processed = $1,
+        records_updated = $2,
+        records_failed = $3,
+        completed_at = NOW()
+      WHERE sync_id = $4
+    `, [totalProcessed, totalUpdated, totalFailed, syncId]);
 
-      return NextResponse.json({
-        success: true,
-        message: `Sync completed. Processed: ${totalProcessed}, Updated: ${totalUpdated}, Failed: ${totalFailed}`
-      });
-    } catch (error) {
-      // Update sync log as failed
-      await query(`
-        UPDATE payment_sync_log SET
-          sync_status = 'failed',
-          error_message = $1,
-          completed_at = NOW()
-        WHERE sync_id = $2
-      `, [error instanceof Error ? error.message : 'Unknown error', syncId]);
-
-      throw error;
-    }
+    return {
+      success: true,
+      message: `Sync completed. Processed: ${totalProcessed}, Updated: ${totalUpdated}, Failed: ${totalFailed}`,
+      summary: {
+        processed: totalProcessed,
+        updated: totalUpdated,
+        failed: totalFailed
+      }
+    };
   } catch (error) {
-    console.error('Error syncing QuickBooks data:', error);
-    return NextResponse.json(
-      { error: 'Failed to sync QuickBooks data' },
-      { status: 500 }
-    );
+    // Update sync log as failed
+    await query(`
+      UPDATE payment_sync_log SET
+        sync_status = 'failed',
+        error_message = $1,
+        completed_at = NOW()
+      WHERE sync_id = $2
+    `, [error instanceof Error ? error.message : 'Unknown error', syncId]);
+
+    throw error;
   }
 }
