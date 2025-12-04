@@ -129,8 +129,10 @@ export async function GET(req: NextRequest) {
     });
 
     // Get patients with QuickBooks payment method but no mapping
+    // Include both 'quickbooks' and 'jane_quickbooks' (mixed) patients
     const unmappedQuickBooksPatients = dashboardPatients.filter(p =>
-      p.payment_method_key === 'quickbooks' && !mappedPatientIds.has(p.patient_id)
+      (p.payment_method_key === 'quickbooks' || p.payment_method_key === 'qbo' || p.payment_method_key === 'jane_quickbooks') 
+      && !mappedPatientIds.has(p.patient_id)
     );
 
     // Get QBO customers with recurring transactions but no dashboard mapping

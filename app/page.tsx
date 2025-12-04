@@ -17,7 +17,7 @@ import { requireUser, userHasRole } from '@/lib/auth';
 import { getTotalJaneRevenue, getJaneRevenueMonthly } from '@/lib/janeRevenueQueries';
 import { getMembershipMonthlyRevenue, type MembershipRevenueSummary } from '@/lib/membershipRevenue';
 import { getAllIntegrationStatuses, type IntegrationStatus } from '@/lib/integrationStatus';
-import QuickBooksCard from './components/QuickBooksCard';
+import QuickBooksCard from '@/app/components/QuickBooksCard';
 import {
   getQuickBooksDashboardMetrics,
   getQuickBooksPaymentIssues,
@@ -26,6 +26,7 @@ import {
 import ClinicSyncAdminActions from './components/ClinicSyncAdminActions';
 import GHLAdminActions from './components/GHLAdminActions';
 import PaymentCheckerButton from './components/PaymentCheckerButton';
+import PatientMergeTool from './components/PatientMergeTool';
 
 function withBasePath(path: string): string {
   return path;
@@ -447,6 +448,11 @@ export default async function HomePage() {
       <div style={{ marginBottom: '2rem' }}>
         <PaymentCheckerButton />
       </div>
+
+      {/* Patient Merge Tool - Admin Only */}
+      {userHasRole(user, 'admin') && (
+        <PatientMergeTool />
+      )}
 
       {isOwner && (
         <QuickBooksCard

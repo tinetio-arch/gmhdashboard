@@ -59,6 +59,7 @@ export default function QuickBooksCard({
   const [unmappedRecurringCustomers, setUnmappedRecurringCustomers] = useState<QuickBooksUnmappedCustomer[]>([]);
   const [loadingCustomers, setLoadingCustomers] = useState(false);
   const [intaking, setIntaking] = useState(false);
+  const [customerSearchTerm, setCustomerSearchTerm] = useState<string>('');
 
   const handleSync = async () => {
     setOperationMessage(null);
@@ -534,10 +535,25 @@ export default function QuickBooksCard({
                       <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#92400e', marginBottom: '0.5rem' }}>
                         Select QuickBooks Customer:
                       </div>
+                      <input
+                        type="text"
+                        placeholder="Search customers by name..."
+                        value={customerSearchTerm}
+                        onChange={(e) => setCustomerSearchTerm(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '0.5rem',
+                          borderRadius: '0.4rem',
+                          border: '1px solid rgba(251, 146, 60, 0.3)',
+                          fontSize: '0.8rem',
+                          marginBottom: '0.5rem',
+                        }}
+                      />
                       <select
                         onChange={(e) => {
                           if (e.target.value) {
                             handleMapPatient(patient.patient_id, e.target.value);
+                            setCustomerSearchTerm(''); // Clear search after selection
                           }
                         }}
                         style={{
@@ -546,15 +562,31 @@ export default function QuickBooksCard({
                           borderRadius: '0.4rem',
                           border: '1px solid rgba(251, 146, 60, 0.3)',
                           fontSize: '0.8rem',
+                          maxHeight: '200px',
                         }}
+                        size={Math.min(10, qbCustomers.filter(c => 
+                          !customerSearchTerm || c.DisplayName.toLowerCase().includes(customerSearchTerm.toLowerCase())
+                        ).length + 1)}
                       >
-                        <option value="">Choose customer...</option>
-                        {qbCustomers.map((customer) => (
-                          <option key={customer.Id} value={customer.Id}>
-                            {customer.DisplayName}
-                          </option>
-                        ))}
+                        <option value="">Choose customer... ({qbCustomers.length} total)</option>
+                        {qbCustomers
+                          .filter(c => 
+                            !customerSearchTerm || c.DisplayName.toLowerCase().includes(customerSearchTerm.toLowerCase())
+                          )
+                          .sort((a, b) => a.DisplayName.localeCompare(b.DisplayName))
+                          .map((customer) => (
+                            <option key={customer.Id} value={customer.Id}>
+                              {customer.DisplayName}
+                            </option>
+                          ))}
                       </select>
+                      {customerSearchTerm && (
+                        <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
+                          Showing {qbCustomers.filter(c => 
+                            c.DisplayName.toLowerCase().includes(customerSearchTerm.toLowerCase())
+                          ).length} of {qbCustomers.length} customers
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
