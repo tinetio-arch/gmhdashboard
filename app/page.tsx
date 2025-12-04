@@ -23,10 +23,10 @@ import {
   getQuickBooksPaymentIssues,
   getQuickBooksUnmatchedPatients,
 } from '@/lib/quickbooksDashboard';
-import ClinicSyncAdminActions from './components/ClinicSyncAdminActions';
-import GHLAdminActions from './components/GHLAdminActions';
-import PaymentCheckerButton from './components/PaymentCheckerButton';
-import PatientMergeTool from './components/PatientMergeTool';
+import ClinicSyncAdminActions from '@/app/components/ClinicSyncAdminActions';
+import GHLAdminActions from '@/app/components/GHLAdminActions';
+import PaymentCheckerButton from '@/app/components/PaymentCheckerButton';
+import PatientMergeTool from '@/app/components/PatientMergeTool';
 
 function withBasePath(path: string): string {
   return path;
