@@ -37,3 +37,4 @@ COMMENT ON COLUMN jane_revenue_snapshots.total_visits IS 'Total completed visits
 
 
 
+
