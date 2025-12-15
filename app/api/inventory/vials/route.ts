@@ -136,6 +136,15 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('[API] Error creating vials:', error);
     
+    // Log full error details for debugging
+    if (error instanceof Error) {
+      console.error('[API] Error details:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+    }
+    
     // Check if it's a JSON parse error
     if (error instanceof SyntaxError || error.message?.includes('JSON') || error.message?.includes('unexpected token')) {
       return NextResponse.json(

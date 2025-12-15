@@ -37,6 +37,8 @@ export async function GET(req: NextRequest) {
           LOWER(TRIM(REGEXP_REPLACE(full_name, '[^a-zA-Z0-9\\s]', '', 'g'))) AS normalized_name
         FROM patients
         WHERE patient_id IS NOT NULL
+          AND status_key != 'inactive'
+          AND (alert_status IS NULL OR LOWER(alert_status) NOT LIKE '%inactive%' AND LOWER(alert_status) NOT LIKE '%merged%')
       ),
       duplicate_groups AS (
         SELECT 
@@ -102,6 +104,8 @@ export async function GET(req: NextRequest) {
           GROUP BY patient_id
         ) pi ON pi.patient_id = p.patient_id
         WHERE p.patient_id = ANY($1::uuid[])
+          AND p.status_key != 'inactive'
+          AND (p.alert_status IS NULL OR LOWER(p.alert_status) NOT LIKE '%inactive%' AND LOWER(p.alert_status) NOT LIKE '%merged%')
         ORDER BY 
           d.dispense_count DESC NULLS LAST,
           t.transaction_count DESC NULLS LAST,
@@ -123,5 +127,7 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+
 
 

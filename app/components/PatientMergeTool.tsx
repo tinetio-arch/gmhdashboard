@@ -32,13 +32,22 @@ export default function PatientMergeTool() {
   const loadDuplicates = async () => {
     setLoading(true);
     setError(null);
+    setMessage(null);
     try {
       const response = await fetch('/ops/api/admin/patients/duplicates');
-      if (!response.ok) throw new Error('Failed to load duplicates');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData?.error || `Failed to load duplicates (${response.status})`);
+      }
       const data = await response.json();
       setDuplicates(data.duplicates || []);
+      if (!data.duplicates || data.duplicates.length === 0) {
+        setMessage('✅ No duplicate patients found');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load duplicate patients');
+      const errorMsg = err instanceof Error ? err.message : 'Failed to load duplicate patients';
+      setError(errorMsg);
+      console.error('Error loading duplicates:', err);
     } finally {
       setLoading(false);
     }
@@ -160,9 +169,13 @@ export default function PatientMergeTool() {
         </div>
       )}
 
-      {loading && duplicates.length === 0 ? (
+      {loading ? (
         <div style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
           Loading duplicate patients...
+        </div>
+      ) : error ? (
+        <div style={{ textAlign: 'center', padding: '2rem', color: '#dc2626' }}>
+          ❌ {error}
         </div>
       ) : duplicates.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
@@ -273,5 +286,7 @@ export default function PatientMergeTool() {
     </div>
   );
 }
+
+
 
 

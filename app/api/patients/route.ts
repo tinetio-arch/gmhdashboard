@@ -95,8 +95,16 @@ export async function POST(request: NextRequest) {
     // Return immediately without waiting for GHL sync
     return NextResponse.json({ data: created });
   } catch (error) {
-    console.error('Failed to create patient', error);
+    console.error('[API] Failed to create patient:', error);
     const errorMessage = error instanceof Error ? error.message : 'Failed to create patient';
+    // Log full error details for debugging
+    if (error instanceof Error) {
+      console.error('[API] Error details:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+    }
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
