@@ -6,22 +6,36 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
   try {
-    const user = await requireApiUser(request, 'write');
-    const { id: dispenseId } = params;
-    const body = await request.json();
+    // Handle params as either Promise or direct object (Next.js 13+ compatibility)
+    const resolvedParams = params instanceof Promise ? await params : params;
+    const { id: dispenseId } = resolvedParams;
 
     if (!dispenseId) {
       return NextResponse.json({ error: 'Dispense ID is required.' }, { status: 400 });
     }
+
+    const user = await requireApiUser(request, 'write');
 
     // Check if user can sign (admin or has can_sign permission)
     if (user.role !== 'admin' && !user.can_sign) {
       return NextResponse.json(
         { error: 'You do not have permission to sign dispenses.' },
         { status: 403 }
+      );
+    }
+
+    // Parse request body with error handling
+    let body;
+    try {
+      body = await request.json();
+    } catch (parseError) {
+      console.error('[API] Error parsing request body:', parseError);
+      return NextResponse.json(
+        { error: 'Invalid request body. Expected JSON.' },
+        { status: 400 }
       );
     }
 
@@ -41,8 +55,15 @@ export async function POST(
     return NextResponse.json({ success: true, message: 'Dispense signed successfully.' });
   } catch (error: any) {
     console.error('[API] Error signing dispense:', error);
+    
+    // Ensure we always return JSON, even on unexpected errors
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: error.message || 'Failed to sign dispense.' },
+      { 
+        success: false,
+        error: errorMessage || 'Failed to sign dispense.',
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      },
       { status: 500 }
     );
   }

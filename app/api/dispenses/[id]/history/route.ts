@@ -6,23 +6,32 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
   try {
-    const user = await requireApiUser(request, 'write');
-    const { id: dispenseId } = params;
+    // Handle params as either Promise or direct object (Next.js 13+ compatibility)
+    const resolvedParams = params instanceof Promise ? await params : params;
+    const { id: dispenseId } = resolvedParams;
 
     if (!dispenseId) {
       return NextResponse.json({ error: 'Dispense ID is required.' }, { status: 400 });
     }
 
+    const user = await requireApiUser(request, 'write');
     const history = await fetchDispenseHistory(dispenseId);
 
     return NextResponse.json({ history });
   } catch (error: any) {
     console.error('[API] Error fetching dispense history:', error);
+    
+    // Ensure we always return JSON, even on unexpected errors
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: error.message || 'Failed to fetch dispense history.' },
+      { 
+        success: false,
+        error: errorMessage || 'Failed to fetch dispense history.',
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      },
       { status: 500 }
     );
   }

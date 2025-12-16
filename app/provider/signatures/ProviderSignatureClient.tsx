@@ -166,7 +166,19 @@ export default function ProviderSignatureClient({
     try {
       setHistoryLoadingId(dispenseId);
       const response = await fetch(withBasePath(`/api/dispenses/${dispenseId}/history`));
-      const payload = await response.json();
+      
+      // Check if response is JSON before parsing
+      const contentType = response.headers.get('content-type');
+      let payload;
+      if (contentType && contentType.includes('application/json')) {
+        payload = await response.json();
+      } else {
+        // If not JSON, read as text to see what we got
+        const text = await response.text();
+        console.error('[Frontend] Non-JSON response:', text.substring(0, 200));
+        throw new Error(`Server returned an error. Please try again or contact support if the problem persists.`);
+      }
+      
       if (!response.ok) {
         throw new Error(payload?.error ?? 'Unable to load history.');
       }
@@ -190,7 +202,19 @@ export default function ProviderSignatureClient({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ note: note.trim() || null })
       });
-      const payload = await response.json();
+      
+      // Check if response is JSON before parsing
+      const contentType = response.headers.get('content-type');
+      let payload;
+      if (contentType && contentType.includes('application/json')) {
+        payload = await response.json();
+      } else {
+        // If not JSON, read as text to see what we got
+        const text = await response.text();
+        console.error('[Frontend] Non-JSON response:', text.substring(0, 200));
+        throw new Error(`Server returned an error. Please try again or contact support if the problem persists.`);
+      }
+      
       if (!response.ok) {
         throw new Error(payload?.error ?? 'Unable to sign this dispense.');
       }
