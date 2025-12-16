@@ -17,7 +17,17 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const user = await requireApiUser(request, 'write');
+  let user;
+  try {
+    user = await requireApiUser(request, 'write');
+  } catch (authError) {
+    console.error('[API] Authentication error:', authError);
+    return NextResponse.json(
+      { error: authError instanceof Error ? authError.message : 'Unauthorized' },
+      { status: 401 }
+    );
+  }
+  
   try {
     const body = await request.json();
     const timestamp = new Date().toISOString();
@@ -61,7 +71,7 @@ export async function POST(request: NextRequest) {
     (async () => {
       try {
         const patientForSync = await fetchPatientById(created.patient_id);
-        if (patientForSync) {
+        if (patientForSync && user?.user_id) {
           // Pass user email for audit trail
           const syncResult = await syncPatientToGHL(patientForSync, user.user_id);
           if (syncResult.success) {
@@ -97,14 +107,35 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('[API] Failed to create patient:', error);
     const errorMessage = error instanceof Error ? error.message : 'Failed to create patient';
+    
     // Log full error details for debugging
     if (error instanceof Error) {
       console.error('[API] Error details:', {
         message: error.message,
         stack: error.stack,
-        name: error.name
+        name: error.name,
+        user: user?.email || 'unknown',
+        userRole: user?.role || 'unknown',
+        userId: user?.user_id || 'unknown'
       });
+      
+      // Check for specific database errors
+      if (error.message.includes('violates') || error.message.includes('constraint')) {
+        return NextResponse.json(
+          { error: 'Database constraint error. Please check all required fields are valid.' },
+          { status: 400 }
+        );
+      }
+      
+      // Check for authentication errors
+      if (error.message.includes('Unauthorized') || error.message.includes('Forbidden')) {
+        return NextResponse.json(
+          { error: 'You do not have permission to create patients. Please contact an administrator.' },
+          { status: 403 }
+        );
+      }
     }
+    
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
