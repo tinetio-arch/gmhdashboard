@@ -14,7 +14,7 @@ export type HealthieConfig = {
   apiUrl?: string;
 };
 
-export type HealthieClient = {
+export type HealthieClientData = {
   id: string;
   user_id?: string;
   first_name?: string;
@@ -117,16 +117,23 @@ export class HealthieClient {
 
   /**
    * Execute a GraphQL query/mutation
+   * 
+   * Healthie API uses Basic authentication with API key
+   * Documentation: https://docs.gethealthie.com/guides/api-concepts/authentication/
    */
   private async graphql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
     if (!this.config.apiKey) {
       throw new Error('Healthie API key is required');
     }
 
+    // Healthie uses Basic auth with API key (not Bearer token)
+    // Format: Authorization: Basic YOUR_API_KEY_HERE
+    // Also requires AuthorizationSource: API header
     const response = await fetch(this.apiUrl, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${this.config.apiKey}`,
+        'Authorization': `Basic ${this.config.apiKey}`,
+        'AuthorizationSource': 'API',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -153,7 +160,7 @@ export class HealthieClient {
   /**
    * Create a new client in Healthie
    */
-  async createClient(input: CreateClientInput): Promise<HealthieClient> {
+  async createClient(input: CreateClientInput): Promise<HealthieClientData> {
     const mutation = `
       mutation CreateClient($input: createClientInput!) {
         createClient(input: $input) {
@@ -179,7 +186,7 @@ export class HealthieClient {
     try {
       const result = await this.graphql<{
         createClient: {
-          client: HealthieClient;
+          client: HealthieClientData;
         };
       }>(mutation, {
         input: {
@@ -206,7 +213,7 @@ export class HealthieClient {
   /**
    * Find client by email
    */
-  async findClientByEmail(email: string): Promise<HealthieClient | null> {
+  async findClientByEmail(email: string): Promise<HealthieClientData | null> {
     if (!email) {
       return null;
     }
@@ -233,7 +240,7 @@ export class HealthieClient {
 
     try {
       const result = await this.graphql<{
-        clients: HealthieClient[];
+        clients: HealthieClientData[];
       }>(query, { email });
 
       if (result.clients && result.clients.length > 0) {
@@ -253,7 +260,7 @@ export class HealthieClient {
   /**
    * Find client by phone number
    */
-  async findClientByPhone(phone: string): Promise<HealthieClient | null> {
+  async findClientByPhone(phone: string): Promise<HealthieClientData | null> {
     if (!phone) {
       return null;
     }
@@ -283,7 +290,7 @@ export class HealthieClient {
 
     try {
       const result = await this.graphql<{
-        clients: HealthieClient[];
+        clients: HealthieClientData[];
       }>(query, { phone: normalizedPhone });
 
       if (result.clients && result.clients.length > 0) {
@@ -303,7 +310,7 @@ export class HealthieClient {
   /**
    * Get client by ID
    */
-  async getClient(clientId: string): Promise<HealthieClient> {
+  async getClient(clientId: string): Promise<HealthieClientData> {
     const query = `
       query GetClient($id: ID!) {
         client(id: $id) {
@@ -325,7 +332,7 @@ export class HealthieClient {
     `;
 
     const result = await this.graphql<{
-      client: HealthieClient;
+      client: HealthieClientData;
     }>(query, { id: clientId });
 
     return result.client;
@@ -334,7 +341,7 @@ export class HealthieClient {
   /**
    * Update client information
    */
-  async updateClient(clientId: string, input: Partial<CreateClientInput>): Promise<HealthieClient> {
+  async updateClient(clientId: string, input: Partial<CreateClientInput>): Promise<HealthieClientData> {
     const mutation = `
       mutation UpdateClient($id: ID!, $input: updateClientInput!) {
         updateClient(id: $id, input: $input) {
@@ -359,7 +366,7 @@ export class HealthieClient {
 
     const result = await this.graphql<{
       updateClient: {
-        client: HealthieClient;
+        client: HealthieClientData;
       };
     }>(mutation, {
       id: clientId,
