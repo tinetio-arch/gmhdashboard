@@ -27,7 +27,8 @@ const PAYMENT_COLOR_MAP: Record<string, string> = {
   'jane_quickbooks': '#a4c2f4',
   'both': '#a4c2f4',
   'pro-bono': '#b6d7a8',
-  'pro bono': '#b6d7a8'
+  'pro bono': '#b6d7a8',
+  'healthie': '#c084fc'
 };
 
 const TYPE_COLOR_MAP: Record<string, string> = {
@@ -44,7 +45,9 @@ const TYPE_COLOR_MAP: Record<string, string> = {
   'mixed primcare (jane) | qbo tcmh': '#76a5af',
   'mixed_primcare_jane_qbo_tcmh': '#76a5af',
   "men's health (qbo)": '#f6b26b',
-  'approved disc / pro-bono pt': '#a64d79'
+  'approved disc / pro-bono pt': '#a64d79',
+  'nowmenshealth.care': '#fed7aa',
+  'nowprimary.care': '#bae6fd'
 };
 
 const PRIMARY_CARE_TYPE_KEYS = new Set([
