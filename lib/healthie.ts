@@ -12,6 +12,8 @@
 export type HealthieConfig = {
   apiKey: string;
   apiUrl?: string;
+  trtRegimenMetadataKey?: string;
+  lastDispenseMetadataKey?: string;
 };
 
 export type HealthieClientData = {
@@ -28,6 +30,31 @@ export type HealthieClientData = {
   zip?: string;
   created_at?: string;
   updated_at?: string;
+};
+
+type HealthieUserRecord = {
+  id: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  email?: string | null;
+  phone_number?: string | null;
+  dob?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type HealthieLocationInput = {
+  name?: string;
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  country?: string;
+};
+
+type UpdateClientPayload = Partial<CreateClientInput> & {
+  location?: HealthieLocationInput;
 };
 
 export type HealthiePackage = {
@@ -63,6 +90,20 @@ export type CreateClientInput = {
   city?: string;
   state?: string;
   zip?: string;
+  dietitian_id?: string;
+  metadata?: string;
+  user_group_id?: string;
+  additional_record_identifier?: string;
+  record_identifier?: string;
+  restricted?: boolean;
+  dont_send_welcome?: boolean;
+  skipped_email?: boolean;
+  skip_set_password_state?: boolean;
+  gender?: string;
+  legal_name?: string;
+  ssn?: string;
+  timezone?: string;
+  other_provider_ids?: string[];
 };
 
 export type CreatePackageInput = {
@@ -182,10 +223,17 @@ const HEALTHIE_DEBUG_ENABLED = process.env.HEALTHIE_DEBUG === 'true';
 export class HealthieClient {
   private config: HealthieConfig;
   private apiUrl: string;
+  private userDirectoryPromise: Promise<void> | null = null;
+  private userDirectoryByEmail = new Map<string, HealthieClientData>();
+  private userDirectoryByPhone = new Map<string, HealthieClientData>();
+  private trtRegimenKey: string;
+  private lastDispenseKey: string;
 
   constructor(config: HealthieConfig) {
     this.config = config;
     this.apiUrl = config.apiUrl || 'https://api.gethealthie.com/graphql';
+    this.trtRegimenKey = config.trtRegimenMetadataKey || 'trt_regimen';
+    this.lastDispenseKey = config.lastDispenseMetadataKey || 'last_dispense_date';
   }
 
   private debugLog(...args: unknown[]): void {
@@ -236,6 +284,165 @@ export class HealthieClient {
     return result.data as T;
   }
 
+  private normalizeEmail(value?: string | null): string | null {
+    return value?.trim().toLowerCase() ?? null;
+  }
+
+  private normalizePhone(value?: string | null): string | null {
+    const digits = value?.replace(/\D/g, '') ?? '';
+    return digits || null;
+  }
+
+  private parseMetadata(raw?: string | null): Record<string, string> {
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed as Record<string, string>;
+      }
+    } catch (error) {
+      this.debugLog('Failed to parse metadata:', error);
+    }
+    return {};
+  }
+
+  private stringifyMetadata(data: Record<string, unknown>): string {
+    return JSON.stringify(data);
+  }
+
+  private transformUserRecord(user: HealthieUserRecord): HealthieClientData {
+    return {
+      id: user.id,
+      user_id: user.id,
+      first_name: user.first_name ?? undefined,
+      last_name: user.last_name ?? undefined,
+      email: user.email ?? undefined,
+      phone_number: user.phone_number ?? undefined,
+      dob: user.dob ?? undefined,
+      created_at: user.created_at ?? undefined,
+      updated_at: user.updated_at ?? undefined,
+    };
+  }
+
+  async getUserMetadata(userId: string): Promise<Record<string, string>> {
+    const query = `
+      query UserMetadata($id: ID!) {
+        user(id: $id) {
+          id
+          metadata
+        }
+      }
+    `;
+    const result = await this.graphql<{ user: { id: string; metadata?: string | null } | null }>(query, { id: userId });
+    const raw = result.user?.metadata ?? null;
+    return this.parseMetadata(raw);
+  }
+
+  async updateClientMetadataFields(
+    clientId: string,
+    updates: Record<string, string | undefined | null>
+  ): Promise<void> {
+    const updateKeys = Object.keys(updates);
+    if (!updateKeys.length) {
+      return;
+    }
+
+    const existing = await this.getUserMetadata(clientId);
+    const merged: Record<string, string> = { ...existing };
+
+    for (const key of updateKeys) {
+      const value = updates[key];
+      if (value === undefined || value === null || value === '') {
+        delete merged[key];
+      } else {
+        merged[key] = value;
+      }
+    }
+
+    await this.updateClient(clientId, {
+      metadata: this.stringifyMetadata(merged),
+    });
+  }
+
+  private async fetchUsersPage(params: { offset: number; pageSize: number; keywords?: string }): Promise<HealthieUserRecord[]> {
+    const query = `
+      query ListUsers($offset: Int!, $pageSize: Int!, $shouldPaginate: Boolean!, $includeSuborgPatients: Boolean!, $keywords: String) {
+        users(
+          offset: $offset
+          page_size: $pageSize
+          should_paginate: $shouldPaginate
+          include_suborg_patients: $includeSuborgPatients
+          keywords: $keywords
+        ) {
+          id
+          first_name
+          last_name
+          email
+          phone_number
+          dob
+          created_at
+          updated_at
+        }
+      }
+    `;
+
+    const variables: Record<string, unknown> = {
+      offset: params.offset,
+      pageSize: params.pageSize,
+      shouldPaginate: true,
+      includeSuborgPatients: true,
+      keywords: params.keywords ?? null,
+    };
+
+    const result = await this.graphql<{ users: HealthieUserRecord[] }>(query, variables);
+    return result.users ?? [];
+  }
+
+  private async ensureUserDirectory(): Promise<void> {
+    if (this.userDirectoryPromise) {
+      return this.userDirectoryPromise;
+    }
+
+    this.userDirectoryPromise = (async () => {
+      this.userDirectoryByEmail.clear();
+      this.userDirectoryByPhone.clear();
+      const pageSize = 200;
+      let offset = 0;
+
+      for (;;) {
+        const users = await this.fetchUsersPage({ offset, pageSize });
+        if (!users.length) {
+          break;
+        }
+
+        for (const user of users) {
+          const normalizedUser = this.transformUserRecord(user);
+          const emailKey = this.normalizeEmail(user.email);
+          if (emailKey && !this.userDirectoryByEmail.has(emailKey)) {
+            this.userDirectoryByEmail.set(emailKey, normalizedUser);
+          }
+
+          const phoneKey = this.normalizePhone(user.phone_number);
+          if (phoneKey && !this.userDirectoryByPhone.has(phoneKey)) {
+            this.userDirectoryByPhone.set(phoneKey, normalizedUser);
+          }
+        }
+
+        if (users.length < pageSize) {
+          break;
+        }
+
+        offset += pageSize;
+      }
+    })()
+      .catch((error) => {
+        this.userDirectoryPromise = null;
+        throw error;
+      });
+
+    await this.userDirectoryPromise;
+  }
+
   /**
    * Create a new client in Healthie
    */
@@ -243,46 +450,74 @@ export class HealthieClient {
     const mutation = `
       mutation CreateClient($input: createClientInput!) {
         createClient(input: $input) {
-          client {
+          user {
             id
-            user_id
             first_name
             last_name
             email
             phone_number
             dob
-            address
-            city
-            state
-            zip
             created_at
             updated_at
+          }
+          messages {
+            field
+            message
           }
         }
       }
     `;
 
+    const payload: Record<string, unknown> = {
+      first_name: input.first_name,
+      last_name: input.last_name,
+    };
+    if (input.email) payload.email = input.email;
+    if (input.phone_number) payload.phone_number = input.phone_number;
+    if (input.dob) payload.dob = input.dob;
+    if (input.dietitian_id) payload.dietitian_id = input.dietitian_id;
+    if (input.metadata) payload.metadata = input.metadata;
+    if (input.user_group_id) payload.user_group_id = input.user_group_id;
+    if (input.additional_record_identifier) payload.additional_record_identifier = input.additional_record_identifier;
+    if (input.record_identifier) payload.record_identifier = input.record_identifier;
+    if (typeof input.restricted === 'boolean') payload.restricted = input.restricted;
+    if (typeof input.dont_send_welcome === 'boolean') payload.dont_send_welcome = input.dont_send_welcome;
+    if (typeof input.skipped_email === 'boolean') payload.skipped_email = input.skipped_email;
+    if (typeof input.skip_set_password_state === 'boolean') payload.skip_set_password_state = input.skip_set_password_state;
+    if (input.gender) payload.gender = input.gender;
+    if (input.legal_name) payload.legal_name = input.legal_name;
+    if (input.ssn) payload.ssn = input.ssn;
+    if (input.timezone) payload.timezone = input.timezone;
+    if (input.other_provider_ids?.length) payload.other_provider_ids = input.other_provider_ids;
+
     try {
       const result = await this.graphql<{
         createClient: {
-          client: HealthieClientData;
+          user: {
+            id: string;
+            first_name?: string;
+            last_name?: string;
+            email?: string;
+            phone_number?: string;
+            dob?: string;
+            created_at?: string;
+            updated_at?: string;
+          } | null;
+          messages?: Array<{ field?: string | null; message?: string | null }> | null;
         };
-      }>(mutation, {
-        input: {
-          first_name: input.first_name,
-          last_name: input.last_name,
-          email: input.email || null,
-          phone_number: input.phone_number || null,
-          dob: input.dob || null,
-          address: input.address || null,
-          city: input.city || null,
-          state: input.state || null,
-          zip: input.zip || null,
-        },
-      });
+      }>(mutation, { input: payload });
 
-      this.debugLog('Created client:', result.createClient.client.id);
-      return result.createClient.client;
+      const user = result.createClient.user;
+      if (!user) {
+        const messages = result.createClient.messages ?? [];
+        const messageText =
+          messages.length > 0
+            ? messages.map((m) => `${m.field ?? 'general'}: ${m.message ?? 'unknown error'}`).join('; ')
+            : 'unknown error';
+        throw new Error(`Healthie createClient did not return a user (${messageText}).`);
+      }
+      this.debugLog('Created client:', user.id);
+      return this.transformUserRecord(user);
     } catch (error) {
       this.debugLog('Error creating client:', error);
       throw error;
@@ -461,43 +696,13 @@ export class HealthieClient {
       return null;
     }
 
-    const query = `
-      query FindClientByEmail($email: String!) {
-        clients(email: $email) {
-          id
-          user_id
-          first_name
-          last_name
-          email
-          phone_number
-          dob
-          address
-          city
-          state
-          zip
-          created_at
-          updated_at
-        }
-      }
-    `;
-
-    try {
-      const result = await this.graphql<{
-        clients: HealthieClientData[];
-      }>(query, { email });
-
-      if (result.clients && result.clients.length > 0) {
-        this.debugLog('Found client by email:', result.clients[0].id);
-        return result.clients[0];
-      }
-
+    await this.ensureUserDirectory();
+    const normalized = this.normalizeEmail(email);
+    if (!normalized) {
       return null;
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('not found')) {
-        return null;
-      }
-      throw error;
     }
+
+    return this.userDirectoryByEmail.get(normalized) ?? null;
   }
 
   /**
@@ -508,46 +713,13 @@ export class HealthieClient {
       return null;
     }
 
-    // Normalize phone number (remove non-digits)
-    const normalizedPhone = phone.replace(/\D/g, '');
-
-    const query = `
-      query FindClientByPhone($phone: String!) {
-        clients(phone_number: $phone) {
-          id
-          user_id
-          first_name
-          last_name
-          email
-          phone_number
-          dob
-          address
-          city
-          state
-          zip
-          created_at
-          updated_at
-        }
-      }
-    `;
-
-    try {
-      const result = await this.graphql<{
-        clients: HealthieClientData[];
-      }>(query, { phone: normalizedPhone });
-
-      if (result.clients && result.clients.length > 0) {
-        this.debugLog('Found client by phone:', result.clients[0].id);
-        return result.clients[0];
-      }
-
+    await this.ensureUserDirectory();
+    const normalized = this.normalizePhone(phone);
+    if (!normalized) {
       return null;
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('not found')) {
-        return null;
-      }
-      throw error;
     }
+
+    return this.userDirectoryByPhone.get(normalized) ?? null;
   }
 
   /**
@@ -584,40 +756,78 @@ export class HealthieClient {
   /**
    * Update client information
    */
-  async updateClient(clientId: string, input: Partial<CreateClientInput>): Promise<HealthieClientData> {
+  async updateClient(clientId: string, input: UpdateClientPayload): Promise<HealthieClientData> {
     const mutation = `
-      mutation UpdateClient($id: ID!, $input: updateClientInput!) {
-        updateClient(id: $id, input: $input) {
-          client {
+      mutation UpdateClient($input: updateClientInput!) {
+        updateClient(input: $input) {
+          user {
             id
-            user_id
             first_name
             last_name
             email
             phone_number
             dob
-            address
-            city
-            state
-            zip
             created_at
             updated_at
+          }
+          messages {
+            field
+            message
           }
         }
       }
     `;
 
+    const payload: Record<string, unknown> = {};
+    if (input.first_name) payload.first_name = input.first_name;
+    if (input.last_name) payload.last_name = input.last_name;
+    if (input.email) payload.email = input.email;
+    if (input.phone_number) payload.phone_number = input.phone_number;
+    if (input.dob) payload.dob = input.dob;
+    if (input.dietitian_id) payload.dietitian_id = input.dietitian_id;
+    if (input.metadata) payload.metadata = input.metadata;
+    if (input.user_group_id) payload.user_group_id = input.user_group_id;
+    if (input.additional_record_identifier) payload.additional_record_identifier = input.additional_record_identifier;
+    if (input.record_identifier) payload.record_identifier = input.record_identifier;
+    if (typeof input.restricted === 'boolean') payload.restricted = input.restricted;
+    if (typeof input.dont_send_welcome === 'boolean') payload.dont_send_welcome = input.dont_send_welcome;
+    if (typeof input.skipped_email === 'boolean') payload.skipped_email = input.skipped_email;
+    if (typeof input.skip_set_password_state === 'boolean') payload.skip_set_password_state = input.skip_set_password_state;
+    if (input.gender) payload.gender = input.gender;
+    if (input.legal_name) payload.legal_name = input.legal_name;
+    if (input.ssn) payload.ssn = input.ssn;
+    if (input.timezone) payload.timezone = input.timezone;
+    if (input.other_provider_ids?.length) payload.other_provider_ids = input.other_provider_ids;
+    if (input.location) payload.location = input.location;
+    payload.id = clientId;
+
     const result = await this.graphql<{
       updateClient: {
-        client: HealthieClientData;
+        user: {
+          id: string;
+          first_name?: string;
+          last_name?: string;
+          email?: string;
+          phone_number?: string;
+          dob?: string;
+          created_at?: string;
+          updated_at?: string;
+        } | null;
+        messages?: Array<{ field?: string | null; message?: string | null }> | null;
       };
-    }>(mutation, {
-      id: clientId,
-      input,
-    });
+    }>(mutation, { input: payload });
 
-    this.debugLog('Updated client:', result.updateClient.client.id);
-    return result.updateClient.client;
+    const user = result.updateClient.user;
+    if (!user) {
+      const messages = result.updateClient.messages ?? [];
+      const messageText =
+        messages.length > 0
+          ? messages.map((m) => `${m.field ?? 'general'}: ${m.message ?? 'unknown error'}`).join('; ')
+          : 'unknown error';
+      throw new Error(`Healthie updateClient did not return a user (${messageText}).`);
+    }
+    this.debugLog('Updated client:', user.id);
+    return this.transformUserRecord(user);
   }
 
   /**
@@ -960,6 +1170,14 @@ export class HealthieClient {
       return false;
     }
   }
+
+  getTrtRegimenMetadataKey(): string {
+    return this.trtRegimenKey;
+  }
+
+  getLastDispenseMetadataKey(): string {
+    return this.lastDispenseKey;
+  }
 }
 
 /**
@@ -968,6 +1186,8 @@ export class HealthieClient {
 export function createHealthieClient(): HealthieClient | null {
   const apiKey = process.env.HEALTHIE_API_KEY;
   const apiUrl = process.env.HEALTHIE_API_URL;
+  const trtRegimenMetadataKey = process.env.HEALTHIE_TRT_REGIMEN_META_KEY;
+  const lastDispenseMetadataKey = process.env.HEALTHIE_LAST_DISPENSE_META_KEY;
 
   if (!apiKey) {
     console.warn('Healthie API key not configured');
@@ -977,6 +1197,8 @@ export function createHealthieClient(): HealthieClient | null {
   return new HealthieClient({
     apiKey,
     apiUrl,
+    trtRegimenMetadataKey,
+    lastDispenseMetadataKey,
   });
 }
 

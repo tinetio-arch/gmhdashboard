@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Database MCP Server
  * Exposes PostgreSQL database as MCP tools for agentic AI

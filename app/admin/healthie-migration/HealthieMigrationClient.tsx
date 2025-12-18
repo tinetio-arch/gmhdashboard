@@ -36,6 +36,9 @@ type MigrationStatus = {
   recentErrors: number;
 };
 
+type MigrationTab = 'migration' | 'invoices' | 'payment-status';
+const DEFAULT_TAB: MigrationTab = 'migration';
+
 export default function HealthieMigrationClient() {
   const [connectionStatus, setConnectionStatus] = useState<{
     connected: boolean;
@@ -52,7 +55,7 @@ export default function HealthieMigrationClient() {
   const [paymentStatus, setPaymentStatus] = useState<any>(null);
   const [sendingInvoices, setSendingInvoices] = useState(false);
   const [invoiceResults, setInvoiceResults] = useState<any>(null);
-  const [activeTab, setActiveTab] = useState<'migration' | 'invoices' | 'payment-status'>('migration');
+  const [activeTab, setActiveTab] = useState<MigrationTab>(DEFAULT_TAB);
 
   // Test connection on mount
   useEffect(() => {
@@ -372,7 +375,7 @@ export default function HealthieMigrationClient() {
 
       {/* Migration Tab Content */}
       {activeTab === 'migration' && (
-        <>
+        <div>
       {/* Actions */}
       <div style={{ marginBottom: '2rem', display: 'flex', gap: '1rem' }}>
         <button
@@ -410,6 +413,9 @@ export default function HealthieMigrationClient() {
           </button>
         )}
       </div>
+
+        </div>
+      )}
 
       {/* Invoice Tab */}
       {activeTab === 'invoices' && (
@@ -703,8 +709,6 @@ export default function HealthieMigrationClient() {
             </div>
           )}
         </div>
-      )}
-        </>
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import {
   type NewDispenseInput,
 } from './inventoryQueries';
 import { createOrUpdateAudit } from './auditQueries';
+import { syncHealthieTrtMetadata } from './trtSync';
 
 /**
  * DEA / Controlled Dispense domain module
@@ -101,6 +102,17 @@ export const deaService: DeaService = {
       signatureNote: input.note ?? null,
       signedIp: input.ip ?? null,
     });
+
+    const rows = await query<{ patient_id: string | null }>(
+      `SELECT patient_id FROM dispenses WHERE dispense_id = $1`,
+      [input.dispenseId]
+    );
+    const patientId = rows[0]?.patient_id;
+    if (patientId) {
+      syncHealthieTrtMetadata(patientId).catch((error) => {
+        console.error('Failed to sync Healthie TRT metadata:', error);
+      });
+    }
   },
 
   async getUnsignedDispenses(limit = 50) {

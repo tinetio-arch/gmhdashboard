@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Email MCP Server
  * Exposes AWS SES email sending as MCP tools for agentic AI

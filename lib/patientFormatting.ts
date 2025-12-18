@@ -1,3 +1,5 @@
+import type { PatientDataEntryRow } from './patientQueries';
+
 const STATUS_ROW_COLOR_MAP: Record<string, string> = {
   'active': '#d9ead3',
   'active - pending': '#fff2cc',
@@ -188,3 +190,112 @@ export const patientFormattingMaps = {
   PRIMARY_CARE_ROW_COLOR,
   PRIMARY_CARE_TYPE_KEYS
 };
+
+type HealthieBillingInput = Pick<
+  PatientDataEntryRow,
+  | 'method_of_payment'
+  | 'type_of_client'
+  | 'membership_balance'
+  | 'membership_owes'
+  | 'membership_status'
+  | 'next_charge_date'
+>;
+
+export type HealthieBillingStatus = {
+  state: 'not_applicable' | 'current' | 'attention' | 'overdue';
+  label: string;
+  color: string;
+  details?: string;
+};
+
+const HEALTHIE_METHOD_PATTERN = /healthie/i;
+const HEALTHIE_CLIENT_PATTERN = /(nowprimary\.care|nowmenshealth\.care)/i;
+
+function parseCurrencyValue(value: unknown): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  const text = String(value).replace(/[^0-9.-]/g, '');
+  if (!text) {
+    return null;
+  }
+  const parsed = Number.parseFloat(text);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function formatCurrency(amount: number): string {
+  return amount.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 });
+}
+
+export function deriveHealthieBillingStatus(input: HealthieBillingInput): HealthieBillingStatus {
+  const method = input.method_of_payment ?? '';
+  const client = input.type_of_client ?? '';
+
+  if (!HEALTHIE_METHOD_PATTERN.test(method) || !HEALTHIE_CLIENT_PATTERN.test(client)) {
+    return { state: 'not_applicable', label: '—', color: '#e2e8f0' };
+  }
+
+  const amountOwed =
+    parseCurrencyValue(input.membership_balance) ??
+    parseCurrencyValue(input.membership_owes) ??
+    0;
+  const statusText = (input.membership_status ?? '').toLowerCase();
+  const nextChargeDate = parseFlexibleDate(input.next_charge_date ?? null);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const daysPastDue =
+    nextChargeDate && !Number.isNaN(nextChargeDate.getTime())
+      ? Math.floor((today.getTime() - nextChargeDate.getTime()) / msPerDay)
+      : null;
+
+  const details: string[] = [];
+  if (amountOwed > 0.5) {
+    details.push(`Balance ${formatCurrency(amountOwed)}`);
+  }
+  if (nextChargeDate) {
+    const formatted = nextChargeDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    if (daysPastDue !== null && daysPastDue >= 0) {
+      details.push(`Charge due since ${formatted}`);
+    } else if (daysPastDue !== null && daysPastDue >= -7) {
+      details.push(`Next charge ${formatted}`);
+    }
+  }
+
+  if (
+    amountOwed > 0.5 ||
+    statusText.includes('past') ||
+    statusText.includes('due') ||
+    (daysPastDue !== null && daysPastDue > 3)
+  ) {
+    return {
+      state: 'overdue',
+      label: 'Overdue',
+      color: '#fecaca',
+      details: details.join(' • ') || 'Requires immediate review'
+    };
+  }
+
+  if (
+    statusText.includes('cancel') ||
+    statusText.includes('pause') ||
+    (daysPastDue !== null && daysPastDue >= 0)
+  ) {
+    return {
+      state: 'attention',
+      label: 'Needs Review',
+      color: '#fef08a',
+      details: details.join(' • ') || 'Check payment method'
+    };
+  }
+
+  return {
+    state: 'current',
+    label: 'Current',
+    color: '#bbf7d0',
+    details: details.join(' • ') || undefined
+  };
+}

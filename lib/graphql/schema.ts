@@ -49,7 +49,7 @@ const RootQuery = new GraphQLObjectType({
     patient: {
       type: PatientType,
       args: {
-        id: { type: GraphQLNonNull(GraphQLID) },
+        id: { type: new GraphQLNonNull(GraphQLID) },
       },
       resolve: async (parent, args, context) => {
         // This will fetch from your database
@@ -60,7 +60,7 @@ const RootQuery = new GraphQLObjectType({
     
     // Get all patients
     patients: {
-      type: GraphQLList(PatientType),
+      type: new GraphQLList(PatientType),
       resolve: async (parent, args, context) => {
         // Fetch all patients
         return [];
@@ -73,12 +73,12 @@ const RootQuery = new GraphQLObjectType({
         name: 'PatientComplete',
         fields: () => ({
           patient: { type: PatientType },
-          payments: { type: GraphQLList(PaymentType) },
-          subscriptions: { type: GraphQLList(SubscriptionType) },
+          payments: { type: new GraphQLList(PaymentType) },
+          subscriptions: { type: new GraphQLList(SubscriptionType) },
         }),
       }),
       args: {
-        id: { type: GraphQLNonNull(GraphQLID) },
+        id: { type: new GraphQLNonNull(GraphQLID) },
       },
       resolve: async (parent, args, context) => {
         // Fetch patient + payments + subscriptions all at once

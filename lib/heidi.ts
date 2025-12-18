@@ -40,6 +40,7 @@ export class HeidiClient {
       headers: {
         'Content-Type': 'application/json',
         'X-API-Key': this.config.apiKey,
+        'Heidi-Api-Key': this.config.apiKey,
         ...(options.headers ?? {}),
       },
     });
@@ -83,6 +84,29 @@ export class HeidiClient {
     return this.request<HeidiNote>(`sessions/${sessionId}/consult-note`, {
       method: 'GET',
     });
+  }
+
+  async requestJwtToken(params: {
+    email: string;
+    internalId: string;
+  }): Promise<{ token: string; expiration_time: string }> {
+    const url = new URL('jwt', this.baseUrl);
+    url.searchParams.set('email', params.email);
+    url.searchParams.set('third_party_internal_id', params.internalId);
+
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        'Heidi-Api-Key': this.config.apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Heidi JWT error: ${response.status} ${response.statusText} - ${body}`);
+    }
+
+    return (await response.json()) as { token: string; expiration_time: string };
   }
 }
 

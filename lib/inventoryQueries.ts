@@ -101,6 +101,7 @@ export type PatientDispenseRow = {
   created_by_name: string | null;
   signed_by_name: string | null;
   signed_at: string | null;
+  dea_drug_name?: string | null;
 };
 
 export type DispenseHistoryEvent = {
@@ -366,9 +367,11 @@ export async function fetchDispensesForPatient(patientId: string, limit = 200): 
         d.notes,
         cu.display_name AS created_by_name,
         su.display_name AS signed_by_name,
-        d.signed_at::text AS signed_at
+        d.signed_at::text AS signed_at,
+        COALESCE(dt.dea_drug_name, v.dea_drug_name) AS dea_drug_name
      FROM dispenses d
      LEFT JOIN vials v ON v.vial_id = d.vial_id
+     LEFT JOIN dea_transactions dt ON dt.dispense_id = d.dispense_id
      LEFT JOIN users cu ON cu.user_id = d.created_by
      LEFT JOIN users su ON su.user_id = d.signed_by
      WHERE d.patient_id = $1

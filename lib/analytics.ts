@@ -170,7 +170,7 @@ export const analyticsService: AnalyticsService = {
   async getMorningBriefing(date) {
     const [schedule, overdueReport, deaStatus, payments, metrics] = await Promise.all([
       fetchScheduleForDate(date),
-      getOverdueLabEntries(10),
+      fetchOverdueLabEntries(10),
       fetchDeaCounts(),
       fetchPendingPayments(10),
       fetchDashboardMetrics(),

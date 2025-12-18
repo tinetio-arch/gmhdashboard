@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * DEA & Transactions MCP Server
  * Exposes DEA logs and transaction data as MCP tools

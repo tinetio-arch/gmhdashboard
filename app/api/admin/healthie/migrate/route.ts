@@ -30,10 +30,7 @@ export async function POST(request: NextRequest) {
       result = await migrateBatch(patientIds, migrationOptions);
     }
 
-    return NextResponse.json({
-      success: result.success,
-      ...result,
-    });
+    return NextResponse.json(result);
   } catch (error) {
     console.error('Healthie migration error:', error);
     return NextResponse.json(

@@ -3,6 +3,7 @@ import { requireApiUser } from '@/lib/auth';
 import { deletePatient, updatePatient, fetchPatientById } from '@/lib/patientQueries';
 import { syncPatientToGHL } from '@/lib/patientGHLSync';
 import { query } from '@/lib/db';
+import { syncHealthiePatientDemographics } from '@/lib/healthieDemographics';
 
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
   const user = await requireApiUser(request, 'write');
@@ -76,6 +77,25 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
         } catch (updateError) {
           console.error(`[API] Failed to update patient sync error status:`, updateError);
         }
+      }
+    })();
+
+    // Sync patient demographics to Healthie if eligible
+    (async () => {
+      try {
+        const result = await syncHealthiePatientDemographics(params.id);
+        if (result.status === 'synced') {
+          console.log(`[API] ✅ Synced demographics for patient ${params.id} to Healthie`);
+        } else {
+          console.log(
+            `[API] ℹ️ Skipped Healthie sync for patient ${params.id}: ${result.reason}`
+          );
+        }
+      } catch (healthieError) {
+        console.error(
+          `[API] ❌ Failed to sync patient ${params.id} to Healthie:`,
+          healthieError instanceof Error ? healthieError.message : healthieError
+        );
       }
     })();
 

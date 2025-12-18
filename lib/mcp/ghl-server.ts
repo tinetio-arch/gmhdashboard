@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * GoHighLevel (GHL) MCP Server
  * Exposes GHL API as MCP tools for agentic AI

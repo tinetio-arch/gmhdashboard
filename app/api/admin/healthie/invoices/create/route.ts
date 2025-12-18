@@ -19,10 +19,7 @@ export async function POST(request: NextRequest) {
         sendEmail: options?.sendEmail ?? true,
       });
 
-      return NextResponse.json({
-        success: result.success,
-        ...result,
-      });
+      return NextResponse.json(result);
     } else {
       // Create invoices for specific patients
       if (!patientIds || !Array.isArray(patientIds) || patientIds.length === 0) {

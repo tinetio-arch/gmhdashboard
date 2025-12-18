@@ -5,7 +5,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import type { PatientDataEntryRow, ProfessionalPatient } from '@/lib/patientQueries';
 import type { LookupSets } from '@/lib/lookups';
-import { computeLabStatus, deriveRowColors } from '@/lib/patientFormatting';
+import { computeLabStatus, deriveHealthieBillingStatus, deriveRowColors } from '@/lib/patientFormatting';
 import type { UserRole } from '@/lib/auth';
 import { withBasePath } from '@/lib/basePath';
 import Link from 'next/link';
@@ -40,12 +40,46 @@ type EditablePatient = {
   lastModified: string;
   email: string;
   membershipOwes: string;
+  membershipBalance: string | null;
+  membershipStatus: string | null;
+  nextChargeDate: string | null;
   lastSupplyDate: string;
   eligibleForNextSupply: string;
   lastSupplyFromDea: boolean;
+  healthieBillingState: string;
+  healthieBillingLabel: string;
+  healthieBillingColor: string;
+  healthieBillingReason: string | null;
 };
 
 type EditableFieldKey = keyof EditablePatient;
+
+type HealthieBillingSource = {
+  methodOfPayment?: string | null;
+  typeOfClient?: string | null;
+  membershipBalance?: string | null;
+  membershipOwes?: string | null;
+  membershipStatus?: string | null;
+  nextChargeDate?: string | null;
+};
+
+function mapHealthieBillingFields(source: HealthieBillingSource) {
+  const status = deriveHealthieBillingStatus({
+    method_of_payment: source.methodOfPayment ?? null,
+    type_of_client: source.typeOfClient ?? null,
+    membership_balance: source.membershipBalance ?? null,
+    membership_owes: source.membershipOwes ?? null,
+    membership_status: source.membershipStatus ?? null,
+    next_charge_date: source.nextChargeDate ?? null,
+  });
+
+  return {
+    healthieBillingState: status.state,
+    healthieBillingLabel: status.label,
+    healthieBillingColor: status.color,
+    healthieBillingReason: status.details ?? null,
+  };
+}
 
 type Props = {
   patients: PatientDataEntryRow[];
@@ -270,6 +304,21 @@ function mapPatient(row: PatientDataEntryRow, supplement?: ProfessionalPatient):
     enforcedStatusKey === 'active_pending'
       ? 'Active - Pending'
       : toNullableString(row.alert_status);
+  const methodOfPayment = toNullableString(row.method_of_payment);
+  const typeOfClient = toNullableString(row.type_of_client);
+  const membershipOwesValue = toStringValue(row.membership_owes ?? extra?.membership_owes);
+  const membershipBalance = toStringValue(row.membership_balance ?? extra?.membership_balance);
+  const membershipStatus = toStringValue(row.membership_status ?? extra?.membership_status);
+  const nextChargeDate = toStringValue(row.next_charge_date ?? extra?.next_charge_date);
+  const healthieBilling = mapHealthieBillingFields({
+    methodOfPayment,
+    typeOfClient,
+    membershipBalance,
+    membershipOwes: membershipOwesValue,
+    membershipStatus,
+    nextChargeDate
+  });
+
   return {
     id: row.patient_id,
     patientName: toStringValue(row.patient_name),
@@ -278,10 +327,10 @@ function mapPatient(row: PatientDataEntryRow, supplement?: ProfessionalPatient):
     statusRowColor: toNullableString(row.status_row_color),
     statusAlertColor: toNullableString(row.status_alert_color),
     paymentMethodKey: toNullableString(row.payment_method_key),
-    methodOfPayment: toNullableString(row.method_of_payment),
+    methodOfPayment,
     paymentMethodColor: toNullableString(row.payment_method_color),
     clientTypeKey: toNullableString(row.client_type_key),
-    typeOfClient: toNullableString(row.type_of_client),
+    typeOfClient,
     clientTypeColor: toNullableString(row.client_type_color),
     isPrimaryCare: toBooleanValue(row.is_primary_care),
     regimen: toStringValue(row.regimen),
@@ -299,10 +348,14 @@ function mapPatient(row: PatientDataEntryRow, supplement?: ProfessionalPatient):
     dateAdded: toStringValue(row.date_added ?? extra?.date_added),
     lastModified: toStringValue(row.last_modified ?? extra?.last_modified),
     email: toStringValue(row.email ?? row.qbo_customer_email ?? extra?.patient_email),
-    membershipOwes: toStringValue(row.membership_owes ?? extra?.membership_owes),
+    membershipOwes: membershipOwesValue,
+    membershipBalance,
+    membershipStatus,
+    nextChargeDate,
     lastSupplyDate: toStringValue(chosenSupply),
     eligibleForNextSupply: toStringValue(eligibleSupply),
-    lastSupplyFromDea: lastSupplyFromDea
+    lastSupplyFromDea: lastSupplyFromDea,
+    ...healthieBilling
   };
 }
 
@@ -555,6 +608,7 @@ export default function PatientTable({
     'Patient Name',
     'Alert Status',
     'Method of Payment',
+    'Healthie Billing',
     'Client Type',
     'Regimen',
     'Lab Status',
@@ -580,6 +634,18 @@ export default function PatientTable({
     const trimmed = value.trim();
     return trimmed.length ? trimmed : '—';
   };
+
+  const applyHealthieBilling = (row: EditablePatient): EditablePatient => ({
+    ...row,
+    ...mapHealthieBillingFields({
+      methodOfPayment: row.methodOfPayment,
+      typeOfClient: row.typeOfClient,
+      membershipBalance: row.membershipBalance,
+      membershipOwes: row.membershipOwes,
+      membershipStatus: row.membershipStatus,
+      nextChargeDate: row.nextChargeDate
+    })
+  });
 
   const EditableCell: React.FC<EditableCellProps> = ({
     rowId,
@@ -616,7 +682,15 @@ export default function PatientTable({
   };
 
   function updateRow(id: string, updater: (row: EditablePatient) => EditablePatient) {
-    setRows((prev) => prev.map((row) => (row.id === id ? updater(row) : row)));
+    setRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) {
+          return row;
+        }
+        const next = updater(row);
+        return applyHealthieBilling(next);
+      })
+    );
   }
 
   function handleLastLabCommit(rowId: string, rawValue: string) {
@@ -955,6 +1029,42 @@ export default function PatientTable({
                         ))}
                       </select>
                     )}
+                  />
+                  <EditableCell
+                    rowId={row.id}
+                    field="healthieBillingLabel"
+                    cellStyle={baseCell}
+                    allowEdit={false}
+                    display={
+                      row.healthieBillingState === 'not_applicable' ? (
+                        <span style={{ color: '#475569' }}>—</span>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              padding: '0.15rem 0.6rem',
+                              borderRadius: '999px',
+                              fontWeight: 600,
+                              fontSize: '0.75rem',
+                              backgroundColor: row.healthieBillingColor,
+                              color: '#0f172a',
+                              minWidth: 'fit-content'
+                            }}
+                          >
+                            {row.healthieBillingLabel}
+                          </span>
+                          {row.healthieBillingReason && (
+                            <span style={{ fontSize: '0.75rem', color: '#475569', whiteSpace: 'normal' }}>
+                              {row.healthieBillingReason}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    }
+                    renderEditor={() => null}
                   />
                   <EditableCell
                     rowId={row.id}
