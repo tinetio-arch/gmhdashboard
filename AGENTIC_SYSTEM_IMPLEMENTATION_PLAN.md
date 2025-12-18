@@ -413,3 +413,4 @@ Scheduled job → analytics.getMorningBriefing
 
 This plan should be treated as the canonical reference. Any future coding should cite which section it implements and ensure compliance with the safety, logging, and ownership boundaries outlined above.
 
+

@@ -62,9 +62,11 @@ Healthie uses GraphQL, which means:
 
 ### Get Current User (Test Connection)
 
+`currentUser` is the canonical “who am I?” query. Use it immediately after configuring the API key.
+
 ```graphql
 query TestConnection {
-  me {
+  currentUser {
     id
     email
     first_name
@@ -73,16 +75,60 @@ query TestConnection {
 }
 ```
 
-### Get Client by ID
+Example response:
+
+```json
+{
+  "data": {
+    "currentUser": {
+      "id": "12088269",
+      "email": "admin@granitemountainhealth.com",
+      "first_name": "Phil",
+      "last_name": "Schafer"
+    }
+  }
+}
+```
+
+If you call `me` you will receive `Field 'me' doesn't exist on type 'Query'`, so always use `currentUser`.
+
+### Schema Discovery
+
+Healthie allows full GraphQL introspection. Run queries like the following to see every field that exists, then pin the ones relevant to your workflows:
 
 ```graphql
-query GetClient($id: ID!) {
-  client(id: $id) {
+{
+  __schema {
+    queryType {
+      fields {
+        name
+        type {
+          kind
+          name
+          ofType {
+            kind
+            name
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+From introspection we confirmed fields such as `appointments`, `labOrders`, `labResult`, `medications`, `medication`, `pharmacies`, `prescriptions`, `subscription`, and many others.
+
+### Get Client / User Records
+
+Use the `user`/`users` queries to fetch patient demographics (clients are specialized users):
+
+```graphql
+query GetUser($id: ID!) {
+  user(id: $id) {
     id
-    user_id
+    email
     first_name
     last_name
-    email
     phone_number
     dob
     address
@@ -95,60 +141,132 @@ query GetClient($id: ID!) {
 }
 ```
 
-### Search Clients by Email
+Search by contact info:
 
 ```graphql
-query FindClientByEmail($email: String!) {
-  clients(email: $email) {
+query FindUsers($email: String, $phone: String) {
+  users(email: $email, phone_number: $phone) {
     id
-    first_name
-    last_name
     email
     phone_number
-  }
-}
-```
-
-### Get Client with Subscriptions
-
-```graphql
-query GetClientWithSubscriptions($id: ID!) {
-  client(id: $id) {
-    id
     first_name
     last_name
-    email
-    subscriptions {
-      id
-      package_id
-      status
-      start_date
-      next_charge_date
-      amount
-    }
   }
 }
 ```
 
-### Get Client with Invoices
+Maintain a local `patient_id ↔ Healthie user_id` map to avoid fuzzy matching downstream.
+
+### Appointments
+
+`appointment(id: ID!)` and `appointments(...)` expose scheduling data.
 
 ```graphql
-query GetClientWithInvoices($id: ID!) {
-  client(id: $id) {
+query UpcomingAppointments($userId: ID!, $start: ISO8601DateTime!, $end: ISO8601DateTime!) {
+  appointments(user_id: $userId, start_at: $start, end_at: $end) {
     id
-    first_name
-    last_name
-    invoices {
-      id
-      invoice_number
-      amount
-      status
-      due_date
-      created_at
-    }
+    start_at
+    end_at
+    status
+    appointment_type { id name }
+    location { id name }
   }
 }
 ```
+
+### Labs & Results
+
+Use `labOrders` to list IDs by patient, then detail each via `labResult`.
+
+```graphql
+query LabResultDetail($resultId: ID!) {
+  labResult(id: $resultId) {
+    id
+    lab_order_id
+    interpretation
+    status_flag
+    lab_observation_requests {
+      lab_analyte
+      lab_observation_results {
+        quantitative_result
+        qualitative_result
+        units
+        reference_range
+        is_abnormal
+        interpretation
+      }
+    }
+    document { id download_url }
+  }
+}
+```
+
+Useful fields (per introspection):
+
+- `LabResult`: `patient`, `ordering_physician`, `interpretation`, `status_flag`, `result_type`, `document`.
+- `LabObservationResult`: `quantitative_result`, `qualitative_result`, `units`, `reference_range`, `is_abnormal`, `abnormal_flag`, `notes`.
+
+### Medications
+
+`medications(user_id: ID!, active: Boolean, search: String, ...) : [MedicationType!]`
+
+```graphql
+query ActiveMedications($patientId: ID!) {
+  medications(user_id: $patientId, active: true) {
+    id
+    name
+    dosage
+    frequency
+    route
+    directions
+    normalized_status
+    start_date
+    end_date
+  }
+}
+```
+
+`MedicationType` exposes `active`, `normalized_status`, `dosage`, `frequency`, `route`, `directions`, `start_date`, `end_date`, `code`, `comment`, and audit timestamps.
+
+### Prescriptions & Pharmacies (E-RX)
+
+- `prescriptions(user_id: ID!, status: String, limit: Int)`
+- `prescription(id: ID!)`
+- `pharmacies(search: String!, limit: Int)`
+
+`Prescription` fields: `product_name`, `dosage`, `directions`, `quantity`, `refills`, `unit`, `route`, `days_supply`, `date_written`, `status`, `normalized_status`, `pharmacy`, `prescriber_name`, `rx_reference_number`, `ndc`, `schedule`, `first_prescription_diagnosis`, `second_prescription_diagnosis`.
+
+`Pharmacy` fields: `name`, `line1`, `line2`, `city`, `state`, `zip`, `phone_number`, `latitude`, `longitude`.
+
+> Healthie routes transmissions through DoseSpot; confirm with support whether API-based submission is enabled or limited to read/draft access.
+
+### Subscriptions & Recurring Payments
+
+`subscription(id: ID!) : SubscriptionInstance`
+
+Notable fields: `plan_name`, `interval`, `monthly_cost_of_base_plan`, `annual_total`, `credit_balance`, `is_trialing`, `set_to_cancel`, `has_scheduled_change`, `trial_end_at`, `access_will_stop_at`, `card_type`, `last_four`, `card_expiration`, `stripe_subscription_id`, `stripe_plan`, `last_invoice`, `upcoming_invoice`.
+
+Manage lifecycle with `assignPackage`, `cancelPackageAssignment`, `pauseSubscription`, etc.
+
+### Requested Payments / Invoices
+
+`requestedPayments(client_id: ID!, status: String) : [RequestedPayment!]`
+
+```graphql
+query RequestedPayments($clientId: ID!, $status: String) {
+  requestedPayments(client_id: $clientId, status: $status) {
+    id
+    amount
+    description
+    status
+    due_date
+    invoice_number
+    client { id first_name last_name }
+  }
+}
+```
+
+Pair with `createInvoice` (mutation) to issue new invoices and capture payment methods.
 
 ### Get All Packages
 

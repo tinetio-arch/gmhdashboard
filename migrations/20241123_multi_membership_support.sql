@@ -85,3 +85,4 @@ SELECT update_mixed_payment_patients();
 
 
 
+

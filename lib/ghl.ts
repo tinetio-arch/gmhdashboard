@@ -554,6 +554,25 @@ export class GHLClient {
   }
 
   /**
+   * Send an SMS message within Conversations.
+   */
+  async sendSms(contactId: string, body: string): Promise<{ id: string }> {
+    if (!body || !body.trim()) {
+      throw new Error('SMS body is required.');
+    }
+    return this.request<{ id: string }>(
+      'POST',
+      this.withLocationPath('/conversations/messages'),
+      {
+        contactId,
+        type: 'SMS',
+        message: body,
+        body,
+      }
+    );
+  }
+
+  /**
    * Get all tags
    */
   async getTags(): Promise<GHLTag[]> {
@@ -589,6 +608,48 @@ export class GHLClient {
    */
   async createOpportunity(opportunity: Partial<GHLOpportunity>): Promise<GHLOpportunity> {
     return this.request<GHLOpportunity>('POST', '/opportunities/', opportunity);
+  }
+
+  /**
+   * Create an appointment (Calendar API).
+   */
+  async createAppointment(appointment: {
+    contactId: string;
+    calendarId: string;
+    appointmentTypeId?: string;
+    startTime: string;
+    endTime?: string;
+    notes?: string;
+    timeZone?: string;
+  }): Promise<{ id: string }> {
+    return this.request<{ id: string }>(
+      'POST',
+      this.withLocationPath('/appointments/'),
+      {
+        contactId: appointment.contactId,
+        calendarId: appointment.calendarId,
+        appointmentTypeId: appointment.appointmentTypeId,
+        startTime: appointment.startTime,
+        endTime: appointment.endTime,
+        notes: appointment.notes,
+        timeZone: appointment.timeZone,
+      }
+    );
+  }
+
+  async rescheduleAppointment(appointmentId: string, updates: { startTime?: string; endTime?: string; notes?: string }) {
+    return this.request(
+      'PUT',
+      this.withLocationPath(`/appointments/${appointmentId}`),
+      updates
+    );
+  }
+
+  async cancelAppointment(appointmentId: string): Promise<void> {
+    await this.request(
+      'DELETE',
+      this.withLocationPath(`/appointments/${appointmentId}`)
+    );
   }
 
   /**

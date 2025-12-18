@@ -98,6 +98,85 @@ export type CreateInvoiceInput = {
   send_email?: boolean;
 };
 
+export type HealthiePaymentMethod = {
+  id: string;
+  type: string;
+  last_four?: string | null;
+  is_default?: boolean | null;
+  expires_at?: string | null;
+};
+
+export type HealthieMedication = {
+  id: string;
+  name?: string | null;
+  dosage?: string | null;
+  frequency?: string | null;
+  route?: string | null;
+  directions?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  normalized_status?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type HealthieAllergy = {
+  id: string;
+  name?: string | null;
+  reaction?: string | null;
+  severity?: string | null;
+  notes?: string | null;
+};
+
+export type HealthiePrescription = {
+  id: string;
+  product_name?: string | null;
+  dosage?: string | null;
+  directions?: string | null;
+  quantity?: string | null;
+  refills?: string | null;
+  unit?: string | null;
+  route?: string | null;
+  days_supply?: number | null;
+  date_written?: string | null;
+  status?: string | null;
+  normalized_status?: string | null;
+  pharmacy?: HealthiePharmacy | null;
+  prescriber_name?: string | null;
+  rx_reference_number?: string | null;
+  ndc?: string | null;
+  schedule?: string | null;
+};
+
+export type HealthiePharmacy = {
+  id: string;
+  name?: string | null;
+  line1?: string | null;
+  line2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  phone_number?: string | null;
+  latitude?: string | null;
+  longitude?: string | null;
+};
+
+export type CreateChartNoteInput = {
+  client_id: string;
+  body: string;
+  title?: string;
+  status?: string;
+  author_id?: string;
+  template_id?: string;
+};
+
+export type HealthieChartNote = {
+  id: string;
+  title?: string | null;
+  status?: string | null;
+  body?: string | null;
+};
+
 const HEALTHIE_DEBUG_ENABLED = process.env.HEALTHIE_DEBUG === 'true';
 
 export class HealthieClient {
@@ -208,6 +287,170 @@ export class HealthieClient {
       this.debugLog('Error creating client:', error);
       throw error;
     }
+  }
+
+  /**
+   * Retrieve medications for a user.
+   */
+  async getMedications(userId: string, options?: { active?: boolean }): Promise<HealthieMedication[]> {
+    const query = `
+      query Medications($userId: ID!, $active: Boolean) {
+        medications(user_id: $userId, active: $active) {
+          id
+          name
+          dosage
+          frequency
+          route
+          directions
+          start_date
+          end_date
+          normalized_status
+          created_at
+          updated_at
+        }
+      }
+    `;
+
+    const variables: Record<string, unknown> = { userId };
+    if (typeof options?.active === 'boolean') {
+      variables.active = options.active;
+    }
+
+    const result = await this.graphql<{ medications: HealthieMedication[] }>(query, variables);
+    return result.medications ?? [];
+  }
+
+  /**
+   * Retrieve allergies for a user.
+   */
+  async getAllergies(userId: string): Promise<HealthieAllergy[]> {
+    const query = `
+      query Allergies($userId: ID!) {
+        allergies(user_id: $userId) {
+          id
+          name
+          reaction
+          severity
+          notes
+        }
+      }
+    `;
+
+    const result = await this.graphql<{ allergies: HealthieAllergy[] }>(query, { userId });
+    return result.allergies ?? [];
+  }
+
+  /**
+   * Retrieve prescriptions for a user.
+   */
+  async getPrescriptions(userId: string, options?: { status?: string }): Promise<HealthiePrescription[]> {
+    const query = `
+      query Prescriptions($userId: ID!, $status: String) {
+        prescriptions(user_id: $userId, status: $status) {
+          id
+          product_name
+          dosage
+          directions
+          quantity
+          refills
+          unit
+          route
+          days_supply
+          date_written
+          status
+          normalized_status
+          rx_reference_number
+          ndc
+          schedule
+          pharmacy {
+            id
+            name
+            line1
+            line2
+            city
+            state
+            zip
+            phone_number
+          }
+          prescriber_name
+        }
+      }
+    `;
+
+    const variables: Record<string, unknown> = { userId };
+    if (options?.status) {
+      variables.status = options.status;
+    }
+
+    const result = await this.graphql<{ prescriptions: HealthiePrescription[] }>(query, variables);
+    return result.prescriptions ?? [];
+  }
+
+  /**
+   * Search pharmacies by text.
+   */
+  async searchPharmacies(term: string, limit = 5): Promise<HealthiePharmacy[]> {
+    const query = `
+      query Pharmacies($term: String!, $limit: Int) {
+        pharmacies(search: $term, limit: $limit) {
+          id
+          name
+          line1
+          line2
+          city
+          state
+          zip
+          phone_number
+          latitude
+          longitude
+        }
+      }
+    `;
+
+    const variables: Record<string, unknown> = { term, limit };
+    const result = await this.graphql<{ pharmacies: HealthiePharmacy[] }>(query, variables);
+    return result.pharmacies ?? [];
+  }
+
+  /**
+   * Create a chart note entry for a client.
+   */
+  async createChartNote(input: CreateChartNoteInput): Promise<HealthieChartNote> {
+    const mutation = `
+      mutation CreateChartNote($input: createChartNoteInput!) {
+        createChartNote(input: $input) {
+          chart_note {
+            id
+            title
+            status
+          }
+          errors {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    const result = await this.graphql<{
+      createChartNote: {
+        chart_note?: HealthieChartNote | null;
+        errors?: Array<{ field?: string | null; message?: string | null }> | null;
+      };
+    }>(mutation, { input });
+
+    const errors = result.createChartNote?.errors ?? [];
+    if (errors.length) {
+      const message = errors.map((e) => `${e.field ?? 'base'}: ${e.message ?? 'error'}`).join('; ');
+      throw new Error(`Healthie createChartNote failed: ${message}`);
+    }
+
+    const chartNote = result.createChartNote?.chart_note;
+    if (!chartNote?.id) {
+      throw new Error('Healthie createChartNote did not return a chart note ID.');
+    }
+
+    return chartNote;
   }
 
   /**
@@ -655,6 +898,39 @@ export class HealthieClient {
       this.debugLog('Error checking payment methods:', error);
       return false;
     }
+  }
+
+  /**
+   * Retrieve saved payment methods.
+   */
+  async getPaymentMethods(clientId: string): Promise<HealthiePaymentMethod[]> {
+    const query = `
+      query GetClientPaymentMethods($clientId: ID!) {
+        client(id: $clientId) {
+          payment_methods {
+            id
+            type
+            last_four
+            is_default
+            expires_at
+          }
+        }
+      }
+    `;
+
+    const result = await this.graphql<{
+      client: {
+        payment_methods: Array<{
+          id: string;
+          type: string;
+          last_four?: string | null;
+          is_default?: boolean | null;
+          expires_at?: string | null;
+        }>;
+      };
+    }>(query, { clientId });
+
+    return result.client.payment_methods ?? [];
   }
 
   /**

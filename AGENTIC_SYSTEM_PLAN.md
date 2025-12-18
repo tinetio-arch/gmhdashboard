@@ -382,3 +382,4 @@ npm install @modelcontextprotocol/sdk
 
 This system will transform how you interact with your practice management system! 🚀
 
+

@@ -141,3 +141,4 @@ const { data } = await fetch('/api/graphql', {
 That's it! Your GraphQL endpoint will be at:
 `https://nowoptimal.com/ops/api/graphql`
 
+

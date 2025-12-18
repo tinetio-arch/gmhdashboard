@@ -114,8 +114,18 @@ export async function deleteUser(userId: string): Promise<void> {
 
 export async function listUsers(): Promise<PublicUser[]> {
   const records = await query<UserRecord>(
-    `SELECT user_id, email, role, display_name, is_active, is_provider, can_sign, created_at, updated_at, password_hash
+    `SELECT user_id,
+            email,
+            role,
+            display_name,
+            is_active,
+            is_provider,
+            can_sign,
+            created_at,
+            updated_at,
+            password_hash
        FROM users
+      WHERE is_active = TRUE
       ORDER BY created_at DESC`
   );
   return records.map(({ password_hash: _hash, ...rest }) => rest);
