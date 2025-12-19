@@ -1,10 +1,30 @@
 import { NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { handleHealthiePaymentWebhook } from '@/lib/healthiePaymentAutomation';
 
 const WEBHOOK_SECRET = process.env.HEALTHIE_WEBHOOK_SECRET;
+const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY;
+
+function extractQuerySecret(request: Request): string | null {
+  try {
+    const url = new URL(request.url);
+    return (
+      url.searchParams.get('secret') ||
+      url.searchParams.get('token') ||
+      url.searchParams.get('webhook_secret')
+    );
+  } catch {
+    return null;
+  }
+}
 
 function isAuthorized(request: Request): boolean {
   if (!WEBHOOK_SECRET) {
+    return true;
+  }
+
+  const querySecret = extractQuerySecret(request);
+  if (querySecret === WEBHOOK_SECRET) {
     return true;
   }
 
@@ -22,6 +42,26 @@ function isAuthorized(request: Request): boolean {
   if (provided.startsWith('Bearer ')) {
     return provided.slice('Bearer '.length) === WEBHOOK_SECRET;
   }
+
+  if (HEALTHIE_API_KEY && provided.startsWith('Basic ')) {
+    const encoded = provided.slice('Basic '.length).trim();
+    if (encoded) {
+      try {
+        const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+        const [username] = decoded.split(':');
+        if (username === HEALTHIE_API_KEY) {
+          return true;
+        }
+      } catch (error) {
+        console.warn('[healthie-webhook] Failed to decode basic auth header', error);
+      }
+    }
+  }
+
+  if (HEALTHIE_API_KEY && provided === `Basic ${HEALTHIE_API_KEY}`) {
+    return true;
+  }
+
   return false;
 }
 
@@ -59,6 +99,20 @@ export async function POST(request: Request): Promise<Response> {
     body = await request.json();
   } catch (error) {
     return NextResponse.json({ success: false, error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  try {
+    const paymentResult = await handleHealthiePaymentWebhook(body);
+    if (paymentResult.handled) {
+      return NextResponse.json({
+        success: true,
+        patientId: paymentResult.patientId,
+        invoiceId: paymentResult.invoiceId,
+        status: paymentResult.status,
+      });
+    }
+  } catch (error) {
+    console.error('[healthie-webhook] payment handling failed', error);
   }
 
   const client = extractClient(body);

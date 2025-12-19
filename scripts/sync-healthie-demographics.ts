@@ -8,7 +8,7 @@ async function main() {
       SELECT patient_id
       FROM patient_data_entry_v
       WHERE method_of_payment ILIKE '%healthie%'
-        AND client_type IN ('NowMensHealth.Care', 'NowPrimary.Care')
+        AND type_of_client IN ('NowMensHealth.Care', 'NowPrimary.Care')
     `
   );
 

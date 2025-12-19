@@ -6,7 +6,7 @@ type PatientRow = {
   patient_name: string;
   email: string | null;
   phone_number: string | null;
-  date_of_birth: string | null;
+  date_of_birth: string | Date | null;
   address_line1: string | null;
   city: string | null;
   state: string | null;
@@ -36,9 +36,13 @@ function sanitizePhone(phone?: string | null): string | undefined {
   return digits;
 }
 
-function normalizeDob(dob?: string | null): string | undefined {
+function normalizeDob(dob?: string | Date | null): string | undefined {
   if (!dob) return undefined;
-  const trimmed = dob.trim();
+  if (dob instanceof Date) {
+    return dob.toISOString().slice(0, 10);
+  }
+  const stringValue = String(dob);
+  const trimmed = stringValue.trim();
   if (!trimmed) return undefined;
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     return trimmed;
@@ -174,7 +178,7 @@ async function fetchPatientRow(patientId: string): Promise<PatientRow | null> {
         state,
         postal_code,
         method_of_payment,
-        client_type
+        type_of_client AS client_type
       FROM patient_data_entry_v
       WHERE patient_id = $1
       LIMIT 1

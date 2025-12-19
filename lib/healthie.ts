@@ -398,6 +398,21 @@ export class HealthieClient {
     return result.users ?? [];
   }
 
+  private upsertUserDirectoryEntries(users: HealthieUserRecord[]): void {
+    for (const user of users) {
+      const normalizedUser = this.transformUserRecord(user);
+      const emailKey = this.normalizeEmail(user.email);
+      if (emailKey) {
+        this.userDirectoryByEmail.set(emailKey, normalizedUser);
+      }
+
+      const phoneKey = this.normalizePhone(user.phone_number);
+      if (phoneKey) {
+        this.userDirectoryByPhone.set(phoneKey, normalizedUser);
+      }
+    }
+  }
+
   private async ensureUserDirectory(): Promise<void> {
     if (this.userDirectoryPromise) {
       return this.userDirectoryPromise;
@@ -415,18 +430,7 @@ export class HealthieClient {
           break;
         }
 
-        for (const user of users) {
-          const normalizedUser = this.transformUserRecord(user);
-          const emailKey = this.normalizeEmail(user.email);
-          if (emailKey && !this.userDirectoryByEmail.has(emailKey)) {
-            this.userDirectoryByEmail.set(emailKey, normalizedUser);
-          }
-
-          const phoneKey = this.normalizePhone(user.phone_number);
-          if (phoneKey && !this.userDirectoryByPhone.has(phoneKey)) {
-            this.userDirectoryByPhone.set(phoneKey, normalizedUser);
-          }
-        }
+        this.upsertUserDirectoryEntries(users);
 
         if (users.length < pageSize) {
           break;
@@ -702,7 +706,18 @@ export class HealthieClient {
       return null;
     }
 
-    return this.userDirectoryByEmail.get(normalized) ?? null;
+    const cached = this.userDirectoryByEmail.get(normalized);
+    if (cached) {
+      return cached;
+    }
+
+    const keywordResults = await this.fetchUsersPage({ offset: 0, pageSize: 50, keywords: email });
+    if (keywordResults.length) {
+      this.upsertUserDirectoryEntries(keywordResults);
+      return this.userDirectoryByEmail.get(normalized) ?? null;
+    }
+
+    return null;
   }
 
   /**
@@ -719,7 +734,18 @@ export class HealthieClient {
       return null;
     }
 
-    return this.userDirectoryByPhone.get(normalized) ?? null;
+    const cached = this.userDirectoryByPhone.get(normalized);
+    if (cached) {
+      return cached;
+    }
+
+    const keywordResults = await this.fetchUsersPage({ offset: 0, pageSize: 50, keywords: phone });
+    if (keywordResults.length) {
+      this.upsertUserDirectoryEntries(keywordResults);
+      return this.userDirectoryByPhone.get(normalized) ?? null;
+    }
+
+    return null;
   }
 
   /**
