@@ -42,8 +42,8 @@ export default async function MembershipReconciliationPage() {
 
   // Get QuickBooks recurring customers
   let quickbooksConnected = false;
-  let recurringPatients: QuickBooksRecurringPatient[] = [];
-  let missingFromSheet: MissingFromSheet[] = [];
+  const recurringPatients: QuickBooksRecurringPatient[] = [];
+  const missingFromSheet: MissingFromSheet[] = [];
 
   try {
     const qbClient = await createQuickBooksClient();

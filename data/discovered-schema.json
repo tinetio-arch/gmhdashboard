@@ -1,0 +1,1477 @@
+{
+  "discoveredAt": "2025-12-25T09:28:21.554Z",
+  "database": "GMH_CLINIC",
+  "tables": [
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "HEALTHIE_BILLING_ITEMS",
+      "columns": [
+        {
+          "name": "BILLING_ITEM_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "HEALTHIE_SENDER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "SENDER_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "RECIPIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "RECIPIENT_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "AMOUNT_PAID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "STATE",
+          "type": "TEXT"
+        },
+        {
+          "name": "PAYMENT_DATE",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 82
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "HEALTHIE_INVOICES",
+      "columns": [
+        {
+          "name": "INVOICE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "HEALTHIE_CLIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "INVOICE_NUMBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "AMOUNT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "PAID_AMOUNT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "REMAINING_BALANCE",
+          "type": "NUMBER"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "INVOICE_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "DUE_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "UPDATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 69
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "HEALTHIE_PACKAGE_PURCHASES",
+      "columns": [
+        {
+          "name": "PURCHASE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "HEALTHIE_USER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "OFFERING_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "OFFERING_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "OFFERING_PRICE",
+          "type": "NUMBER"
+        },
+        {
+          "name": "AMOUNT_PAID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "AMOUNT_REMAINING",
+          "type": "NUMBER"
+        },
+        {
+          "name": "ACTIVE_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 0
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "HEALTHIE_PAYMENTS",
+      "columns": [
+        {
+          "name": "PAYMENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "INVOICE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "AMOUNT_CENTS",
+          "type": "NUMBER"
+        },
+        {
+          "name": "AMOUNT_DOLLARS",
+          "type": "NUMBER"
+        },
+        {
+          "name": "PAYMENT_METHOD",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 0
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "HEALTHIE_PAYMENT_METHODS",
+      "columns": [
+        {
+          "name": "PAYMENT_METHOD_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "HEALTHIE_USER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "CARD_BRAND",
+          "type": "TEXT"
+        },
+        {
+          "name": "CARD_LAST4",
+          "type": "TEXT"
+        },
+        {
+          "name": "EXP_MONTH",
+          "type": "NUMBER"
+        },
+        {
+          "name": "EXP_YEAR",
+          "type": "NUMBER"
+        },
+        {
+          "name": "IS_DEFAULT",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 0
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "INVOICES",
+      "columns": [
+        {
+          "name": "INVOICE_ID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "HEALTHIE_INVOICE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "INVOICE_NUMBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "AMOUNT_DUE",
+          "type": "NUMBER"
+        },
+        {
+          "name": "AMOUNT_PAID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "DUE_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "INVOICE_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "UPDATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_TO_SNOWFLAKE_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 0
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "MEMBERSHIPS",
+      "columns": [
+        {
+          "name": "MEMBERSHIP_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PROGRAM_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "FEE_AMOUNT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "START_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "END_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 102
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "PAYMENT_ISSUES",
+      "columns": [
+        {
+          "name": "ISSUE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "ISSUE_TYPE",
+          "type": "TEXT"
+        },
+        {
+          "name": "DESCRIPTION",
+          "type": "TEXT"
+        },
+        {
+          "name": "SEVERITY",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "RESOLVED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 142
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "QB_PAYMENTS",
+      "columns": [
+        {
+          "name": "PAYMENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "QB_CUSTOMER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "INVOICE_NUMBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "AMOUNT_PAID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "PAYMENT_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "PAYMENT_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "DAYS_OVERDUE",
+          "type": "NUMBER"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 84
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "QB_TRANSACTIONS",
+      "columns": [
+        {
+          "name": "TRANSACTION_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "TRANSACTION_TYPE",
+          "type": "TEXT"
+        },
+        {
+          "name": "AMOUNT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "TRANSACTION_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "DESCRIPTION",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 14
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "QUICKBOOKS_PAYMENTS",
+      "columns": [
+        {
+          "name": "PAYMENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "QB_CUSTOMER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "AMOUNT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "PAYMENT_METHOD",
+          "type": "TEXT"
+        },
+        {
+          "name": "PAYMENT_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "REFERENCE_NUMBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "MEMO",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 0
+    },
+    {
+      "schema": "FINANCIAL_DATA",
+      "table": "REVENUE_BY_MONTH",
+      "columns": [
+        {
+          "name": "MONTH",
+          "type": "DATE"
+        },
+        {
+          "name": "UNIQUE_PATIENTS",
+          "type": "NUMBER"
+        },
+        {
+          "name": "PAYMENT_COUNT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "TOTAL_REVENUE",
+          "type": "NUMBER"
+        },
+        {
+          "name": "AVG_PAYMENT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "MAX_PAYMENT",
+          "type": "NUMBER"
+        }
+      ],
+      "rowCount": 2
+    },
+    {
+      "schema": "INTEGRATION_LOGS",
+      "table": "SYNC_LOGS",
+      "columns": [
+        {
+          "name": "LOG_ID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "SYNC_TYPE",
+          "type": "TEXT"
+        },
+        {
+          "name": "SOURCE_SYSTEM",
+          "type": "TEXT"
+        },
+        {
+          "name": "RECORDS_SYNCED",
+          "type": "NUMBER"
+        },
+        {
+          "name": "SYNC_STARTED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNC_COMPLETED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "ERROR_MESSAGE",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 1
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "DEA_TRANSACTIONS",
+      "columns": [
+        {
+          "name": "TRANSACTION_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "DISPENSE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "VIAL_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "DEA_DRUG_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "DEA_DRUG_CODE",
+          "type": "TEXT"
+        },
+        {
+          "name": "DEA_SCHEDULE",
+          "type": "TEXT"
+        },
+        {
+          "name": "QUANTITY_DISPENSED",
+          "type": "NUMBER"
+        },
+        {
+          "name": "UNITS",
+          "type": "TEXT"
+        },
+        {
+          "name": "TRANSACTION_TIME",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "PRESCRIBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "REPORTING_PERIOD",
+          "type": "TEXT"
+        },
+        {
+          "name": "PHONE_PRIMARY",
+          "type": "TEXT"
+        },
+        {
+          "name": "ADDRESS_LINE1",
+          "type": "TEXT"
+        },
+        {
+          "name": "CITY",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATE",
+          "type": "TEXT"
+        },
+        {
+          "name": "POSTAL_CODE",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 189
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "DISPENSES",
+      "columns": [
+        {
+          "name": "DISPENSE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "DOSE_PER_SYRINGE_ML",
+          "type": "NUMBER"
+        },
+        {
+          "name": "SYRINGE_COUNT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "TOTAL_DISPENSED_ML",
+          "type": "NUMBER"
+        },
+        {
+          "name": "DISPENSE_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "PRESCRIBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "NOTES",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "MEDICATION_NAME",
+          "type": "TEXT"
+        }
+      ],
+      "rowCount": 192
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "HEALTHIE_OFFERINGS",
+      "columns": [
+        {
+          "name": "OFFERING_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "OFFERING_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "DESCRIPTION",
+          "type": "TEXT"
+        },
+        {
+          "name": "PRICE",
+          "type": "NUMBER"
+        },
+        {
+          "name": "OFFERING_TYPE",
+          "type": "TEXT"
+        },
+        {
+          "name": "FREQUENCY",
+          "type": "TEXT"
+        },
+        {
+          "name": "USER_GROUP_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "USER_GROUP_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "ACTIVE",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 5
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "LABS",
+      "columns": [
+        {
+          "name": "LAB_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "LAST_LAB_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "NEXT_LAB_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "LAB_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "LAB_NOTES",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "UPDATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 305
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "PATIENTS",
+      "columns": [
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "PREFERRED_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "EMAIL",
+          "type": "TEXT"
+        },
+        {
+          "name": "PHONE_NUMBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "PHONE_SECONDARY",
+          "type": "TEXT"
+        },
+        {
+          "name": "ADDRESS_LINE1",
+          "type": "TEXT"
+        },
+        {
+          "name": "ADDRESS_LINE2",
+          "type": "TEXT"
+        },
+        {
+          "name": "CITY",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATE",
+          "type": "TEXT"
+        },
+        {
+          "name": "POSTAL_CODE",
+          "type": "TEXT"
+        },
+        {
+          "name": "COUNTRY",
+          "type": "TEXT"
+        },
+        {
+          "name": "DATE_OF_BIRTH",
+          "type": "DATE"
+        },
+        {
+          "name": "GENDER",
+          "type": "TEXT"
+        },
+        {
+          "name": "REGIMEN",
+          "type": "TEXT"
+        },
+        {
+          "name": "PRESCRIBING_PROVIDER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "ALERT_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "SERVICE_START_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "CONTRACT_END_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "DATE_ADDED",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "PAYMENT_METHOD",
+          "type": "TEXT"
+        },
+        {
+          "name": "CLIENT_TYPE",
+          "type": "TEXT"
+        },
+        {
+          "name": "MEMBERSHIP_OWES",
+          "type": "NUMBER"
+        },
+        {
+          "name": "HEALTHIE_CLIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "GHL_CONTACT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "GHL_SYNC_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "GHL_LAST_SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "JANE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "JANE_EMAIL",
+          "type": "TEXT"
+        },
+        {
+          "name": "JANE_VERIFIED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "QB_CUSTOMER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "QB_CUSTOMER_EMAIL",
+          "type": "TEXT"
+        },
+        {
+          "name": "NOTES",
+          "type": "TEXT"
+        },
+        {
+          "name": "ADDED_BY",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "UPDATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 305
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "PATIENT_360_VIEW",
+      "columns": [
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "PREFERRED_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "EMAIL",
+          "type": "TEXT"
+        },
+        {
+          "name": "ADDRESS_LINE1",
+          "type": "TEXT"
+        },
+        {
+          "name": "ADDRESS_LINE2",
+          "type": "TEXT"
+        },
+        {
+          "name": "CITY",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATE",
+          "type": "TEXT"
+        },
+        {
+          "name": "POSTAL_CODE",
+          "type": "TEXT"
+        },
+        {
+          "name": "COUNTRY",
+          "type": "TEXT"
+        },
+        {
+          "name": "PHONE_NUMBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "PHONE_SECONDARY",
+          "type": "TEXT"
+        },
+        {
+          "name": "DATE_OF_BIRTH",
+          "type": "DATE"
+        },
+        {
+          "name": "GENDER",
+          "type": "TEXT"
+        },
+        {
+          "name": "REGIMEN",
+          "type": "TEXT"
+        },
+        {
+          "name": "ALERT_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "SERVICE_START_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "CONTRACT_END_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "DAYS_UNTIL_CONTRACT_ENDS",
+          "type": "NUMBER"
+        },
+        {
+          "name": "CLIENT_TYPE",
+          "type": "TEXT"
+        },
+        {
+          "name": "PAYMENT_METHOD",
+          "type": "TEXT"
+        },
+        {
+          "name": "LAST_LAB_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "NEXT_LAB_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "LAB_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "DAYS_UNTIL_NEXT_LAB",
+          "type": "NUMBER"
+        },
+        {
+          "name": "LAB_ALERT_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "HEALTHIE_CLIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "GHL_CONTACT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "GHL_SYNC_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "JANE_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "TOTAL_DISPENSES",
+          "type": "NUMBER"
+        },
+        {
+          "name": "TOTAL_ML_DISPENSED",
+          "type": "NUMBER"
+        },
+        {
+          "name": "LAST_DISPENSE_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "MEDICATIONS",
+          "type": "TEXT"
+        },
+        {
+          "name": "DATE_ADDED",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 305
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "PATIENT_COMPREHENSIVE",
+      "columns": [
+        {
+          "name": "PATIENT_ID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "PATIENT_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "EMAIL",
+          "type": "TEXT"
+        },
+        {
+          "name": "PHONE_NUMBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "DATE_OF_BIRTH",
+          "type": "DATE"
+        },
+        {
+          "name": "CITY",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATE",
+          "type": "TEXT"
+        },
+        {
+          "name": "STATUS_KEY",
+          "type": "TEXT"
+        },
+        {
+          "name": "CLIENT_TYPE_KEY",
+          "type": "TEXT"
+        },
+        {
+          "name": "PAYMENT_METHOD",
+          "type": "TEXT"
+        },
+        {
+          "name": "REGIMEN",
+          "type": "TEXT"
+        },
+        {
+          "name": "LAST_LAB",
+          "type": "DATE"
+        },
+        {
+          "name": "NEXT_LAB",
+          "type": "DATE"
+        },
+        {
+          "name": "LAB_STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "HAS_HEALTHIE",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "HAS_GHL",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "HAS_QUICKBOOKS",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "HEALTHIE_CLIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "GHL_CONTACT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "QB_CUSTOMER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "TOTAL_INVOICES",
+          "type": "NUMBER"
+        },
+        {
+          "name": "TOTAL_AMOUNT_DUE",
+          "type": "NUMBER"
+        },
+        {
+          "name": "TOTAL_AMOUNT_PAID",
+          "type": "NUMBER"
+        },
+        {
+          "name": "SERVICE_START_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "CONTRACT_END",
+          "type": "DATE"
+        },
+        {
+          "name": "SYNCED_TO_SNOWFLAKE_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": -1
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "PATIENT_OFFERINGS",
+      "columns": [
+        {
+          "name": "ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "HEALTHIE_CLIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "OFFERING_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "OFFERING_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "OFFERING_PRICE",
+          "type": "NUMBER"
+        },
+        {
+          "name": "OFFERING_TYPE",
+          "type": "TEXT"
+        },
+        {
+          "name": "IS_ACTIVE",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "START_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "END_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 0
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "PRESCRIPTIONS",
+      "columns": [
+        {
+          "name": "PRESCRIPTION_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "PATIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "HEALTHIE_CLIENT_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "MEDICATION_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "STRENGTH",
+          "type": "TEXT"
+        },
+        {
+          "name": "DOSAGE_INSTRUCTIONS",
+          "type": "TEXT"
+        },
+        {
+          "name": "QUANTITY",
+          "type": "TEXT"
+        },
+        {
+          "name": "REFILLS",
+          "type": "NUMBER"
+        },
+        {
+          "name": "PRESCRIBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "PRESCRIBED_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 2
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "PROVIDERS",
+      "columns": [
+        {
+          "name": "PROVIDER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "HEALTHIE_USER_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "FIRST_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "LAST_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "FULL_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "EMAIL",
+          "type": "TEXT"
+        },
+        {
+          "name": "ACTIVE",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "PATIENT_COUNT",
+          "type": "NUMBER"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 5
+    },
+    {
+      "schema": "PATIENT_DATA",
+      "table": "VIALS",
+      "columns": [
+        {
+          "name": "VIAL_ID",
+          "type": "TEXT"
+        },
+        {
+          "name": "DEA_DRUG_NAME",
+          "type": "TEXT"
+        },
+        {
+          "name": "DEA_DRUG_CODE",
+          "type": "TEXT"
+        },
+        {
+          "name": "LOT_NUMBER",
+          "type": "TEXT"
+        },
+        {
+          "name": "SIZE_ML",
+          "type": "NUMBER"
+        },
+        {
+          "name": "REMAINING_VOLUME_ML",
+          "type": "NUMBER"
+        },
+        {
+          "name": "STATUS",
+          "type": "TEXT"
+        },
+        {
+          "name": "LOCATION",
+          "type": "TEXT"
+        },
+        {
+          "name": "DATE_RECEIVED",
+          "type": "DATE"
+        },
+        {
+          "name": "EXPIRATION_DATE",
+          "type": "DATE"
+        },
+        {
+          "name": "CREATED_AT",
+          "type": "TIMESTAMP_NTZ"
+        },
+        {
+          "name": "SYNCED_AT",
+          "type": "TIMESTAMP_NTZ"
+        }
+      ],
+      "rowCount": 126
+    }
+  ],
+  "missingDataSuggestions": [
+    "APPOINTMENTS: No appointments table found. Consider syncing from Healthie appointments API."
+  ]
+}

@@ -99,7 +99,6 @@ export async function createUser({
   if (!record) {
     throw new Error('Failed to create user');
   }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { password_hash, ...rest } = record;
   return rest;
 }

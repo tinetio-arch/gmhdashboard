@@ -33,6 +33,7 @@ module.exports = {
         GHL_API_KEY: "pit-ed220b26-de5d-4232-9e55-981181a6a2de",
         GHL_LOCATION_ID: "0dpAFAovcFXbe0G5TUFr",
         GHL_BASE_URL: "https://services.leadconnectorhq.com",
+  NEXT_PUBLIC_HEALTHIE_TOKEN: "gh_live_SHmVYEL4hDX2o7grAgDDVvDkpvYgzRHzlZlgQOZ7WTp9KZgmAeEgJpOtB8HLMCVp",
       },
     },
   ],

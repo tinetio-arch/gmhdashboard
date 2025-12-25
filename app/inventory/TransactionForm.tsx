@@ -528,7 +528,7 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
       <header style={{ marginBottom: '1rem' }}>
         <h3 style={{ margin: 0, fontSize: '1.4rem', color: '#0f172a' }}>Log Testosterone Dispense</h3>
         <p style={{ margin: '0.35rem 0 0', color: '#64748b' }}>
-          Automatically tracks medication volume, mandated 0.1 mL waste per syringe, and updates the DEA ledger.
+          Automatically tracks medication volume, mandated 0.1 mL waste per syringe, and updates the DEA ledger.
         </p>
       </header>
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
