@@ -588,3 +588,557 @@ When a patient name is detected in a query, the bot now ALWAYS fetches from Heal
 
 This ensures patient addresses, demographics, and real-time billing data are always available even though Snowflake doesn't store addresses.
 
+
+
+---
+
+## MAJOR SYSTEM UPDATES — DECEMBER 25-28, 2025
+### Switched to AntiGravity AI Assistant (Google Deepmind Agentic Coding)
+
+This section documents significant architecture changes, new systems, and critical fixes implemented during the December 25-28, 2025 development sprint.
+
+---
+
+## 🤖 AI SCRIBE SYSTEM — PRODUCTION READY
+
+### Overview
+Intelligent visit documentation system that processes audio recordings, classifies visit types, generates multiple clinical documents, and implements human-in-the-loop approval via Telegram before injecting into Healthie charts.
+
+### Architecture (`/home/ec2-user/scripts/scribe/`)
+- **Orchestrator**: `scribe_orchestrator.py` - Main workflow coordinator
+- **Telegram Approval**: `telegram_approver.py` - Human approval interface with inline buttons
+- **Document Generation**: `document_generators.py` - AI-powered clinical note generation
+- **Audio Processing**: Deepgram for transcription, Claude for analysis
+- **Visit Classification**: Automatic detection of visit type (initial consult, follow-up, prescription refill, medication adjustment, lab review)
+
+### Key Features
+1. **Multi-Document Generation**:
+   - SOAP note (medical record)
+   - Patient summary (5th-grade reading level for patient portal)
+   - Prescription recommendations (for e-prescribing workflow)
+   - Lab order recommendations (when applicable)
+
+2. **Telegram Approval Workflow**:
+   - Documents sent to Telegram for provider review
+   - Inline buttons: Approve All, Approve Selected, Reject, Retry Generation
+   - Edit capability before approval
+   - Only approved documents injected into Healthie
+
+3. **Prompt Customization**:
+   - `prompts_config.yaml` - Centralized prompt templates
+   - `PROMPT_CUSTOMIZATION.md` - Documentation for modifying AI behavior
+   - Easy to adjust tone, detail level, clinical focus
+
+4. **Error Handling**:
+   - Telegram errors don't crash workflow (graceful degradation)
+   - Retry logic for API failures
+   - Comprehensive logging to `/tmp/scribe_*.log`
+
+### Setup & Configuration
+```bash
+# Install dependencies
+pip3 install deepgram-sdk anthropic python-telegram-bot pyyaml
+
+# Environment variables required
+DEEPGRAM_API_KEY=...
+ANTHROPIC_API_KEY=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...  # Provider's Telegram chat ID
+HEALTHIE_API_KEY=...
+```
+
+### Usage
+```bash
+# Process audio file
+cd /home/ec2-user/scripts/scribe
+python3 scribe_orchestrator.py /path/to/visit_audio.m4a
+
+# Telegram bot receives documents
+# Provider approves/rejects via inline buttons
+# Approved docs automatically injected to Healthie chart
+```
+
+### Files & Documentation
+- **Setup**: `scripts/scribe/SETUP.md` - Installation and configuration guide
+- **Safety**: `scripts/scribe/SAFETY_GUIDE.md` - Human-in-the-loop controls
+- **Customization**: `scripts/scribe/PROMPT_CUSTOMIZATION.md` - How to modify AI prompts
+- **Prompts**: `scripts/scribe/prompts_config.yaml` - All prompt templates
+- **Integration**: `scripts/scribe/upload_receiver.js` - PM2 service for receiving uploaded audio files
+
+### PM2 Service
+```bash
+# Receiver service (port 3001)
+pm2 start scripts/scribe/upload_receiver.js --name upload-receiver
+pm2 save
+
+# Automatically processes uploaded files and triggers scribe workflow
+```
+
+### Telegram Bot Commands
+- `/approve_all` - Approve all pending documents
+- `/reject` - Reject and request regeneration
+- Inline buttons on each document for selective approval
+
+---
+
+## 📊 SNOWFLAKE DATA WAREHOUSE — "MINI-BRIDGE" COMPLETE
+
+### Overview
+Snowflake is now the **centralized analytics hub** for all clinical/financial data. Data pipeline: Healthie/QuickBooks/Postgres → AWS S3 → Snowflake → Metabase.
+
+### Infrastructure Provisioned
+1. **AWS S3 Bucket**: `gmh-snowflake-stage` (us-east-2)
+   - Staging area for Healthie data exports
+   - Lifecycle policy for automatic cleanup
+
+2. **AWS IAM Role**: `snowflake-s3-access-role`
+   - Trust relationship with Snowflake account
+   - Permissions: `s3:GetObject`, `s3:GetObjectVersion`, `s3:ListBucket`
+   - ARN: Used in Snowflake STORAGE_INTEGRATION
+
+3. **Snowflake STORAGE_INTEGRATION**: 
+   ```sql
+   CREATE STORAGE INTEGRATION s3_gmh_integration
+     TYPE = EXTERNAL_STAGE
+     STORAGE_PROVIDER = S3
+     ENABLED = TRUE
+     STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::...:role/snowflake-s3-access-role'
+     STORAGE_ALLOWED_LOCATIONS = ('s3://gmh-snowflake-stage/healthie-data/');
+   ```
+
+4. **Snowpipe** (Auto-Ingest):
+   - Watches S3 for new files
+   - Automatically loads into Snowflake tables
+   - SQS notification integration
+
+### Data Flow
+```
+Clinical Systems (Healthie, QuickBooks, Postgres)
+  ↓ (Sync scripts: sync-healthie-ops.js, etc.)
+AWS S3 (gmh-snowflake-stage)
+  ↓ (Snowpipe auto-ingest)
+Snowflake (GMH_CLINIC database)
+  ↓ (SQL views, transforms)
+Metabase (BI dashboards)
+```
+
+### Active Sync Scripts
+- `scripts/sync-healthie-ops.js` - Every 6 hours (cron)
+- `scripts/sync-healthie-invoices.ts` - On-demand
+- `scripts/sync-healthie-providers.ts` - Provider data sync
+- `scripts/ingest-healthie-financials.ts` - Billing items
+- `scripts/scribe/healthie_snowflake_sync.py` - Hourly
+
+### Snowflake Schemas
+- **GMH_CLINIC.FINANCIAL_DATA**: Invoices, payments, billing items, packages, QB data
+- **GMH_CLINIC.PATIENT_DATA**: Demographics, labs, prescriptions, dispenses, DEA log
+- **GMH_CLINIC.INTEGRATION_LOGS**: Sync audit trail
+
+### Key Tables & Row Counts (as of Dec 28)
+- `PATIENTS`: 305
+- `HEALTHIE_INVOICES`: 69
+- `HEALTHIE_BILLING_ITEMS`: 20 (recurring charges)
+- `QB_PAYMENTS`: 84
+- `QB_TRANSACTIONS`: 14
+- `MEMBERSHIPS`: 102
+- `PAYMENT_ISSUES`: 132
+- `DISPENSES`: 192
+- `LABS`: 305
+
+### Connection Info
+- **Account**: `KXWWLYZ-DZ83651`
+- **User**: `tinetio123`
+- **Role**: `ACCOUNTADMIN`
+- **Warehouse**: `GMH_WAREHOUSE` or `COMPUTE_WH`
+- **Database**: `GMH_CLINIC`
+
+---
+
+## 💊 PRESCRIBING WORKFLOW — PRE-STAGING E-RX ORDERS
+
+### Overview
+Automates prescription order creation by pre-staging them as Healthie Tasks, reducing manual data entry and enabling AI-assisted prescribing.
+
+### Components
+1. **Task Creation**: `scripts/prescribing/task_creator.py`
+   - Creates Healthie task with prescription details
+   - Tags: `erx-pending`, `medication-order`
+   - Assigned to provider for review
+
+2. **E-Rx Automation**: `scripts/scribe/erx_automation.py`
+   - Reads task details
+   - Formats for e-prescribing system (DoseSpot/Healthie native)
+   - Marks task complete after submission
+
+3. **Integration Points**:
+   - **Input**: AI Scribe generates prescription recommendations
+   - **Process**: Recommendations → Healthie Tasks
+   - **Provider Review**: Approve/edit/reject via Healthie dashboard
+   - **Output**: Approved scripts sent to pharmacy
+
+### Task Format
+```json
+{
+  "content": "Prescription: Testosterone Cypionate 200mg/ml, 1ml IM weekly x 90 days",
+  "tags": ["erx-pending", "medication-order"],
+  "assigned_to": "provider_healthie_id",
+  "due_date": "2025-12-30",
+  "patient_id": "healthie_client_id"
+}
+```
+
+### Safety Features
+- Human review required before e-prescribing
+- Task-based workflow allows provider to edit dosage/instructions
+- Audit trail of all prescription recommendations
+
+---
+
+## 🗣️ PATIENT ENGAGEMENT — 5TH-GRADE SUMMARIES
+
+### Overview
+Automatically generates patient-friendly visit summaries written at 5th-grade reading level, improving patient understanding and engagement.
+
+### Implementation
+- **Generator**: Part of `document_generators.py`
+- **Prompt Engineering**: Uses Claude with specific readability constraints
+- **Output**: Plain English summary of visit (what happened, next steps, medications)
+- **Delivery**: Posted to Healthie patient portal as secure message or document
+
+### Example Summary
+```
+Your Visit Summary
+
+What we talked about today:
+- Your testosterone levels are good
+- Blood pressure is healthy
+- You mentioned feeling more energy
+
+What to do next:
+- Continue your current medication
+- Come back in 3 months for lab work
+- Call us if you have any questions
+
+Your medications:
+- Testosterone shot: Once per week
+```
+
+### Readability Metrics
+- Target: 5th-grade Flesch-Kincaid reading level
+- Short sentences (<15 words average)
+- No medical jargon (or jargon explained in parentheses)
+- Bullet points for scannability
+
+---
+
+## 🔧 INFRASTRUCTURE & DEPLOYMENT FIXES (DEC 28)
+
+### Disk Space Crisis & Resolution
+- **Problem**: 98% disk usage (20GB) causing silent npm failures
+- **Cleaned**: 4GB (duplicates, logs, n8n Docker container)
+- **Expanded**: AWS EBS volume 20GB → 50GB
+- **Commands**: 
+  ```bash
+  sudo growpart /dev/nvme0n1 1
+  sudo xfs_growfs -d /
+  ```
+- **Current**: 32% usage (35GB free) ✅
+
+### QuickBooks OAuth Routes — Created from Scratch
+- **Problem**: `/api/auth/quickbooks/` returned 404 (routes never existed)
+- **Solution**: 
+  - Created `/app/api/auth/quickbooks/route.ts` (OAuth initiation)
+  - Created `/app/api/auth/quickbooks/callback/route.ts` (token exchange)
+  - Implemented `getPublicUrl()` helper for proper redirects
+- **Flow**: User → QuickBooks auth → Callback → Tokens stored → Redirect to dashboard
+- **Database**: `quickbooks_oauth_tokens` table (`realm_id`, `access_token`, `refresh_token`, `expires_at`)
+
+### Redirect Loop Fix
+- **Problem**: `ERR_TOO_MANY_REDIRECTS` on `/ops` ↔ `/ops/`
+- **Root Cause**: Nginx forced trailing slash, Next.js stripped it
+- **Solution**: 
+  - Added `trailingSlash: true` to `next.config.js`
+  - Renamed session cookie from `gmh_session` to `gmh_session_v2`
+  - All URLs now end with `/` (e.g., `/ops/`, `/ops/login/`)
+
+### Base Path Configuration
+- **ENV**: `NEXT_PUBLIC_BASE_PATH=/ops` in `.env.local` and `next.config.js`
+- **Helpers**: 
+  - `lib/basePath.ts` exports `getBasePath()` and `withBasePath(path)`
+  - `getPublicUrl(path)` builds full `https://nowoptimal.com/ops/...` URLs
+- **Usage**: Client-side fetches MUST use `withBasePath('/api/...')`
+
+### Production Mode Fix
+- **Problem**: PM2 running `npm run dev` instead of `npm run start`
+- **Solution**: 
+  ```bash
+  pm2 delete gmh-dashboard
+  pm2 start npm --name "gmh-dashboard" -- run start
+  pm2 save
+  ```
+- **Verify**: `pm2 describe gmh-dashboard | grep "script args"` → `run start`
+
+### React Hydration Fixes
+- **Pattern**: Client-side rendering guard
+  ```tsx
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  if (!mounted) return <div style={{minHeight: '300px'}} />;
+  ```
+- **Applied**: `AddPatientForm.tsx`, `LoginForm.tsx`
+- **Date formatting**: Use UTC-based `safeDateFormat()` instead of `toLocaleString()`
+
+### Type Safety Improvements
+- **Problem**: Numeric API responses sometimes strings, crashing `formatCurrency()`
+- **Solution**: All formatters now handle `number | string | null | undefined`
+  ```typescript
+  function formatCurrency(val: number | string | null | undefined): string {
+    const num = Number(val);
+    return Number.isFinite(num) ? `$${num.toFixed(2)}` : '$0.00';
+  }
+  ```
+
+---
+
+## 🚀 DEPLOYMENT & OPERATIONS
+
+### Active Directory Structure
+- **Production**: `/home/ec2-user/gmhdashboard` ✅
+- **Old/Archived**: `/home/ec2-user/apps/gmh-dashboard` ❌ (DO NOT USE)
+- **Scripts**: `/home/ec2-user/scripts/` (shared utilities)
+
+### PM2 Services
+```bash
+pm2 list
+# ├─ gmh-dashboard (port 3000) - Next.js dashboard
+# ├─ telegram-ai-bot-v2 - Conversational AI for data queries
+# └─ upload-receiver (port 3001) - Audio file receiver for scribe
+
+# Verify working directory
+pm2 describe gmh-dashboard | grep "exec cwd"
+# Should show: /home/ec2-user/gmhdashboard
+```
+
+### Nginx Configuration (`/etc/nginx/conf.d/nowoptimal.conf`)
+```nginx
+# Force trailing slash
+location = /ops {
+    return 301 /ops/;
+}
+
+# Proxy to Next.js (preserve /ops prefix)
+location /ops/ {
+    proxy_pass http://127.0.0.1:3000;
+    # ... proxy headers ...
+}
+
+# Root domain placeholder
+location / {
+    return 200 "Use /ops for the Operations Dashboard";
+}
+```
+
+### Build & Deploy Checklist
+1. **Check disk space**: `df -h /` (need >2GB free)
+2. **Verify directory**: `pwd` should be `/home/ec2-user/gmhdashboard`
+3. **Stop old build**: `pm2 stop gmh-dashboard`
+4. **Clean**: `rm -rf .next`
+5. **Build**: `npm run build` (ignore TypeScript warnings)
+6. **Start**: `pm2 start gmh-dashboard`
+7. **Verify**: 
+   - `curl -I http://localhost:3000/ops/` → 307 redirect
+   - `pm2 logs gmh-dashboard --lines 10` → shows `next start` (not `next dev`)
+8. **Test**: `https://nowoptimal.com/ops/` in browser
+
+### Cron Jobs
+```bash
+crontab -l
+# 0 2 * * * - Backup cleanup (daily 2 AM)
+# 0 */3 * * * - QuickBooks sync (every 3 hours)
+# 0 */6 * * * - Healthie ops sync to Snowflake (every 6 hours)
+# 0 * * * * - Scribe Healthie sync (hourly)
+```
+
+### Environment Variables (Critical)
+```bash
+# .env.local (Next.js)
+NEXT_PUBLIC_BASE_PATH=/ops
+NODE_ENV=production
+HEALTHIE_API_KEY=gh_live_...
+QUICKBOOKS_CLIENT_ID=...
+QUICKBOOKS_CLIENT_SECRET=...
+QUICKBOOKS_REDIRECT_URI=https://nowoptimal.com/ops/api/auth/quickbooks/callback
+SNOWFLAKE_PASSWORD=...
+
+# PM2 (telegram-ai-bot-v2)
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_AUTHORIZED_CHAT_IDS=...
+AWS_REGION=us-east-1
+
+# Scribe (scripts/scribe/.env)
+DEEPGRAM_API_KEY=...
+ANTHROPIC_API_KEY=...
+TELEGRAM_CHAT_ID=...
+```
+
+---
+
+## 🔍 TROUBLESHOOTING GUIDE
+
+### Dashboard Won't Start
+```bash
+# Check logs
+pm2 logs gmh-dashboard --lines 50
+
+# Common issues:
+# 1. Wrong directory (check: pm2 describe gmh-dashboard | grep cwd)
+# 2. Missing .next folder (rebuild: npm run build)
+# 3. Port conflict (check: lsof -i :3000)
+# 4. Disk full (check: df -h /)
+```
+
+### QuickBooks OAuth Failing
+```bash
+# Test route exists
+curl -I http://localhost:3000/ops/api/auth/quickbooks/
+# Should: 307 redirect to appcenter.intuit.com
+
+# Check callback route
+ls -la app/api/auth/quickbooks/callback/route.ts
+# Should: exist and have getPublicUrl() helper
+
+# Verify env vars
+grep QUICKBOOKS .env.local
+# Should: CLIENT_ID, CLIENT_SECRET, REDIRECT_URI all present
+```
+
+### Scribe System Not Processing
+```bash
+# Check receiver service
+pm2 logs upload-receiver --lines 20
+
+# Check scribe logs
+tail -50 /tmp/scribe_orchestrator.log
+
+# Verify Telegram bot responding
+curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe"
+
+# Test audio transcription
+cd /home/ec2-user/scripts/scribe
+python3 -c "from scribe_orchestrator import *; print('OK')"
+```
+
+### Snowflake Sync Failing
+```bash
+# Check last sync
+tail -50 /home/ec2-user/logs/snowflake-sync.log
+
+# Test connection
+python3 -c "import snowflake.connector; conn = snowflake.connector.connect(account='KXWWLYZ-DZ83651', user='tinetio123', password='...'); print('Connected')"
+
+# Run manual sync
+cd /home/ec2-user
+node scripts/sync-healthie-ops.js
+```
+
+### Disk Space Cleanup
+```bash
+# Check usage
+df -h /
+
+# Clean npm logs
+rm -rf ~/.npm/_logs/*
+
+# Clean old PM2 logs
+find ~/.pm2/logs -name "*.log" -mtime +7 -delete
+
+# Clean Docker
+sudo docker system prune -f
+
+# Last resort: expand EBS via AWS Console
+sudo growpart /dev/nvme0n1 1
+sudo xfs_growfs -d /
+```
+
+---
+
+## 📝 RECENT FILE CHANGES (DEC 25-28)
+
+### New Files Created
+- `app/api/auth/quickbooks/route.ts` - OAuth initiation
+- `app/api/auth/quickbooks/callback/route.ts` - OAuth callback
+- `scripts/scribe/scribe_orchestrator.py` - Scribe main workflow
+- `scripts/scribe/telegram_approver.py` - Telegram approval UI
+- `scripts/scribe/document_generators.py` - AI document generation
+- `scripts/scribe/erx_automation.py` - E-prescribing automation
+- `scripts/scribe/prompts_config.yaml` - Prompt templates
+- `scripts/scribe/SETUP.md` - Scribe setup guide
+- `scripts/scribe/PROMPT_CUSTOMIZATION.md` - Prompt editing guide
+- `scripts/scribe/SAFETY_GUIDE.md` - Safety controls documentation
+- `scripts/scribe/upload_receiver.js` - PM2 audio receiver service
+- `scripts/prescribing/task_creator.py` - Healthie task creation
+
+### Modified Files
+- `next.config.js` - Added `trailingSlash: true`
+- `lib/auth.ts` - Changed cookie to `gmh_session_v2`
+- `lib/basePath.ts` - Added `getBasePath()` and `withBasePath()`
+- `app/login/LoginForm.tsx` - Client-side guard, `withBasePath` usage
+- `app/patients/AddPatientForm.tsx` - Client-side guard
+- `app/components/QuickBooksCard.tsx` - Type-safe formatters, UTC dates
+- `.env.local` - Added `NEXT_PUBLIC_BASE_PATH=/ops`
+- `/etc/nginx/conf.d/nowoptimal.conf` - Updated `/ops/` routing
+- `.github/copilot-instructions.md` - This file (comprehensive updates)
+
+### Configuration Files
+- `scripts/scribe/prompts_config.yaml` - All AI prompts for scribe system
+- `pm2.config.js` - PM2 process definitions (verify gmhdashboard cwd)
+
+---
+
+## 🎯 KEY TAKEAWAYS FOR AI ASSISTANTS
+
+1. **Always check disk space** before npm operations (`df -h /`)
+2. **Active directory is** `/home/ec2-user/gmhdashboard` (not `/apps/gmh-dashboard`)
+3. **All URLs end with `/`** due to `trailingSlash: true`
+4. **Client-side fetches** MUST use `withBasePath(path)` from `@/lib/basePath`
+5. **OAuth redirects** MUST use `getPublicUrl(path)` for full URLs
+6. **Production mode** requires `pm2 start npm -- run start` (not `dev`)
+7. **Snowflake is the data hub** - prefer Snowflake for analytics over direct Postgres queries
+8. **Human-in-the-loop** - Scribe system requires Telegram approval, never auto-inject to charts
+9. **Type safety** - All API response formatters must handle `number | string | null | undefined`
+10. **Build process** - Always `npm run build` before `pm2 restart`, check for `Exit code: 0`
+
+---
+
+## 🔮 FUTURE ENHANCEMENTS (ROADMAP)
+
+### Scribe System
+- [ ] Voice command support (provider dictation)
+- [ ] Multi-provider support (routing to correct Telegram chat)
+- [ ] Template library (common visit types)
+- [ ] Integration with calendar for auto-processing scheduled visits
+
+### Snowflake
+- [ ] Real-time streaming ingestion (replace batch sync)
+- [ ] dbt transformations for data modeling
+- [ ] Automated data quality checks
+- [ ] Patient 360° view materialized table
+
+### Prescribing
+- [ ] Direct DoseSpot API integration
+- [ ] Medication history review automation
+- [ ] Drug interaction checking
+- [ ] Prior authorization automation
+
+### Dashboard
+- [ ] Real-time updates via WebSockets
+- [ ] Mobile-responsive redesign
+- [ ] Dark mode support
+- [ ] Customizable dashboards per user role
+
+---
+
+**Last Updated**: December 28, 2025, 02:33 UTC  
+**Updated By**: AntiGravity AI Assistant (Google Deepmind)  
+**Sprint**: December 25-28, 2025 - AI Scribe Implementation & Infrastructure Hardening
+

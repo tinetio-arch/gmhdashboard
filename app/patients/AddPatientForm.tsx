@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import type { LookupSets } from '@/lib/lookups';
@@ -54,6 +54,11 @@ const inputStyle: CSSProperties = {
 export default function AddPatientForm({ lookups, currentUserRole, currentUserEmail }: Props) {
   const router = useRouter();
   const defaultStatus = useMemo(() => lookups.statuses[0]?.status_key ?? null, [lookups.statuses]);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const [form, setForm] = useState<FormState>({
     patientName: '',
@@ -167,8 +172,12 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
     }
   }
 
+  if (!mounted) {
+    return <div style={cardStyle} suppressHydrationWarning />;
+  }
+
   return (
-    <form onSubmit={handleSubmit} style={cardStyle}>
+    <form onSubmit={handleSubmit} style={cardStyle} suppressHydrationWarning={true}>
       <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 220px' }}>
           <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Patient Name *</label>

@@ -337,8 +337,21 @@ export async function fetchActivePatientOptions(): Promise<PatientOption[]> {
         next_lab
      FROM patient_data_entry_v
      WHERE
-       COALESCE(status_key, '') IN ('active', 'active_pending')
-       OR LOWER(COALESCE(alert_status, '')) IN ('active', 'active - pending')
+       (
+         COALESCE(status_key, '') IN ('active', 'active_pending')
+         OR LOWER(COALESCE(alert_status, '')) IN ('active', 'active - pending')
+       )
+       AND client_type_key IN (
+         'qbo_tcmh_180_month',
+         'qbo_f_f_fr_veteran_140_month',
+         'jane_tcmh_180_month',
+         'jane_f_f_fr_veteran_140_month',
+         'approved_disc_pro_bono_pt',
+         'nowmenshealth',
+         'ins_supp_60_month',
+         'primecare_elite_100_month',
+         'primecare_premier_50_month'
+       )
      ORDER BY patient_name ASC`
   );
 

@@ -1,5 +1,5 @@
 {
-  "discoveredAt": "2025-12-25T09:28:21.554Z",
+  "discoveredAt": "2025-12-25T21:23:12.507Z",
   "database": "GMH_CLINIC",
   "tables": [
     {
@@ -106,7 +106,7 @@
           "type": "TIMESTAMP_NTZ"
         }
       ],
-      "rowCount": 69
+      "rowCount": 70
     },
     {
       "schema": "FINANCIAL_DATA",

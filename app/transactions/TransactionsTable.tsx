@@ -39,18 +39,22 @@ const deleteButtonStyle: CSSProperties = {
 
 function formatDate(value: unknown) {
   if (value === null || value === undefined) return '—';
+  let date: Date;
   if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? '—' : value.toLocaleDateString();
+    date = value;
+  } else {
+    const str = String(value).trim();
+    if (!str) return '—';
+    const candidate = str.replace(' ', 'T');
+    const iso = candidate.includes('Z') || candidate.includes('+') ? candidate : `${candidate}Z`;
+    date = new Date(iso);
   }
-  const str = String(value).trim();
-  if (!str) return '—';
-  const candidate = str.replace(' ', 'T');
-  const iso = candidate.includes('Z') || candidate.includes('+') ? candidate : `${candidate}Z`;
-  const date = new Date(iso);
-  if (!Number.isNaN(date.getTime())) {
-    return date.toLocaleDateString();
-  }
-  return str;
+  if (Number.isNaN(date.getTime())) return '—';
+  // Use UTC to avoid server/client timezone hydration mismatch
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const year = date.getUTCFullYear();
+  return `${month}/${day}/${year}`;
 }
 
 function formatMl(value: unknown) {

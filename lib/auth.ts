@@ -39,7 +39,7 @@ const ROLE_PRIORITY: Record<UserRole, number> = {
   admin: 3
 };
 
-export const SESSION_COOKIE_NAME = 'gmh_session';
+export const SESSION_COOKIE_NAME = 'gmh_session_v2';
 const SESSION_TTL_HOURS = 12;
 
 function ensureSessionSecret(): string {

@@ -74,7 +74,7 @@ function logMissingData(chatId: number, query: string, missingElement: string) {
     chatId
   });
   console.log(`[Bot] 📝 Missing data logged: "${missingElement}" requested in query: "${query}"`);
-  
+
   // Persist to file periodically
   if (missingDataLog.length % 5 === 0) {
     try {
@@ -272,7 +272,7 @@ async function fetchHealthieGraphQL<T>(query: string, variables: Record<string, 
     console.log('[Healthie] No API key configured');
     return null;
   }
-  
+
   try {
     const res = await fetch(HEALTHIE_API_URL, {
       method: 'POST',
@@ -283,7 +283,7 @@ async function fetchHealthieGraphQL<T>(query: string, variables: Record<string, 
       },
       body: JSON.stringify({ query, variables }),
     });
-    
+
     const json: any = await res.json();
     if (!res.ok || json.errors) {
       console.error('[Healthie] API Error:', JSON.stringify(json.errors || json));
@@ -406,7 +406,7 @@ async function updateHealthiePatient(healthieClientId: string, fields: PatientUp
       country: fields.country || 'US'
     };
   }
-  
+
   const mutation = `
     mutation UpdateClient($id: ID!, $first_name: String, $last_name: String, $email: String, 
                           $phone_number: String, $dob: String, $gender: String, 
@@ -449,7 +449,7 @@ async function updateHealthiePatient(healthieClientId: string, fields: PatientUp
       }
     }
   `;
-  
+
   const variables: any = {
     id: healthieClientId,
     first_name: fields.first_name,
@@ -463,24 +463,24 @@ async function updateHealthiePatient(healthieClientId: string, fields: PatientUp
     timezone: fields.timezone,
     quick_notes: fields.quick_notes
   };
-  
+
   // Remove undefined values
   Object.keys(variables).forEach(key => {
     if (variables[key] === undefined) delete variables[key];
   });
-  
+
   console.log(`[Bot] 🔧 Updating Healthie patient ${healthieClientId}:`, JSON.stringify(variables, null, 2));
-  
+
   try {
     const data = await fetchHealthieGraphQL<any>(mutation, variables);
-    
+
     if (data?.updateClient?.messages?.length > 0) {
       return {
         success: false,
         errors: data.updateClient.messages
       };
     }
-    
+
     return {
       success: true,
       user: data?.updateClient?.user
@@ -504,33 +504,33 @@ interface ParsedUpdateCommand {
 
 function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
   const textLower = text.toLowerCase();
-  
+
   // Must contain update/change/set/modify (can be preceded by "please", "can you", etc.)
   if (!textLower.match(/(update|change|set|modify|edit)\s/)) {
     return null;
   }
-  
+
   // Remove common prefixes for pattern matching
   // "Please update..." -> "update..."
   // "Can you update..." -> "update..."
   let cleanedText = text.replace(/^(please\s+)?(can\s+you\s+)?/i, '');
-  
+
   // Normalize smart quotes to straight quotes for pattern matching
   cleanedText = cleanedText.replace(/['']/g, "'");
-  
+
   // Extract patient name - multiple patterns supported:
   // 1. "update ... for John Smith" or "update ... for patient John Smith"
   // 2. "update John Smith's ..." (possessive)
   // 3. "update John Smith gender ..." (name before field)
   let patientName: string | null = null;
-  
+
   // Pattern 1: "for [Name]" or "of [Name]"
   const forPattern = /(?:for|of)\s+(?:patient\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i;
   const forMatch = cleanedText.match(forPattern);
   if (forMatch) {
     patientName = forMatch[1].trim();
   }
-  
+
   // Pattern 2: "[Name]'s [field]" - possessive form (straight quote after normalization)
   if (!patientName) {
     const possessivePattern = /^(?:update|change|set|modify|edit)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)'s\s/i;
@@ -539,7 +539,7 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
       patientName = possessiveMatch[1].trim();
     }
   }
-  
+
   // Pattern 3: "[Name] [field] to [value]" - name first, then field
   if (!patientName) {
     const nameFirstPattern = /^(?:update|change|set|modify|edit)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+(?:gender|email|phone|address|dob)/i;
@@ -548,15 +548,15 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
       patientName = nameFirstMatch[1].trim();
     }
   }
-  
+
   if (!patientName) {
     console.log(`[Bot] parseUpdateCommand: Could not extract patient name from: "${text}" (cleaned: "${cleanedText}")`);
     return null;
   }
-  
+
   const fields: PatientUpdateFields = {};
   let updateType: 'address' | 'phone' | 'email' | 'name' | 'dob' | 'gender' | 'other' = 'other';
-  
+
   // GENDER PATTERNS
   // "update gender for John Smith to male"
   // "update John Smith's gender to male"
@@ -567,7 +567,7 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
   if (genderMatch || textLower.includes('gender')) {
     updateType = 'gender';
     // Find the value after "to" if present
-    const genderValueMatch = textLower.match(/gender\s+(?:.*?\s+)?to\s+(male|female|m|f|man|woman|non-binary|nonbinary|other)/i) 
+    const genderValueMatch = textLower.match(/gender\s+(?:.*?\s+)?to\s+(male|female|m|f|man|woman|non-binary|nonbinary|other)/i)
       || textLower.match(/to\s+(male|female|m|f|man|woman|non-binary|nonbinary|other)\s*$/i)
       || genderMatch;
     if (genderValueMatch) {
@@ -579,17 +579,17 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
       fields.gender = gender.charAt(0).toUpperCase() + gender.slice(1); // Capitalize
     }
   }
-  
+
   // ADDRESS PATTERNS
   // "update address for John Smith to 123 Main St, City, ST 12345"
   if (textLower.includes('address')) {
     updateType = 'address';
-    
+
     // Try to parse address parts from "to [address]"
     const afterTo = text.match(/to\s+(.+)$/i);
     if (afterTo) {
       const addressText = afterTo[1];
-      
+
       // Parse "123 Main St, City, ST 12345" format
       const fullAddressMatch = addressText.match(/^(.+?),\s*([^,]+),?\s*([A-Z]{2})\s*(\d{5}(?:-\d{4})?)$/i);
       if (fullAddressMatch) {
@@ -612,7 +612,7 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
       }
     }
   }
-  
+
   // PHONE PATTERNS
   // "change phone number for John Smith to 555-123-4567"
   const phonePattern = /phone\s*(?:number)?\s+(?:.*?\s+)?to\s+([0-9\-\(\)\s\+\.]+)/i;
@@ -622,7 +622,7 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
     // Normalize phone number
     fields.phone_number = phoneMatch[1].replace(/[\s\-\(\)\.]/g, '').replace(/^1/, '');
   }
-  
+
   // EMAIL PATTERNS
   // "set email for John Smith to john@example.com"
   const emailPattern = /email\s+(?:.*?\s+)?to\s+([\w\.\-\+]+@[\w\.\-]+\.\w+)/i;
@@ -631,7 +631,7 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
     updateType = 'email';
     fields.email = emailMatch[1].toLowerCase();
   }
-  
+
   // NAME PATTERNS (first/last)
   const firstNameMatch = text.match(/first\s*name\s+(?:.*?\s+)?to\s+([A-Za-z]+)/i);
   const lastNameMatch = text.match(/last\s*name\s+(?:.*?\s+)?to\s+([A-Za-z]+)/i);
@@ -640,7 +640,7 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
     if (firstNameMatch) fields.first_name = firstNameMatch[1];
     if (lastNameMatch) fields.last_name = lastNameMatch[1];
   }
-  
+
   // DOB PATTERNS
   // "update date of birth for John Smith to 1985-03-15"
   const dobPattern = /(?:date\s*of\s*birth|dob|birthday)\s+(?:.*?\s+)?to\s+(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})/i;
@@ -655,15 +655,15 @@ function parseUpdateCommand(text: string): ParsedUpdateCommand | null {
     }
     fields.dob = dob;
   }
-  
+
   // Check if we actually extracted any fields
   if (Object.keys(fields).length === 0) {
     console.log(`[Bot] parseUpdateCommand: No fields extracted from: "${text}"`);
     return null;
   }
-  
+
   console.log(`[Bot] parseUpdateCommand: Parsed successfully - patient="${patientName}", type=${updateType}, fields=`, fields);
-  
+
   return {
     patientName,
     updateType,
@@ -682,7 +682,7 @@ async function findHealthieClientId(patientName: string): Promise<{ healthieClie
       WHERE PATIENT_NAME ILIKE ?
       LIMIT 1
     `;
-    
+
     const rows: any[] = await new Promise((resolve, reject) => {
       conn.execute({
         sqlText: sql,
@@ -693,11 +693,11 @@ async function findHealthieClientId(patientName: string): Promise<{ healthieClie
         }
       });
     });
-    
+
     conn.destroy((err: any) => {
       if (err) console.error('Error destroying connection:', err);
     });
-    
+
     if (rows.length > 0) {
       return {
         healthieClientId: rows[0].HEALTHIE_CLIENT_ID,
@@ -705,7 +705,7 @@ async function findHealthieClientId(patientName: string): Promise<{ healthieClie
         fullName: rows[0].PATIENT_NAME
       };
     }
-    
+
     return { healthieClientId: null, patientId: null, fullName: null };
   } catch (error) {
     console.error('[Bot] Error finding Healthie client ID:', error);
@@ -719,39 +719,39 @@ async function handleHealthieUpdate(chatId: number, text: string): Promise<boole
   if (!parsed) {
     return false; // Not an update command
   }
-  
+
   console.log(`[Bot] 📝 Parsed update command:`, parsed);
-  
+
   await sendTyping(chatId);
-  
+
   // Find the patient's Healthie client ID
   const { healthieClientId, fullName } = await findHealthieClientId(parsed.patientName);
-  
+
   if (!healthieClientId) {
-    await sendMessage(chatId, 
+    await sendMessage(chatId,
       `❌ Could not find patient "${parsed.patientName}" or they don't have a Healthie account linked.\n\n` +
       `Make sure the patient exists in the system and has a Healthie client ID.`
     );
     return true;
   }
-  
+
   // Show confirmation message
   let confirmMsg = `📝 *Updating ${fullName} in Healthie*\n\n`;
   confirmMsg += `*Update type:* ${parsed.updateType}\n`;
   confirmMsg += `*Changes:*\n`;
-  
+
   for (const [key, value] of Object.entries(parsed.fields)) {
     if (value !== undefined) {
       confirmMsg += `• ${key.replace('_', ' ')}: \`${value}\`\n`;
     }
   }
-  
+
   confirmMsg += `\n⏳ _Processing update..._`;
   await sendMessage(chatId, confirmMsg, 'Markdown');
-  
+
   // Execute the update
   const result = await updateHealthiePatient(healthieClientId, parsed.fields);
-  
+
   if (result.success) {
     let successMsg = `✅ *Successfully updated ${fullName}!*\n\n`;
     if (result.user) {
@@ -778,7 +778,7 @@ async function handleHealthieUpdate(chatId: number, text: string): Promise<boole
     }
     await sendMessage(chatId, errorMsg, 'Markdown');
   }
-  
+
   return true;
 }
 
@@ -794,7 +794,7 @@ function extractPatientName(text: string): string | null {
     /(?:patient|client)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i,
     /(?:look up|lookup|find|get|show|give me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i,
   ];
-  
+
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match && match[1]) {
@@ -815,10 +815,10 @@ function isFinancialQuery(text: string): boolean {
     'balance', 'revenue', 'charge', 'fee', 'cost', 'money', 'dollar', '$'
   ];
   const textLower = text.toLowerCase();
-  return financialKeywords.some(kw => textLower.includes(kw)) || 
-         textLower.includes('all data') || 
-         textLower.includes('complete data') ||
-         textLower.includes('everything');
+  return financialKeywords.some(kw => textLower.includes(kw)) ||
+    textLower.includes('all data') ||
+    textLower.includes('complete data') ||
+    textLower.includes('everything');
 }
 
 async function connectSnowflake() {
@@ -865,12 +865,12 @@ Previous SQL used:
 ${prevContext.lastSql}
 
 Number of results from previous query: ${prevContext.lastResults.length}
-${prevContext.lastResults.length > 0 && prevContext.lastResults.length <= 10 
-  ? `Previous results (for reference): ${JSON.stringify(prevContext.lastResults, null, 2)}`
-  : prevContext.lastResults.length > 0
-    ? `First 5 results: ${JSON.stringify(prevContext.lastResults.slice(0, 5), null, 2)}`
-    : ''
-}
+${prevContext.lastResults.length > 0 && prevContext.lastResults.length <= 10
+        ? `Previous results (for reference): ${JSON.stringify(prevContext.lastResults, null, 2)}`
+        : prevContext.lastResults.length > 0
+          ? `First 5 results: ${JSON.stringify(prevContext.lastResults.slice(0, 5), null, 2)}`
+          : ''
+      }
 
 The user is likely asking about these same records. Modify your query to answer their follow-up while keeping the same filters/context.`;
   }
@@ -878,11 +878,11 @@ The user is likely asking about these same records. Modify your query to answer 
   // CRITICAL RULES placed at the START of prompt for highest visibility
   const questionLower = question.toLowerCase();
   let specializedHint = '';
-  
+
   // Detect provider patient count questions
-  if ((questionLower.includes('provider') || questionLower.includes('doctor') || questionLower.includes('dr.') || 
-       questionLower.includes('whitten') || questionLower.includes('schafer')) && 
-      (questionLower.includes('patient') || questionLower.includes('how many'))) {
+  if ((questionLower.includes('provider') || questionLower.includes('doctor') || questionLower.includes('dr.') ||
+    questionLower.includes('whitten') || questionLower.includes('schafer')) &&
+    (questionLower.includes('patient') || questionLower.includes('how many'))) {
     specializedHint = `
 🚨 PROVIDER PATIENT COUNT DETECTED! USE THIS EXACT QUERY:
 SELECT FULL_NAME as PROVIDER_NAME, PATIENT_COUNT, EMAIL, ACTIVE
@@ -892,11 +892,11 @@ WHERE FULL_NAME ILIKE '%${questionLower.includes('whitten') ? 'whitten' : questi
 DO NOT use COUNT(*) from PATIENTS table! The PROVIDERS table has PATIENT_COUNT pre-calculated!
 `;
   }
-  
+
   // Detect Carrie Boyd testosterone questions
-  if (questionLower.includes('carrie boyd') || 
-      (questionLower.includes('carrie') && questionLower.includes('testosterone')) ||
-      (questionLower.includes('run out') && questionLower.includes('carrie'))) {
+  if (questionLower.includes('carrie boyd') ||
+    (questionLower.includes('carrie') && questionLower.includes('testosterone')) ||
+    (questionLower.includes('run out') && questionLower.includes('carrie'))) {
     specializedHint = `
 🚨 CARRIE BOYD TESTOSTERONE DETECTED! "Carrie Boyd" is a MEDICATION TYPE, not a patient name!
 Full name: "Carrie Boyd - Testosterone Miglyol 812 Oil Injection 200mg/ml - 30 ML Vials"
@@ -921,10 +921,10 @@ SELECT 'Carrie Boyd' as TYPE, ROUND(i.REMAINING_ML, 1) as REMAINING_ML, ROUND(d.
 FROM inventory i, dispense_stats d;
 `;
   }
-  
+
   // Detect TopRX testosterone questions
-  if (questionLower.includes('toprx') || questionLower.includes('top rx') || 
-      (questionLower.includes('cottonseed') && questionLower.includes('testosterone'))) {
+  if (questionLower.includes('toprx') || questionLower.includes('top rx') ||
+    (questionLower.includes('cottonseed') && questionLower.includes('testosterone'))) {
     specializedHint = `
 🚨 TOPRX TESTOSTERONE DETECTED! "TopRX" is a MEDICATION TYPE, not a patient name!
 Full name: "TopRX (Testosterone Cypionate Cottonseed Oil 200mg/ml) - 10 ML Vials"
@@ -968,17 +968,17 @@ ${contextHint ? 'IMPORTANT: This is a follow-up question - keep the same patient
   const response = await bedrock.send(command);
   const responseBody = JSON.parse(new TextDecoder().decode(response.body));
   let result = responseBody.content[0].text.trim();
-  
+
   // Remove markdown code blocks
   result = result.replace(/```sql\n?|\n?```/g, '');
-  
+
   // Extract just the SQL if AI added explanatory text before it
   // Look for SQL keywords at start of a line
   const sqlMatch = result.match(/^(SELECT|WITH|SHOW|DESCRIBE|EXPLAIN)\b[\s\S]*/im);
   if (sqlMatch) {
     result = sqlMatch[0].trim();
   }
-  
+
   return result;
 }
 
@@ -1009,7 +1009,7 @@ async function executeQuery(sql: string): Promise<any[]> {
 // ============================================================================
 async function generateFixedSQL(originalQuestion: string, failedSQL: string, errorMessage: string, prevContext?: ConversationContext | null): Promise<string> {
   console.log(`[Bot] 🔧 Self-healing: Attempting to fix SQL based on error...`);
-  
+
   const prompt = `${SCHEMA_CONTEXT}
 
 PREVIOUS SQL THAT FAILED:
@@ -1048,28 +1048,28 @@ Generate ONLY the corrected SQL query. No explanations.`;
   const response = await bedrock.send(command);
   const responseBody = JSON.parse(new TextDecoder().decode(response.body));
   let result = responseBody.content[0].text.trim();
-  
+
   // Remove markdown code blocks
   result = result.replace(/```sql\n?|\n?```/g, '');
-  
+
   // Extract just the SQL if AI added explanatory text before it
   const sqlMatch = result.match(/^(SELECT|WITH|SHOW|DESCRIBE|EXPLAIN)\b[\s\S]*/im);
   if (sqlMatch) {
     result = sqlMatch[0].trim();
   }
-  
+
   return result;
 }
 
 async function executeQueryWithRetry(
-  sql: string, 
-  question: string, 
+  sql: string,
+  question: string,
   prevContext?: ConversationContext | null,
   maxRetries: number = 2
 ): Promise<{ results: any[]; finalSQL: string; retryCount: number }> {
   let currentSQL = sql;
   let lastError: any = null;
-  
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const results = await executeQuery(currentSQL);
@@ -1077,12 +1077,12 @@ async function executeQueryWithRetry(
     } catch (error: any) {
       lastError = error;
       console.log(`[Bot] ❌ SQL attempt ${attempt + 1} failed: ${error.message}`);
-      
+
       if (attempt < maxRetries) {
         // Try to fix the SQL
         console.log(`[Bot] 🔧 Attempting self-heal (retry ${attempt + 1}/${maxRetries})...`);
         const fixedSQL = await generateFixedSQL(question, currentSQL, error.message, prevContext);
-        
+
         // Check if AI generated a valid SQL
         const isSql = /^\s*(SELECT|WITH|SHOW|DESCRIBE|EXPLAIN)\b/i.test(fixedSQL);
         if (isSql && fixedSQL !== currentSQL) {
@@ -1095,7 +1095,7 @@ async function executeQueryWithRetry(
       }
     }
   }
-  
+
   // All retries failed
   throw lastError;
 }
@@ -1141,7 +1141,7 @@ async function sendMessage(chatId: number, text: string, parseMode?: 'Markdown' 
   }
 
   const url = `${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-  
+
   try {
     await fetch(url, {
       method: 'POST',
@@ -1159,9 +1159,9 @@ async function sendMessage(chatId: number, text: string, parseMode?: 'Markdown' 
 
 async function sendTyping(chatId: number) {
   if (!TELEGRAM_BOT_TOKEN) return;
-  
+
   const url = `${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendChatAction`;
-  
+
   try {
     await fetch(url, {
       method: 'POST',
@@ -1180,7 +1180,7 @@ async function handlePatientLookup(chatId: number, query: string) {
   try {
     await sendTyping(chatId);
     const patients = await patientsService.findByQuery({ name: query });
-    
+
     if (patients.length === 0) {
       await sendMessage(chatId, `No patients found matching "${query}" in the dashboard.`);
       return;
@@ -1196,7 +1196,7 @@ async function handlePatientLookup(chatId: number, query: string) {
       if (p.phone) response += `📞 ${p.phone}\n`;
       response += '\n';
     }
-    
+
     if (patients.length > 5) {
       response += `_...and ${patients.length - 5} more._`;
     }
@@ -1211,7 +1211,7 @@ async function handlePatientLookup(chatId: number, query: string) {
 async function handleHealthieFinance(chatId: number, patientName: string) {
   try {
     await sendTyping(chatId);
-    
+
     // First search for the patient directly in Healthie by name
     const userSearchQuery = `
       query FindUser($keywords: String!) {
@@ -1225,7 +1225,7 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
         }
       }
     `;
-    
+
     let healthieUser: any = null;
     try {
       const searchData = await fetchGraphQL<any>(userSearchQuery, { keywords: patientName });
@@ -1235,17 +1235,17 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
     } catch (e: any) {
       console.error('User search error:', e);
     }
-    
+
     if (!healthieUser) {
       await sendMessage(chatId, `No patient found in Healthie matching "${patientName}".`);
       return;
     }
-    
+
     const healthieClientId = healthieUser.id;
     const fullName = `${healthieUser.first_name} ${healthieUser.last_name}`;
-    
+
     await sendTyping(chatId);
-    
+
     // Query billing items filtered by client_id
     const billingQuery = `
       query BillingItemsForClient($client_id: ID!) {
@@ -1262,7 +1262,7 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
         }
       }
     `;
-    
+
     // Query requested payments by keywords (patient name)
     const paymentsQuery = `
       query RequestedPayments($keywords: String!) {
@@ -1280,27 +1280,27 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
         }
       }
     `;
-    
+
     let billingItems: any[] = [];
     let requestedPayments: any[] = [];
-    
+
     try {
       const billingData = await fetchGraphQL<any>(billingQuery, { client_id: healthieClientId });
       billingItems = billingData.billingItems || [];
     } catch (e: any) {
       console.error('Billing items error:', e);
     }
-    
+
     try {
       const paymentsData = await fetchGraphQL<any>(paymentsQuery, { keywords: patientName });
       // Filter to only payments where recipient matches our patient
-      requestedPayments = (paymentsData.requestedPayments || []).filter((rp: any) => 
+      requestedPayments = (paymentsData.requestedPayments || []).filter((rp: any) =>
         rp.recipient_id === healthieClientId || rp.recipient?.id === healthieClientId
       );
     } catch (e: any) {
       console.error('Requested payments error:', e);
     }
-    
+
     let totalPaid = 0;
     let response = `💰 *Healthie Financial Data for ${fullName}*\n`;
     response += `🆔 Healthie ID: \`${healthieClientId}\`\n`;
@@ -1309,7 +1309,7 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
       response += `🏷️ ${healthieUser.active_tags.map((t: any) => t.name).join(', ')}\n`;
     }
     response += '\n';
-    
+
     // Billing Items (recurring charges)
     if (billingItems.length > 0) {
       response += `📋 *Billing Items (${billingItems.length}):*\n`;
@@ -1324,7 +1324,7 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
     } else {
       response += `📋 *Billing Items:* None\n\n`;
     }
-    
+
     // Requested Payments
     if (requestedPayments.length > 0) {
       response += `💳 *Requested Payments (${requestedPayments.length}):*\n`;
@@ -1339,9 +1339,9 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
     } else {
       response += `💳 *Requested Payments:* None\n\n`;
     }
-    
+
     response += `💵 *Total Paid (from billing items):* $${totalPaid.toFixed(2)}`;
-    
+
     await sendMessage(chatId, response, 'Markdown');
   } catch (error: any) {
     console.error('Healthie finance error:', error);
@@ -1351,7 +1351,7 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
 
 async function handleMessage(chatId: number, text: string, username?: string) {
   console.log(`[Bot] Message from ${username} (${chatId}): ${text}`);
-  
+
   if (AUTHORIZED_CHAT_IDS.length > 0 && !AUTHORIZED_CHAT_IDS.includes(chatId)) {
     await sendMessage(chatId, '⛔ You are not authorized to use this bot.');
     return;
@@ -1361,8 +1361,8 @@ async function handleMessage(chatId: number, text: string, username?: string) {
   const textLower = text.toLowerCase();
 
   if (textLower === '/start') {
-    await sendMessage(chatId, 
-`🤖 *GMH Clinic AI Assistant (V2) - Self-Learning System*
+    await sendMessage(chatId,
+      `🤖 *GMH Clinic AI Assistant (V2) - Self-Learning System*
 
 I can answer questions about your clinic data. I automatically:
 • 📊 Query Snowflake (demographics, billing, inventory)
@@ -1391,7 +1391,7 @@ Just ask your question in plain English!`, 'Markdown');
   // Handle /schema-gaps command - show missing data requests
   if (textLower === '/schema-gaps') {
     let response = '📝 *Schema Gaps & Missing Data Requests*\n\n';
-    
+
     // Load from file
     try {
       const logPath = path.join(__dirname, '../data/missing-data-requests.json');
@@ -1415,7 +1415,7 @@ Just ask your question in plain English!`, 'Markdown');
     } catch (e) {
       response += '_Error loading missing data log._';
     }
-    
+
     // Also show known data gaps from schema discovery
     try {
       const schemaPath = path.join(__dirname, '../data/discovered-schema.json');
@@ -1431,7 +1431,7 @@ Just ask your question in plain English!`, 'Markdown');
     } catch (e) {
       // Ignore
     }
-    
+
     response += '\n\n_Run /refresh-schema to re-discover the database structure._';
     await sendMessage(chatId, response, 'Markdown');
     return;
@@ -1442,7 +1442,7 @@ Just ask your question in plain English!`, 'Markdown');
     await sendMessage(chatId, '🔄 _Re-discovering database schema... This may take a moment._', 'Markdown');
     try {
       const { execSync } = require('child_process');
-      execSync('npx tsx scripts/discover-schema.ts', { 
+      execSync('npx tsx scripts/discover-schema.ts', {
         cwd: '/home/ec2-user/gmhdashboard',
         timeout: 60000
       });
@@ -1494,7 +1494,7 @@ Just ask your question in plain English!`, 'Markdown');
   const needsFinancialData = isFinancialQuery(text);
   const prevContext = getConversationContext(chatId);
   const isFollowUp = isFollowUpQuery(text);
-  
+
   console.log(`[Bot] Smart detection: patient="${detectedPatientName}", financial=${needsFinancialData}, followUp=${isFollowUp}`);
   if (isFollowUp && prevContext) {
     console.log(`[Bot] 🔄 Using previous context: "${prevContext.lastQuery}" with ${prevContext.lastResults.length} results`);
@@ -1502,7 +1502,7 @@ Just ask your question in plain English!`, 'Markdown');
 
   try {
     await sendTyping(chatId);
-    
+
     // Step 1: Always run Snowflake query for base data
     console.log('[Bot] Generating SQL...');
     const sql = await generateSQL(text, prevContext);
@@ -1519,40 +1519,40 @@ Just ask your question in plain English!`, 'Markdown');
     console.log('[Bot] Executing Snowflake query (with self-healing)...');
     const { results: snowflakeResults, finalSQL, retryCount } = await executeQueryWithRetry(sql, text, prevContext);
     console.log('[Bot] Got', snowflakeResults.length, 'Snowflake results', retryCount > 0 ? `(after ${retryCount} retries)` : '');
-    
+
     // Track if we had to fix the SQL
     const sqlWasFixed = retryCount > 0;
     const actualSQL = finalSQL;
-    
+
     // Step 2: If asking about a specific patient, ALWAYS query Healthie API for complete data
     // This includes addresses, demographics, tags, and financial data not in Snowflake
     let healthieData: any = null;
     if (detectedPatientName) {
       console.log(`[Bot] 🔗 SMART FUSION: Fetching Healthie API data for "${detectedPatientName}" (addresses, demographics, billing)...`);
       await sendTyping(chatId);
-      
+
       try {
         const healthieUser = await findHealthieUser(detectedPatientName);
         if (healthieUser) {
           const billingItems = await fetchHealthieBillingItems(healthieUser.id);
           const requestedPayments = await fetchHealthieRequestedPayments(detectedPatientName, healthieUser.id);
-          
+
           // Calculate totals from Healthie
           let totalBillingPaid = 0;
           let totalRequestedPaid = 0;
-          
+
           for (const item of billingItems) {
             if (item.state === 'succeeded') {
               totalBillingPaid += parseFloat(item.amount_paid || '0');
             }
           }
-          
+
           for (const rp of requestedPayments) {
             if (rp.status === 'Paid') {
               totalRequestedPaid += parseFloat(rp.price || '0');
             }
           }
-          
+
           healthieData = {
             user: healthieUser,
             billingItems,
@@ -1561,7 +1561,7 @@ Just ask your question in plain English!`, 'Markdown');
             totalRequestedPaid,
             totalPaid: totalBillingPaid, // Don't double count - billing items represent the actual charges
           };
-          
+
           const hasAddress = healthieUser.locations?.[0]?.line1;
           console.log(`[Bot] ✅ Healthie data: ${billingItems.length} billing items, ${requestedPayments.length} requested payments, $${healthieData.totalPaid.toFixed(2)} total paid, address: ${hasAddress ? 'yes' : 'no'}, gender: ${healthieUser.gender || 'N/A'}`);
         } else {
@@ -1571,11 +1571,11 @@ Just ask your question in plain English!`, 'Markdown');
         console.error('[Bot] Healthie API error:', e.message);
       }
     }
-    
+
     // Step 3: Format combined answer
     await sendTyping(chatId);
     console.log('[Bot] Formatting combined answer...');
-    
+
     let combinedContext = '';
     if (healthieData) {
       // Format address if available
@@ -1585,7 +1585,7 @@ Just ask your question in plain English!`, 'Markdown');
         const parts = [loc.line1, loc.line2, loc.city, loc.state, loc.zip, loc.country].filter(Boolean);
         addressStr = parts.join(', ') || 'Not on file';
       }
-      
+
       combinedContext = `
 
 IMPORTANT - LIVE HEALTHIE API DATA (Real-time, authoritative):
@@ -1608,11 +1608,11 @@ ${healthieData.requestedPayments.map((rp: any) => `  - ${rp.offering?.name || 'P
 NOTE: The Healthie API data above is LIVE and authoritative for demographics/addresses/billing. The Snowflake data below may have additional historical/operational details.
 `;
     }
-    
+
     const answer = await formatAnswer(text, actualSQL, snowflakeResults, combinedContext);
-    
+
     await sendMessage(chatId, answer);
-    
+
     if (snowflakeResults.length > 0) {
       let sqlMessage = `\`\`\`sql\n${actualSQL}\n\`\`\``;
       if (sqlWasFixed) {
@@ -1620,19 +1620,19 @@ NOTE: The Healthie API data above is LIVE and authoritative for demographics/add
       }
       await sendMessage(chatId, sqlMessage, 'Markdown');
     }
-    
+
     // Save conversation context for follow-up queries
     setConversationContext(chatId, text, actualSQL, snowflakeResults);
     console.log(`[Bot] 💾 Saved context: ${snowflakeResults.length} results for follow-ups`);
-    
+
     // If we had Healthie data, also mention the data fusion
     if (healthieData) {
       await sendMessage(chatId, `\n🔗 _Data combined from Snowflake + Healthie API for complete view_`, 'Markdown');
     }
-    
+
   } catch (error: any) {
     console.error('[Bot] Error after all retries:', error);
-    
+
     // Log missing data requests for future schema improvements
     if (error.message?.includes('invalid identifier')) {
       const match = error.message.match(/invalid identifier '(\w+)'/i);
@@ -1640,7 +1640,7 @@ NOTE: The Healthie API data above is LIVE and authoritative for demographics/add
         logMissingData(chatId, text, match[1]);
       }
     }
-    
+
     // Provide a more helpful error message
     let errorMsg = `❌ Error: ${error.message}`;
     if (error.message?.includes('invalid identifier')) {
@@ -1654,23 +1654,35 @@ async function getUpdates(offset?: number): Promise<any[]> {
   if (!TELEGRAM_BOT_TOKEN) throw new Error('TELEGRAM_BOT_TOKEN not configured');
 
   const url = `${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/getUpdates`;
-  const params: any = { timeout: 30 };
+  const params: any = {
+    timeout: 5,
+    allowed_updates: ["message", "callback_query"]  // CRITICAL: Include callback_query!
+  };
   if (offset) params.offset = offset;
-  
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params)
-  });
-  
-  const data = await response.json();
-  return data.result || [];
+
+  try {
+    console.log('[Bot] 🔄 Polling for updates...');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+
+    const data = await response.json();
+    if (!data.ok) {
+      console.error('[Bot] ❌ getUpdates error:', data.description);
+    }
+    return data.result || [];
+  } catch (err: any) {
+    console.error('[Bot] ❌ Fetch error in getUpdates:', err.message);
+    return [];
+  }
 }
 
 async function main() {
   console.log('\n🤖 GMH Clinic AI Telegram Bot (V2)');
-  console.log('=' .repeat(50));
-  
+  console.log('='.repeat(50));
+
   if (!TELEGRAM_BOT_TOKEN) {
     console.error('❌ TELEGRAM_BOT_TOKEN not configured in .env');
     process.exit(1);
@@ -1687,22 +1699,91 @@ async function main() {
   }
 
   console.log('\n🟢 Bot is running! Send messages to your bot on Telegram.\n');
-  
+
   let offset: number | undefined;
-  
+
   while (true) {
     try {
       const updates = await getUpdates(offset);
+      if (updates.length > 0) {
+        console.log(`[Bot] 📥 Received ${updates.length} update(s)`);
+      }
       for (const update of updates) {
         offset = update.update_id + 1;
+        console.log(`[Bot] Processing update ${update.update_id}: ${update.message ? 'message' : update.callback_query ? 'callback_query' : 'other'}`);
+        // Handle Message
         if (update.message && update.message.text) {
           const { chat: { id: chatId }, text, from } = update.message;
           const username = from?.username || from?.first_name;
+
+          // Also write text to IPC file for Python scribe (for "Edit with AI" feedback)
+          try {
+            const approvalDir = '/tmp/telegram_approvals';
+            if (!fs.existsSync(approvalDir)) fs.mkdirSync(approvalDir, { recursive: true });
+
+            // Write text response for Python to pick up
+            fs.writeFileSync(
+              path.join(approvalDir, `text_response_${chatId}.json`),
+              JSON.stringify({ text, timestamp: Date.now(), from: username })
+            );
+            console.log(`[Bot] 💬 Saved text response for IPC: "${text.substring(0, 50)}..."`);
+          } catch (err) {
+            console.error('[Bot] Failed to save text response IPC:', err);
+          }
+
           handleMessage(chatId, text, username).catch(err => console.error('[Bot] Message handling error:', err));
         }
+
+        // Handle Callback Query (Buttons)
+        if (update.callback_query) {
+          const cb = update.callback_query;
+          const msgId = cb.message?.message_id;
+          const action = cb.data;
+
+          if (msgId && action) {
+            console.log(`[Bot] 🖱️ Callback received: ${action} for msg ${msgId}`);
+
+            // 1. Acknowledge Telegram
+            try {
+              await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ callback_query_id: cb.id, text: `Processing ${action}...` })
+              });
+            } catch (err) {
+              console.error('[Bot] Failed to answer callback:', err);
+            }
+
+            // 2. Write to IPC file for Python script
+            try {
+              const approvalDir = '/tmp/telegram_approvals';
+              if (!fs.existsSync(approvalDir)) fs.mkdirSync(approvalDir, { recursive: true });
+
+              fs.writeFileSync(
+                path.join(approvalDir, `${msgId}.json`),
+                JSON.stringify({ action, timestamp: Date.now() })
+              );
+              console.log(`[Bot] 💾 Saved approval status to ${approvalDir}/${msgId}.json`);
+
+              // Optional: Update message to show status
+              if (cb.message?.chat?.id) {
+                const statusEmoji = action === 'approve' ? '✅ APPROVED' : action === 'reject' ? '❌ REJECTED' : '📝 EDIT REQUESTED';
+                await sendMessage(cb.message.chat.id, `Received: ${statusEmoji}`);
+              }
+            } catch (err) {
+              console.error('[Bot] Failed to save approval IPC:', err);
+            }
+          }
+        }
       }
-    } catch (error) {
-      console.error('[Bot] Polling error:', error);
+    } catch (error: any) {
+      // Intelligently handle polling errors
+      const msg = error.message || '';
+      if (msg.includes('fetch failed') || msg.includes('ETIMEDOUT') || msg.includes('ECONNRESET')) {
+        console.warn(`[Bot] ⚠️ Network error polling Telegram (retrying in 5s): ${msg}`);
+      } else {
+        console.error('[Bot] Polling error:', error);
+      }
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
   }

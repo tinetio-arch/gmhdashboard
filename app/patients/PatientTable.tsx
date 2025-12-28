@@ -582,7 +582,7 @@ export default function PatientTable({
         }
       }
       const matchesSearch = !searchTerm || row.patientName.toLowerCase().includes(searchTerm.toLowerCase());
-      
+
       // Filter by labs due
       let matchesLabsDue = !labsDueDays;
       if (labsDueDays && row.nextLab) {
@@ -597,7 +597,7 @@ export default function PatientTable({
           }
         }
       }
-      
+
       return matchesStatus && matchesSearch && matchesLabsDue;
     });
     matches.sort(comparePatients);
@@ -608,7 +608,6 @@ export default function PatientTable({
     'Patient Name',
     'Alert Status',
     'Method of Payment',
-    'Healthie Billing',
     'Client Type',
     'Regimen',
     'Lab Status',
@@ -909,426 +908,391 @@ export default function PatientTable({
         <div style={{ overflowX: 'auto', borderRadius: 'inherit' }}>
           <table style={tableStyles}>
             <thead style={headerRowContainerStyles}>
-            <tr>
-              {headerLabels.map((header) => (
-                <th
-                  key={header}
-                  style={headerCellStyles}
-                >
-                  {header}
-                </th>
-              ))}
-            </tr>
+              <tr>
+                {headerLabels.map((header) => (
+                  <th
+                    key={header}
+                    style={headerCellStyles}
+                  >
+                    {header}
+                  </th>
+                ))}
+              </tr>
             </thead>
-          <tbody>
-            {filteredRows.map((row) => {
-              const palette = deriveRowColors(row.alertStatus, row.typeOfClient, row.methodOfPayment);
-              const baseCell = { ...cellStyles, backgroundColor: palette.rowColor };
-              const wrapCell = { ...baseCell, whiteSpace: 'normal' as const };
-              const narrowCellStyle = { ...narrowCell, backgroundColor: palette.rowColor };
-              const compactCellStyle = { ...compactCell, backgroundColor: palette.rowColor };
-              const statusCell = { ...cellStyles, backgroundColor: palette.statusColor };
-              const paymentCell = { ...cellStyles, backgroundColor: palette.paymentColor };
-              const typeCell = { ...cellStyles, backgroundColor: palette.typeColor };
-              const detailHref = `/patients/${row.id}`;
+            <tbody>
+              {filteredRows.map((row) => {
+                const palette = deriveRowColors(row.alertStatus, row.typeOfClient, row.methodOfPayment);
+                const baseCell = { ...cellStyles, backgroundColor: palette.rowColor };
+                const wrapCell = { ...baseCell, whiteSpace: 'normal' as const };
+                const narrowCellStyle = { ...narrowCell, backgroundColor: palette.rowColor };
+                const compactCellStyle = { ...compactCell, backgroundColor: palette.rowColor };
+                const statusCell = { ...cellStyles, backgroundColor: palette.statusColor };
+                const paymentCell = { ...cellStyles, backgroundColor: palette.paymentColor };
+                const typeCell = { ...cellStyles, backgroundColor: palette.typeColor };
+                const detailHref = `/patients/${row.id}`;
 
-              return (
-                <tr
-                  key={row.id}
-                  style={{
-                    borderLeft: row.isPrimaryCare ? '4px solid #38bdf8' : '4px solid transparent'
-                  }}
-                >
-                  <EditableCell
-                    rowId={row.id}
-                    field="patientName"
-                    cellStyle={baseCell}
-                    display={
-                      row.patientName ? (
-                        <Link href={detailHref} style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'none' }}>
-                          {row.patientName}
+                return (
+                  <tr
+                    key={row.id}
+                    style={{
+                      borderLeft: row.isPrimaryCare ? '4px solid #38bdf8' : '4px solid transparent'
+                    }}
+                  >
+                    <EditableCell
+                      rowId={row.id}
+                      field="patientName"
+                      cellStyle={baseCell}
+                      display={
+                        row.patientName ? (
+                          <Link href={detailHref} style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'none' }}>
+                            {row.patientName}
+                          </Link>
+                        ) : (
+                          renderText(row.patientName)
+                        )
+                      }
+                      renderEditor={({ onBlur }) => (
+                        <input
+                          type="text"
+                          value={row.patientName}
+                          onChange={(event) =>
+                            updateRow(row.id, (current) => ({ ...current, patientName: event.target.value }))
+                          }
+                          onBlur={onBlur}
+                          autoFocus
+                          style={inputStyle}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="statusKey"
+                      cellStyle={statusCell}
+                      display={renderText(row.alertStatus)}
+                      renderEditor={({ onBlur }) => (
+                        <select
+                          value={row.statusKey ?? ''}
+                          onChange={(event) =>
+                            updateRow(row.id, (current) => {
+                              const statusMeta = statusLookupByKey.get(event.target.value || '') ?? null;
+                              return {
+                                ...current,
+                                statusKey: event.target.value || null,
+                                alertStatus: statusMeta?.display_name ?? current.alertStatus,
+                                statusRowColor: statusMeta?.dashboard_row_hex_color ?? current.statusRowColor,
+                                statusAlertColor: statusMeta?.dashboard_alert_hex ?? current.statusAlertColor
+                              };
+                            })
+                          }
+                          onBlur={onBlur}
+                          autoFocus
+                          style={{ ...selectStyle, backgroundColor: palette.statusColor }}
+                        >
+                          <option value="">(none)</option>
+                          {lookups.statuses.map((status) => (
+                            <option key={status.status_key} value={status.status_key}>
+                              {status.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="paymentMethodKey"
+                      cellStyle={paymentCell}
+                      display={renderText(row.methodOfPayment)}
+                      renderEditor={({ onBlur }) => (
+                        <select
+                          value={row.paymentMethodKey ?? ''}
+                          onChange={(event) =>
+                            updateRow(row.id, (current) => {
+                              const methodMeta = methodLookupByKey.get(event.target.value || '') ?? null;
+                              return {
+                                ...current,
+                                paymentMethodKey: event.target.value || null,
+                                methodOfPayment: methodMeta?.display_name ?? current.methodOfPayment,
+                                paymentMethodColor: methodMeta?.hex_color ?? current.paymentMethodColor
+                              };
+                            })
+                          }
+                          onBlur={onBlur}
+                          autoFocus
+                          style={{ ...selectStyle, backgroundColor: palette.paymentColor }}
+                        >
+                          <option value="">(none)</option>
+                          {lookups.paymentMethods.map((method) => (
+                            <option key={method.method_key} value={method.method_key}>
+                              {method.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    />
+
+                    <EditableCell
+                      rowId={row.id}
+                      field="clientTypeKey"
+                      cellStyle={typeCell}
+                      display={renderText(row.typeOfClient)}
+                      renderEditor={({ onBlur }) => (
+                        <select
+                          value={row.clientTypeKey ?? ''}
+                          onChange={(event) =>
+                            updateRow(row.id, (current) => {
+                              const clientMeta = clientLookupByKey.get(event.target.value || '') ?? null;
+                              return {
+                                ...current,
+                                clientTypeKey: event.target.value || null,
+                                typeOfClient: clientMeta?.display_name ?? current.typeOfClient,
+                                clientTypeColor: clientMeta?.hex_color ?? current.clientTypeColor,
+                                isPrimaryCare: clientMeta?.is_primary_care ?? current.isPrimaryCare
+                              };
+                            })
+                          }
+                          onBlur={onBlur}
+                          autoFocus
+                          style={{ ...selectStyle, backgroundColor: palette.typeColor }}
+                        >
+                          <option value="">(none)</option>
+                          {lookups.clientTypes.map((type) => (
+                            <option key={type.type_key} value={type.type_key}>
+                              {type.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="regimen"
+                      cellStyle={baseCell}
+                      display={renderText(row.regimen)}
+                      renderEditor={({ onBlur }) => (
+                        <input
+                          type="text"
+                          value={row.regimen}
+                          onChange={(event) => updateRow(row.id, (current) => ({ ...current, regimen: event.target.value }))}
+                          onBlur={onBlur}
+                          autoFocus
+                          style={inputStyle}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="labStatus"
+                      cellStyle={baseCell}
+                      display={renderText(row.labStatus)}
+                      renderEditor={({ onBlur }) => (
+                        <input
+                          type="text"
+                          value={row.labStatus}
+                          onChange={(event) => updateRow(row.id, (current) => ({ ...current, labStatus: event.target.value }))}
+                          onBlur={onBlur}
+                          autoFocus
+                          style={inputStyle}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="patientNotes"
+                      cellStyle={{ ...wrapCell, minWidth: '220px' }}
+                      display={
+                        <span style={{ whiteSpace: 'normal' }}>{row.patientNotes?.trim() ? row.patientNotes : '—'}</span>
+                      }
+                      renderEditor={({ onBlur }) => (
+                        <NotesEditor
+                          rowId={row.id}
+                          initialValue={row.patientNotes ?? ''}
+                          onCommit={(nextValue) =>
+                            updateRow(row.id, (current) => ({
+                              ...current,
+                              patientNotes: nextValue
+                            }))
+                          }
+                          onBlur={onBlur}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="lastLab"
+                      cellStyle={narrowCellStyle}
+                      display={formatDisplayDate(row.lastLab)}
+                      renderEditor={({ onBlur }) => (
+                        <DateEditor
+                          value={formatDateInput(row.lastLab)}
+                          placeholder={DATE_INPUT_PLACEHOLDER}
+                          autoFocus
+                          onCommit={(value) => handleLastLabCommit(row.id, value)}
+                          onBlur={onBlur}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="nextLab"
+                      cellStyle={narrowCellStyle}
+                      display={formatDisplayDate(row.nextLab)}
+                      renderEditor={({ onBlur }) => (
+                        <DateEditor
+                          value={formatDateInput(row.nextLab)}
+                          placeholder={DATE_INPUT_PLACEHOLDER}
+                          autoFocus
+                          onCommit={(value) => handleNextLabCommit(row.id, value)}
+                          onBlur={onBlur}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="serviceStartDate"
+                      cellStyle={narrowCellStyle}
+                      display={formatDisplayDate(row.serviceStartDate)}
+                      renderEditor={({ onBlur }) => (
+                        <DateEditor
+                          value={formatDateInput(row.serviceStartDate)}
+                          placeholder={DATE_INPUT_PLACEHOLDER}
+                          autoFocus
+                          onCommit={(value) => handleSimpleDateCommit(row.id, 'serviceStartDate', value)}
+                          onBlur={onBlur}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="contractEnd"
+                      cellStyle={narrowCellStyle}
+                      display={formatDisplayDate(row.contractEnd)}
+                      renderEditor={({ onBlur }) => (
+                        <DateEditor
+                          value={formatDateInput(row.contractEnd)}
+                          placeholder={DATE_INPUT_PLACEHOLDER}
+                          autoFocus
+                          onCommit={(value) => handleSimpleDateCommit(row.id, 'contractEnd', value)}
+                          onBlur={onBlur}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="dateOfBirth"
+                      cellStyle={narrowCellStyle}
+                      display={formatDisplayDate(row.dateOfBirth)}
+                      renderEditor={({ onBlur }) => (
+                        <DateEditor
+                          value={formatDateInput(row.dateOfBirth)}
+                          placeholder={DATE_INPUT_PLACEHOLDER}
+                          autoFocus
+                          onCommit={(value) => handleSimpleDateCommit(row.id, 'dateOfBirth', value)}
+                          onBlur={onBlur}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="address"
+                      cellStyle={{ ...wrapCell, minWidth: '240px' }}
+                      display={<span style={{ whiteSpace: 'normal' }}>{row.address?.trim() ? row.address : '—'}</span>}
+                      renderEditor={({ onBlur }) => (
+                        <textarea
+                          value={row.address}
+                          onChange={(event) => updateRow(row.id, (current) => ({ ...current, address: event.target.value }))}
+                          onBlur={onBlur}
+                          autoFocus
+                          rows={3}
+                          style={{
+                            ...inputStyle,
+                            minHeight: '48px',
+                            resize: 'vertical',
+                            direction: 'ltr',
+                            textAlign: 'left'
+                          }}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="phoneNumber"
+                      cellStyle={compactCellStyle}
+                      display={renderText(row.phoneNumber)}
+                      renderEditor={({ onBlur }) => (
+                        <input
+                          type="text"
+                          value={row.phoneNumber}
+                          onChange={(event) =>
+                            updateRow(row.id, (current) => ({ ...current, phoneNumber: event.target.value }))
+                          }
+                          onBlur={onBlur}
+                          autoFocus
+                          style={inputStyle}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="email"
+                      cellStyle={{ ...compactCellStyle, whiteSpace: 'normal' as const }}
+                      display={renderText(row.email)}
+                      renderEditor={({ onBlur }) => (
+                        <input
+                          type="email"
+                          value={row.email}
+                          onChange={(event) =>
+                            updateRow(row.id, (current) => ({ ...current, email: event.target.value }))
+                          }
+                          onBlur={onBlur}
+                          autoFocus
+                          style={inputStyle}
+                        />
+                      )}
+                    />
+                    <td style={compactCellStyle}>{renderText(row.addedBy)}</td>
+                    <td style={compactCellStyle}>{formatDisplayDate(row.dateAdded)}</td>
+                    <td style={compactCellStyle}>{formatDisplayDate(row.lastModified)}</td>
+                    <td style={narrowCellStyle}>
+                      {row.lastSupplyDate?.trim() ? (
+                        <Link
+                          href={detailHref}
+                          style={{
+                            color: row.lastSupplyFromDea ? '#0284c7' : '#0f172a',
+                            fontWeight: row.lastSupplyFromDea ? 600 : 500,
+                            textDecoration: row.lastSupplyFromDea ? 'underline' : 'none'
+                          }}
+                        >
+                          {formatDisplayDate(row.lastSupplyDate)}
                         </Link>
                       ) : (
-                        renderText(row.patientName)
-                      )
-                    }
-                    renderEditor={({ onBlur }) => (
-                      <input
-                        type="text"
-                        value={row.patientName}
-                        onChange={(event) =>
-                          updateRow(row.id, (current) => ({ ...current, patientName: event.target.value }))
-                        }
-                        onBlur={onBlur}
-                        autoFocus
-                        style={inputStyle}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="statusKey"
-                    cellStyle={statusCell}
-                    display={renderText(row.alertStatus)}
-                    renderEditor={({ onBlur }) => (
-                      <select
-                        value={row.statusKey ?? ''}
-                        onChange={(event) =>
-                          updateRow(row.id, (current) => {
-                            const statusMeta = statusLookupByKey.get(event.target.value || '') ?? null;
-                            return {
-                              ...current,
-                              statusKey: event.target.value || null,
-                              alertStatus: statusMeta?.display_name ?? current.alertStatus,
-                              statusRowColor: statusMeta?.dashboard_row_hex_color ?? current.statusRowColor,
-                              statusAlertColor: statusMeta?.dashboard_alert_hex ?? current.statusAlertColor
-                            };
-                          })
-                        }
-                        onBlur={onBlur}
-                        autoFocus
-                        style={{ ...selectStyle, backgroundColor: palette.statusColor }}
-                      >
-                        <option value="">(none)</option>
-                        {lookups.statuses.map((status) => (
-                          <option key={status.status_key} value={status.status_key}>
-                            {status.display_name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="paymentMethodKey"
-                    cellStyle={paymentCell}
-                    display={renderText(row.methodOfPayment)}
-                    renderEditor={({ onBlur }) => (
-                      <select
-                        value={row.paymentMethodKey ?? ''}
-                        onChange={(event) =>
-                          updateRow(row.id, (current) => {
-                            const methodMeta = methodLookupByKey.get(event.target.value || '') ?? null;
-                            return {
-                              ...current,
-                              paymentMethodKey: event.target.value || null,
-                              methodOfPayment: methodMeta?.display_name ?? current.methodOfPayment,
-                              paymentMethodColor: methodMeta?.hex_color ?? current.paymentMethodColor
-                            };
-                          })
-                        }
-                        onBlur={onBlur}
-                        autoFocus
-                        style={{ ...selectStyle, backgroundColor: palette.paymentColor }}
-                      >
-                        <option value="">(none)</option>
-                        {lookups.paymentMethods.map((method) => (
-                          <option key={method.method_key} value={method.method_key}>
-                            {method.display_name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="healthieBillingLabel"
-                    cellStyle={baseCell}
-                    allowEdit={false}
-                    display={
-                      row.healthieBillingState === 'not_applicable' ? (
-                        <span style={{ color: '#475569' }}>—</span>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                          <span
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              padding: '0.15rem 0.6rem',
-                              borderRadius: '999px',
-                              fontWeight: 600,
-                              fontSize: '0.75rem',
-                              backgroundColor: row.healthieBillingColor,
-                              color: '#0f172a',
-                              minWidth: 'fit-content'
-                            }}
-                          >
-                            {row.healthieBillingLabel}
-                          </span>
-                          {row.healthieBillingReason && (
-                            <span style={{ fontSize: '0.75rem', color: '#475569', whiteSpace: 'normal' }}>
-                              {row.healthieBillingReason}
-                            </span>
-                          )}
-                        </div>
-                      )
-                    }
-                    renderEditor={() => null}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="clientTypeKey"
-                    cellStyle={typeCell}
-                    display={renderText(row.typeOfClient)}
-                    renderEditor={({ onBlur }) => (
-                      <select
-                        value={row.clientTypeKey ?? ''}
-                        onChange={(event) =>
-                          updateRow(row.id, (current) => {
-                            const clientMeta = clientLookupByKey.get(event.target.value || '') ?? null;
-                            return {
-                              ...current,
-                              clientTypeKey: event.target.value || null,
-                              typeOfClient: clientMeta?.display_name ?? current.typeOfClient,
-                              clientTypeColor: clientMeta?.hex_color ?? current.clientTypeColor,
-                              isPrimaryCare: clientMeta?.is_primary_care ?? current.isPrimaryCare
-                            };
-                          })
-                        }
-                        onBlur={onBlur}
-                        autoFocus
-                        style={{ ...selectStyle, backgroundColor: palette.typeColor }}
-                      >
-                        <option value="">(none)</option>
-                        {lookups.clientTypes.map((type) => (
-                          <option key={type.type_key} value={type.type_key}>
-                            {type.display_name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="regimen"
-                    cellStyle={baseCell}
-                    display={renderText(row.regimen)}
-                    renderEditor={({ onBlur }) => (
-                      <input
-                        type="text"
-                        value={row.regimen}
-                        onChange={(event) => updateRow(row.id, (current) => ({ ...current, regimen: event.target.value }))}
-                        onBlur={onBlur}
-                        autoFocus
-                        style={inputStyle}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="labStatus"
-                    cellStyle={baseCell}
-                    display={renderText(row.labStatus)}
-                    renderEditor={({ onBlur }) => (
-                      <input
-                        type="text"
-                        value={row.labStatus}
-                        onChange={(event) => updateRow(row.id, (current) => ({ ...current, labStatus: event.target.value }))}
-                        onBlur={onBlur}
-                        autoFocus
-                        style={inputStyle}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="patientNotes"
-                    cellStyle={{ ...wrapCell, minWidth: '220px' }}
-                    display={
-                      <span style={{ whiteSpace: 'normal' }}>{row.patientNotes?.trim() ? row.patientNotes : '—'}</span>
-                    }
-                    renderEditor={({ onBlur }) => (
-                      <NotesEditor
-                        rowId={row.id}
-                        initialValue={row.patientNotes ?? ''}
-                        onCommit={(nextValue) =>
-                          updateRow(row.id, (current) => ({
-                            ...current,
-                            patientNotes: nextValue
-                          }))
-                        }
-                        onBlur={onBlur}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="lastLab"
-                    cellStyle={narrowCellStyle}
-                    display={formatDisplayDate(row.lastLab)}
-                    renderEditor={({ onBlur }) => (
-                      <DateEditor
-                        value={formatDateInput(row.lastLab)}
-                        placeholder={DATE_INPUT_PLACEHOLDER}
-                        autoFocus
-                        onCommit={(value) => handleLastLabCommit(row.id, value)}
-                        onBlur={onBlur}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="nextLab"
-                    cellStyle={narrowCellStyle}
-                    display={formatDisplayDate(row.nextLab)}
-                    renderEditor={({ onBlur }) => (
-                      <DateEditor
-                        value={formatDateInput(row.nextLab)}
-                        placeholder={DATE_INPUT_PLACEHOLDER}
-                        autoFocus
-                        onCommit={(value) => handleNextLabCommit(row.id, value)}
-                        onBlur={onBlur}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="serviceStartDate"
-                    cellStyle={narrowCellStyle}
-                    display={formatDisplayDate(row.serviceStartDate)}
-                    renderEditor={({ onBlur }) => (
-                      <DateEditor
-                        value={formatDateInput(row.serviceStartDate)}
-                        placeholder={DATE_INPUT_PLACEHOLDER}
-                        autoFocus
-                        onCommit={(value) => handleSimpleDateCommit(row.id, 'serviceStartDate', value)}
-                        onBlur={onBlur}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="contractEnd"
-                    cellStyle={narrowCellStyle}
-                    display={formatDisplayDate(row.contractEnd)}
-                    renderEditor={({ onBlur }) => (
-                      <DateEditor
-                        value={formatDateInput(row.contractEnd)}
-                        placeholder={DATE_INPUT_PLACEHOLDER}
-                        autoFocus
-                        onCommit={(value) => handleSimpleDateCommit(row.id, 'contractEnd', value)}
-                        onBlur={onBlur}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="dateOfBirth"
-                    cellStyle={narrowCellStyle}
-                    display={formatDisplayDate(row.dateOfBirth)}
-                    renderEditor={({ onBlur }) => (
-                      <DateEditor
-                        value={formatDateInput(row.dateOfBirth)}
-                        placeholder={DATE_INPUT_PLACEHOLDER}
-                        autoFocus
-                        onCommit={(value) => handleSimpleDateCommit(row.id, 'dateOfBirth', value)}
-                        onBlur={onBlur}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="address"
-                    cellStyle={{ ...wrapCell, minWidth: '240px' }}
-                    display={<span style={{ whiteSpace: 'normal' }}>{row.address?.trim() ? row.address : '—'}</span>}
-                    renderEditor={({ onBlur }) => (
-                      <textarea
-                        value={row.address}
-                        onChange={(event) => updateRow(row.id, (current) => ({ ...current, address: event.target.value }))}
-                        onBlur={onBlur}
-                        autoFocus
-                        rows={3}
-                        style={{
-                          ...inputStyle,
-                          minHeight: '48px',
-                          resize: 'vertical',
-                          direction: 'ltr',
-                          textAlign: 'left'
-                        }}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="phoneNumber"
-                    cellStyle={compactCellStyle}
-                    display={renderText(row.phoneNumber)}
-                    renderEditor={({ onBlur }) => (
-                      <input
-                        type="text"
-                        value={row.phoneNumber}
-                        onChange={(event) =>
-                          updateRow(row.id, (current) => ({ ...current, phoneNumber: event.target.value }))
-                        }
-                        onBlur={onBlur}
-                        autoFocus
-                        style={inputStyle}
-                      />
-                    )}
-                  />
-                  <EditableCell
-                    rowId={row.id}
-                    field="email"
-                    cellStyle={{ ...compactCellStyle, whiteSpace: 'normal' as const }}
-                    display={renderText(row.email)}
-                    renderEditor={({ onBlur }) => (
-                      <input
-                        type="email"
-                        value={row.email}
-                        onChange={(event) =>
-                          updateRow(row.id, (current) => ({ ...current, email: event.target.value }))
-                        }
-                        onBlur={onBlur}
-                        autoFocus
-                        style={inputStyle}
-                      />
-                    )}
-                  />
-                  <td style={compactCellStyle}>{renderText(row.addedBy)}</td>
-                  <td style={compactCellStyle}>{formatDisplayDate(row.dateAdded)}</td>
-                  <td style={compactCellStyle}>{formatDisplayDate(row.lastModified)}</td>
-                  <td style={narrowCellStyle}>
-                    {row.lastSupplyDate?.trim() ? (
-                      <Link
-                        href={detailHref}
-                        style={{
-                          color: row.lastSupplyFromDea ? '#0284c7' : '#0f172a',
-                          fontWeight: row.lastSupplyFromDea ? 600 : 500,
-                          textDecoration: row.lastSupplyFromDea ? 'underline' : 'none'
-                        }}
-                      >
-                        {formatDisplayDate(row.lastSupplyDate)}
-                      </Link>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td style={narrowCellStyle}>{formatDisplayDate(row.eligibleForNextSupply)}</td>
-                  {canDeletePatient && (
-                    <td style={{ ...baseCell, minWidth: '120px' }}>
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(row.id)}
-                        disabled={savingId === row.id}
-                        style={{
-                          padding: '0.45rem 0.95rem',
-                          borderRadius: '0.5rem',
-                          border: '1px solid rgba(248, 113, 113, 0.6)',
-                          background: 'rgba(248, 113, 113, 0.15)',
-                          color: '#f87171',
-                          cursor: savingId === row.id ? 'wait' : 'pointer',
-                          fontWeight: 600
-                        }}
-                      >
-                        Delete
-                      </button>
+                        '—'
+                      )}
                     </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
+                    <td style={narrowCellStyle}>{formatDisplayDate(row.eligibleForNextSupply)}</td>
+                    {canDeletePatient && (
+                      <td style={{ ...baseCell, minWidth: '120px' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(row.id)}
+                          disabled={savingId === row.id}
+                          style={{
+                            padding: '0.45rem 0.95rem',
+                            borderRadius: '0.5rem',
+                            border: '1px solid rgba(248, 113, 113, 0.6)',
+                            background: 'rgba(248, 113, 113, 0.15)',
+                            color: '#f87171',
+                            cursor: savingId === row.id ? 'wait' : 'pointer',
+                            fontWeight: 600
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
           </table>
         </div>
       </div>

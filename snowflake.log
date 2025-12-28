@@ -1021,3 +1021,470 @@
 {"level":"INFO","message":"[10:33:54.004 AM]: Connection[id: fdcde82e-712b-4976-b65f-2d492c07e67a] - connecting. Associated Snowflake domain: GLOBAL"}
 {"level":"INFO","message":"[10:33:54.004 AM]: Connection[id: fdcde82e-712b-4976-b65f-2d492c07e67a] - authentication successful using: SNOWFLAKE"}
 {"level":"INFO","message":"[10:33:54.004 AM]: Connection[id: fdcde82e-712b-4976-b65f-2d492c07e67a] - connected successfully after 0.826839999994263 milliseconds"}
+{"level":"INFO","message":"[10:40:26.022 AM]: Creating new connection object"}
+{"level":"INFO","message":"[10:40:26.023 AM]: Creating Connection[id: dad13160-3b34-49f8-9e92-bbe5b22c6263] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[10:40:26.023 AM]: Connection[id: dad13160-3b34-49f8-9e92-bbe5b22c6263] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[10:40:26.023 AM]: Connection[id: dad13160-3b34-49f8-9e92-bbe5b22c6263] - connection object created successfully."}
+{"level":"INFO","message":"[10:40:26.024 AM]: Connection[id: dad13160-3b34-49f8-9e92-bbe5b22c6263] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[10:40:26.024 AM]: Connection[id: dad13160-3b34-49f8-9e92-bbe5b22c6263] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[10:40:26.024 AM]: Connection[id: dad13160-3b34-49f8-9e92-bbe5b22c6263] - connected successfully after 0.8490349999628961 milliseconds"}
+{"level":"INFO","message":"[2:42:32.361 PM]: Creating new connection object"}
+{"level":"INFO","message":"[2:42:32.363 PM]: Creating Connection[id: 6387c242-3a57-4512-9bdb-c5e78be69f26] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[2:42:32.363 PM]: Connection[id: 6387c242-3a57-4512-9bdb-c5e78be69f26] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[2:42:32.363 PM]: Connection[id: 6387c242-3a57-4512-9bdb-c5e78be69f26] - connection object created successfully."}
+{"level":"INFO","message":"[2:42:32.363 PM]: Connection[id: 6387c242-3a57-4512-9bdb-c5e78be69f26] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[2:42:32.363 PM]: Connection[id: 6387c242-3a57-4512-9bdb-c5e78be69f26] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[2:42:32.364 PM]: Connection[id: 6387c242-3a57-4512-9bdb-c5e78be69f26] - connected successfully after 0.9041930008679628 milliseconds"}
+{"level":"INFO","message":"[2:43:04.381 PM]: Creating new connection object"}
+{"level":"INFO","message":"[2:43:04.382 PM]: Creating Connection[id: 88f36f80-1aa0-46ce-b3c1-38fbef86d761] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[2:43:04.382 PM]: Connection[id: 88f36f80-1aa0-46ce-b3c1-38fbef86d761] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[2:43:04.382 PM]: Connection[id: 88f36f80-1aa0-46ce-b3c1-38fbef86d761] - connection object created successfully."}
+{"level":"INFO","message":"[2:43:04.383 PM]: Connection[id: 88f36f80-1aa0-46ce-b3c1-38fbef86d761] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[2:43:04.383 PM]: Connection[id: 88f36f80-1aa0-46ce-b3c1-38fbef86d761] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[2:43:04.383 PM]: Connection[id: 88f36f80-1aa0-46ce-b3c1-38fbef86d761] - connected successfully after 0.6777710001915693 milliseconds"}
+{"level":"INFO","message":"[2:43:39.847 PM]: Creating new connection object"}
+{"level":"INFO","message":"[2:43:39.848 PM]: Creating Connection[id: 5815ac65-5741-46e0-b46e-71379585af2d] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[2:43:39.848 PM]: Connection[id: 5815ac65-5741-46e0-b46e-71379585af2d] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[2:43:39.848 PM]: Connection[id: 5815ac65-5741-46e0-b46e-71379585af2d] - connection object created successfully."}
+{"level":"INFO","message":"[2:43:39.848 PM]: Connection[id: 5815ac65-5741-46e0-b46e-71379585af2d] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[2:43:39.848 PM]: Connection[id: 5815ac65-5741-46e0-b46e-71379585af2d] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[2:43:39.848 PM]: Connection[id: 5815ac65-5741-46e0-b46e-71379585af2d] - connected successfully after 0.5529139991849661 milliseconds"}
+{"level":"INFO","message":"[2:44:13.955 PM]: Creating new connection object"}
+{"level":"INFO","message":"[2:44:13.956 PM]: Creating Connection[id: 933f0681-4549-46a1-b1ba-5f981b15eced] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[2:44:13.956 PM]: Connection[id: 933f0681-4549-46a1-b1ba-5f981b15eced] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[2:44:13.956 PM]: Connection[id: 933f0681-4549-46a1-b1ba-5f981b15eced] - connection object created successfully."}
+{"level":"INFO","message":"[2:44:13.957 PM]: Connection[id: 933f0681-4549-46a1-b1ba-5f981b15eced] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[2:44:13.957 PM]: Connection[id: 933f0681-4549-46a1-b1ba-5f981b15eced] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[2:44:13.957 PM]: Connection[id: 933f0681-4549-46a1-b1ba-5f981b15eced] - connected successfully after 0.5796449985355139 milliseconds"}
+{"level":"INFO","message":"[2:44:44.321 PM]: Creating new connection object"}
+{"level":"INFO","message":"[2:44:44.322 PM]: Creating Connection[id: 003bfc62-1793-458b-ab74-f36c411d14e1] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[2:44:44.322 PM]: Connection[id: 003bfc62-1793-458b-ab74-f36c411d14e1] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[2:44:44.323 PM]: Connection[id: 003bfc62-1793-458b-ab74-f36c411d14e1] - connection object created successfully."}
+{"level":"INFO","message":"[2:44:44.323 PM]: Connection[id: 003bfc62-1793-458b-ab74-f36c411d14e1] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[2:44:44.323 PM]: Connection[id: 003bfc62-1793-458b-ab74-f36c411d14e1] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[2:44:44.324 PM]: Connection[id: 003bfc62-1793-458b-ab74-f36c411d14e1] - connected successfully after 1.059679999947548 milliseconds"}
+{"level":"INFO","message":"[3:23:06.190 PM]: Creating new connection object"}
+{"level":"INFO","message":"[3:23:06.191 PM]: Creating Connection[id: 86e6e0a0-d3ca-461b-b07f-2a593d77e6d4] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:23:06.192 PM]: Connection[id: 86e6e0a0-d3ca-461b-b07f-2a593d77e6d4] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:23:06.192 PM]: Connection[id: 86e6e0a0-d3ca-461b-b07f-2a593d77e6d4] - connection object created successfully."}
+{"level":"INFO","message":"[3:23:06.192 PM]: Connection[id: 86e6e0a0-d3ca-461b-b07f-2a593d77e6d4] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:23:06.193 PM]: Connection[id: 86e6e0a0-d3ca-461b-b07f-2a593d77e6d4] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:23:06.194 PM]: Connection[id: 86e6e0a0-d3ca-461b-b07f-2a593d77e6d4] - connected successfully after 2.0066180005669594 milliseconds"}
+{"level":"INFO","message":"[3:23:39.037 PM]: Creating new connection object"}
+{"level":"INFO","message":"[3:23:39.038 PM]: Creating Connection[id: 1b2154c4-efe3-4c14-ae26-cfee902be849] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:23:39.038 PM]: Connection[id: 1b2154c4-efe3-4c14-ae26-cfee902be849] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:23:39.038 PM]: Connection[id: 1b2154c4-efe3-4c14-ae26-cfee902be849] - connection object created successfully."}
+{"level":"INFO","message":"[3:23:39.038 PM]: Connection[id: 1b2154c4-efe3-4c14-ae26-cfee902be849] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:23:39.039 PM]: Connection[id: 1b2154c4-efe3-4c14-ae26-cfee902be849] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:23:39.039 PM]: Connection[id: 1b2154c4-efe3-4c14-ae26-cfee902be849] - connected successfully after 0.4557870030403137 milliseconds"}
+{"level":"INFO","message":"[3:24:28.677 PM]: Creating new connection object"}
+{"level":"INFO","message":"[3:24:28.677 PM]: Creating Connection[id: 3a2dedbe-2253-4ad4-978d-a3888e49d7bc] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:24:28.678 PM]: Connection[id: 3a2dedbe-2253-4ad4-978d-a3888e49d7bc] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:24:28.678 PM]: Connection[id: 3a2dedbe-2253-4ad4-978d-a3888e49d7bc] - connection object created successfully."}
+{"level":"INFO","message":"[3:24:28.678 PM]: Connection[id: 3a2dedbe-2253-4ad4-978d-a3888e49d7bc] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:24:28.678 PM]: Connection[id: 3a2dedbe-2253-4ad4-978d-a3888e49d7bc] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:24:28.679 PM]: Connection[id: 3a2dedbe-2253-4ad4-978d-a3888e49d7bc] - connected successfully after 0.6295810006558895 milliseconds"}
+{"level":"INFO","message":"[3:25:18.207 PM]: Creating new connection object"}
+{"level":"INFO","message":"[3:25:18.207 PM]: Creating Connection[id: bd198f19-f1bf-4e71-bcf9-2c5fcd625606] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:25:18.207 PM]: Connection[id: bd198f19-f1bf-4e71-bcf9-2c5fcd625606] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:25:18.208 PM]: Connection[id: bd198f19-f1bf-4e71-bcf9-2c5fcd625606] - connection object created successfully."}
+{"level":"INFO","message":"[3:25:18.208 PM]: Connection[id: bd198f19-f1bf-4e71-bcf9-2c5fcd625606] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:25:18.208 PM]: Connection[id: bd198f19-f1bf-4e71-bcf9-2c5fcd625606] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:25:18.208 PM]: Connection[id: bd198f19-f1bf-4e71-bcf9-2c5fcd625606] - connected successfully after 0.46205199882388115 milliseconds"}
+{"level":"INFO","message":"[3:26:20.036 PM]: Creating new connection object"}
+{"level":"INFO","message":"[3:26:20.037 PM]: Creating Connection[id: ad589218-2bf7-40a3-83df-ebe50e3b71ea] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:26:20.037 PM]: Connection[id: ad589218-2bf7-40a3-83df-ebe50e3b71ea] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:26:20.037 PM]: Connection[id: ad589218-2bf7-40a3-83df-ebe50e3b71ea] - connection object created successfully."}
+{"level":"INFO","message":"[3:26:20.037 PM]: Connection[id: ad589218-2bf7-40a3-83df-ebe50e3b71ea] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:26:20.037 PM]: Connection[id: ad589218-2bf7-40a3-83df-ebe50e3b71ea] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:26:20.037 PM]: Connection[id: ad589218-2bf7-40a3-83df-ebe50e3b71ea] - connected successfully after 0.522087998688221 milliseconds"}
+{"level":"INFO","message":"[3:27:32.188 PM]: Creating new connection object"}
+{"level":"INFO","message":"[3:27:32.189 PM]: Creating Connection[id: d6253650-9ac7-41ad-ae4f-7d16baff1a55] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:27:32.189 PM]: Connection[id: d6253650-9ac7-41ad-ae4f-7d16baff1a55] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:27:32.189 PM]: Connection[id: d6253650-9ac7-41ad-ae4f-7d16baff1a55] - connection object created successfully."}
+{"level":"INFO","message":"[3:27:32.189 PM]: Connection[id: d6253650-9ac7-41ad-ae4f-7d16baff1a55] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:27:32.189 PM]: Connection[id: d6253650-9ac7-41ad-ae4f-7d16baff1a55] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:27:32.190 PM]: Connection[id: d6253650-9ac7-41ad-ae4f-7d16baff1a55] - connected successfully after 0.9198139980435371 milliseconds"}
+{"level":"INFO","message":"[3:28:06.432 PM]: Creating new connection object"}
+{"level":"INFO","message":"[3:28:06.433 PM]: Creating Connection[id: c07372e1-9c0e-4fb2-a00b-6932b45bfef3] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:28:06.433 PM]: Connection[id: c07372e1-9c0e-4fb2-a00b-6932b45bfef3] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:28:06.433 PM]: Connection[id: c07372e1-9c0e-4fb2-a00b-6932b45bfef3] - connection object created successfully."}
+{"level":"INFO","message":"[3:28:06.433 PM]: Connection[id: c07372e1-9c0e-4fb2-a00b-6932b45bfef3] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:28:06.433 PM]: Connection[id: c07372e1-9c0e-4fb2-a00b-6932b45bfef3] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:28:06.434 PM]: Connection[id: c07372e1-9c0e-4fb2-a00b-6932b45bfef3] - connected successfully after 0.4890569970011711 milliseconds"}
+{"level":"INFO","message":"[3:28:35.344 PM]: Creating new connection object"}
+{"level":"INFO","message":"[3:28:35.345 PM]: Creating Connection[id: f8043b62-6397-4b90-804a-8c1ecabfd01e] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:28:35.345 PM]: Connection[id: f8043b62-6397-4b90-804a-8c1ecabfd01e] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:28:35.346 PM]: Connection[id: f8043b62-6397-4b90-804a-8c1ecabfd01e] - connection object created successfully."}
+{"level":"INFO","message":"[3:28:35.346 PM]: Connection[id: f8043b62-6397-4b90-804a-8c1ecabfd01e] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:28:35.346 PM]: Connection[id: f8043b62-6397-4b90-804a-8c1ecabfd01e] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:28:35.347 PM]: Connection[id: f8043b62-6397-4b90-804a-8c1ecabfd01e] - connected successfully after 0.8612489998340607 milliseconds"}
+{"level":"INFO","message":"[5:24:56.911 PM]: Creating new connection object"}
+{"level":"INFO","message":"[5:24:57.022 PM]: Creating Connection[id: 3344b526-4d8a-41db-8fc8-a91dbb39346f] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:24:57.026 PM]: Connection[id: 3344b526-4d8a-41db-8fc8-a91dbb39346f] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:24:57.028 PM]: Connection[id: 3344b526-4d8a-41db-8fc8-a91dbb39346f] - connection object created successfully."}
+{"level":"INFO","message":"[5:24:57.030 PM]: Connection[id: 3344b526-4d8a-41db-8fc8-a91dbb39346f] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:24:57.039 PM]: Connection[id: 3344b526-4d8a-41db-8fc8-a91dbb39346f] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:24:57.039 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:24:57.062 PM]: No client config detected."}
+{"level":"INFO","message":"[5:24:57.064 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:24:57.065 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:24:57.078 PM]: Connection[id: 3344b526-4d8a-41db-8fc8-a91dbb39346f] - connected successfully after 48.001924999999574 milliseconds"}
+{"level":"INFO","message":"[6:20:46.140 PM]: Creating new connection object"}
+{"level":"INFO","message":"[6:20:46.222 PM]: Creating Connection[id: bb685268-4ce9-45aa-a2da-51ba0a541fb0] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[6:20:46.223 PM]: Connection[id: bb685268-4ce9-45aa-a2da-51ba0a541fb0] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[6:20:46.225 PM]: Connection[id: bb685268-4ce9-45aa-a2da-51ba0a541fb0] - connection object created successfully."}
+{"level":"INFO","message":"[6:20:46.227 PM]: Connection[id: bb685268-4ce9-45aa-a2da-51ba0a541fb0] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[6:20:46.232 PM]: Connection[id: bb685268-4ce9-45aa-a2da-51ba0a541fb0] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[6:20:46.235 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[6:20:46.260 PM]: No client config detected."}
+{"level":"INFO","message":"[6:20:46.261 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[6:20:46.263 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[6:20:46.273 PM]: Connection[id: bb685268-4ce9-45aa-a2da-51ba0a541fb0] - connected successfully after 45.899976999999126 milliseconds"}
+{"level":"INFO","message":"[9:09:28.294 PM]: Creating new connection object"}
+{"level":"INFO","message":"[9:09:28.355 PM]: Creating Connection[id: 1650e556-a994-4cbe-84cc-a0f997255cca] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[9:09:28.356 PM]: Connection[id: 1650e556-a994-4cbe-84cc-a0f997255cca] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[9:09:28.357 PM]: Connection[id: 1650e556-a994-4cbe-84cc-a0f997255cca] - connection object created successfully."}
+{"level":"INFO","message":"[9:09:28.358 PM]: Connection[id: 1650e556-a994-4cbe-84cc-a0f997255cca] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[9:09:28.360 PM]: Connection[id: 1650e556-a994-4cbe-84cc-a0f997255cca] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[9:09:28.361 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[9:09:28.371 PM]: No client config detected."}
+{"level":"INFO","message":"[9:09:28.372 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[9:09:28.373 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[9:09:28.378 PM]: Connection[id: 1650e556-a994-4cbe-84cc-a0f997255cca] - connected successfully after 20.569840000000113 milliseconds"}
+{"level":"INFO","message":"[9:23:04.489 PM]: Creating new connection object"}
+{"level":"INFO","message":"[9:23:04.526 PM]: Creating Connection[id: 4493ff12-5706-4a84-bf81-86bbbd83fe8f] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: undefined, warehouse: COMPUTE_WH, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[9:23:04.528 PM]: Connection[id: 4493ff12-5706-4a84-bf81-86bbbd83fe8f] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[9:23:04.529 PM]: Connection[id: 4493ff12-5706-4a84-bf81-86bbbd83fe8f] - connection object created successfully."}
+{"level":"INFO","message":"[9:23:04.530 PM]: Connection[id: 4493ff12-5706-4a84-bf81-86bbbd83fe8f] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[9:23:04.532 PM]: Connection[id: 4493ff12-5706-4a84-bf81-86bbbd83fe8f] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[9:23:04.532 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[9:23:04.549 PM]: No client config detected."}
+{"level":"INFO","message":"[9:23:04.549 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[9:23:04.550 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[9:23:04.555 PM]: Connection[id: 4493ff12-5706-4a84-bf81-86bbbd83fe8f] - connected successfully after 24.833605000000034 milliseconds"}
+{"level":"INFO","message":"[9:23:49.948 PM]: Creating new connection object"}
+{"level":"INFO","message":"[9:23:49.980 PM]: Creating Connection[id: 0483158b-b55b-4fd1-ab8f-f6bc6651542e] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[9:23:49.982 PM]: Connection[id: 0483158b-b55b-4fd1-ab8f-f6bc6651542e] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[9:23:49.983 PM]: Connection[id: 0483158b-b55b-4fd1-ab8f-f6bc6651542e] - connection object created successfully."}
+{"level":"INFO","message":"[9:23:49.985 PM]: Connection[id: 0483158b-b55b-4fd1-ab8f-f6bc6651542e] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[9:23:49.988 PM]: Connection[id: 0483158b-b55b-4fd1-ab8f-f6bc6651542e] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[9:23:49.989 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[9:23:50.009 PM]: No client config detected."}
+{"level":"INFO","message":"[9:23:50.010 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[9:23:50.011 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[9:23:50.017 PM]: Connection[id: 0483158b-b55b-4fd1-ab8f-f6bc6651542e] - connected successfully after 32.56617099999994 milliseconds"}
+{"level":"INFO","message":"[3:03:25.738 AM]: Creating new connection object"}
+{"level":"INFO","message":"[3:03:25.762 AM]: Creating Connection[id: 1bb67392-1783-47c7-82d2-4bc964799b2b] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:03:25.764 AM]: Connection[id: 1bb67392-1783-47c7-82d2-4bc964799b2b] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:03:25.765 AM]: Connection[id: 1bb67392-1783-47c7-82d2-4bc964799b2b] - connection object created successfully."}
+{"level":"INFO","message":"[3:03:25.766 AM]: Connection[id: 1bb67392-1783-47c7-82d2-4bc964799b2b] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:03:25.769 AM]: Connection[id: 1bb67392-1783-47c7-82d2-4bc964799b2b] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:03:25.770 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[3:03:25.777 AM]: No client config detected."}
+{"level":"INFO","message":"[3:03:25.779 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[3:03:25.780 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[3:03:25.785 AM]: Connection[id: 1bb67392-1783-47c7-82d2-4bc964799b2b] - connected successfully after 18.6482289999999 milliseconds"}
+{"level":"INFO","message":"[3:35:20.825 AM]: Creating new connection object"}
+{"level":"INFO","message":"[3:35:20.864 AM]: Creating Connection[id: 3f3ca025-b90d-4004-b506-e07721f6e4d5] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:35:20.865 AM]: Connection[id: 3f3ca025-b90d-4004-b506-e07721f6e4d5] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:35:20.866 AM]: Connection[id: 3f3ca025-b90d-4004-b506-e07721f6e4d5] - connection object created successfully."}
+{"level":"INFO","message":"[3:35:20.866 AM]: Connection[id: 3f3ca025-b90d-4004-b506-e07721f6e4d5] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:35:20.879 AM]: Connection[id: 3f3ca025-b90d-4004-b506-e07721f6e4d5] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:35:20.880 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[3:35:20.886 AM]: No client config detected."}
+{"level":"INFO","message":"[3:35:20.887 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[3:35:20.887 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[3:35:20.892 AM]: Connection[id: 3f3ca025-b90d-4004-b506-e07721f6e4d5] - connected successfully after 25.93201599999975 milliseconds"}
+{"level":"INFO","message":"[3:36:32.993 AM]: Creating new connection object"}
+{"level":"INFO","message":"[3:36:33.019 AM]: Creating Connection[id: 42a130b7-5497-4e37-a391-6868ff227fc3] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:36:33.020 AM]: Connection[id: 42a130b7-5497-4e37-a391-6868ff227fc3] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:36:33.021 AM]: Connection[id: 42a130b7-5497-4e37-a391-6868ff227fc3] - connection object created successfully."}
+{"level":"INFO","message":"[3:36:33.021 AM]: Connection[id: 42a130b7-5497-4e37-a391-6868ff227fc3] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:36:33.023 AM]: Connection[id: 42a130b7-5497-4e37-a391-6868ff227fc3] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:36:33.024 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[3:36:33.030 AM]: No client config detected."}
+{"level":"INFO","message":"[3:36:33.031 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[3:36:33.031 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[3:36:33.036 AM]: Connection[id: 42a130b7-5497-4e37-a391-6868ff227fc3] - connected successfully after 15.095366999999897 milliseconds"}
+{"level":"INFO","message":"[4:02:41.625 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:02:41.660 AM]: Creating Connection[id: 8fb89348-606a-47c5-8e9d-c003f4e8b139] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:02:41.677 AM]: Connection[id: 8fb89348-606a-47c5-8e9d-c003f4e8b139] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:02:41.679 AM]: Connection[id: 8fb89348-606a-47c5-8e9d-c003f4e8b139] - connection object created successfully."}
+{"level":"INFO","message":"[4:02:41.681 AM]: Connection[id: 8fb89348-606a-47c5-8e9d-c003f4e8b139] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:02:41.684 AM]: Connection[id: 8fb89348-606a-47c5-8e9d-c003f4e8b139] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:02:41.686 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[4:02:41.698 AM]: No client config detected."}
+{"level":"INFO","message":"[4:02:41.700 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[4:02:41.701 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[4:02:41.711 AM]: Connection[id: 8fb89348-606a-47c5-8e9d-c003f4e8b139] - connected successfully after 29.910123000000112 milliseconds"}
+{"level":"INFO","message":"[4:08:46.484 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:08:46.486 AM]: Creating Connection[id: b7f4a3d1-463a-47df-bc2e-10fd78317aa7] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:08:46.487 AM]: Connection[id: b7f4a3d1-463a-47df-bc2e-10fd78317aa7] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:08:46.487 AM]: Connection[id: b7f4a3d1-463a-47df-bc2e-10fd78317aa7] - connection object created successfully."}
+{"level":"INFO","message":"[4:08:46.488 AM]: Connection[id: b7f4a3d1-463a-47df-bc2e-10fd78317aa7] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:08:46.488 AM]: Connection[id: b7f4a3d1-463a-47df-bc2e-10fd78317aa7] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:08:46.490 AM]: Connection[id: b7f4a3d1-463a-47df-bc2e-10fd78317aa7] - connected successfully after 2.1157330000423826 milliseconds"}
+{"level":"INFO","message":"[4:19:54.586 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:19:54.612 AM]: Creating Connection[id: 9ddf9847-d77f-4032-9ef0-135e1e83992e] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:19:54.614 AM]: Connection[id: 9ddf9847-d77f-4032-9ef0-135e1e83992e] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:19:54.615 AM]: Connection[id: 9ddf9847-d77f-4032-9ef0-135e1e83992e] - connection object created successfully."}
+{"level":"INFO","message":"[4:19:54.616 AM]: Connection[id: 9ddf9847-d77f-4032-9ef0-135e1e83992e] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:19:54.619 AM]: Connection[id: 9ddf9847-d77f-4032-9ef0-135e1e83992e] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:19:54.620 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[4:19:54.628 AM]: No client config detected."}
+{"level":"INFO","message":"[4:19:54.628 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[4:19:54.629 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[4:19:54.636 AM]: Connection[id: 9ddf9847-d77f-4032-9ef0-135e1e83992e] - connected successfully after 19.335710999999947 milliseconds"}
+{"level":"INFO","message":"[4:28:50.633 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:28:50.668 AM]: Creating Connection[id: f4132ff6-20c4-46b5-a678-45315f345d1a] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:28:50.670 AM]: Connection[id: f4132ff6-20c4-46b5-a678-45315f345d1a] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:28:50.671 AM]: Connection[id: f4132ff6-20c4-46b5-a678-45315f345d1a] - connection object created successfully."}
+{"level":"INFO","message":"[4:28:50.672 AM]: Connection[id: f4132ff6-20c4-46b5-a678-45315f345d1a] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:28:50.674 AM]: Connection[id: f4132ff6-20c4-46b5-a678-45315f345d1a] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:28:50.676 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[4:28:50.684 AM]: No client config detected."}
+{"level":"INFO","message":"[4:28:50.684 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[4:28:50.685 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[4:28:50.692 AM]: Connection[id: f4132ff6-20c4-46b5-a678-45315f345d1a] - connected successfully after 19.791545999999926 milliseconds"}
+{"level":"INFO","message":"[4:31:20.936 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:31:20.959 AM]: Creating Connection[id: ab04c382-7b00-490a-b812-34f8e01b50c4] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:31:20.961 AM]: Connection[id: ab04c382-7b00-490a-b812-34f8e01b50c4] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:31:20.961 AM]: Connection[id: ab04c382-7b00-490a-b812-34f8e01b50c4] - connection object created successfully."}
+{"level":"INFO","message":"[4:31:20.962 AM]: Connection[id: ab04c382-7b00-490a-b812-34f8e01b50c4] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:31:20.964 AM]: Connection[id: ab04c382-7b00-490a-b812-34f8e01b50c4] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:31:20.965 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[4:31:20.973 AM]: No client config detected."}
+{"level":"INFO","message":"[4:31:20.974 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[4:31:20.974 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[4:31:20.980 AM]: Connection[id: ab04c382-7b00-490a-b812-34f8e01b50c4] - connected successfully after 17.384473999999955 milliseconds"}
+{"level":"INFO","message":"[4:32:45.291 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:32:45.316 AM]: Creating Connection[id: 907ce284-59ce-41f2-8d22-675e6552e4a4] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:32:45.318 AM]: Connection[id: 907ce284-59ce-41f2-8d22-675e6552e4a4] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:32:45.319 AM]: Connection[id: 907ce284-59ce-41f2-8d22-675e6552e4a4] - connection object created successfully."}
+{"level":"INFO","message":"[4:32:45.320 AM]: Connection[id: 907ce284-59ce-41f2-8d22-675e6552e4a4] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:32:45.323 AM]: Connection[id: 907ce284-59ce-41f2-8d22-675e6552e4a4] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:32:45.324 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[4:32:45.333 AM]: No client config detected."}
+{"level":"INFO","message":"[4:32:45.333 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[4:32:45.334 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[4:32:45.341 AM]: Connection[id: 907ce284-59ce-41f2-8d22-675e6552e4a4] - connected successfully after 20.411535000000185 milliseconds"}
+{"level":"INFO","message":"[4:35:15.155 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:35:15.192 AM]: Creating Connection[id: dead530f-c7fc-49b0-a075-03c5b370c37d] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:35:15.193 AM]: Connection[id: dead530f-c7fc-49b0-a075-03c5b370c37d] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:35:15.194 AM]: Connection[id: dead530f-c7fc-49b0-a075-03c5b370c37d] - connection object created successfully."}
+{"level":"INFO","message":"[4:35:15.195 AM]: Connection[id: dead530f-c7fc-49b0-a075-03c5b370c37d] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:35:15.205 AM]: Connection[id: dead530f-c7fc-49b0-a075-03c5b370c37d] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:35:15.206 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[4:35:15.217 AM]: No client config detected."}
+{"level":"INFO","message":"[4:35:15.217 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[4:35:15.218 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[4:35:15.223 AM]: Connection[id: dead530f-c7fc-49b0-a075-03c5b370c37d] - connected successfully after 28.586439999999584 milliseconds"}
+{"level":"INFO","message":"[4:47:05.134 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:47:05.136 AM]: Creating Connection[id: fb074a20-6c19-4ef0-a118-0d6603f8c59f] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:47:05.137 AM]: Connection[id: fb074a20-6c19-4ef0-a118-0d6603f8c59f] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:47:05.138 AM]: Connection[id: fb074a20-6c19-4ef0-a118-0d6603f8c59f] - connection object created successfully."}
+{"level":"INFO","message":"[4:47:05.139 AM]: Connection[id: fb074a20-6c19-4ef0-a118-0d6603f8c59f] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:47:05.140 AM]: Connection[id: fb074a20-6c19-4ef0-a118-0d6603f8c59f] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:47:05.141 AM]: Connection[id: fb074a20-6c19-4ef0-a118-0d6603f8c59f] - connected successfully after 2.7077410001074895 milliseconds"}
+{"level":"INFO","message":"[4:52:02.877 AM]: Creating new connection object"}
+{"level":"INFO","message":"[4:52:02.935 AM]: Creating Connection[id: bb48eb48-8546-4efc-b6ef-efec53c4c294] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[4:52:02.937 AM]: Connection[id: bb48eb48-8546-4efc-b6ef-efec53c4c294] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[4:52:02.938 AM]: Connection[id: bb48eb48-8546-4efc-b6ef-efec53c4c294] - connection object created successfully."}
+{"level":"INFO","message":"[4:52:02.945 AM]: Connection[id: bb48eb48-8546-4efc-b6ef-efec53c4c294] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[4:52:02.948 AM]: Connection[id: bb48eb48-8546-4efc-b6ef-efec53c4c294] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[4:52:02.950 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[4:52:02.964 AM]: No client config detected."}
+{"level":"INFO","message":"[4:52:02.965 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[4:52:02.966 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[4:52:02.977 AM]: Connection[id: bb48eb48-8546-4efc-b6ef-efec53c4c294] - connected successfully after 31.636789000000135 milliseconds"}
+{"level":"INFO","message":"[5:37:12.799 PM]: Creating new connection object"}
+{"level":"INFO","message":"[5:37:12.838 PM]: Creating Connection[id: 57ed85d0-3333-431e-85f5-1ede5d1b59a1] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:37:12.839 PM]: Connection[id: 57ed85d0-3333-431e-85f5-1ede5d1b59a1] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:37:12.840 PM]: Connection[id: 57ed85d0-3333-431e-85f5-1ede5d1b59a1] - connection object created successfully."}
+{"level":"INFO","message":"[5:37:12.841 PM]: Connection[id: 57ed85d0-3333-431e-85f5-1ede5d1b59a1] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:37:12.843 PM]: Connection[id: 57ed85d0-3333-431e-85f5-1ede5d1b59a1] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:37:12.844 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:37:12.851 PM]: No client config detected."}
+{"level":"INFO","message":"[5:37:12.852 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:37:12.853 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:37:12.859 PM]: Connection[id: 57ed85d0-3333-431e-85f5-1ede5d1b59a1] - connected successfully after 17.547898000000032 milliseconds"}
+{"level":"INFO","message":"[6:05:49.977 PM]: Creating new connection object"}
+{"level":"INFO","message":"[6:05:50.005 PM]: Creating Connection[id: 8798f419-b2b6-4e58-91df-7549cd210f8b] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[6:05:50.007 PM]: Connection[id: 8798f419-b2b6-4e58-91df-7549cd210f8b] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[6:05:50.007 PM]: Connection[id: 8798f419-b2b6-4e58-91df-7549cd210f8b] - connection object created successfully."}
+{"level":"INFO","message":"[6:05:50.008 PM]: Connection[id: 8798f419-b2b6-4e58-91df-7549cd210f8b] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[6:05:50.011 PM]: Connection[id: 8798f419-b2b6-4e58-91df-7549cd210f8b] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[6:05:50.012 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[6:05:50.019 PM]: No client config detected."}
+{"level":"INFO","message":"[6:05:50.019 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[6:05:50.020 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[6:05:50.027 PM]: Connection[id: 8798f419-b2b6-4e58-91df-7549cd210f8b] - connected successfully after 18.45385199999987 milliseconds"}
+{"level":"INFO","message":"[6:12:25.989 PM]: Creating new connection object"}
+{"level":"INFO","message":"[6:12:26.025 PM]: Creating Connection[id: 25f71fd3-eb5a-445e-afad-03a53a238d20] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[6:12:26.026 PM]: Connection[id: 25f71fd3-eb5a-445e-afad-03a53a238d20] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[6:12:26.027 PM]: Connection[id: 25f71fd3-eb5a-445e-afad-03a53a238d20] - connection object created successfully."}
+{"level":"INFO","message":"[6:12:26.028 PM]: Connection[id: 25f71fd3-eb5a-445e-afad-03a53a238d20] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[6:12:26.030 PM]: Connection[id: 25f71fd3-eb5a-445e-afad-03a53a238d20] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[6:12:26.031 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[6:12:26.041 PM]: No client config detected."}
+{"level":"INFO","message":"[6:12:26.041 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[6:12:26.042 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[6:12:26.049 PM]: Connection[id: 25f71fd3-eb5a-445e-afad-03a53a238d20] - connected successfully after 20.497431000000006 milliseconds"}
+{"level":"INFO","message":"[6:23:15.404 PM]: Creating new connection object"}
+{"level":"INFO","message":"[6:23:15.431 PM]: Creating Connection[id: 0c8a4058-52f2-4904-9549-3e42b648f8de] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[6:23:15.433 PM]: Connection[id: 0c8a4058-52f2-4904-9549-3e42b648f8de] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[6:23:15.434 PM]: Connection[id: 0c8a4058-52f2-4904-9549-3e42b648f8de] - connection object created successfully."}
+{"level":"INFO","message":"[6:23:15.436 PM]: Connection[id: 0c8a4058-52f2-4904-9549-3e42b648f8de] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[6:23:15.438 PM]: Connection[id: 0c8a4058-52f2-4904-9549-3e42b648f8de] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[6:23:15.439 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[6:23:15.446 PM]: No client config detected."}
+{"level":"INFO","message":"[6:23:15.447 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[6:23:15.447 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[6:23:15.454 PM]: Connection[id: 0c8a4058-52f2-4904-9549-3e42b648f8de] - connected successfully after 17.93787099999986 milliseconds"}
+{"level":"INFO","message":"[8:00:14.517 PM]: Creating new connection object"}
+{"level":"INFO","message":"[8:00:14.554 PM]: Creating Connection[id: 77708860-022b-4110-b306-cadf1bff91fb] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[8:00:14.555 PM]: Connection[id: 77708860-022b-4110-b306-cadf1bff91fb] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[8:00:14.556 PM]: Connection[id: 77708860-022b-4110-b306-cadf1bff91fb] - connection object created successfully."}
+{"level":"INFO","message":"[8:00:14.557 PM]: Connection[id: 77708860-022b-4110-b306-cadf1bff91fb] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[8:00:14.559 PM]: Connection[id: 77708860-022b-4110-b306-cadf1bff91fb] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[8:00:14.559 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[8:00:14.566 PM]: No client config detected."}
+{"level":"INFO","message":"[8:00:14.566 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[8:00:14.567 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[8:00:14.572 PM]: Connection[id: 77708860-022b-4110-b306-cadf1bff91fb] - connected successfully after 15.077469999999948 milliseconds"}
+{"level":"INFO","message":"[8:08:02.755 PM]: Creating new connection object"}
+{"level":"INFO","message":"[8:08:02.782 PM]: Creating Connection[id: ffc5fe82-6219-4a65-8f86-e7018471091b] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[8:08:02.783 PM]: Connection[id: ffc5fe82-6219-4a65-8f86-e7018471091b] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[8:08:02.784 PM]: Connection[id: ffc5fe82-6219-4a65-8f86-e7018471091b] - connection object created successfully."}
+{"level":"INFO","message":"[8:08:02.785 PM]: Connection[id: ffc5fe82-6219-4a65-8f86-e7018471091b] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[8:08:02.787 PM]: Connection[id: ffc5fe82-6219-4a65-8f86-e7018471091b] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[8:08:02.788 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[8:08:02.795 PM]: No client config detected."}
+{"level":"INFO","message":"[8:08:02.796 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[8:08:02.796 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[8:08:02.803 PM]: Connection[id: ffc5fe82-6219-4a65-8f86-e7018471091b] - connected successfully after 17.27546499999994 milliseconds"}
+{"level":"INFO","message":"[9:24:54.149 PM]: Creating new connection object"}
+{"level":"INFO","message":"[9:24:54.168 PM]: Creating Connection[id: 31faf3f1-5bd2-4976-96c8-6a80a030e927] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[9:24:54.168 PM]: Connection[id: 31faf3f1-5bd2-4976-96c8-6a80a030e927] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[9:24:54.169 PM]: Connection[id: 31faf3f1-5bd2-4976-96c8-6a80a030e927] - connection object created successfully."}
+{"level":"INFO","message":"[9:24:54.170 PM]: Connection[id: 31faf3f1-5bd2-4976-96c8-6a80a030e927] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[9:24:54.170 PM]: Connection[id: 31faf3f1-5bd2-4976-96c8-6a80a030e927] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[9:24:54.191 PM]: Connection[id: 31faf3f1-5bd2-4976-96c8-6a80a030e927] - connected successfully after 21.658719000406563 milliseconds"}
+{"level":"INFO","message":"[10:17:58.340 PM]: Creating new connection object"}
+{"level":"INFO","message":"[10:17:58.341 PM]: Creating Connection[id: a19220d1-2dd0-4a40-83ad-55b3c1b131b3] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[10:17:58.342 PM]: Connection[id: a19220d1-2dd0-4a40-83ad-55b3c1b131b3] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[10:17:58.343 PM]: Connection[id: a19220d1-2dd0-4a40-83ad-55b3c1b131b3] - connection object created successfully."}
+{"level":"INFO","message":"[10:17:58.343 PM]: Connection[id: a19220d1-2dd0-4a40-83ad-55b3c1b131b3] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[10:17:58.344 PM]: Connection[id: a19220d1-2dd0-4a40-83ad-55b3c1b131b3] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[10:17:58.346 PM]: Connection[id: a19220d1-2dd0-4a40-83ad-55b3c1b131b3] - connected successfully after 2.2929389998316765 milliseconds"}
+{"level":"INFO","message":"[10:23:45.788 PM]: Creating new connection object"}
+{"level":"INFO","message":"[10:23:45.823 PM]: Creating Connection[id: 55faae33-a50d-4190-b6e5-0250453770c5] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[10:23:45.824 PM]: Connection[id: 55faae33-a50d-4190-b6e5-0250453770c5] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[10:23:45.828 PM]: Connection[id: 55faae33-a50d-4190-b6e5-0250453770c5] - connection object created successfully."}
+{"level":"INFO","message":"[10:23:45.829 PM]: Connection[id: 55faae33-a50d-4190-b6e5-0250453770c5] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[10:23:45.834 PM]: Connection[id: 55faae33-a50d-4190-b6e5-0250453770c5] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[10:23:45.835 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[10:23:45.844 PM]: No client config detected."}
+{"level":"INFO","message":"[10:23:45.844 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[10:23:45.845 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[10:23:45.851 PM]: Connection[id: 55faae33-a50d-4190-b6e5-0250453770c5] - connected successfully after 21.80254799999966 milliseconds"}
+{"level":"INFO","message":"[5:29:18.087 AM]: Creating new connection object"}
+{"level":"INFO","message":"[5:29:18.111 AM]: Creating Connection[id: 2698f5b9-8a43-44a3-81f2-099c1779c0ad] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:29:18.112 AM]: Connection[id: 2698f5b9-8a43-44a3-81f2-099c1779c0ad] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:29:18.113 AM]: Connection[id: 2698f5b9-8a43-44a3-81f2-099c1779c0ad] - connection object created successfully."}
+{"level":"INFO","message":"[5:29:18.114 AM]: Connection[id: 2698f5b9-8a43-44a3-81f2-099c1779c0ad] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:29:18.116 AM]: Connection[id: 2698f5b9-8a43-44a3-81f2-099c1779c0ad] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:29:18.116 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:29:18.121 AM]: No client config detected."}
+{"level":"INFO","message":"[5:29:18.122 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:29:18.122 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:29:18.127 AM]: Connection[id: 2698f5b9-8a43-44a3-81f2-099c1779c0ad] - connected successfully after 12.430103000000145 milliseconds"}
+{"level":"INFO","message":"[5:46:50.932 AM]: Creating new connection object"}
+{"level":"INFO","message":"[5:46:50.958 AM]: Creating Connection[id: 1266fc90-4065-4069-9d50-05866b46e053] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:46:50.959 AM]: Connection[id: 1266fc90-4065-4069-9d50-05866b46e053] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:46:50.960 AM]: Connection[id: 1266fc90-4065-4069-9d50-05866b46e053] - connection object created successfully."}
+{"level":"INFO","message":"[5:46:50.963 AM]: Connection[id: 1266fc90-4065-4069-9d50-05866b46e053] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:46:50.965 AM]: Connection[id: 1266fc90-4065-4069-9d50-05866b46e053] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:46:50.966 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:46:50.975 AM]: No client config detected."}
+{"level":"INFO","message":"[5:46:50.976 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:46:50.977 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:46:50.984 AM]: Connection[id: 1266fc90-4065-4069-9d50-05866b46e053] - connected successfully after 21.262068999999883 milliseconds"}
+{"level":"INFO","message":"[5:50:43.443 AM]: Creating new connection object"}
+{"level":"INFO","message":"[5:50:43.460 AM]: Creating Connection[id: 994d3cb5-bb7f-4534-ac62-e9368ae65b6e] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: undefined, warehouse: COMPUTE_WH, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:50:43.461 AM]: Connection[id: 994d3cb5-bb7f-4534-ac62-e9368ae65b6e] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:50:43.461 AM]: Connection[id: 994d3cb5-bb7f-4534-ac62-e9368ae65b6e] - connection object created successfully."}
+{"level":"INFO","message":"[5:50:43.462 AM]: Connection[id: 994d3cb5-bb7f-4534-ac62-e9368ae65b6e] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:50:43.463 AM]: Connection[id: 994d3cb5-bb7f-4534-ac62-e9368ae65b6e] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:50:43.464 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:50:43.470 AM]: No client config detected."}
+{"level":"INFO","message":"[5:50:43.471 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:50:43.471 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:50:43.475 AM]: Connection[id: 994d3cb5-bb7f-4534-ac62-e9368ae65b6e] - connected successfully after 12.840449000000035 milliseconds"}
+{"level":"INFO","message":"[5:51:10.776 AM]: Creating new connection object"}
+{"level":"INFO","message":"[5:51:10.801 AM]: Creating Connection[id: 875b8dbb-929e-479f-9d4b-804e4408c938] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: undefined, warehouse: COMPUTE_WH, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:51:10.802 AM]: Connection[id: 875b8dbb-929e-479f-9d4b-804e4408c938] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:51:10.803 AM]: Connection[id: 875b8dbb-929e-479f-9d4b-804e4408c938] - connection object created successfully."}
+{"level":"INFO","message":"[5:51:10.803 AM]: Connection[id: 875b8dbb-929e-479f-9d4b-804e4408c938] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:51:10.804 AM]: Connection[id: 875b8dbb-929e-479f-9d4b-804e4408c938] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:51:10.805 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:51:10.813 AM]: No client config detected."}
+{"level":"INFO","message":"[5:51:10.814 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:51:10.815 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:51:10.820 AM]: Connection[id: 875b8dbb-929e-479f-9d4b-804e4408c938] - connected successfully after 16.630402000000004 milliseconds"}
+{"level":"INFO","message":"[5:51:27.118 AM]: Creating new connection object"}
+{"level":"INFO","message":"[5:51:27.143 AM]: Creating Connection[id: 50188fb6-8ee3-4ffb-92a1-59bd5be46237] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: undefined, warehouse: COMPUTE_WH, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:51:27.145 AM]: Connection[id: 50188fb6-8ee3-4ffb-92a1-59bd5be46237] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:51:27.146 AM]: Connection[id: 50188fb6-8ee3-4ffb-92a1-59bd5be46237] - connection object created successfully."}
+{"level":"INFO","message":"[5:51:27.147 AM]: Connection[id: 50188fb6-8ee3-4ffb-92a1-59bd5be46237] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:51:27.148 AM]: Connection[id: 50188fb6-8ee3-4ffb-92a1-59bd5be46237] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:51:27.149 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:51:27.172 AM]: No client config detected."}
+{"level":"INFO","message":"[5:51:27.173 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:51:27.174 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:51:27.181 AM]: Connection[id: 50188fb6-8ee3-4ffb-92a1-59bd5be46237] - connected successfully after 33.860259999999926 milliseconds"}
+{"level":"INFO","message":"[5:52:01.883 AM]: Creating new connection object"}
+{"level":"INFO","message":"[5:52:01.921 AM]: Creating Connection[id: 48660fed-490f-4404-b494-5afd66a8b6c0] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: undefined, warehouse: COMPUTE_WH, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:52:01.928 AM]: Connection[id: 48660fed-490f-4404-b494-5afd66a8b6c0] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:52:01.930 AM]: Connection[id: 48660fed-490f-4404-b494-5afd66a8b6c0] - connection object created successfully."}
+{"level":"INFO","message":"[5:52:01.931 AM]: Connection[id: 48660fed-490f-4404-b494-5afd66a8b6c0] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:52:01.935 AM]: Connection[id: 48660fed-490f-4404-b494-5afd66a8b6c0] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:52:01.936 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:52:01.964 AM]: No client config detected."}
+{"level":"INFO","message":"[5:52:01.968 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:52:01.969 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:52:01.983 AM]: Connection[id: 48660fed-490f-4404-b494-5afd66a8b6c0] - connected successfully after 51.94904900000006 milliseconds"}
+{"level":"INFO","message":"[5:52:26.993 AM]: Creating new connection object"}
+{"level":"INFO","message":"[5:52:27.020 AM]: Creating Connection[id: 6f8ea4fc-ab0a-4bb7-a6ed-5c813c31695e] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: undefined, warehouse: COMPUTE_WH, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[5:52:27.021 AM]: Connection[id: 6f8ea4fc-ab0a-4bb7-a6ed-5c813c31695e] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[5:52:27.021 AM]: Connection[id: 6f8ea4fc-ab0a-4bb7-a6ed-5c813c31695e] - connection object created successfully."}
+{"level":"INFO","message":"[5:52:27.022 AM]: Connection[id: 6f8ea4fc-ab0a-4bb7-a6ed-5c813c31695e] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[5:52:27.024 AM]: Connection[id: 6f8ea4fc-ab0a-4bb7-a6ed-5c813c31695e] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[5:52:27.024 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[5:52:27.038 AM]: No client config detected."}
+{"level":"INFO","message":"[5:52:27.039 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[5:52:27.039 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[5:52:27.045 AM]: Connection[id: 6f8ea4fc-ab0a-4bb7-a6ed-5c813c31695e] - connected successfully after 22.38461600000005 milliseconds"}
+{"level":"INFO","message":"[8:57:05.554 PM]: Creating new connection object"}
+{"level":"INFO","message":"[8:57:05.586 PM]: Creating Connection[id: 25c3107d-dab9-4cef-b4e9-10af60b8ddd7] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[8:57:05.587 PM]: Connection[id: 25c3107d-dab9-4cef-b4e9-10af60b8ddd7] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[8:57:05.589 PM]: Connection[id: 25c3107d-dab9-4cef-b4e9-10af60b8ddd7] - connection object created successfully."}
+{"level":"INFO","message":"[8:57:05.590 PM]: Connection[id: 25c3107d-dab9-4cef-b4e9-10af60b8ddd7] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[8:57:05.592 PM]: Connection[id: 25c3107d-dab9-4cef-b4e9-10af60b8ddd7] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[8:57:05.593 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[8:57:05.603 PM]: No client config detected."}
+{"level":"INFO","message":"[8:57:05.605 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[8:57:05.606 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[8:57:05.612 PM]: Connection[id: 25c3107d-dab9-4cef-b4e9-10af60b8ddd7] - connected successfully after 21.90358500000002 milliseconds"}
+{"level":"INFO","message":"[3:31:01.288 AM]: Creating new connection object"}
+{"level":"INFO","message":"[3:31:01.398 AM]: Creating Connection[id: 1b46d61f-7b69-41f2-ab8d-6e336f2194e4] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: tinetio123, password is provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: GMH_WAREHOUSE, region: undefined, authenticator: SNOWFLAKE, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[3:31:01.399 AM]: Connection[id: 1b46d61f-7b69-41f2-ab8d-6e336f2194e4] additional details: passcode in password is provided, passcode is not provided, private key is not provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[3:31:01.400 AM]: Connection[id: 1b46d61f-7b69-41f2-ab8d-6e336f2194e4] - connection object created successfully."}
+{"level":"INFO","message":"[3:31:01.414 AM]: Connection[id: 1b46d61f-7b69-41f2-ab8d-6e336f2194e4] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[3:31:01.417 AM]: Connection[id: 1b46d61f-7b69-41f2-ab8d-6e336f2194e4] - authentication successful using: SNOWFLAKE"}
+{"level":"INFO","message":"[3:31:01.425 AM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[3:31:01.466 AM]: No client config detected."}
+{"level":"INFO","message":"[3:31:01.467 AM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[3:31:01.467 AM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[3:31:01.487 AM]: Connection[id: 1b46d61f-7b69-41f2-ab8d-6e336f2194e4] - connected successfully after 72.88173099999949 milliseconds"}

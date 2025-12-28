@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useState, useTransition, useEffect } from 'react';
 import type { CSSProperties } from 'react';
 import { useRouter } from 'next/navigation';
-import { getBasePath, withBasePath } from '@/lib/basePath';
+import { withBasePath } from '@/lib/basePath';
 
 type FormState = {
   email: string;
@@ -15,7 +15,16 @@ export default function LoginForm() {
   const [state, setState] = useState<FormState>({ email: '', password: '' });
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const basePath = getBasePath();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
+    // Prevent hydration mismatch by rendering nothing on server
+    return <div style={{ minHeight: '300px' }} />;
+  }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,9 +55,9 @@ export default function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', color: '#0f172a', fontWeight: 600 }}>
-        Email
+    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }} suppressHydrationWarning>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }} suppressHydrationWarning>
+        <span style={{ color: '#0f172a', fontWeight: 600 }}>Email</span>
         <input
           type="email"
           required
@@ -57,11 +66,12 @@ export default function LoginForm() {
           style={inputStyle}
           placeholder="you@example.com"
           autoComplete="username"
+          suppressHydrationWarning
         />
-      </label>
+      </div>
 
-      <label style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', color: '#0f172a', fontWeight: 600 }}>
-        Password
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }} suppressHydrationWarning>
+        <span style={{ color: '#0f172a', fontWeight: 600 }}>Password</span>
         <input
           type="password"
           required
@@ -70,8 +80,9 @@ export default function LoginForm() {
           style={inputStyle}
           placeholder="••••••••••"
           autoComplete="current-password"
+          suppressHydrationWarning
         />
-      </label>
+      </div>
 
       {error && (
         <p style={{ color: '#b91c1c', background: 'rgba(248, 113, 113, 0.15)', padding: '0.75rem', borderRadius: '0.6rem' }}>
@@ -108,4 +119,3 @@ const inputStyle: CSSProperties = {
   color: '#0f172a',
   boxShadow: '0 1px 2px rgba(15, 23, 42, 0.05)'
 };
-

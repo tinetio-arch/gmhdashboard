@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { withBasePath } from '@/lib/basePath';
 import type {
   QuickBooksDashboardMetrics,
   QuickBooksPaymentIssue,
@@ -30,16 +31,30 @@ type QuickBooksCardProps = {
   };
 };
 
-function formatCurrency(value: number): string {
+function formatCurrency(value: number | string | null | undefined): string {
+  const num = Number(value);
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
     maximumFractionDigits: 2,
-  }).format(value || 0);
+  }).format(Number.isFinite(num) ? num : 0);
 }
 
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat('en-US').format(value || 0);
+function formatNumber(value: number | string | null | undefined): string {
+  const num = Number(value);
+  return new Intl.NumberFormat('en-US').format(Number.isFinite(num) ? num : 0);
+}
+
+function safeDateFormat(dateInput: string | Date | null | undefined): string {
+  if (!dateInput) return '';
+  const d = new Date(dateInput);
+  if (Number.isNaN(d.getTime())) return '';
+  // Use UTC to prevent hydration mismatch between server (UTC) and client (local)
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const yyyy = d.getUTCFullYear();
+  // User requested MM-DD-YYYY format
+  return `${mm}-${dd}-${yyyy}`;
 }
 
 export default function QuickBooksCard({
@@ -66,7 +81,7 @@ export default function QuickBooksCard({
     setOperationError(null);
     setSyncing(true);
     try {
-      const response = await fetch('/ops/api/admin/quickbooks/sync', {
+      const response = await fetch(withBasePath('/api/admin/quickbooks/sync'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -92,7 +107,7 @@ export default function QuickBooksCard({
   const handleResolveIssue = async (issueId: string) => {
     setResolvingIssueId(issueId);
     try {
-      const response = await fetch('/ops/api/admin/quickbooks/resolve-payment-issue', {
+      const response = await fetch(withBasePath('/api/admin/quickbooks/resolve-payment-issue'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ issueId }),
@@ -117,13 +132,13 @@ export default function QuickBooksCard({
     setLoadingCustomers(true);
     try {
       // Try to get all QuickBooks customers from the API
-      const response = await fetch('/ops/api/admin/quickbooks/patient-matching');
+      const response = await fetch(withBasePath('/api/admin/quickbooks/patient-matching'));
       if (!response.ok) throw new Error('Failed to load customers');
       const data = await response.json();
-      
+
       // Extract customers from multiple sources
       const customers = new Map<string, { Id: string; DisplayName: string }>();
-      
+
       // Add from potential matches
       if (data.potentialMatches) {
         data.potentialMatches.forEach((m: any) => {
@@ -132,7 +147,7 @@ export default function QuickBooksCard({
           }
         });
       }
-      
+
       // Add from unmapped recurring customers
       if (data.unmappedRecurringCustomers) {
         data.unmappedRecurringCustomers.forEach((c: any) => {
@@ -141,7 +156,7 @@ export default function QuickBooksCard({
           }
         });
       }
-      
+
       // Add from all customers list if available
       if (data.allCustomers) {
         data.allCustomers.forEach((c: any) => {
@@ -150,15 +165,15 @@ export default function QuickBooksCard({
           }
         });
       }
-      
+
       setQbCustomers(Array.from(customers.values()));
-      
+
       // Store unmapped recurring customers for intake
       if (data.unmappedRecurringCustomers) {
         setUnmappedRecurringCustomers(data.unmappedRecurringCustomers);
       }
     } catch (error) {
-      setOperationError('Failed to load QuickBooks customers. Please try syncing QuickBooks first.');
+      setOperationError('Failed to load customers. Please try syncing QuickBooks first.');
     } finally {
       setLoadingCustomers(false);
     }
@@ -166,7 +181,7 @@ export default function QuickBooksCard({
 
   const handleMapPatient = async (patientId: string, qbCustomerId: string) => {
     try {
-      const response = await fetch('/ops/api/admin/quickbooks/patient-matching', {
+      const response = await fetch(withBasePath('/api/admin/quickbooks/patient-matching'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ patientId, qbCustomerId, matchMethod: 'manual' }),
@@ -200,7 +215,7 @@ export default function QuickBooksCard({
       const address = null;
 
       // Create patient from QuickBooks customer
-      const createResponse = await fetch('/ops/api/patients', {
+      const createResponse = await fetch(withBasePath('/api/patients'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -226,13 +241,13 @@ export default function QuickBooksCard({
       }
 
       // Automatically map the new patient to the QuickBooks customer
-      const mapResponse = await fetch('/ops/api/admin/quickbooks/patient-matching', {
+      const mapResponse = await fetch(withBasePath('/api/admin/quickbooks/patient-matching'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          patientId: newPatientId, 
-          qbCustomerId: customer.Id, 
-          matchMethod: 'intake' 
+        body: JSON.stringify({
+          patientId: newPatientId,
+          qbCustomerId: customer.Id,
+          matchMethod: 'intake'
         }),
       });
 
@@ -301,8 +316,8 @@ export default function QuickBooksCard({
             <p style={{ margin: 0, color: '#7c2d12', fontSize: '0.9rem' }}>
               {connection.connected ? 'Connected to QuickBooks' : 'Connection required'}
               {connection.lastChecked && (
-                <span style={{ marginLeft: '0.5rem', color: '#a16207' }}>
-                  · Last checked {new Date(connection.lastChecked).toLocaleString()}
+                <span style={{ marginLeft: '0.5rem', color: '#a16207' }} suppressHydrationWarning>
+                  · Last checked {safeDateFormat(connection.lastChecked)}
                 </span>
               )}
             </p>
@@ -314,7 +329,7 @@ export default function QuickBooksCard({
           </div>
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
             <a
-              href="/ops/api/auth/quickbooks"
+              href={withBasePath('/api/auth/quickbooks')}
               style={{
                 padding: '0.6rem 1rem',
                 borderRadius: '0.6rem',
@@ -344,7 +359,7 @@ export default function QuickBooksCard({
               {syncing ? 'Syncing…' : 'Sync QuickBooks'}
             </button>
             <a
-              href="/ops/admin/quickbooks"
+              href={withBasePath('/admin/quickbooks')}
               style={{
                 padding: '0.6rem 1rem',
                 borderRadius: '0.6rem',
@@ -421,7 +436,7 @@ export default function QuickBooksCard({
           emptyMessage="All QuickBooks payments are current."
           footer={
             <a
-              href="/ops/admin/quickbooks"
+              href={withBasePath('/admin/quickbooks')}
               style={{ fontSize: '0.8rem', color: '#b91c1c', fontWeight: 600, textDecoration: 'none' }}
             >
               Manage payment issues →
@@ -449,7 +464,7 @@ export default function QuickBooksCard({
                   {issue.issue_type.replace(/_/g, ' ')} · {issue.days_overdue ?? 0} days overdue
                 </div>
                 <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                  Opened {new Date(issue.created_at).toLocaleDateString()}
+                  Opened {safeDateFormat(issue.created_at)}
                 </div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.5rem' }}>
@@ -480,7 +495,7 @@ export default function QuickBooksCard({
           emptyMessage="All QuickBooks patients are mapped."
           footer={
             <a
-              href="/ops/admin/quickbooks"
+              href={withBasePath('/admin/quickbooks')}
               style={{ fontSize: '0.8rem', color: '#92400e', fontWeight: 600, textDecoration: 'none' }}
             >
               Resolve unmatched patients →
@@ -564,13 +579,13 @@ export default function QuickBooksCard({
                           fontSize: '0.8rem',
                           maxHeight: '200px',
                         }}
-                        size={Math.min(10, qbCustomers.filter(c => 
+                        size={Math.min(10, qbCustomers.filter(c =>
                           !customerSearchTerm || c.DisplayName.toLowerCase().includes(customerSearchTerm.toLowerCase())
                         ).length + 1)}
                       >
                         <option value="">Choose customer... ({qbCustomers.length} total)</option>
                         {qbCustomers
-                          .filter(c => 
+                          .filter(c =>
                             !customerSearchTerm || c.DisplayName.toLowerCase().includes(customerSearchTerm.toLowerCase())
                           )
                           .sort((a, b) => a.DisplayName.localeCompare(b.DisplayName))
@@ -582,7 +597,7 @@ export default function QuickBooksCard({
                       </select>
                       {customerSearchTerm && (
                         <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
-                          Showing {qbCustomers.filter(c => 
+                          Showing {qbCustomers.filter(c =>
                             c.DisplayName.toLowerCase().includes(customerSearchTerm.toLowerCase())
                           ).length} of {qbCustomers.length} customers
                         </div>
@@ -730,5 +745,3 @@ function MetricTile({ label, value, accent, helper }: MetricTileProps) {
     </div>
   );
 }
-
-

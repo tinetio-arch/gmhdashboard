@@ -216,7 +216,7 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
   const filteredPatients = useMemo(() => {
     const query = patientQuery.trim().toLowerCase();
     if (!query) {
-      return patients.slice(0, 15);
+      return patients.slice(0, 50);
     }
     return patients
       .filter((patient) => {
@@ -229,7 +229,7 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
         const lastNameMatch = reversed.length > 0 && reversed[0].startsWith(query);
         return name.includes(query) || tokenMatch || lastNameMatch || type.includes(query);
       })
-      .slice(0, 15);
+      .slice(0, 50);
   }, [patientQuery, patients]);
 
   const doseValue = Number.parseFloat(dosePerSyringe);

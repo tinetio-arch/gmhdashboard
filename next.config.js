@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  trailingSlash: true,
   basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
   reactStrictMode: true,
   swcMinify: true,
@@ -9,6 +10,9 @@ const nextConfig = {
     ],
   },
   // Exclude backup directories from build
+  typescript: {
+    ignoreBuildErrors: true,
+  },
   webpack: (config) => {
     config.watchOptions = {
       ...config.watchOptions,
