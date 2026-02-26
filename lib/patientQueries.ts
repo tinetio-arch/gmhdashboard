@@ -208,12 +208,19 @@ function enforceLabStatusOnPatientStatus(
   labState: LabStatusState
 ): string | null {
   const normalized = statusKey?.trim().toLowerCase() ?? null;
-  if (normalized === 'active' && (labState === 'overdue' || labState === 'due-soon')) {
+
+  // Only change to active_pending if labs are due soon (within 30 days)
+  // Do NOT auto-change for overdue - that requires manual attention
+  if (normalized === 'active' && labState === 'due-soon') {
     return 'active_pending';
   }
+
+  // If patient is active_pending but labs are current (more than 30 days out),
+  // they should be Active (green)
   if (normalized === 'active_pending' && labState === 'current') {
     return 'active';
   }
+
   return statusKey ?? null;
 }
 
@@ -320,6 +327,7 @@ export type PatientOption = {
   lab_status: string | null;
   last_lab: string | null;
   next_lab: string | null;
+  method_of_payment: string | null;
 };
 
 export async function fetchActivePatientOptions(): Promise<PatientOption[]> {
@@ -332,9 +340,9 @@ export async function fetchActivePatientOptions(): Promise<PatientOption[]> {
         type_of_client,
         status_key,
         alert_status,
-        lab_status,
         last_lab,
-        next_lab
+        next_lab,
+        method_of_payment
      FROM patient_data_entry_v
      WHERE
        (
@@ -365,7 +373,8 @@ export async function fetchActivePatientOptions(): Promise<PatientOption[]> {
     alert_status: formatOptionalValue(row.alert_status),
     lab_status: formatOptionalValue(row.lab_status),
     last_lab: formatOptionalValue(row.last_lab),
-    next_lab: formatOptionalValue(row.next_lab)
+    next_lab: formatOptionalValue(row.next_lab),
+    method_of_payment: formatOptionalValue(row.method_of_payment)
   }));
 }
 
@@ -411,6 +420,7 @@ export type PatientDataEntryPayload = {
   lastSupplyDate: string | null;
   lastControlledDispenseAt: string | null;
   lastDeaDrug: string | null;
+  clinic?: string | null;  // 'nowprimary.care' or 'nowmenshealth.care'
 };
 
 export async function createPatient(payload: PatientDataEntryPayload): Promise<PatientDataEntryRow> {
@@ -465,6 +475,7 @@ export async function createPatient(payload: PatientDataEntryPayload): Promise<P
           regular_client,
           is_verified,
           membership_owes,
+          clinic,
           updated_at
        ) VALUES (
           $1,
@@ -492,6 +503,7 @@ export async function createPatient(payload: PatientDataEntryPayload): Promise<P
           $20,
           $21,
           $22,
+          $23,
           NOW()
        ) RETURNING patient_id`,
       [
@@ -516,7 +528,8 @@ export async function createPatient(payload: PatientDataEntryPayload): Promise<P
         email,
         regularClient,
         isVerified,
-        membershipOwes
+        membershipOwes,
+        payload.clinic ?? null
       ]
     );
     const patientId = patientInsert.rows[0].patient_id;

@@ -1,0 +1,730 @@
+[dotenv@17.2.3] injecting env (44) from .env.local -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+🚀 EXECUTING Safe Duplicate Merge
+Fetching ungrouped active duplicates from Snowflake...
+
+{"level":"INFO","message":"[12:56:44.372 PM]: Creating new connection object"}
+{"level":"INFO","message":"[12:56:44.402 PM]: Creating Connection[id: 34ce0a6f-0076-4ee6-930d-5a306cf75f97] with host: KXWWLYZ-DZ83651.snowflakecomputing.com, account: KXWWLYZ-DZ83651, accessUrl: https://KXWWLYZ-DZ83651.snowflakecomputing.com, user: JARVIS_SERVICE_ACCOUNT, password is not provided, role: undefined, database: GMH_CLINIC, schema: PATIENT_DATA, warehouse: COMPUTE_WH, region: undefined, authenticator: SNOWFLAKE_JWT, ocsp mode: FAIL_OPEN, os: linux, os version: 6.1.155-176.282.amzn2023.x86_64"}
+{"level":"INFO","message":"[12:56:44.402 PM]: Connection[id: 34ce0a6f-0076-4ee6-930d-5a306cf75f97] additional details: passcode in password is provided, passcode is not provided, private key is provided, application: undefined, client name: snowflake-sdk, client version: 1.15.0, retry timeout: 300, private key path: undefined, private key pass is not provided, client store temporary credential: false, browser response timeout: 120000"}
+{"level":"INFO","message":"[12:56:44.403 PM]: Connection[id: 34ce0a6f-0076-4ee6-930d-5a306cf75f97] - connection object created successfully."}
+{"level":"INFO","message":"[12:56:44.404 PM]: Connection[id: 34ce0a6f-0076-4ee6-930d-5a306cf75f97] - connecting. Associated Snowflake domain: GLOBAL"}
+{"level":"INFO","message":"[12:56:44.412 PM]: Connection[id: 34ce0a6f-0076-4ee6-930d-5a306cf75f97] - authentication successful using: SNOWFLAKE_JWT"}
+{"level":"INFO","message":"[12:56:44.413 PM]: Trying to initialize Easy Logging"}
+{"level":"INFO","message":"[12:56:44.415 PM]: No client config detected."}
+{"level":"INFO","message":"[12:56:44.415 PM]: No config file path found. Client config will not be used."}
+{"level":"INFO","message":"[12:56:44.415 PM]: Easy Logging is disabled as no config has been found"}
+{"level":"INFO","message":"[12:56:44.418 PM]: Connection[id: 34ce0a6f-0076-4ee6-930d-5a306cf75f97] - connected successfully after 14.425974999999994 milliseconds"}
+✅ Loaded 5759 patients
+
+Found 379 potential duplicate clusters
+
+🔍 Enriching with: Active, Group, Stripe, Data Richness...
+
+   Enriched 50/379...
+   Enriched 100/379...
+   Enriched 150/379...
+   Enriched 200/379...
+   Enriched 250/379...
+   Enriched 300/379...
+   Enriched 350/379...
+
+✅ Found 89 safe clusters to process
+
+================================================================================
+🔥 BEGINNING MERGE EXECUTION
+================================================================================
+
+[1/89] Mallorie Barrons
+  👑 MASTER: 12743388
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743384
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[2/89] Audrew Black
+  👑 MASTER: 12743972
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743976
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[3/89] Rachel Ferguson
+  👑 MASTER: 12744996
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745002
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[4/89] Mary Houghton
+  👑 MASTER: 12743346
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743340
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[5/89] Jeff Jones
+  👑 MASTER: 12744419
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744430
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[6/89] Christy Maggio
+  👑 MASTER: 12746714
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746719
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[7/89] Mathew Mitchell
+  👑 MASTER: 12743798
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743803
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[8/89] Greg Riordan
+  👑 MASTER: 12742095
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742100
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[9/89] Matt Ruwe
+  👑 MASTER: 12743023
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743028
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[10/89] sara ryburn
+  👑 MASTER: 12743066
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743074
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[11/89] Clarence Neil Ajon
+  👑 MASTER: 12741685
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742088
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[12/89] Avery Anderson
+  👑 MASTER: 12742140
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742145
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12742220
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[13/89] Alex Arizm
+  👑 MASTER: 12742450
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742454
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12742466
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[14/89] Armando Armenta
+  👑 MASTER: 12742485
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742495
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[15/89] LEA Riordan
+  👑 MASTER: 12742107
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742897
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[16/89] Brittany Baird
+  👑 MASTER: 12743039
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743043
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12743048
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[17/89] Alexa Bakken
+  👑 MASTER: 12743101
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745193
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[18/89] Aspen Baldenegro
+  👑 MASTER: 12743136
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743144
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[19/89] Zoey McClellan
+  👑 MASTER: 12742234
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743284
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[20/89] Marie Lynn Bartock
+  👑 MASTER: 12743423
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743427
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[21/89] Samantha Beasley
+  👑 MASTER: 12743615
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745137
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[22/89] Caden Bernier
+  👑 MASTER: 12743843
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743847
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[23/89] Amy Bonney
+  👑 MASTER: 12744216
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744219
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[24/89] Daphne Bostwick
+  👑 MASTER: 12744347
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744351
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[25/89] Kelly Davina
+  👑 MASTER: 12742398
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744533
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[26/89] Bryce Buntin
+  👑 MASTER: 12745148
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746999
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[27/89] Engracia Caballaro
+  👑 MASTER: 12745372
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745376
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[28/89] Ann Calano
+  👑 MASTER: 12745422
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745427
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[29/89] Andrea Carrillo
+  👑 MASTER: 12745775
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745779
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[30/89] April Christie
+  👑 MASTER: 12746320
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746323
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12746331
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[31/89] Laura Clark
+  👑 MASTER: 12746421
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746428
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[32/89] Willis McIntosh
+  👑 MASTER: 12742746
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746709
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[33/89] Capri Conterno
+  👑 MASTER: 12746766
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746770
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[34/89] Helen Cooper
+  👑 MASTER: 12741438
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12741465
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[35/89] Aspyn Crumley
+  👑 MASTER: 12741899
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742135
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[36/89] Faith Dekens
+  👑 MASTER: 12742729
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742733
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[37/89] Carin Dey
+  👑 MASTER: 12743059
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743072
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[38/89] Katie Hanna
+  👑 MASTER: 12741739
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743824
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[39/89] Caleb Erickson
+  👑 MASTER: 12744361
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744363
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[40/89] Cora Farmer
+  👑 MASTER: 12744718
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744731
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[41/89] Salvatore Fiumara
+  👑 MASTER: 12745341
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745348
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[42/89] Aila Stanford
+  👑 MASTER: 12745064
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745067
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12746761
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[43/89] Ashley Mahan
+  👑 MASTER: 12746740
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746895
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[44/89] Kristen Grell
+  👑 MASTER: 12746951
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746952
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[45/89] Michael Irving
+  👑 MASTER: 12743899
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12747063
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[46/89] Nicole Haas
+  👑 MASTER: 12741395
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12741399
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[47/89] Matthew Hamby
+  👑 MASTER: 12741618
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12741621
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[48/89] Amberlie Hamm
+  👑 MASTER: 12741655
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12741660
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[49/89] Jesse Heck
+  👑 MASTER: 12742395
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742397
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[50/89] Carter Henderson
+  👑 MASTER: 12742512
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742531
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12742535
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[51/89] Callie Hernandez
+  👑 MASTER: 12742600
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742619
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[52/89] Carmen Hernandez
+  👑 MASTER: 12742607
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746710
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[53/89] Rachel Rogers
+  👑 MASTER: 12742532
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743656
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[54/89] Aaron Janosco
+  👑 MASTER: 12744008
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744010
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[55/89] Carson Johnston
+  👑 MASTER: 12744345
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744348
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[56/89] Natalie King
+  👑 MASTER: 12744951
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744964
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12744968
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[57/89] Alana Morrison
+  👑 MASTER: 12744305
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744952
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[58/89] Madison Koob
+  👑 MASTER: 12745191
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746792
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[59/89] Keith Kschinka
+  👑 MASTER: 12745339
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745342
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[60/89] Rose Kugler
+  👑 MASTER: 12745369
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745371
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[61/89] Jaden Lee
+  👑 MASTER: 12745852
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745855
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[62/89] Leah Lissy
+  👑 MASTER: 12746216
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746226
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[63/89] Damian Lomas
+  👑 MASTER: 12746301
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746303
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[64/89] Kristen Maas
+  👑 MASTER: 12746569
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746571
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[65/89] James McCabe
+  👑 MASTER: 12742152
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742159
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[66/89] Jayden Metcalf
+  👑 MASTER: 12743238
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743244
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12743251
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12743273
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[67/89] Amos Milbourne
+  👑 MASTER: 12743434
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743436
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[68/89] BrookeLynne Morrell
+  👑 MASTER: 12744247
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744252
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[69/89] Camille Munoz
+  👑 MASTER: 12744479
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744523
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[70/89] Kaeden Newkirk
+  👑 MASTER: 12745045
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745050
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[71/89] Kassandra York
+  👑 MASTER: 12743741
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745151
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12745154
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[72/89] Alayna Parks
+  👑 MASTER: 12746254
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746257
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12746260
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12746265
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12746269
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[73/89] christian pennell
+  👑 MASTER: 12746511
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746512
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[74/89] Ken Percy
+  👑 MASTER: 12746543
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746547
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[75/89] Jack Polk
+  👑 MASTER: 12746907
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746908
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[76/89] Leigh polk
+  👑 MASTER: 12746904
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12746910
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12746915
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12746912
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[77/89] Finn Reverdiau
+  👑 MASTER: 12741812
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12741818
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12741821
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12741824
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12742980
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[78/89] Mckinley rice
+  👑 MASTER: 12741933
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12741941
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[79/89] Landon Riss
+  👑 MASTER: 12742128
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742796
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[80/89] Anthony Roberts
+  👑 MASTER: 12742219
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742254
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12744696
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[81/89] Brantley Ross
+  👑 MASTER: 12742748
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742752
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12743051
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+  🗑️  DUPLICATE: 12743065
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[82/89] Hannah Sarge
+  👑 MASTER: 12743351
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743354
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[83/89] Faith Scott
+  👑 MASTER: 12743909
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12743941
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[84/89] Emery Sheetz
+  👑 MASTER: 12744164
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744169
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[85/89] Whitney Welch
+  👑 MASTER: 12742567
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12744524
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[86/89] Ahren St Martin
+  👑 MASTER: 12745239
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745241
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[87/89] Tim Strowd
+  👑 MASTER: 12745413
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745417
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[88/89] Gerald Styre
+  👑 MASTER: 12745469
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12745473
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+[89/89] Liam Wanamaker
+  👑 MASTER: 12742247
+     Stripe: None | Docs: 0 | Forms: 0
+  🗑️  DUPLICATE: 12742244
+     Stripe: None | Docs: 0
+     ✅ ARCHIVED
+
+================================================================================
+✅ MERGE COMPLETE
+================================================================================
+Clusters Processed: 89
+Records Archived: 110
+Records Skipped (Stripe): 0
+
+📄 Log saved: merge_execution_log.md
+

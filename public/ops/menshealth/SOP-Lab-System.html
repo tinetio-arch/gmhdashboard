@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lab Management System - Standard Operating Procedure (SOP)</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            color: #1e293b;
+            line-height: 1.6;
+            background: #f1f5f9;
+            padding: 2rem;
+        }
+
+        .page {
+            background: #fff;
+            max-width: 850px;
+            margin: 0 auto 2rem;
+            padding: 3rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+            border-radius: 8px;
+        }
+
+        h1 {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 0.25rem;
+        }
+
+        h2 {
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: #1e40af;
+            margin: 2rem 0 0.75rem;
+            padding-bottom: 0.4rem;
+            border-bottom: 2px solid #dbeafe;
+        }
+
+        h2::before { content: '■ '; color: #3b82f6; }
+
+        h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #334155;
+            margin: 1.25rem 0 0.5rem;
+        }
+
+        p { margin: 0.5rem 0; }
+
+        .meta {
+            color: #64748b;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .meta strong { color: #334155; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0.75rem 0;
+            font-size: 0.88rem;
+        }
+
+        th {
+            background: #f8fafc;
+            font-weight: 600;
+            text-align: left;
+            color: #475569;
+            border: 1px solid #e2e8f0;
+            padding: 0.5rem 0.6rem;
+        }
+
+        td {
+            border: 1px solid #e2e8f0;
+            padding: 0.5rem 0.6rem;
+            color: #334155;
+        }
+
+        ol, ul { margin: 0.5rem 0 0.5rem 1.5rem; }
+        li { margin: 0.25rem 0; }
+
+        code {
+            background: #f1f5f9;
+            padding: 0.15rem 0.35rem;
+            border-radius: 3px;
+            font-size: 0.85em;
+            color: #0f172a;
+        }
+
+        .important {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 0.75rem 1rem;
+            margin: 0.75rem 0;
+            border-radius: 0 4px 4px 0;
+            font-size: 0.9rem;
+        }
+
+        .important strong { color: #92400e; }
+
+        .new-badge {
+            display: inline-block;
+            background: #10b981;
+            color: #fff;
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 0.1rem 0.4rem;
+            border-radius: 3px;
+            margin-left: 0.4rem;
+            vertical-align: middle;
+            letter-spacing: 0.03em;
+        }
+
+        .warning {
+            background: #fef2f2;
+            border-left: 4px solid #ef4444;
+            padding: 0.75rem 1rem;
+            margin: 0.75rem 0;
+            border-radius: 0 4px 4px 0;
+            font-size: 0.9rem;
+        }
+
+        .warning strong { color: #991b1b; }
+
+        .footer {
+            text-align: center;
+            color: #94a3b8;
+            font-size: 0.8rem;
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        @media print {
+            body { background: #fff; padding: 0; }
+            .page { box-shadow: none; margin: 0; padding: 1.5rem; page-break-after: always; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- PAGE 1 -->
+<div class="page">
+    <h1>Lab Management System</h1>
+    <p style="font-size: 1.1rem; color: #64748b; margin-bottom: 1rem;">Standard Operating Procedure (SOP)</p>
+
+    <div class="meta">
+        <strong>Effective Date:</strong> February 17, 2026<br>
+        <strong>Department:</strong> Clinical Operations - Men's Health & Primary Care<br>
+        <strong>Purpose:</strong> Comprehensive lab ordering, result review, and patient management procedures
+    </div>
+
+    <h2>OVERVIEW</h2>
+    <p>The GMH Lab System integrates with <strong>Access Medical Labs</strong> to provide:</p>
+    <ul>
+        <li><strong>Lab Ordering:</strong> Submit lab orders directly from the dashboard</li>
+        <li><strong>Result Retrieval:</strong> Automatic fetching of completed lab results every 30 minutes</li>
+        <li><strong>Provider Review:</strong> Queue system for providers to review and approve results</li>
+        <li><strong>Patient Portal:</strong> Approved results automatically visible in Healthie patient portal</li>
+        <li><strong>Automatic Lab Date Tracking:</strong> <span class="new-badge">NEW</span> Pre Required lab dates auto-update on approval</li>
+    </ul>
+
+    <h3>System Components</h3>
+    <table>
+        <tr><th>Component</th><th>Location</th><th>Purpose</th></tr>
+        <tr><td><strong>Lab Dashboard</strong></td><td><code>nowoptimal.com/ops/labs/</code></td><td>Central hub for all lab operations</td></tr>
+        <tr><td><strong>Order Modal</strong></td><td>Dashboard → "+ Order Lab" button</td><td>Create new lab orders</td></tr>
+        <tr><td><strong>Review Queue</strong></td><td>Dashboard → "Review Queue" tab</td><td>Pending results for provider review</td></tr>
+        <tr><td><strong>Orders Tab</strong></td><td>Dashboard → "Order Labs" tab</td><td>Track submitted orders</td></tr>
+        <tr><td><strong>Patient Detail</strong></td><td>Patients → Click patient</td><td>View Last Lab, Next Lab, and Lab Status</td></tr>
+    </table>
+
+    <h2>CLINIC & PROVIDER ASSIGNMENT</h2>
+    <h3>Clinic Selection Rules:</h3>
+    <table>
+        <tr><th>Clinic</th><th>Client ID</th><th>Default Provider</th><th>Provider NPI</th></tr>
+        <tr><td><strong>Tri-City Men's Health</strong></td><td>22937</td><td>Dr. Whitten</td><td>1366037806</td></tr>
+        <tr><td><strong>NOW Primary Care</strong></td><td>72152</td><td>Phil Schafer NP</td><td>1790276608</td></tr>
+    </table>
+
+    <div class="important">
+        <strong>IMPORTANT:</strong> When ordering labs, the provider is automatically assigned based on the selected clinic. Do <strong>NOT</strong> manually override unless specifically instructed.
+    </div>
+</div>
+
+<!-- PAGE 2 -->
+<div class="page">
+    <h2>ORDERING LABS</h2>
+
+    <h3>Step 1: Access the Order Modal</h3>
+    <ol>
+        <li>Navigate to <code>nowoptimal.com/ops/labs/</code></li>
+        <li>Click the <strong>"+ Order Lab"</strong> button in the top right</li>
+        <li>The Order Lab Modal will open</li>
+    </ol>
+
+    <h3>Step 2: Select Clinic & Patient</h3>
+    <ol>
+        <li><strong>Clinic Selection:</strong>
+            <ul>
+                <li>Select <strong>Tri-City Men's Health</strong> for TRT/Men's Health patients</li>
+                <li>Select <strong>NOW Primary Care</strong> for primary care/weight loss patients</li>
+            </ul>
+        </li>
+        <li><strong>Patient Selection:</strong>
+            <ul>
+                <li><strong>Existing Patient:</strong> Type the patient name to search, select from dropdown</li>
+                <li><strong>New Patient:</strong> Click "New Patient" tab and fill in demographics manually</li>
+            </ul>
+        </li>
+    </ol>
+
+    <div class="warning">
+        <strong>⚠️ ACTIVE PATIENTS ONLY:</strong> <span class="new-badge">NEW</span> The patient search only returns <strong>active</strong> Healthie patients. Archived/inactive patients will not appear in search results. If you cannot find a patient, verify they are not archived in Healthie.
+    </div>
+
+    <h3>Step 3: Select Lab Tests</h3>
+    <table>
+        <tr><th>Category</th><th>Test Code</th><th>Description</th></tr>
+        <tr><td colspan="3" style="background:#f0f9ff; font-weight:600; color:#1e40af;">Core Panels</td></tr>
+        <tr><td>Male Pre-Treatment</td><td>9757</td><td>Initial hormone workup</td></tr>
+        <tr><td>Male Post-Treatment</td><td>9761</td><td>Follow-up hormone panel</td></tr>
+        <tr><td>Female Pre-Treatment</td><td>9765</td><td>Female hormone baseline</td></tr>
+        <tr><td>Female Post-Treatment</td><td>9760</td><td>Female hormone follow-up</td></tr>
+        <tr><td colspan="3" style="background:#f0f9ff; font-weight:600; color:#1e40af;">Add-Ons</td></tr>
+        <tr><td>PSA</td><td>146</td><td>Prostate screening</td></tr>
+        <tr><td colspan="3" style="background:#f0f9ff; font-weight:600; color:#1e40af;">Restricted (Requires Approval)</td></tr>
+        <tr><td>Lipid Panel</td><td>L509</td><td>Cholesterol/Lipid profile</td></tr>
+        <tr><td>A1C</td><td>202</td><td>Diabetes screening</td></tr>
+        <tr><td>Custom</td><td>varies</td><td>Any non-standard test code</td></tr>
+    </table>
+
+    <h3>Step 4: Submit Order</h3>
+    <ol>
+        <li>Review all information</li>
+        <li>Click <strong>"Submit Order"</strong> (or "Request Approval" for restricted tests)</li>
+        <li>Order is sent to Access Medical Labs</li>
+        <li>Order appears in "Orders" tab with status</li>
+    </ol>
+
+    <h3>Order Statuses</h3>
+    <table>
+        <tr><th>Status</th><th>Meaning</th><th>Action Required</th></tr>
+        <tr><td><code>pending</code></td><td>Waiting in queue</td><td>None - will auto-submit</td></tr>
+        <tr><td><code>pending_approval</code></td><td>Restricted test - needs admin</td><td>Admin must approve</td></tr>
+        <tr><td><code>submitted</code></td><td>Sent to Access Labs</td><td>Patient can go in for draw</td></tr>
+        <tr><td><code>failed</code></td><td>Submission error</td><td>Review error, re-submit</td></tr>
+    </table>
+</div>
+
+<!-- PAGE 3 -->
+<div class="page">
+    <h2>REVIEWING LAB RESULTS</h2>
+
+    <h3>Automatic Result Fetching</h3>
+    <ul>
+        <li>Results are automatically fetched from Access Labs <strong>every 30 minutes</strong></li>
+        <li>When results arrive, they appear in the <strong>Review Queue</strong></li>
+        <li>Critical values trigger <strong>Google Chat alerts</strong> and <strong>Telegram notifications</strong></li>
+    </ul>
+
+    <h3>Provider Review Workflow</h3>
+    <ol>
+        <li><strong>Navigate to Review Queue</strong>
+            <ul>
+                <li>Go to <code>nowoptimal.com/ops/labs/</code></li>
+                <li>Default view shows pending review items</li>
+            </ul>
+        </li>
+        <li><strong>Review Each Result</strong>
+            <ul>
+                <li>Click <strong>"View Results"</strong> to open the PDF</li>
+                <li>Review all values, flag critical findings</li>
+            </ul>
+        </li>
+        <li><strong>Patient Matching</strong>
+            <ul>
+                <li>System auto-matches patients with ≥ 80% confidence</li>
+                <li>Low-confidence matches show a warning</li>
+                <li>If unmatched, click and search for correct patient</li>
+            </ul>
+        </li>
+        <li><strong>Approve or Reject</strong>
+            <ul>
+                <li><strong>Approve:</strong> Result is uploaded to Healthie and made visible to patient</li>
+                <li><strong>Reject:</strong> Result is archived with reason (requires note)</li>
+            </ul>
+        </li>
+    </ol>
+
+    <div class="warning">
+        <strong>⚠️ ARCHIVED PATIENT PROTECTION:</strong> <span class="new-badge">NEW</span> The system will <strong>block</strong> lab uploads to archived/inactive Healthie patients. If you attempt to approve a lab for an archived patient, you will see an error: <em>"Cannot upload to archived patient: [Name]. Please select an active patient instead."</em> Use the patient search to find the correct active patient record.
+    </div>
+
+    <h3>What Happens When You Approve a Pre Required Lab <span class="new-badge">NEW</span></h3>
+    <p>When a lab containing <strong>Male Pre Required</strong> or <strong>Female Pre Required</strong> tests is approved, the system automatically:</p>
+    <ol>
+        <li>Uploads the lab result to the patient's Healthie portal</li>
+        <li>Sets <strong>Last Lab Date</strong> = collection date of the lab</li>
+        <li>Sets <strong>Next Lab Date</strong> = collection date + 1 year</li>
+        <li>Updates <strong>Lab Status</strong> on the patient record (Current / Due Soon / Overdue)</li>
+    </ol>
+
+    <div class="important">
+        <strong>NOTE:</strong> Only <strong>Pre Required</strong> labs update the patient's lab dates. Post-treatment labs, PSA, Lipid Panels, and other tests do <strong>NOT</strong> change the Last Lab / Next Lab dates.
+    </div>
+
+    <h3>Critical Value Alerts</h3>
+    <p>These values trigger immediate alerts:</p>
+    <table>
+        <tr><th>Test</th><th>Critical Low</th><th>Critical High</th><th>Alert Method</th></tr>
+        <tr><td><strong>Testosterone (Total)</strong></td><td>&lt; 200</td><td>&gt; 1500</td><td>Telegram + Google Chat</td></tr>
+        <tr><td><strong>PSA</strong></td><td>-</td><td>&gt; 4.0</td><td>Telegram + Google Chat</td></tr>
+        <tr><td><strong>Hematocrit</strong></td><td>&lt; 35%</td><td>&gt; 54%</td><td>Telegram + Google Chat</td></tr>
+        <tr><td><strong>Hemoglobin</strong></td><td>&lt; 10</td><td>&gt; 18</td><td>Telegram + Google Chat</td></tr>
+    </table>
+</div>
+
+<!-- PAGE 4 -->
+<div class="page">
+    <h2>PATIENT LAB HISTORY & TRACKING</h2>
+
+    <h3>Viewing Patient Lab Information</h3>
+    <ol>
+        <li>Go to <strong>Patients</strong> page (<code>nowoptimal.com/ops/patients/</code>)</li>
+        <li>Find patient in list — the table shows <strong>Last Lab</strong> and <strong>Next Lab</strong> columns</li>
+        <li>Click patient to see full detail page</li>
+    </ol>
+
+    <h3>Patient Detail Page <span class="new-badge">NEW</span></h3>
+    <p>The patient detail page now displays dedicated lab information cards:</p>
+    <table>
+        <tr><th>Card</th><th>Shows</th><th>Description</th></tr>
+        <tr><td><strong>Last Lab</strong></td><td>Date of last Pre Required lab</td><td>Automatically set when a Pre Required lab is approved</td></tr>
+        <tr><td><strong>Next Lab</strong></td><td>Date of next lab due</td><td>Last Lab Date + 1 year, color-coded by urgency</td></tr>
+        <tr><td><strong>Lab Status</strong></td><td>Current status text</td><td>Calculated from Next Lab date</td></tr>
+    </table>
+
+    <h3>Lab Status Indicators & Color Coding</h3>
+    <table>
+        <tr><th>Status</th><th>Color</th><th>Meaning</th></tr>
+        <tr><td><strong>Current</strong></td><td style="background:#d9ead3;">🟢 Green</td><td>Next lab is &gt; 30 days away</td></tr>
+        <tr><td><strong>Due Soon</strong></td><td style="background:#fff2cc;">🟡 Yellow</td><td>Next lab is within 30 days</td></tr>
+        <tr><td><strong>Overdue</strong></td><td style="background:#f4cccc;">🔴 Red</td><td>Next lab date has passed</td></tr>
+        <tr><td><strong>No Data</strong></td><td style="background:#e6e6e6;">⚪ Gray</td><td>No lab history on file</td></tr>
+    </table>
+
+    <h3>Automatic Lab Date Updates <span class="new-badge">NEW</span></h3>
+    <p>Lab dates are managed automatically — <strong>no manual entry needed</strong>:</p>
+    <table>
+        <tr><th>Event</th><th>What Happens</th></tr>
+        <tr><td>Pre Required lab approved</td><td>Last Lab = collection date, Next Lab = +1 year</td></tr>
+        <tr><td>Post-treatment lab approved</td><td>No date change (Post labs don't reset the schedule)</td></tr>
+        <tr><td>Patient not found by Healthie ID</td><td>System falls back to name match, auto-links Healthie ID</td></tr>
+    </table>
+
+    <div class="important">
+        <strong>WHERE LAB DATES APPEAR:</strong> Lab dates are visible in three places:
+        <ol style="margin-top: 0.25rem;">
+            <li><strong>Patients list</strong> — Last Lab / Next Lab columns</li>
+            <li><strong>Patient detail page</strong> — Dedicated lab cards</li>
+            <li><strong>NOW Optimal mobile app</strong> — Patients can see their lab status</li>
+        </ol>
+    </div>
+
+    <h3>GHL Integration</h3>
+    <p>When a patient's labs become overdue, GHL sync automatically applies the tag <code>has_labs_overdue</code>. If you have GHL automations configured on this tag (e.g., reminder workflows), they will trigger automatically.</p>
+
+    <div class="important">
+        <strong>NOTE:</strong> There is currently <strong>no automated messaging</strong> to patients about lab due dates. The system tracks and displays the data, but does not send push notifications or text messages. Any patient communication about labs must be done manually.
+    </div>
+</div>
+
+<!-- PAGE 5 -->
+<div class="page">
+    <h2>TROUBLESHOOTING</h2>
+
+    <h3>Order Not Appearing in Access Labs</h3>
+    <ol>
+        <li>Check Order Status: Go to Orders tab, find the order</li>
+        <li>If <strong>"submitted"</strong>: Order may take up to 24 hours to appear in Access Labs portal</li>
+        <li>If <strong>"failed"</strong>: Click to view error, correct issue, re-submit</li>
+        <li>If blank/stuck: Contact IT - may be API connectivity issue</li>
+    </ol>
+
+    <h3>Results Not Fetching</h3>
+    <ol>
+        <li><strong>Wait:</strong> Results auto-fetch every 30 minutes</li>
+        <li><strong>Manual Fetch:</strong> Run <code>python3 /home/ec2-user/scripts/labs/fetch_results.py</code></li>
+        <li><strong>Check Logs:</strong> <code>pm2 logs gmh-dashboard --lines 50</code></li>
+    </ol>
+
+    <h3>Patient Not Matching</h3>
+    <ol>
+        <li><strong>Manual Match:</strong> Click the unmatched result</li>
+        <li><strong>Search by Name:</strong> Enter exact patient name from Healthie</li>
+        <li><strong>Select Correct Patient:</strong> Click to link</li>
+        <li><strong>Complete Review:</strong> Approve after linking</li>
+    </ol>
+
+    <h3>"Cannot Upload to Archived Patient" Error <span class="new-badge">NEW</span></h3>
+    <p>If you see this error when approving a lab:</p>
+    <ol>
+        <li>The matched patient is <strong>archived/inactive</strong> in Healthie</li>
+        <li>Click "Approve" again — the patient selection modal will open</li>
+        <li>Search for the patient's name — only <strong>active</strong> patients are shown</li>
+        <li>Select the correct active patient and approve</li>
+        <li>If no active patient is found, the patient may need to be reactivated in Healthie first</li>
+    </ol>
+
+    <h3>Lab Dates Not Updating After Approval</h3>
+    <p>Lab dates only auto-update for <strong>Pre Required</strong> tests. If dates didn't update:</p>
+    <ol>
+        <li>Check if the lab contains <strong>MALE PRE REQUIRED</strong> or <strong>FEMALE PRE REQUIRED</strong> in tests</li>
+        <li>Post-treatment labs, PSA-only, Lipid Panels, etc. do <strong>not</strong> trigger date updates</li>
+        <li>If the patient has no <code>healthie_client_id</code>, the system tries a name match — verify the name matches exactly</li>
+    </ol>
+
+    <h3>"Submitted" But No Confirmation</h3>
+    <ul>
+        <li>Access Labs API returns empty 200 response on success</li>
+        <li>This is <strong>NORMAL</strong> - verify in Access Labs portal</li>
+        <li>If not appearing after 24 hours, contact Access Labs support</li>
+    </ul>
+
+    <h2>CONTACTS & SUPPORT</h2>
+    <table>
+        <tr><th>Issue</th><th>Contact</th></tr>
+        <tr><td><strong>System Questions</strong></td><td>IT / Aaron</td></tr>
+        <tr><td><strong>Lab Results Questions</strong></td><td>Provider on duty</td></tr>
+        <tr><td><strong>Access Labs Portal Support</strong></td><td>1-800-XXX-XXXX</td></tr>
+        <tr><td><strong>Urgent Patient Issues</strong></td><td>Telegram Ops Channel</td></tr>
+    </table>
+
+    <h2>RELATED DOCUMENTS</h2>
+    <ul>
+        <li><strong>Patient Workflows</strong> — Clinical procedures by visit type</li>
+        <li><strong>Staff Onboarding SOP</strong> — New staff checklist</li>
+        <li><strong>Inventory Check SOP</strong> — DEA compliance</li>
+    </ul>
+
+    <div class="footer">
+        <p><strong>Last Updated:</strong> February 17, 2026</p>
+        <p>Confidential — NOW Optimal Clinical Operations</p>
+    </div>
+</div>
+
+</body>
+</html>

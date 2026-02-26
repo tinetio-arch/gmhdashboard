@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>SOP: Pharmacy Tracking System</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #1e293b; max-width: 800px; margin: 0 auto; padding: 40px; background: #fff; }
+        h1 { color: #0f172a; font-size: 24px; border-bottom: 3px solid #0ea5e9; padding-bottom: 10px; margin-bottom: 20px; }
+        h2 { color: #1e40af; font-size: 18px; margin-top: 30px; margin-bottom: 15px; border-left: 4px solid #0ea5e9; padding-left: 12px; }
+        h3 { color: #475569; font-size: 16px; margin-top: 20px; margin-bottom: 10px; }
+        p { margin-bottom: 12px; }
+        ul, ol { margin-left: 25px; margin-bottom: 15px; }
+        li { margin-bottom: 8px; }
+        .header { background: linear-gradient(135deg, #1e3a5f, #0f1d30); color: white; padding: 25px; border-radius: 10px; margin-bottom: 30px; }
+        .header h1 { color: white; border: none; margin: 0; }
+        .header p { color: #94a3b8; margin: 5px 0 0; }
+        .section { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .important { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 15px 0; }
+        .tip { background: #dcfce7; border-left: 4px solid #22c55e; padding: 15px; margin: 15px 0; }
+        .warning { background: #fee2e2; border-left: 4px solid #ef4444; padding: 15px; margin: 15px 0; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { border: 1px solid #e2e8f0; padding: 10px; text-align: left; }
+        th { background: #f1f5f9; font-weight: 600; }
+        code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-family: monospace; }
+        .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 12px; text-align: center; }
+        @media print { body { padding: 20px; } .header { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📦 Pharmacy Tracking System SOP</h1>
+        <p>Standard Operating Procedure for Specialty Pharmacy Orders</p>
+    </div>
+
+    <h2>1. Overview</h2>
+    <div class="section">
+        <p>The Pharmacy Tracking System manages specialty medication orders from external pharmacies. It tracks orders from placement through delivery and automatically uploads documentation to patient charts in Healthie.</p>
+        
+        <h3>Supported Pharmacies</h3>
+        <table>
+            <tr>
+                <th>Pharmacy</th>
+                <th>Primary Medications</th>
+                <th>Dashboard Path</th>
+            </tr>
+            <tr>
+                <td>Strive (Tirzepatide)</td>
+                <td>Tirzepatide, weight loss medications</td>
+                <td>/ops/pharmacy/strive</td>
+            </tr>
+            <tr>
+                <td>Farmakaio</td>
+                <td>Compounded medications</td>
+                <td>/ops/pharmacy/farmakaio</td>
+            </tr>
+            <tr>
+                <td>Olympia</td>
+                <td>Specialty compounds</td>
+                <td>/ops/pharmacy/olympia</td>
+            </tr>
+            <tr>
+                <td>TopRX</td>
+                <td>Various specialty meds</td>
+                <td>/ops/pharmacy/toprx</td>
+            </tr>
+            <tr>
+                <td>Carrie Boyd</td>
+                <td>Compounded hormones</td>
+                <td>/ops/pharmacy/carrieboyd</td>
+            </tr>
+        </table>
+    </div>
+
+    <h2>2. Creating a New Order</h2>
+    <div class="section">
+        <ol>
+            <li>Navigate to <strong>Pharmacy Tracking</strong> dropdown → Select pharmacy</li>
+            <li>Click <strong>"+ Add Order"</strong> button (top right)</li>
+            <li>
+                <strong>Patient Selection:</strong>
+                <ul>
+                    <li>Type patient name in search field (minimum 2 characters)</li>
+                    <li>Select patient from dropdown to link to Healthie</li>
+                    <li>OR check <strong>"Office Use"</strong> for non-patient orders</li>
+                </ul>
+            </li>
+            <li>Fill in order details:
+                <ul>
+                    <li><strong>Medication</strong>: Drug name (e.g., "Tirzepatide 10mg")</li>
+                    <li><strong>Dose</strong>: Specific dosage (e.g., "2.5mg", "5mg")</li>
+                    <li><strong>Order #</strong>: Pharmacy order reference number</li>
+                    <li><strong>Date Ordered</strong>: When order was placed</li>
+                    <li><strong>Ordered To</strong>: Delivery destination</li>
+                </ul>
+            </li>
+            <li>Click <strong>"✓ Save Order"</strong></li>
+        </ol>
+
+        <div class="important">
+            <strong>⚠️ Important:</strong> Always search and select the patient from Healthie to enable automatic chart uploads. Orders without linked patients won't sync to Healthie.
+        </div>
+    </div>
+
+    <h2>3. Managing Order Status</h2>
+    <div class="section">
+        <p>Use the <strong>Status</strong> dropdown in each order row to track progress:</p>
+        
+        <table>
+            <tr>
+                <th>Status</th>
+                <th>When to Use</th>
+            </tr>
+            <tr>
+                <td>🟡 Pending</td>
+                <td>Initial state - order placed, awaiting payment</td>
+            </tr>
+            <tr>
+                <td>🟢 Paid</td>
+                <td>Payment confirmed</td>
+            </tr>
+            <tr>
+                <td>🔵 Ordered</td>
+                <td>Order submitted to pharmacy</td>
+            </tr>
+            <tr>
+                <td>🟣 Shipped</td>
+                <td>Pharmacy has shipped the medication</td>
+            </tr>
+            <tr>
+                <td>✅ Delivered</td>
+                <td>Patient/office received the medication</td>
+            </tr>
+        </table>
+    </div>
+
+    <h2>4. Uploading Order Documentation (PDF)</h2>
+    <div class="section">
+        <p>Upload pharmacy receipts, shipping confirmations, or order documents:</p>
+        
+        <ol>
+            <li>Click <strong>"📤 Upload"</strong> button in the PDF column</li>
+            <li>Select the PDF file from your computer</li>
+            <li>Wait for upload to complete (button changes to "📄 View")</li>
+        </ol>
+
+        <div class="tip">
+            <strong>✅ What Happens:</strong>
+            <ul>
+                <li>PDF is saved to our S3 storage (always accessible via "View" button)</li>
+                <li>If patient is linked to Healthie, PDF is <strong>automatically uploaded to patient's Documents</strong></li>
+                <li>"In Chart" checkbox is automatically checked when Healthie upload succeeds</li>
+            </ul>
+        </div>
+
+        <div class="warning">
+            <strong>❌ If Upload Fails:</strong>
+            <ul>
+                <li>Check internet connection</li>
+                <li>Ensure file is a valid PDF (not too large, &lt;10MB)</li>
+                <li>Verify patient is linked to Healthie (shows "✓ Healthie" under name)</li>
+            </ul>
+        </div>
+    </div>
+
+    <h2>5. Viewing Uploaded Documents</h2>
+    <div class="section">
+        <p>Two ways to access uploaded documents:</p>
+        
+        <h3>From Dashboard:</h3>
+        <ol>
+            <li>Find the order with uploaded PDF</li>
+            <li>Click <strong>"📄 View"</strong> button</li>
+            <li>PDF opens in new browser tab</li>
+        </ol>
+
+        <h3>From Patient's Healthie Chart:</h3>
+        <ol>
+            <li>Open patient in Healthie</li>
+            <li>Go to <strong>Documents</strong> section</li>
+            <li>Find document labeled with filename</li>
+        </ol>
+    </div>
+
+    <h2>6. "In Chart" Checkbox</h2>
+    <div class="section">
+        <p>The <strong>"In Chart"</strong> checkbox indicates whether the order documentation exists in the patient's Healthie chart.</p>
+        
+        <ul>
+            <li><strong>Automatically checked</strong>: When PDF upload to Healthie succeeds</li>
+            <li><strong>Manually check</strong>: If you uploaded directly to Healthie outside this system</li>
+            <li><strong>Uncheck</strong>: If document was removed from Healthie</li>
+        </ul>
+    </div>
+
+    <h2>7. Deleting Orders</h2>
+    <div class="section">
+        <p>To remove an order:</p>
+        <ol>
+            <li>Click the <strong>🗑️</strong> button on the order row</li>
+            <li>Confirm deletion when prompted</li>
+        </ol>
+
+        <div class="warning">
+            <strong>⚠️ Warning:</strong> Deletion cannot be undone. Documents already uploaded to Healthie will remain in the patient's chart.
+        </div>
+    </div>
+
+    <h2>8. Technical Architecture</h2>
+    <div class="section">
+        <h3>Data Flow</h3>
+        <ol>
+            <li><strong>Order Creation</strong>: Saved to PostgreSQL database</li>
+            <li><strong>Patient Search</strong>: Queries Healthie API for active patients</li>
+            <li><strong>PDF Upload</strong>:
+                <ul>
+                    <li>Files stored in AWS S3 bucket: <code>gmh-specialty-orders</code></li>
+                    <li>Also pushed to Healthie patient Documents via GraphQL API</li>
+                </ul>
+            </li>
+            <li><strong>Status Updates</strong>: Immediately saved to database</li>
+        </ol>
+
+        <h3>Database Tables</h3>
+        <ul>
+            <li><code>tirzepatide_orders</code> - Strive pharmacy</li>
+            <li><code>farmakaio_orders</code> - Farmakaio pharmacy</li>
+            <li><code>olympia_orders</code> - Olympia pharmacy</li>
+            <li><code>toprx_orders</code> - TopRX pharmacy</li>
+            <li><code>carrieboyd_orders</code> - Carrie Boyd pharmacy</li>
+        </ul>
+    </div>
+
+    <h2>9. Troubleshooting</h2>
+    <div class="section">
+        <table>
+            <tr>
+                <th>Problem</th>
+                <th>Solution</th>
+            </tr>
+            <tr>
+                <td>Patient search shows "No patients found"</td>
+                <td>Verify patient exists in Healthie; try different name spelling</td>
+            </tr>
+            <tr>
+                <td>PDF upload fails</td>
+                <td>Check file size (&lt;10MB), ensure valid PDF format</td>
+            </tr>
+            <tr>
+                <td>PDF uploaded but not in Healthie chart</td>
+                <td>Ensure order was linked to Healthie patient before upload</td>
+            </tr>
+            <tr>
+                <td>Changes not saving</td>
+                <td>Refresh page; check internet connection</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="footer">
+        <p><strong>Granite Mountain Health</strong> | NOW Men's Health | NOW Primary Care</p>
+        <p>SOP Version 1.0 | Last Updated: January 28, 2026</p>
+        <p>Questions? Contact system administrator</p>
+    </div>
+</body>
+</html>

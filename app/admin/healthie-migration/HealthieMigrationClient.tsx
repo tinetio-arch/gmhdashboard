@@ -1,4 +1,5 @@
 'use client';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 import { useState, useEffect } from 'react';
 
@@ -621,7 +622,7 @@ export default function HealthieMigrationClient() {
                           <div style={{ fontWeight: 'bold' }}>{rt.name}</div>
                           <div style={{ fontSize: '0.875rem', color: '#666' }}>
                             ${rt.amount.toFixed(2)} / {rt.frequency}
-                            {rt.nextChargeDate && ` (Next: ${new Date(rt.nextChargeDate).toLocaleDateString()})`}
+                            {rt.nextChargeDate && ` (Next: ${formatDateUTC(rt.nextChargeDate)})`}
                           </div>
                         </div>
                       ))}

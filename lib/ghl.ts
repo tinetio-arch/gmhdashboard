@@ -93,27 +93,27 @@ export type GHLOpportunity = {
 type GHLContactFilter = {
   field: string;
   operator:
-    | 'eq'
-    | 'not_eq'
-    | 'contains'
-    | 'not_contains'
-    | 'wildcard'
-    | 'not_wildcard'
-    | 'match'
-    | 'not_match'
-    | 'exists'
-    | 'not_exists'
-    | 'range'
-    | 'contains_set'
-    | 'contains_not_set'
-    | 'gt'
-    | 'gte'
-    | 'lt'
-    | 'lte'
-    | 'nested'
-    | 'nested_not'
-    | 'has_child'
-    | 'has_parent';
+  | 'eq'
+  | 'not_eq'
+  | 'contains'
+  | 'not_contains'
+  | 'wildcard'
+  | 'not_wildcard'
+  | 'match'
+  | 'not_match'
+  | 'exists'
+  | 'not_exists'
+  | 'range'
+  | 'contains_set'
+  | 'contains_not_set'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'nested'
+  | 'nested_not'
+  | 'has_child'
+  | 'has_parent';
   value?: unknown;
 };
 
@@ -152,20 +152,17 @@ export class GHLClient {
   }
 
   private withLocation(path: string): string {
-    if (!this.config.locationId || this.locationAccessBlocked) {
-      return path;
-    }
-    const separator = path.includes('?') ? '&' : '?';
-    return `${path}${separator}locationId=${encodeURIComponent(this.config.locationId)}`;
+    // V2 Private Integration Tokens are already scoped to a location
+    // We should NOT add locationId to URL query params - it causes "access denied" errors
+    // locationId is only needed in request BODIES for certain endpoints (search, tags)
+    return path;
   }
 
   private withLocationPath(path: string): string {
-    const locationId = this.requireLocationId('call this endpoint');
+    // V2 Private Integration Tokens are already scoped to a location
+    // We should NOT use /locations/{id}/... path format - it causes "access denied" errors
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-    if (!locationId || this.locationAccessBlocked) {
-      return normalizedPath;
-    }
-    return `/locations/${locationId}${normalizedPath}`;
+    return normalizedPath;
   }
 
   private async detectAccessibleLocationId(): Promise<string | undefined> {
@@ -212,8 +209,7 @@ export class GHLClient {
       this.debugLog('[GHL] Location discovery returned no usable locations.');
     } catch (error) {
       this.debugLog(
-        `[GHL] Location discovery encountered an error: ${
-          error instanceof Error ? error.message : String(error)
+        `[GHL] Location discovery encountered an error: ${error instanceof Error ? error.message : String(error)
         }`
       );
     }
@@ -277,36 +273,20 @@ export class GHLClient {
         (!response.ok || response.status === 403) &&
         responseText.toLowerCase().includes('does not have access to this location')
       ) {
-        const retryUrl = new URL(url.toString());
-        const hadLocationParam = retryUrl.searchParams.has('locationId');
-        const hadLocationPath = retryUrl.pathname.includes('/locations/');
-
+        // For V2 Private Integration Tokens, we should NOT retry without location
+        // The token is scoped to a specific location - if access is denied, retrying won't help
+        // Just log and let the error propagate
         console.warn(
-          '[GHL] Location access still denied after refresh. Removing explicit location from subsequent requests.'
+          '[GHL] Location access denied. Check that the API token has access to the configured location.'
         );
-
-        if (hadLocationParam) {
-          retryUrl.searchParams.delete('locationId');
-        }
-        if (hadLocationPath) {
-          retryUrl.pathname = retryUrl.pathname.replace(/\/locations\/[^/]+/, '');
-          if (!retryUrl.pathname) {
-            retryUrl.pathname = '/';
-          }
-        }
-
-        this.locationAccessBlocked = true;
-        this.config.locationId = undefined;
-
-        response = await executeFetch(retryUrl);
-        responseText = await response.text();
+        // Do NOT clear locationId - it's required for request bodies with V2 API
       }
     }
-    
+
     if (!response.ok) {
       let errorMessage = `GHL API error: ${response.status} ${response.statusText}`;
       let errorDetails = '';
-      
+
       try {
         const errorJson = JSON.parse(responseText);
         errorMessage = errorJson.message || errorJson.error || errorMessage;
@@ -365,46 +345,46 @@ export class GHLClient {
       let contacts = await this.searchContacts([
         { field: 'email', operator: 'eq', value: email },
       ]);
-      
+
       // If no exact match, try case-insensitive search
       if (contacts.length === 0) {
         contacts = await this.searchContacts([
           { field: 'email', operator: 'contains', value: email.toLowerCase() },
         ]);
       }
-      
+
       if (contacts.length === 0) {
         return null;
       }
-      
+
       // Find the best match (exact email match preferred)
       let contact = contacts.find(c => {
         const cEmail = (c.email || '').toLowerCase();
         return cEmail === email.toLowerCase();
       }) || contacts[0];
-      
+
       // If contact is still wrapped in a 'contact' property, unwrap it
       if (contact && (contact as any).contact && !contact.id) {
         contact = (contact as any).contact;
       }
-      
+
       this.debugLog(`[GHL] Found contact by email: ${contactSummary(contact)}`);
-      
+
       // Extract ID from multiple possible locations
-      const contactId = contact.id || 
-                       (contact as any).contactId || 
-                       (contact as any)._id || 
-                       (contact as any).contact_id;
-      
+      const contactId = contact.id ||
+        (contact as any).contactId ||
+        (contact as any)._id ||
+        (contact as any).contact_id;
+
       if (contactId && !contact.id) {
         // Set the id field if we found it elsewhere
         contact.id = contactId;
       }
-      
+
       if (!contact.id) {
         console.error(`[GHL] Contact found but missing ID field. Contact structure:`, JSON.stringify(contact, null, 2));
       }
-      
+
       return contact;
     } catch (error) {
       if (error instanceof Error && error.message.includes('404')) {
@@ -424,24 +404,24 @@ export class GHLClient {
 
     try {
       const filters: GHLContactFilter[] = [];
-      
+
       if (lastName) {
         filters.push({ field: 'lastName', operator: 'eq', value: lastName });
       }
       if (firstName) {
         filters.push({ field: 'firstName', operator: 'eq', value: firstName });
       }
-      
+
       if (filters.length === 0) {
         return null;
       }
 
       const contacts = await this.searchContacts(filters);
-      
+
       if (contacts.length === 0) {
         return null;
       }
-      
+
       // Find the best match (both first and last name match preferred)
       let contact = contacts.find(c => {
         const cFirst = (c.firstName || '').toLowerCase().trim();
@@ -450,24 +430,24 @@ export class GHLClient {
         const matchLast = !lastName || cLast === lastName.toLowerCase().trim();
         return matchFirst && matchLast;
       }) || contacts[0];
-      
+
       // If contact is still wrapped in a 'contact' property, unwrap it
       if (contact && (contact as any).contact && !contact.id) {
         contact = (contact as any).contact;
       }
-      
+
       this.debugLog(`[GHL] Found contact by name: ${contactSummary(contact)}`);
-      
+
       // Extract ID from multiple possible locations
-      const contactId = contact.id || 
-                       (contact as any).contactId || 
-                       (contact as any)._id || 
-                       (contact as any).contact_id;
-      
+      const contactId = contact.id ||
+        (contact as any).contactId ||
+        (contact as any)._id ||
+        (contact as any).contact_id;
+
       if (contactId && !contact.id) {
         contact.id = contactId;
       }
-      
+
       return contact;
     } catch (error) {
       if (error instanceof Error && error.message.includes('404')) {
@@ -495,35 +475,35 @@ export class GHLClient {
       const contacts = await this.searchContacts([
         { field: 'phone', operator: 'eq', value: normalizedPhone },
       ]);
-      
+
       if (contacts.length === 0) {
         return null;
       }
-      
+
       let contact = contacts[0];
-      
+
       // If contact is still wrapped in a 'contact' property, unwrap it
       if (contact && (contact as any).contact && !contact.id) {
         contact = (contact as any).contact;
       }
-      
+
       this.debugLog(`[GHL] Found contact by phone: ${contactSummary(contact)}`);
-      
+
       // Extract ID from multiple possible locations
-      const contactId = contact.id || 
-                       (contact as any).contactId || 
-                       (contact as any)._id || 
-                       (contact as any).contact_id;
-      
+      const contactId = contact.id ||
+        (contact as any).contactId ||
+        (contact as any)._id ||
+        (contact as any).contact_id;
+
       if (contactId && !contact.id) {
         // Set the id field if we found it elsewhere
         contact.id = contactId;
       }
-      
+
       if (!contact.id) {
         console.error(`[GHL] Contact found but missing ID field. Contact structure:`, JSON.stringify(contact, null, 2));
       }
-      
+
       return contact;
     } catch (error) {
       if (error instanceof Error && error.message.includes('404')) {
@@ -534,10 +514,24 @@ export class GHLClient {
   }
 
   /**
-   * Create a new contact
+   * Create or update a contact using upsert
+   * Uses /contacts/upsert which auto-matches by phone/email to prevent duplicates
+   * Note: GHL V2 API requires locationId in the request body
    */
   async createContact(contact: Partial<GHLContact>): Promise<GHLContact> {
-    return this.request<GHLContact>('POST', this.withLocation('/contacts/'), contact);
+    // Include locationId in the body - required for V2 API
+    const payload = {
+      ...contact,
+      locationId: this.config.locationId
+    };
+    // Use upsert endpoint to automatically find and update existing contacts
+    // This prevents "This location does not allow duplicated contacts" errors
+    const result = await this.request<{ contact: GHLContact; new: boolean }>('POST', '/contacts/upsert', payload);
+    if (result.new === false) {
+      this.debugLog(`[GHL] Upsert found existing contact: ${result.contact?.id}`);
+    }
+    // GHL returns { contact: {...}, new: boolean } wrapper
+    return result.contact || result as unknown as GHLContact;
   }
 
   /**
@@ -573,12 +567,17 @@ export class GHLClient {
   }
 
   /**
-   * Get all tags
+   * Get all tags for the location
+   * Note: Tags endpoint requires /locations/{id}/tags path format
    */
   async getTags(): Promise<GHLTag[]> {
+    if (!this.config.locationId) {
+      console.warn('[GHL] Cannot get tags without locationId');
+      return [];
+    }
     const response = await this.request<{ tags: GHLTag[] }>(
       'GET',
-      this.withLocationPath('/tags')
+      `/locations/${this.config.locationId}/tags`
     );
     return response.tags || [];
   }
@@ -589,15 +588,19 @@ export class GHLClient {
   async findOrCreateTag(tagName: string): Promise<GHLTag> {
     const tags = await this.getTags();
     const existingTag = tags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
-    
+
     if (existingTag) {
       return existingTag;
+    }
+
+    if (!this.config.locationId) {
+      throw new Error('Cannot create tag without locationId');
     }
 
     // Create new tag
     const newTag = await this.request<GHLTag>(
       'POST',
-      this.withLocationPath('/tags'),
+      `/locations/${this.config.locationId}/tags`,
       { name: tagName }
     );
     return newTag;
@@ -670,7 +673,7 @@ export class GHLClient {
 
     const params = new URLSearchParams();
     params.append('locationId', locationId);
-    
+
     if (filters?.contactId) {
       params.append('contactId', filters.contactId);
     }
@@ -719,7 +722,7 @@ export class GHLClient {
   async updateCustomField(contactId: string, fieldKey: string, value: string): Promise<GHLContact> {
     const contact = await this.getContact(contactId);
     const customFields = contact.customFields || [];
-    
+
     const fieldIndex = customFields.findIndex(f => f.key === fieldKey);
     if (fieldIndex >= 0) {
       customFields[fieldIndex].value = value;
@@ -744,9 +747,9 @@ export class GHLClient {
     // 2. { contact: {...} } - single contact object (most common for search)
     // 3. Array directly
     // 4. Array of objects with nested { contact: {...} } structure
-    
+
     let contacts: any[] = [];
-    
+
     // First, check if response itself is wrapped in 'contact' property (most common case)
     if (response.contact && !Array.isArray(response.contact)) {
       // Single contact wrapped in 'contact' property
@@ -762,7 +765,7 @@ export class GHLClient {
       console.error('[GHL] Unexpected search response structure:', JSON.stringify(response, null, 2));
       return [];
     }
-    
+
     // Unwrap nested contact structures: if array items have a 'contact' property, extract it
     const unwrappedContacts = contacts.map((item) => {
       // If the item itself is a contact (has id), return it
@@ -785,7 +788,7 @@ export class GHLClient {
       console.warn('[GHL] Contact missing id/contactId:', JSON.stringify(item));
       return item;
     }).filter(item => item && (item.id || item.contactId)); // Filter out invalid contacts
-    
+
     // Final safety check: ensure all contacts have an id field
     const validContacts = unwrappedContacts.map((contact) => {
       if (!contact.id && contact.contactId) {
@@ -793,7 +796,7 @@ export class GHLClient {
       }
       return contact;
     });
-    
+
     return validContacts;
   }
 }
@@ -801,13 +804,47 @@ export class GHLClient {
 /**
  * Create a GHL client from environment variables
  */
-export function createGHLClient(): GHLClient | null {
-  const apiKey = process.env.GHL_API_KEY;
-  const locationId = process.env.GHL_LOCATION_ID;
+export function createGHLClient(overrideLocationId?: string): GHLClient | null {
+  // Use V2 API key by default, fallback to V1
+  const apiKey = process.env.GHL_V2_API_KEY || process.env.GHL_API_KEY;
   const baseUrl = process.env.GHL_BASE_URL;
 
   if (!apiKey) {
-    console.warn('GHL API key not configured');
+    console.warn('GHL API key not configured (checked GHL_V2_API_KEY and GHL_API_KEY)');
+    return null;
+  }
+
+  // IMPORTANT: V2 Private Integration Tokens are sub-account scoped
+  // The token itself knows which sub-account it belongs to
+  // HOWEVER, certain API endpoints (like /contacts/search, /tags) still REQUIRE
+  // the locationId in the request body, even though the token is already scoped
+  // 
+  // This is a quirk of the GHL API v2 design
+  // Solution: Provide the locationId for use in request bodies, but the token
+  // authentication itself is what actually enforces the sub-account scope
+  //
+  // NOTE: Use GHL_LOCATION_ID as the default - this is the location the token has access to
+  // If you need to sync to multiple locations, you need separate tokens for each location
+  const locationId = overrideLocationId || process.env.GHL_LOCATION_ID || process.env.GHL_MENS_HEALTH_LOCATION_ID;
+
+  return new GHLClient({
+    apiKey,
+    locationId, // Used in request bodies for search/tags, NOT in auth
+    baseUrl,
+  });
+}
+
+/**
+ * Create a GHL client for Men's Health location
+ * Uses the Men's Health specific API token
+ */
+export function createGHLClientForMensHealth(): GHLClient | null {
+  const apiKey = process.env.GHL_MENS_HEALTH_API_KEY;
+  const locationId = process.env.GHL_MENS_HEALTH_LOCATION_ID || '0dpAFAovcFXbe0G5TUFr';
+  const baseUrl = process.env.GHL_BASE_URL;
+
+  if (!apiKey) {
+    console.warn('GHL Men\'s Health API key not configured (GHL_MENS_HEALTH_API_KEY)');
     return null;
   }
 
@@ -818,6 +855,80 @@ export function createGHLClient(): GHLClient | null {
   });
 }
 
+/**
+ * Create a GHL client for Primary Care location
+ * Uses the Primary Care specific API token
+ */
+export function createGHLClientForPrimaryCare(): GHLClient | null {
+  const apiKey = process.env.GHL_PRIMARY_CARE_API_KEY || process.env.GHL_V2_API_KEY;
+  const locationId = process.env.GHL_PRIMARY_CARE_LOCATION_ID || process.env.GHL_LOCATION_ID || 'NyfcCiwUMdmXafnUMML8';
+  const baseUrl = process.env.GHL_BASE_URL;
 
+  if (!apiKey) {
+    console.warn('GHL Primary Care API key not configured (GHL_PRIMARY_CARE_API_KEY)');
+    return null;
+  }
+
+  return new GHLClient({
+    apiKey,
+    locationId,
+    baseUrl,
+  });
+}
+
+/**
+ * PRIMARY CARE client types - these go to Primary Care GHL location
+ * Based on GMH Dashboard client type values
+ */
+const PRIMARY_CARE_CLIENT_TYPES = [
+  'nowprimarycare',       // NowPrimary.Care
+  'primecare_premier',    // PrimeCare Premier $50/Month
+  'primecare_elite',      // PrimeCare Elite $100/Month
+];
+
+/**
+ * Determine if a client type key belongs to Primary Care
+ * All other types default to Men's Health
+ */
+function isPrimaryCareClientType(clientType: string | null | undefined): boolean {
+  if (!clientType) return false;
+  const normalized = clientType.toLowerCase();
+  return PRIMARY_CARE_CLIENT_TYPES.some(pcType => normalized.includes(pcType));
+}
+
+/**
+ * Get the appropriate GHL client based on patient's clinic/type
+ * 
+ * ROUTING RULES (as of Jan 2026):
+ * 
+ * Men's Health Location (0dpAFAovcFXbe0G5TUFr):
+ *   - QBO TCMH $180/Month (qbo_tcmh)
+ *   - QBO F&F/FR/Veteran $140/Month (qbo_f_f_fr_veteran)
+ *   - Jane TCMH $180/Month (jane_tcmh)
+ *   - Jane F&F/FR/Veteran $140/Month (jane_f_f_fr_veteran)
+ *   - Approved Disc / Pro-Bono PT (approved_disc)
+ *   - NowMensHealth.Care (nowmenshealth)
+ *   - Ins. Supp. $60/Month (ins_supp)
+ * 
+ * Primary Care Location (NyfcCiwUMdmXafnUMML8):
+ *   - NowPrimary.Care (nowprimarycare)
+ *   - PrimeCare Premier $50/Month (primecare_premier)
+ *   - PrimeCare Elite $100/Month (primecare_elite)
+ */
+export function getGHLClientForPatient(clinic?: string | null, clientType?: string | null): GHLClient | null {
+  // Check if this is a Primary Care patient
+  const isPrimaryCare =
+    clinic?.toLowerCase().includes('primarycare') ||
+    clinic?.toLowerCase().includes('primary_care') ||
+    isPrimaryCareClientType(clientType);
+
+  if (isPrimaryCare) {
+    return createGHLClientForPrimaryCare();
+  }
+
+  // Default to Men's Health for all other patients
+  // This includes: TCMH, F&F/FR/Veteran, Approved Disc, NowMensHealth, Ins.Supp, etc.
+  return createGHLClientForMensHealth();
+}
 
 

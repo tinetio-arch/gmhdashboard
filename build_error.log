@@ -1,0 +1,291 @@
+
+> gmh-dashboard@0.1.0 build
+> next build
+
+  ▲ Next.js 14.2.35
+  - Environments: .env.local
+
+   Creating an optimized production build ...
+ ⚠ Compiled with warnings
+
+./app/components/healthie/ApolloForHealthie.tsx
+Attempted import error: 'ApolloProvider' is not exported from '@apollo/client' (imported as 'ApolloProvider').
+
+Import trace for requested module:
+./app/components/healthie/ApolloForHealthie.tsx
+./app/(client)/healthie-chat/page.tsx
+
+./app/components/healthie/ApolloForHealthie.tsx
+Attempted import error: 'ApolloProvider' is not exported from '@apollo/client' (imported as 'ApolloProvider').
+
+Import trace for requested module:
+./app/components/healthie/ApolloForHealthie.tsx
+./app/(client)/healthie-chat/page.tsx
+
+   Skipping validation of types
+   Linting ...
+ ⨯ ESLint: Invalid Options: - Unknown options: useEslintrc, extensions - 'extensions' has been removed.
+   Collecting page data ...
+   Generating static pages (0/81) ...
+Error debugging Jane failures: B [Error]: Dynamic server usage: Route /api/admin/debug/jane-failures/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at V (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:21778)
+    at Object.get (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:29465)
+    at x (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:639)
+    at u (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:1:1597)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31)
+    at ProxyTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/ProxyTracer.js:36:24) {
+  description: "Route /api/admin/debug/jane-failures/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+GHL history error: n [Error]: Dynamic server usage: Route /api/admin/ghl/history/ couldn't be rendered statically because it used `cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at l (/home/ec2-user/gmhdashboard/.next/server/chunks/9380.js:1:61295)
+    at d (/home/ec2-user/gmhdashboard/.next/server/chunks/5766.js:1:1922)
+    at v (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:375)
+    at b (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:521)
+    at u (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/ghl/history/route.js:1:1552)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31) {
+  description: "Route /api/admin/ghl/history/ couldn't be rendered statically because it used `cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+GHL status error: n [Error]: Dynamic server usage: Route /api/admin/ghl/status/ couldn't be rendered statically because it used `cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at l (/home/ec2-user/gmhdashboard/.next/server/chunks/9380.js:1:61295)
+    at d (/home/ec2-user/gmhdashboard/.next/server/chunks/5766.js:1:1922)
+    at v (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:375)
+    at b (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:521)
+    at u (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/ghl/status/route.js:1:1551)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31) {
+  description: "Route /api/admin/ghl/status/ couldn't be rendered statically because it used `cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+GHL tags error: n [Error]: Dynamic server usage: Route /api/admin/ghl/tags/ couldn't be rendered statically because it used `cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at l (/home/ec2-user/gmhdashboard/.next/server/chunks/9380.js:1:61295)
+    at d (/home/ec2-user/gmhdashboard/.next/server/chunks/5766.js:1:1922)
+    at v (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:375)
+    at b (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:521)
+    at u (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/ghl/tags/route.js:1:1541)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31) {
+  description: "Route /api/admin/ghl/tags/ couldn't be rendered statically because it used `cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+Error searching patients: B [Error]: Dynamic server usage: Route /api/admin/membership-audit/search-patients/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at V (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:21778)
+    at Object.get (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:29465)
+    at x (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:639)
+    at u (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/membership-audit/search-patients/route.js:1:1662)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31)
+    at ProxyTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/ProxyTracer.js:36:24) {
+  description: "Route /api/admin/membership-audit/search-patients/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+   Generating static pages (20/81) 
+Error checking QuickBooks connection: B [Error]: Dynamic server usage: Route /api/admin/quickbooks/connection-status/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at V (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:21778)
+    at Object.get (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:29465)
+    at x (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:639)
+    at c (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/quickbooks/connection-status/route.js:1:1643)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31)
+    at ProxyTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/ProxyTracer.js:36:24) {
+  description: "Route /api/admin/quickbooks/connection-status/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+Error fetching QuickBooks metrics: B [Error]: Dynamic server usage: Route /api/admin/quickbooks/metrics/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at V (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:21778)
+    at Object.get (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:29465)
+    at x (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:639)
+    at u (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/quickbooks/metrics/route.js:1:1593)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31)
+    at ProxyTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/ProxyTracer.js:36:24) {
+  description: "Route /api/admin/quickbooks/metrics/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+Error fetching payment issues: B [Error]: Dynamic server usage: Route /api/admin/quickbooks/payment-issues/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at V (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:21778)
+    at Object.get (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:29465)
+    at x (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:639)
+    at u (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/quickbooks/payment-issues/route.js:1:1628)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31)
+    at ProxyTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/ProxyTracer.js:36:24) {
+  description: "Route /api/admin/quickbooks/payment-issues/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+[Cron] Sync all error: n [Error]: Dynamic server usage: Route /api/cron/sync-all/ couldn't be rendered statically because it used `headers`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at l (/home/ec2-user/gmhdashboard/.next/server/chunks/9380.js:1:61295)
+    at c (/home/ec2-user/gmhdashboard/.next/server/chunks/5766.js:1:1668)
+    at l (/home/ec2-user/gmhdashboard/.next/server/app/api/cron/sync-all/route.js:1:832)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31)
+    at ProxyTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/ProxyTracer.js:36:24)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:122:103 {
+  description: "Route /api/cron/sync-all/ couldn't be rendered statically because it used `headers`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+Error fetching membership revenue: B [Error]: Dynamic server usage: Route /api/jane-membership-revenue/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at V (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:21778)
+    at Object.get (/home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:29465)
+    at x (/home/ec2-user/gmhdashboard/.next/server/app/api/admin/debug/jane-failures/route.js:87:639)
+    at u (/home/ec2-user/gmhdashboard/.next/server/app/api/jane-membership-revenue/route.js:1:1586)
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/compiled/next-server/app-route.runtime.prod.js:6:38417
+    at /home/ec2-user/gmhdashboard/node_modules/next/dist/server/lib/trace/tracer.js:140:36
+    at NoopContextManager.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/context/NoopContextManager.js:25:19)
+    at ContextAPI.with (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/api/context.js:60:46)
+    at NoopTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/NoopTracer.js:65:31)
+    at ProxyTracer.startActiveSpan (/home/ec2-user/gmhdashboard/node_modules/@opentelemetry/api/build/src/trace/ProxyTracer.js:36:24) {
+  description: "Route /api/jane-membership-revenue/ couldn't be rendered statically because it used `request.cookies`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+   Generating static pages (40/81) 
+   Generating static pages (60/81) 
+ ✓ Generating static pages (81/81)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                        Size     First Load JS
+┌ ƒ /                                              154 B          87.8 kB
+├ ƒ /_not-found                                    880 B          88.6 kB
+├ ƒ /account                                       1.75 kB        89.4 kB
+├ ƒ /admin                                         154 B          87.8 kB
+├ ƒ /admin/financials                              3.95 kB        91.6 kB
+├ ƒ /admin/healthie-migration                      3.95 kB        91.6 kB
+├ ƒ /admin/mapping-diagnostics                     2.21 kB        89.9 kB
+├ ƒ /admin/membership-audit                        6.11 kB        93.8 kB
+├ ƒ /admin/membership-reconciliation               2.38 kB        98.8 kB
+├ ƒ /admin/quickbooks                              3.64 kB        91.3 kB
+├ ƒ /admin/users                                   2.8 kB         90.5 kB
+├ ƒ /analytics                                     7.1 kB          104 kB
+├ ƒ /api/admin/debug/jane-failures                 0 B                0 B
+├ ƒ /api/admin/ghl/check-clinicsync-financial      0 B                0 B
+├ ƒ /api/admin/ghl/debug-contact                   0 B                0 B
+├ ƒ /api/admin/ghl/history                         0 B                0 B
+├ ƒ /api/admin/ghl/investigate-financials          0 B                0 B
+├ ƒ /api/admin/ghl/status                          0 B                0 B
+├ ƒ /api/admin/ghl/sync                            0 B                0 B
+├ ƒ /api/admin/ghl/tags                            0 B                0 B
+├ ƒ /api/admin/healthie/invoices/create            0 B                0 B
+├ ƒ /api/admin/healthie/invoices/payment-status    0 B                0 B
+├ ƒ /api/admin/healthie/migrate                    0 B                0 B
+├ ƒ /api/admin/healthie/packages                   0 B                0 B
+├ ƒ /api/admin/healthie/preview                    0 B                0 B
+├ ƒ /api/admin/healthie/status                     0 B                0 B
+├ ƒ /api/admin/healthie/test-connection            0 B                0 B
+├ ƒ /api/admin/membership-audit/map-quickbooks     0 B                0 B
+├ ƒ /api/admin/membership-audit/resolve-duplicate  0 B                0 B
+├ ƒ /api/admin/membership-audit/search-patients    0 B                0 B
+├ ƒ /api/admin/memberships/audit                   0 B                0 B
+├ ƒ /api/admin/memberships/audit/intake-defaults   0 B                0 B
+├ ƒ /api/admin/memberships/audit/link              0 B                0 B
+├ ƒ /api/admin/memberships/audit/resolve           0 B                0 B
+├ ƒ /api/admin/memberships/metrics                 0 B                0 B
+├ ƒ /api/admin/patients/duplicates                 0 B                0 B
+├ ƒ /api/admin/patients/merge                      0 B                0 B
+├ ƒ /api/admin/quickbooks/check-payment-failures   0 B                0 B
+├ ƒ /api/admin/quickbooks/connection-status        0 B                0 B
+├ ƒ /api/admin/quickbooks/debug                    0 B                0 B
+├ ƒ /api/admin/quickbooks/metrics                  0 B                0 B
+├ ƒ /api/admin/quickbooks/patient-matching         0 B                0 B
+├ ƒ /api/admin/quickbooks/payment-issues           0 B                0 B
+├ ƒ /api/admin/quickbooks/resolve-payment-issue    0 B                0 B
+├ ƒ /api/admin/quickbooks/sync                     0 B                0 B
+├ ƒ /api/admin/update-mixed-payments               0 B                0 B
+├ ƒ /api/admin/users                               0 B                0 B
+├ ○ /api/analytics/alerts                          0 B                0 B
+├ ƒ /api/analytics/patient-pipeline                0 B                0 B
+├ ƒ /api/analytics/revenue-details                 0 B                0 B
+├ ƒ /api/analytics/summary                         0 B                0 B
+├ ○ /api/analytics/system-health                   0 B                0 B
+├ ƒ /api/auth/login                                0 B                0 B
+├ ƒ /api/auth/logout                               0 B                0 B
+├ ○ /api/auth/quickbooks                           0 B                0 B
+├ ƒ /api/auth/quickbooks/callback                  0 B                0 B
+├ ƒ /api/cron/sync-all                             0 B                0 B
+├ ƒ /api/debug/outstanding-balances                0 B                0 B
+├ ƒ /api/dispense-override                         0 B                0 B
+├ ƒ /api/dispenses/[id]/history                    0 B                0 B
+├ ƒ /api/dispenses/[id]/sign                       0 B                0 B
+├ ƒ /api/graphql                                   0 B                0 B
+├ ƒ /api/healthie/webhook                          0 B                0 B
+├ ƒ /api/heidi/jwt                                 0 B                0 B
+├ ƒ /api/integrations/healthie/webhook             0 B                0 B
+├ ƒ /api/inventory/controlled-check                0 B                0 B
+├ ƒ /api/inventory/transactions                    0 B                0 B
+├ ƒ /api/inventory/transactions/[id]               0 B                0 B
+├ ƒ /api/inventory/vials                           0 B                0 B
+├ ƒ /api/jane-membership-revenue                   0 B                0 B
+├ ƒ /api/jane-revenue                              0 B                0 B
+├ ƒ /api/labs/order/[id]/approve                   0 B                0 B
+├ ƒ /api/labs/orders                               0 B                0 B
+├ ƒ /api/labs/pdf/[id]                             0 B                0 B
+├ ƒ /api/labs/review-queue                         0 B                0 B
+├ ƒ /api/patients                                  0 B                0 B
+├ ƒ /api/patients/[id]                             0 B                0 B
+├ ƒ /api/patients/[id]/ghl-sync                    0 B                0 B
+├ ƒ /api/patients/[id]/qbo-last-payment            0 B                0 B
+├ ƒ /api/patients/search                           0 B                0 B
+├ ƒ /api/staged-doses                              0 B                0 B
+├ ƒ /api/staged-doses/use                          0 B                0 B
+├ ƒ /api/webhooks/healthie/lab-order               0 B                0 B
+├ ƒ /audit                                         2.25 kB        89.9 kB
+├ ƒ /business-intelligence                         2.15 kB        98.5 kB
+├ ƒ /comprehensive-dashboard                       188 B          96.6 kB
+├ ƒ /dea                                           154 B          87.8 kB
+├ ƒ /executive-dashboard                           154 B          87.8 kB
+├ ƒ /healthie-chat                                 435 kB          523 kB
+├ ƒ /inventory                                     6.82 kB         114 kB
+├ ƒ /jane-revenue                                  2.24 kB        98.6 kB
+├ ƒ /labs                                          6.51 kB         103 kB
+├ ƒ /login                                         1.32 kB          89 kB
+├ ƒ /menshealth                                    188 B          96.6 kB
+├ ƒ /old-dashboard                                 6.59 kB         103 kB
+├ ƒ /ops-center                                    2.68 kB        99.1 kB
+├ ƒ /patient-hub                                   2.72 kB        99.1 kB
+├ ƒ /patients                                      9.79 kB         106 kB
+├ ƒ /patients/[id]                                 3.05 kB        99.5 kB
+├ ƒ /preview-dashboard                             188 B          96.6 kB
+├ ƒ /professional                                  3.26 kB        90.9 kB
+├ ƒ /provider/signatures                           4.09 kB        91.8 kB
+├ ƒ /system-health                                 2.78 kB        99.2 kB
+├ ƒ /transactions                                  1.85 kB         109 kB
+└ ƒ /unauthorized                                  188 B          96.6 kB
++ First Load JS shared by all                      87.7 kB
+  ├ chunks/2117-1fd7adc1312ece09.js                32 kB
+  ├ chunks/fd9d1056-cd559855d824ecd4.js            53.6 kB
+  └ other shared chunks (total)                    2.09 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

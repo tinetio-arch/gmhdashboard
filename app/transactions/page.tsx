@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { fetchInventory, fetchTransactions } from '@/lib/inventoryQueries';
 import { fetchActivePatientOptions } from '@/lib/patientQueries';
 import TransactionsActions from './TransactionsActions';
+import StagedDosesManager from '../inventory/StagedDosesManager';
 import { requireUser } from '@/lib/auth';
 import { TransactionsTable as TransactionsTableClient } from './TransactionsTable';
 
@@ -27,7 +28,8 @@ export default async function TransactionsPage() {
       remaining_volume_ml: vial.remaining_volume_ml,
       size_ml: vial.size_ml,
       status: vial.status,
-      dea_drug_name: vial.dea_drug_name
+      dea_drug_name: vial.dea_drug_name,
+      expiration_date: vial.expiration_date
     }));
 
   return (
@@ -40,6 +42,9 @@ export default async function TransactionsPage() {
           Return to the Inventory workspace.
         </Link>
       </p>
+
+      {/* Prefilled Doses */}
+      <StagedDosesManager patients={patientOptions} />
 
       <TransactionsActions patients={patientOptions} vials={activeVials} currentUserRole={user.role} />
 

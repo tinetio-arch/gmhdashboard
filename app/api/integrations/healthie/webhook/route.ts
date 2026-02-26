@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { handleHealthiePaymentWebhook } from '@/lib/healthiePaymentAutomation';
+import { handleHealthieLabOrderWebhook } from '@/lib/healthieLabOrderHandler';
 
 const WEBHOOK_SECRET = process.env.HEALTHIE_WEBHOOK_SECRET;
 const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY;
@@ -99,6 +100,20 @@ export async function POST(request: Request): Promise<Response> {
     body = await request.json();
   } catch (error) {
     return NextResponse.json({ success: false, error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  try {
+    const labOrderResult = await handleHealthieLabOrderWebhook(body);
+    if (labOrderResult.handled) {
+      return NextResponse.json({
+        success: true,
+        type: 'lab_order',
+        orderId: labOrderResult.orderId,
+        status: labOrderResult.status,
+      });
+    }
+  } catch (error) {
+    console.error('[healthie-webhook] lab order handling failed', error);
   }
 
   try {

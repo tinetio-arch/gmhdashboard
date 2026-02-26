@@ -1,4 +1,5 @@
 'use client';
+import { formatDateTimeUTC } from '@/lib/dateUtils';
 
 import { useEffect, useState } from 'react';
 import { withBasePath } from '@/lib/basePath';
@@ -232,7 +233,7 @@ export default function GHLSyncStatus({ patientId }: Props) {
             }}
           >
             {syncStatus.lastSyncedAt
-              ? new Date(syncStatus.lastSyncedAt).toLocaleString()
+              ? formatDateTimeUTC(syncStatus.lastSyncedAt)
               : 'Never'}
           </p>
         </div>
@@ -379,7 +380,7 @@ export default function GHLSyncStatus({ patientId }: Props) {
                           borderBottom: '1px solid rgba(148,163,184,0.15)',
                         }}
                       >
-                        {new Date(entry.createdAt).toLocaleString()}
+                        {formatDateTimeUTC(entry.createdAt)}
                       </td>
                       <td
                         style={{

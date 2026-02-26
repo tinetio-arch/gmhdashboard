@@ -19,7 +19,9 @@ type FormState = {
   statusKey: string | null;
   paymentMethodKey: string | null;
   clientTypeKey: string | null;
+  clinic: string | null;  // 'nowprimary.care' or 'nowmenshealth.care'
   phoneNumber: string;
+  email: string;  // Email for Healthie matching
   address: string;
   regimen: string;
   dateOfBirth: string;
@@ -65,7 +67,9 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
     statusKey: defaultStatus,
     paymentMethodKey: null,
     clientTypeKey: null,
+    clinic: null,
     phoneNumber: '',
+    email: '',
     address: '',
     regimen: '',
     dateOfBirth: '',
@@ -76,14 +80,20 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
   });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [duplicateInfo, setDuplicateInfo] = useState<{
+    warnings: string[];
+    existingHealthieId: string | null;
+  } | null>(null);
   const isReadOnly = currentUserRole === 'read';
   const isDisabled = saving || isReadOnly;
 
   function updateForm<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
+    // Clear duplicate info when form changes
+    if (duplicateInfo) setDuplicateInfo(null);
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>, forceCreate = false) {
     event.preventDefault();
     if (isReadOnly) {
       setMessage('You do not have permission to add patients.');
@@ -106,6 +116,10 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
       setMessage('Client type is required.');
       return;
     }
+    if (!form.clinic) {
+      setMessage('Clinic is required.');
+      return;
+    }
     if (!form.lastLab) {
       setMessage('Last lab date is required.');
       return;
@@ -120,6 +134,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
     }
     setSaving(true);
     setMessage(null);
+    setDuplicateInfo(null);
     try {
       const response = await fetch(withBasePath('/api/patients'), {
         method: 'POST',
@@ -129,7 +144,9 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
           statusKey: form.statusKey,
           paymentMethodKey: form.paymentMethodKey,
           clientTypeKey: form.clientTypeKey,
+          clinic: form.clinic,
           phoneNumber: form.phoneNumber.trim() || null,
+          email: form.email.trim() || null,
           address: form.address.trim() || null,
           regimen: form.regimen.trim() || null,
           addedBy: currentUserEmail,
@@ -139,9 +156,22 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
           serviceStartDate: form.serviceStartDate || null,
           contractEndDate: form.contractEndDate || null,
           regularClient: false,
-          isVerified: false
+          isVerified: false,
+          forceCreate: forceCreate  // Allow bypassing duplicate check
         })
       });
+
+      // Handle duplicate detection (409 Conflict)
+      if (response.status === 409) {
+        const data = await response.json();
+        setDuplicateInfo({
+          warnings: data.duplicateWarnings || [],
+          existingHealthieId: data.existingHealthieId || null
+        });
+        setMessage('Potential duplicate detected - see options below');
+        return;
+      }
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         const errorMessage = errorData?.error || `Failed to create patient (${response.status})`;
@@ -152,7 +182,9 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
         statusKey: defaultStatus,
         paymentMethodKey: null,
         clientTypeKey: null,
+        clinic: null,
         phoneNumber: '',
+        email: '',
         address: '',
         regimen: '',
         dateOfBirth: '',
@@ -170,6 +202,13 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
     } finally {
       setSaving(false);
     }
+  }
+
+  // Link to existing Healthie patient (forceCreate bypasses duplicate check)
+  async function handleForceCreate() {
+    // Create a synthetic event
+    const syntheticEvent = { preventDefault: () => { } } as FormEvent<HTMLFormElement>;
+    await handleSubmit(syntheticEvent, true);
   }
 
   if (!mounted) {
@@ -223,19 +262,34 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
           </select>
         </div>
         <div style={{ flex: '1 1 220px' }}>
-          <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Client Type</label>
+          <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Client Type *</label>
           <select
             value={form.clientTypeKey ?? ''}
             onChange={(event) => updateForm('clientTypeKey', event.target.value || null)}
             style={inputStyle}
             disabled={isDisabled}
+            required
           >
-            <option value="">(Unspecified)</option>
+            <option value="">Select Client Type...</option>
             {lookups.clientTypes.map((type) => (
               <option key={type.type_key} value={type.type_key}>
                 {type.display_name}
               </option>
             ))}
+          </select>
+        </div>
+        <div style={{ flex: '1 1 220px' }}>
+          <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Clinic *</label>
+          <select
+            value={form.clinic ?? ''}
+            onChange={(event) => updateForm('clinic', event.target.value || null)}
+            style={inputStyle}
+            disabled={isDisabled}
+            required
+          >
+            <option value="">Select Clinic...</option>
+            <option value="nowprimary.care">NOW Primary Care</option>
+            <option value="nowmenshealth.care">NOW Men's Health</option>
           </select>
         </div>
       </div>
@@ -251,6 +305,17 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
             placeholder="(555) 123-4567"
             disabled={isDisabled}
             required
+          />
+        </div>
+        <div style={{ flex: '1 1 250px' }}>
+          <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Email (for Healthie matching)</label>
+          <input
+            type="email"
+            value={form.email}
+            onChange={(event) => updateForm('email', event.target.value)}
+            style={inputStyle}
+            placeholder="patient@example.com"
+            disabled={isDisabled}
           />
         </div>
         <div style={{ flex: '1 1 200px' }}>
@@ -336,6 +401,65 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
         </div>
       </div>
 
+      {/* Duplicate Detection Warning */}
+      {duplicateInfo && (
+        <div style={{
+          padding: '1rem',
+          borderRadius: '0.5rem',
+          background: '#fef9c3',
+          border: '1px solid #eab308',
+          marginBottom: '1rem'
+        }}>
+          <div style={{ fontWeight: 600, color: '#854d0e', marginBottom: '0.5rem' }}>
+            ⚠️ Potential Duplicate Detected
+          </div>
+          <ul style={{ margin: '0 0 1rem 1.5rem', padding: 0, color: '#854d0e' }}>
+            {duplicateInfo.warnings.map((warning, i) => (
+              <li key={i} style={{ marginBottom: '0.25rem' }}>{warning}</li>
+            ))}
+          </ul>
+          {duplicateInfo.existingHealthieId && (
+            <div style={{ marginBottom: '1rem', color: '#854d0e' }}>
+              <strong>Healthie Patient ID:</strong> {duplicateInfo.existingHealthieId}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={handleForceCreate}
+              disabled={saving}
+              style={{
+                padding: '0.5rem 1rem',
+                borderRadius: '0.5rem',
+                border: 'none',
+                background: '#22c55e',
+                color: 'white',
+                fontWeight: 600,
+                cursor: saving ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {saving ? 'Creating...' : '✅ Link to Healthie & Create Patient'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setDuplicateInfo(null)}
+              disabled={saving}
+              style={{
+                padding: '0.5rem 1rem',
+                borderRadius: '0.5rem',
+                border: '1px solid #d1d5db',
+                background: 'white',
+                color: '#374151',
+                fontWeight: 500,
+                cursor: saving ? 'not-allowed' : 'pointer'
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
         <button
           type="submit"
@@ -352,7 +476,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
         >
           {saving ? 'Adding…' : isReadOnly ? 'View Only' : 'Add Patient'}
         </button>
-        {message && <span style={{ color: '#38bdf8' }}>{message}</span>}
+        {message && <span style={{ color: duplicateInfo ? '#854d0e' : '#38bdf8' }}>{message}</span>}
       </div>
     </form>
   );

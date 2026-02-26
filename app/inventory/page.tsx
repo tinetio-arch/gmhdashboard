@@ -5,6 +5,8 @@ import { fetchInventory, fetchInventorySummary } from '@/lib/inventoryQueries';
 import { fetchActivePatientOptions } from '@/lib/patientQueries';
 import InventoryActions from './InventoryActions';
 import InventoryTable from './InventoryTable';
+import MorningCheckForm from './MorningCheckForm';
+import StagedDosesManager from './StagedDosesManager';
 import { requireUser } from '@/lib/auth';
 
 export default async function InventoryPage() {
@@ -38,9 +40,21 @@ export default async function InventoryPage() {
     <section>
       <h2 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>Vial Inventory</h2>
       <p style={{ color: '#64748b', marginBottom: '1.5rem' }}>
-        Keep track of stock levels, expiration dates, and controlled substances. Update vial details directly in the
-        database to keep this dashboard in sync.
+        Keep track of stock levels, expiration dates, and controlled substances. Complete morning check before dispensing.
       </p>
+
+      {/* Prefilled Doses - Document before morning check */}
+      <StagedDosesManager patients={patientOptions} />
+
+      {/* Morning + EOD Check Forms - DEA Compliance */}
+      <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 400px' }}>
+          <MorningCheckForm checkType="morning" />
+        </div>
+        <div style={{ flex: '1 1 400px' }}>
+          <MorningCheckForm checkType="evening" />
+        </div>
+      </div>
 
       <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginBottom: '2rem' }}>
         <SummaryCard label="Active Vials" value={summary.active_vials} />

@@ -10,7 +10,8 @@ import {
   DEFAULT_TESTOSTERONE_DEA_SCHEDULE,
   DEFAULT_TESTOSTERONE_PRESCRIBER,
   DEFAULT_TESTOSTERONE_VENDOR,
-  TESTOSTERONE_VENDORS
+  TESTOSTERONE_VENDORS,
+  WASTE_PER_SYRINGE
 } from '@/lib/testosterone';
 import { computeLabStatus } from '@/lib/patientFormatting';
 
@@ -27,6 +28,7 @@ type VialOption = {
   size_ml: string | null;
   status: string | null;
   dea_drug_name: string | null;
+  expiration_date: string | null;
 };
 
 type Props = {
@@ -81,7 +83,7 @@ const emptyInventoryStyle: CSSProperties = {
   color: '#b91c1c'
 };
 
-const WASTE_PER_SYRINGE = 0.1;
+// WASTE_PER_SYRINGE imported from '@/lib/testosterone'
 
 function InputLabel({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -170,8 +172,27 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [splitNextVialId, setSplitNextVialId] = useState('');
 
+  // Quickbooks override state
+  const [showOverrideForm, setShowOverrideForm] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overrideApproved, setOverrideApproved] = useState(false);
+  const [lastQboPayment, setLastQboPayment] = useState<{ date: string | null; amount: number | null } | null>(null);
+
+  // Morning check status
+  const [morningCheckDone, setMorningCheckDone] = useState<boolean | null>(null);
+
   const loading = status.type === 'loading';
   const canRecord = currentUserRole !== 'read';
+
+  // Check if morning audit is done
+  useEffect(() => {
+    fetch(withBasePath('/api/inventory/controlled-check?action=status'))
+      .then(res => res.json())
+      .then(data => {
+        setMorningCheckDone(data.completed === true);
+      })
+      .catch(() => setMorningCheckDone(null));
+  }, []);
 
   const vialOptions = useMemo(
     () =>
@@ -185,17 +206,28 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
     [vials]
   );
 
+  // Filter to only show vials with remaining volume > 0 for dispensing
+  const dispensableVials = useMemo(
+    () => vialOptions.filter((vial) => vial.remaining_numeric > 0),
+    [vialOptions]
+  );
+
   const selectedVial = useMemo(() => vialOptions.find((vial) => vial.vial_id === selectedVialId) ?? null, [vialOptions, selectedVialId]);
   const selectedRemaining = selectedVial?.remaining_numeric ?? 0;
   const selectedVialLabel = selectedVial ? selectedVial.external_id ?? selectedVial.vial_id : 'No vial selected';
+  const selectedVialEmpty = selectedVial !== null && selectedRemaining <= 0;
+  const selectedVialExpired = selectedVial !== null && selectedVial.expiration_date
+    ? new Date(selectedVial.expiration_date) < new Date()
+    : false;
 
   useEffect(() => {
-    if (!selectedVialId && vialOptions.length > 0) {
-      const first = vialOptions[0];
+    // Auto-select first vial with remaining volume
+    if (!selectedVialId && dispensableVials.length > 0) {
+      const first = dispensableVials[0];
       setSelectedVialId(first.vial_id);
       setDeaDrugName(inferVialVendor(first));
     }
-  }, [selectedVialId, vialOptions]);
+  }, [selectedVialId, dispensableVials]);
 
   const patientLookup = useMemo(() => new Map(patients.map((patient) => [patient.patient_id, patient])), [patients]);
   const selectedPatient = selectedPatientId ? patientLookup.get(selectedPatientId) ?? null : null;
@@ -211,6 +243,27 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
     patientLabInfo?.label ??
     selectedPatient?.lab_status ??
     'No lab data';
+
+  const isRestrictedPayment = useMemo(() => {
+    if (!selectedPatient?.method_of_payment) return false;
+    return selectedPatient.method_of_payment.toLowerCase().includes('quickbooks');
+  }, [selectedPatient]);
+
+  // Fetch last QBO payment when restricted patient is selected
+  useEffect(() => {
+    if (isRestrictedPayment && selectedPatientId) {
+      fetch(withBasePath(`/api/patients/${selectedPatientId}/qbo-last-payment`))
+        .then(res => res.json())
+        .then(data => setLastQboPayment(data.lastPayment ?? null))
+        .catch(() => setLastQboPayment(null));
+    } else {
+      setLastQboPayment(null);
+      setShowOverrideForm(false);
+      setOverrideReason('');
+      setOverrideApproved(false);
+    }
+  }, [isRestrictedPayment, selectedPatientId]);
+
   const regimenDisplay =
     selectedPatient?.regimen && selectedPatient.regimen.trim().length > 0 ? selectedPatient.regimen : '—';
   const filteredPatients = useMemo(() => {
@@ -324,13 +377,20 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
       totalSyringes,
       Math.max(1, Math.round(selectedRemaining / perSyringeRemoval))
     );
-    const doseCurrent = Number((predictedCurrentSyringes * doseValue).toFixed(3));
+    let doseCurrent = Number((predictedCurrentSyringes * doseValue).toFixed(3));
     let wasteCurrent = Number((predictedCurrentSyringes * WASTE_PER_SYRINGE).toFixed(3));
     const delta = Number((selectedRemaining - (doseCurrent + wasteCurrent)).toFixed(3));
     if (delta > 0) {
+      // Vial has more remaining than predicted — add surplus to waste
       wasteCurrent = Number((wasteCurrent + delta).toFixed(3));
+    } else if (delta < 0) {
+      // Vial has LESS remaining than predicted — cap to actual remaining
+      // Scale down dose and waste proportionally to fit what's in the vial
+      const ratio = selectedRemaining / (doseCurrent + wasteCurrent);
+      doseCurrent = Number((doseCurrent * ratio).toFixed(3));
+      wasteCurrent = Number(Math.max(selectedRemaining - doseCurrent, 0).toFixed(3));
     }
-    const removalCurrent = Number((doseCurrent + wasteCurrent).toFixed(3));
+    const removalCurrent = Number(Math.min(doseCurrent + wasteCurrent, selectedRemaining).toFixed(3));
 
     const remainingRemoval = Number((totalRemoval - removalCurrent).toFixed(3));
     const remainingDispensed = Number((computedDispensed - doseCurrent).toFixed(3));
@@ -436,6 +496,10 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
       setStatus({ type: 'error', message: 'Select an inventory vial.' });
       return;
     }
+    if (selectedVialEmpty) {
+      setStatus({ type: 'error', message: `Vial ${selectedVialLabel} has 0 mL remaining. Select a vial with available volume.` });
+      return;
+    }
     if (!finalPatientName) {
       setStatus({ type: 'error', message: 'Select or enter a patient name.' });
       return;
@@ -452,6 +516,13 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
       setStatus({
         type: 'error',
         message: `Selected vial only has ${selectedRemaining.toFixed(2)} mL remaining. Use the split helper below to finish this vial and continue with another.`
+      });
+      return;
+    }
+    if (isRestrictedPayment && !overrideApproved) {
+      setStatus({
+        type: 'error',
+        message: 'Unable to dispense. Patient has Quickbooks as Method of Payment. Use the override option below.'
       });
       return;
     }
@@ -504,12 +575,12 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
     }
   }
 
-  if (vialOptions.length === 0) {
+  if (dispensableVials.length === 0) {
     return (
       <section style={emptyInventoryStyle}>
-        <h3 style={{ margin: 0, fontSize: '1.3rem' }}>No active testosterone vials available</h3>
+        <h3 style={{ margin: 0, fontSize: '1.3rem' }}>No testosterone vials with remaining volume</h3>
         <p style={{ marginTop: '0.75rem' }}>
-          Receive inventory in the <strong>Inventory</strong> workspace before logging dispenses.
+          All vials are empty. Receive new inventory in the <strong>Inventory</strong> workspace before logging dispenses.
         </p>
       </section>
     );
@@ -531,6 +602,48 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
           Automatically tracks medication volume, mandated 0.1 mL waste per syringe, and updates the DEA ledger.
         </p>
       </header>
+
+      {/* Morning check warning */}
+      {morningCheckDone === false && (
+        <div style={{
+          padding: '0.75rem 1rem',
+          borderRadius: '0.5rem',
+          backgroundColor: '#fef2f2',
+          border: '1px solid #fecaca',
+          marginBottom: '1rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem'
+        }}>
+          <span style={{ fontSize: '1.25rem' }}>⚠️</span>
+          <div>
+            <strong style={{ color: '#dc2626' }}>Morning Inventory Check Required</strong>
+            <p style={{ margin: '0.25rem 0 0', color: '#7f1d1d', fontSize: '0.85rem' }}>
+              Complete the daily controlled substance count before dispensing.
+              Go to <a href={withBasePath('/inventory')} style={{ color: '#dc2626', fontWeight: 600, textDecoration: 'underline' }}>Inventory page</a> to complete the check.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {morningCheckDone === true && (
+        <div style={{
+          padding: '0.5rem 0.75rem',
+          borderRadius: '0.5rem',
+          backgroundColor: '#f0fdf4',
+          border: '1px solid #bbf7d0',
+          marginBottom: '1rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          fontSize: '0.85rem',
+          color: '#166534'
+        }}>
+          <span>✅</span>
+          <span>Morning check completed — ready to dispense</span>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
           <InputLabel label="Date">
@@ -546,15 +659,25 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
             <select
               value={selectedVialId}
               onChange={(event) => handleVialChange(event.target.value)}
-              style={fieldStyle}
+              style={selectedVialEmpty ? { ...fieldStyle, borderColor: '#ef4444', backgroundColor: '#fef2f2' } : fieldStyle}
               required
             >
-              {vialOptions.map((vial) => (
+              {dispensableVials.map((vial) => (
                 <option key={vial.vial_id} value={vial.vial_id}>
                   {(vial.external_id ?? vial.vial_id) + ` · ${vial.remaining_numeric.toFixed(2)} mL remaining`}
                 </option>
               ))}
             </select>
+            {selectedVialEmpty && (
+              <span style={{ color: '#dc2626', fontSize: '0.8rem', marginTop: '0.25rem' }}>
+                ⚠️ This vial has 0 mL remaining. Please select another vial.
+              </span>
+            )}
+            {selectedVialExpired && !selectedVialEmpty && (
+              <span style={{ color: '#f59e0b', fontSize: '0.8rem', marginTop: '0.25rem' }}>
+                ⚠️ This vial is past its expiration date ({selectedVial?.expiration_date}). Consider selecting a newer vial.
+              </span>
+            )}
           </InputLabel>
           <InputLabel label="Transaction Type">
             <select value={transactionType} onChange={(event) => setTransactionType(event.target.value)} style={fieldStyle}>
@@ -595,6 +718,7 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
               style={fieldStyle}
               disabled={!canRecord}
             />
+
             {showSuggestions && filteredPatients.length > 0 && (
               <ul
                 style={{
@@ -691,6 +815,130 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
             <span style={{ display: 'block', fontSize: '0.9rem' }}>
               Current lab status: {labStatusLabel}. Please verify labs or update status before dispensing.
             </span>
+          </div>
+        )}
+
+        {isRestrictedPayment && selectedPatient && (
+          <div style={{ ...warningStyle, marginTop: '0.5rem', backgroundColor: overrideApproved ? '#fef3c7' : '#fee2e2', borderColor: overrideApproved ? '#f59e0b' : '#ef4444', color: overrideApproved ? '#92400e' : '#b91c1c' }}>
+            <strong style={{ display: 'block', marginBottom: '0.25rem' }}>
+              {overrideApproved ? '⚠️ Override Active' : '⛔ Dispense Restricted'}
+            </strong>
+            <span style={{ display: 'block', fontSize: '0.9rem', marginBottom: '0.5rem' }}>
+              This patient uses <strong>Quickbooks</strong> as their method of payment.
+              {!overrideApproved && ' You cannot dispense until they are moved to Healthie EMR or you use an override.'}
+            </span>
+
+            {/* Last Payment Info */}
+            {lastQboPayment && (
+              <div style={{ padding: '0.5rem', backgroundColor: 'rgba(255,255,255,0.5)', borderRadius: '0.4rem', marginBottom: '0.5rem', fontSize: '0.85rem' }}>
+                <strong>Last Successful Payment:</strong>{' '}
+                {lastQboPayment.date ? new Date(lastQboPayment.date).toLocaleDateString() : 'Unknown date'}
+                {lastQboPayment.amount !== null && ` — $${lastQboPayment.amount.toFixed(2)}`}
+              </div>
+            )}
+
+            {/* Override Form */}
+            {!overrideApproved && !showOverrideForm && (
+              <button
+                type="button"
+                onClick={() => setShowOverrideForm(true)}
+                style={{
+                  marginTop: '0.5rem',
+                  padding: '0.4rem 0.8rem',
+                  backgroundColor: '#dc2626',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '0.4rem',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Request Override
+              </button>
+            )}
+
+            {showOverrideForm && !overrideApproved && (
+              <div style={{ marginTop: '0.5rem' }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.25rem' }}>
+                  Reason for Override (required):
+                </label>
+                <textarea
+                  value={overrideReason}
+                  onChange={(e) => setOverrideReason(e.target.value)}
+                  placeholder="Explain why you need to dispense to this Quickbooks patient..."
+                  style={{
+                    width: '100%',
+                    padding: '0.5rem',
+                    borderRadius: '0.4rem',
+                    border: '1px solid #fca5a5',
+                    fontSize: '0.9rem',
+                    minHeight: '60px',
+                    resize: 'vertical'
+                  }}
+                />
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <button
+                    type="button"
+                    disabled={!overrideReason.trim() || loading}
+                    onClick={async () => {
+                      setStatus({ type: 'loading' });
+                      try {
+                        const res = await fetch(withBasePath('/api/dispense-override'), {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            patientId: selectedPatientId,
+                            patientName: selectedPatient.patient_name,
+                            overrideReason: overrideReason.trim(),
+                            userName: 'Dashboard User'
+                          })
+                        });
+                        if (!res.ok) {
+                          throw new Error('Failed to send notification');
+                        }
+                        setOverrideApproved(true);
+                        setShowOverrideForm(false);
+                        setStatus({ type: 'success', message: 'Override approved. Billing team notified. You may now dispense.' });
+                      } catch {
+                        setStatus({ type: 'error', message: 'Failed to send override notification.' });
+                      }
+                    }}
+                    style={{
+                      padding: '0.4rem 0.8rem',
+                      backgroundColor: overrideReason.trim() ? '#dc2626' : '#9ca3af',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '0.4rem',
+                      fontWeight: 600,
+                      cursor: overrideReason.trim() ? 'pointer' : 'not-allowed'
+                    }}
+                  >
+                    {loading ? 'Sending...' : 'Confirm Override & Notify Billing'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowOverrideForm(false); setOverrideReason(''); }}
+                    style={{
+                      padding: '0.4rem 0.8rem',
+                      backgroundColor: 'transparent',
+                      color: '#b91c1c',
+                      border: '1px solid #b91c1c',
+                      borderRadius: '0.4rem',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {overrideApproved && (
+              <div style={{ fontSize: '0.85rem', fontStyle: 'italic' }}>
+                ✓ Billing team has been notified. You may now dispense.
+              </div>
+            )}
           </div>
         )}
 

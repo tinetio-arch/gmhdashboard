@@ -1,13 +1,17 @@
 /**
- * Healthie API Client
- * Handles authentication and data operations with Healthie EMR API
- * 
+  * Healthie API Client
+    * Handles authentication and data operations with Healthie EMR API
+      * 
  * NOTE: This implementation assumes Healthie uses a GraphQL API with API key authentication.
- * You may need to adjust the GraphQL queries/mutations based on the actual Healthie API documentation.
+ * You may need to adjust the GraphQL queries / mutations based on the actual Healthie API documentation.
  * If Healthie uses REST instead of GraphQL, modify the `graphql()` method to use REST endpoints.
  * 
  * Healthie API Documentation: https://docs.gethealthie.com/
+ * 
+ * RATE LIMITING: All requests go through the centralized healthieRateLimiter (5 req/s)
+ * to prevent credential-based lockouts (39+ burst requests → 30-60 min ban).
  */
+import { healthieRateLimiter } from './healthieRateLimiter';
 
 export type HealthieConfig = {
   apiKey: string;
@@ -30,6 +34,8 @@ export type HealthieClientData = {
   zip?: string;
   created_at?: string;
   updated_at?: string;
+  user_group_id?: string;
+  active?: boolean;
 };
 
 type HealthieUserRecord = {
@@ -55,6 +61,7 @@ type HealthieLocationInput = {
 
 type UpdateClientPayload = Partial<CreateClientInput> & {
   location?: HealthieLocationInput;
+  active?: boolean;
 };
 
 export type HealthiePackage = {
@@ -76,6 +83,9 @@ export type HealthieSubscription = {
   start_date?: string;
   next_charge_date?: string;
   amount?: number;
+  offering_name?: string;
+  billing_frequency?: string;
+  billing_items_count?: number;
   created_at?: string;
   updated_at?: string;
 };
@@ -218,6 +228,18 @@ export type HealthieChartNote = {
   body?: string | null;
 };
 
+export type HealthieBillingItem = {
+  id: string;
+  amount_paid: string | null;
+  amount_paid_string: string | null;
+  state: string | null;
+  created_at: string | null;
+  offering_name: string | null;
+  payment_medium: string | null;
+  shown_description: string | null;
+  recipient_name: string | null;
+};
+
 const HEALTHIE_DEBUG_ENABLED = process.env.HEALTHIE_DEBUG === 'true';
 
 export class HealthieClient {
@@ -247,27 +269,35 @@ export class HealthieClient {
    * 
    * Healthie API uses Basic authentication with API key
    * Documentation: https://docs.gethealthie.com/guides/api-concepts/authentication/
+   * 
+   * RATE LIMITED: All requests pass through healthieRateLimiter (5 req/s)
+   * with automatic 429 backoff and single retry.
    */
   private async graphql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
     if (!this.config.apiKey) {
       throw new Error('Healthie API key is required');
     }
 
-    // Healthie uses Basic auth with API key (not Bearer token)
-    // Format: Authorization: Basic YOUR_API_KEY_HERE
-    // Also requires AuthorizationSource: API header
-    const response = await fetch(this.apiUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${this.config.apiKey}`,
-        'AuthorizationSource': 'API',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query,
-        variables,
-      }),
-    });
+    const headers = {
+      'Authorization': `Basic ${this.config.apiKey}`,
+      'AuthorizationSource': 'API',
+      'Content-Type': 'application/json',
+    };
+    const body = JSON.stringify({ query, variables });
+
+    // Rate limit: wait for a token before making the request
+    await healthieRateLimiter.acquire();
+
+    let response = await fetch(this.apiUrl, { method: 'POST', headers, body });
+
+    // Handle 429 rate limit: backoff and retry once
+    if (response.status === 429) {
+      const retryAfter = response.headers.get('retry-after');
+      const backoffMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 60_000;
+      healthieRateLimiter.backoff(backoffMs);
+      await healthieRateLimiter.acquire();
+      response = await fetch(this.apiUrl, { method: 'POST', headers, body });
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -321,6 +351,7 @@ export class HealthieClient {
       dob: user.dob ?? undefined,
       created_at: user.created_at ?? undefined,
       updated_at: user.updated_at ?? undefined,
+      user_group_id: (user as any).user_group_id ?? undefined,
     };
   }
 
@@ -424,7 +455,7 @@ export class HealthieClient {
       const pageSize = 200;
       let offset = 0;
 
-      for (;;) {
+      for (; ;) {
         const users = await this.fetchUsersPage({ offset, pageSize });
         if (!users.length) {
           break;
@@ -533,8 +564,8 @@ export class HealthieClient {
    */
   async getMedications(userId: string, options?: { active?: boolean }): Promise<HealthieMedication[]> {
     const query = `
-      query Medications($userId: ID!, $active: Boolean) {
-        medications(user_id: $userId, active: $active) {
+      query Medications($patientId: String, $active: Boolean) {
+        medications(patient_id: $patientId, active: $active) {
           id
           name
           dosage
@@ -550,33 +581,43 @@ export class HealthieClient {
       }
     `;
 
-    const variables: Record<string, unknown> = { userId };
-    if (typeof options?.active === 'boolean') {
-      variables.active = options.active;
-    }
+    try {
+      const variables: Record<string, unknown> = { patientId: userId };
+      if (typeof options?.active === 'boolean') {
+        variables.active = options.active;
+      }
 
-    const result = await this.graphql<{ medications: HealthieMedication[] }>(query, variables);
-    return result.medications ?? [];
+      const result = await this.graphql<{ medications: HealthieMedication[] }>(query, variables);
+      return result.medications ?? [];
+    } catch (error) {
+      this.debugLog('Error fetching medications:', error);
+      return [];
+    }
   }
 
   /**
-   * Retrieve allergies for a user.
-   */
+ * Retrieve allergies for a user.
+ */
   async getAllergies(userId: string): Promise<HealthieAllergy[]> {
     const query = `
-      query Allergies($userId: ID!) {
-        allergies(user_id: $userId) {
-          id
-          name
-          reaction
-          severity
-          notes
-        }
+    query AllergySensitivities($patientId: String) {
+      allergySensitivities(patient_id: $patientId) {
+        id
+        name
+        reaction
+        severity
+        notes
       }
-    `;
+    }
+  `;
 
-    const result = await this.graphql<{ allergies: HealthieAllergy[] }>(query, { userId });
-    return result.allergies ?? [];
+    try {
+      const result = await this.graphql<{ allergySensitivities: HealthieAllergy[] }>(query, { patientId: userId });
+      return result.allergySensitivities ?? [];
+    } catch (error) {
+      this.debugLog('Error fetching allergies:', error);
+      return [];
+    }
   }
 
   /**
@@ -584,8 +625,8 @@ export class HealthieClient {
    */
   async getPrescriptions(userId: string, options?: { status?: string }): Promise<HealthiePrescription[]> {
     const query = `
-      query Prescriptions($userId: ID!, $status: String) {
-        prescriptions(user_id: $userId, status: $status) {
+      query Prescriptions($patientId: String, $status: String) {
+        prescriptions(patient_id: $patientId, status: $status) {
           id
           product_name
           dosage
@@ -616,13 +657,18 @@ export class HealthieClient {
       }
     `;
 
-    const variables: Record<string, unknown> = { userId };
-    if (options?.status) {
-      variables.status = options.status;
-    }
+    try {
+      const variables: Record<string, unknown> = { patientId: userId };
+      if (options?.status) {
+        variables.status = options.status;
+      }
 
-    const result = await this.graphql<{ prescriptions: HealthiePrescription[] }>(query, variables);
-    return result.prescriptions ?? [];
+      const result = await this.graphql<{ prescriptions: HealthiePrescription[] }>(query, variables);
+      return result.prescriptions ?? [];
+    } catch (error) {
+      this.debugLog('Error fetching prescriptions:', error);
+      return [];
+    }
   }
 
   /**
@@ -749,23 +795,38 @@ export class HealthieClient {
   }
 
   /**
+   * Search clients by name using Healthie's keywords search
+   * Used for duplicate detection during patient creation
+   */
+  async searchClientsByName(name: string): Promise<HealthieClientData[]> {
+    if (!name || name.trim().length < 2) {
+      return [];
+    }
+
+    try {
+      const results = await this.fetchUsersPage({ offset: 0, pageSize: 20, keywords: name.trim() });
+      return results.map(user => this.transformUserRecord(user));
+    } catch (error) {
+      this.debugLog('Error searching clients by name:', error);
+      return [];
+    }
+  }
+
+  /**
    * Get client by ID
    */
   async getClient(clientId: string): Promise<HealthieClientData> {
     const query = `
       query GetClient($id: ID!) {
-        client(id: $id) {
+        user(id: $id) {
           id
-          user_id
           first_name
           last_name
           email
           phone_number
           dob
-          address
-          city
-          state
-          zip
+          user_group_id
+          active
           created_at
           updated_at
         }
@@ -773,10 +834,10 @@ export class HealthieClient {
     `;
 
     const result = await this.graphql<{
-      client: HealthieClientData;
+      user: HealthieClientData;
     }>(query, { id: clientId });
 
-    return result.client;
+    return result.user;
   }
 
   /**
@@ -825,6 +886,7 @@ export class HealthieClient {
     if (input.timezone) payload.timezone = input.timezone;
     if (input.other_provider_ids?.length) payload.other_provider_ids = input.other_provider_ids;
     if (input.location) payload.location = input.location;
+    if (typeof input.active === 'boolean') payload.active = input.active;
     payload.id = clientId;
 
     const result = await this.graphql<{
@@ -996,34 +1058,71 @@ export class HealthieClient {
   }
 
   /**
-   * Get client subscriptions
-   */
+ * Get client subscriptions
+ */
   async getClientSubscriptions(clientId: string): Promise<HealthieSubscription[]> {
     const query = `
-      query GetClientSubscriptions($clientId: ID!) {
-        client(id: $clientId) {
-          subscriptions {
-            id
-            client_id
-            package_id
-            status
-            start_date
-            next_charge_date
-            amount
-            created_at
-            updated_at
-          }
-        }
+  query GetClientSubscriptions($id: ID) {
+    user(id: $id) {
+      recurring_payments {
+        id
+        is_canceled
+        is_paused
+        start_at
+        amount_to_pay
+        next_payment_date
+        offering_name
+        billing_frequency
+        billing_items_count
+        created_at
+        updated_at
       }
-    `;
+    }
+  }
+`;
 
-    const result = await this.graphql<{
-      client: {
-        subscriptions: HealthieSubscription[];
-      };
-    }>(query, { clientId });
+    try {
+      const result = await this.graphql<{
+        user: {
+          recurring_payments: Array<{
+            id: string;
+            is_canceled?: boolean;
+            is_paused?: boolean;
+            start_at?: string;
+            amount_to_pay?: string;
+            next_payment_date?: string;
+            offering_name?: string;
+            billing_frequency?: string;
+            billing_items_count?: number;
+            created_at?: string;
+            updated_at?: string;
+          }>;
+        };
+      }>(query, { id: clientId });
 
-    return result.client.subscriptions || [];
+      return (result.user?.recurring_payments || []).map((rp) => {
+        // Map real API fields to our interface for backward compatibility
+        const status: 'active' | 'cancelled' | 'paused' | undefined =
+          rp.is_canceled ? 'cancelled' : rp.is_paused ? 'paused' : 'active';
+        return {
+          id: rp.id,
+          client_id: clientId,
+          package_id: rp.offering_name ?? '',
+          status,
+          start_date: rp.start_at,
+          next_charge_date: rp.next_payment_date,
+          amount: rp.amount_to_pay ? parseFloat(rp.amount_to_pay) : undefined,
+          offering_name: rp.offering_name,
+          billing_frequency: rp.billing_frequency,
+          billing_items_count: rp.billing_items_count,
+          created_at: rp.created_at,
+          updated_at: rp.updated_at,
+        };
+      });
+    } catch (error) {
+      this.debugLog('Error fetching subscriptions:', error);
+      return [];
+    }
   }
 
   /**
@@ -1137,36 +1236,107 @@ export class HealthieClient {
   }
 
   /**
-   * Retrieve saved payment methods.
-   */
+ * Retrieve saved payment methods.
+ */
   async getPaymentMethods(clientId: string): Promise<HealthiePaymentMethod[]> {
     const query = `
-      query GetClientPaymentMethods($clientId: ID!) {
-        client(id: $clientId) {
-          payment_methods {
-            id
-            type
-            last_four
-            is_default
-            expires_at
+    query GetClientPaymentMethods($id: ID) {
+      user(id: $id) {
+        stripe_customer_detail {
+          card_brand
+          last_four
+          exp_month
+          exp_year
+        }
+      }
+    }
+  `;
+
+    try {
+      const result = await this.graphql<{
+        user: {
+          stripe_customer_detail?: {
+            card_brand?: string | null;
+            last_four?: string | null;
+            exp_month?: string | null;
+            exp_year?: string | null;
+          } | null;
+        };
+      }>(query, { id: clientId });
+
+      const detail = result.user?.stripe_customer_detail;
+      if (!detail || !detail.last_four) return [];
+
+      return [{
+        id: 'stripe-primary',
+        type: detail.card_brand ?? 'Card',
+        last_four: detail.last_four,
+        is_default: true,
+        expires_at: detail.exp_month && detail.exp_year ? `${detail.exp_month}/${detail.exp_year}` : null,
+      }];
+    } catch (error) {
+      this.debugLog('Error fetching payment methods:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get billing items for a client (payments, scheduled charges, etc.)
+   */
+  async getBillingItems(clientId: string, limit = 25): Promise<HealthieBillingItem[]> {
+    const query = `
+      query GetClientBillingItems($clientId: ID, $pageSize: Int) {
+        billingItems(client_id: $clientId, page_size: $pageSize) {
+          id
+          amount_paid
+          amount_paid_string
+          state
+          created_at
+          offering {
+            name
+          }
+          payment_medium
+          shown_description
+          recipient {
+            full_name
           }
         }
       }
     `;
 
-    const result = await this.graphql<{
-      client: {
-        payment_methods: Array<{
+    try {
+      console.log(`[Healthie] getBillingItems for clientId=${clientId}, limit=${limit}`);
+      const result = await this.graphql<{
+        billingItems: Array<{
           id: string;
-          type: string;
-          last_four?: string | null;
-          is_default?: boolean | null;
-          expires_at?: string | null;
+          amount_paid: string | null;
+          amount_paid_string: string | null;
+          state: string | null;
+          created_at: string | null;
+          offering?: { name?: string | null } | null;
+          payment_medium: string | null;
+          shown_description: string | null;
+          recipient?: { full_name?: string | null } | null;
         }>;
-      };
-    }>(query, { clientId });
+      }>(query, { clientId, pageSize: limit });
 
-    return result.client.payment_methods ?? [];
+      const items = (result.billingItems || []).map((b) => ({
+        id: b.id,
+        amount_paid: b.amount_paid,
+        amount_paid_string: b.amount_paid_string,
+        state: b.state,
+        created_at: b.created_at,
+        offering_name: b.offering?.name ?? null,
+        payment_medium: b.payment_medium,
+        shown_description: b.shown_description,
+        recipient_name: b.recipient?.full_name ?? null,
+      }));
+      console.log(`[Healthie] getBillingItems returned ${items.length} items`);
+      return items;
+    } catch (error: any) {
+      console.error(`[Healthie] getBillingItems ERROR for clientId=${clientId}:`, error.message);
+      return [];
+    }
   }
 
   /**
@@ -1194,6 +1364,111 @@ export class HealthieClient {
     } catch (error) {
       this.debugLog('Connection test failed:', error);
       return false;
+    }
+  }
+
+  /**
+   * Get documents for a patient
+   */
+  async getDocuments(userId: string): Promise<any[]> {
+    const query = `
+      query GetDocuments($userId: ID!) {
+        documents(user_id: $userId) {
+          id
+          display_name
+          file_type
+          created_at
+        }
+      }
+    `;
+
+    try {
+      const result = await this.graphql<{ documents: any[] }>(query, { userId });
+      return result.documents ?? [];
+    } catch (e) {
+      this.debugLog('Error fetching documents:', e);
+      return [];
+    }
+  }
+
+  /**
+   * Get form answer groups (submitted forms) for a patient
+   */
+  async getFormAnswerGroups(userId: string): Promise<any[]> {
+    const query = `
+      query GetFormAnswerGroups($userId: ID!) {
+        formAnswerGroups(user_id: $userId, finished: true) {
+          id
+          custom_module_form {
+            id
+            name
+          }
+          created_at
+        }
+      }
+    `;
+
+    try {
+      const result = await this.graphql<{ formAnswerGroups: any[] }>(query, { userId });
+      return result.formAnswerGroups ?? [];
+    } catch (e) {
+      this.debugLog('Error fetching form answer groups:', e);
+      return [];
+    }
+  }
+
+  /**
+   * Calculate patient data richness score
+   * Higher score = more data, should be kept as master
+   */
+  async getPatientDataRichness(userId: string): Promise<{
+    score: number;
+    details: {
+      documents: number;
+      forms: number;
+      medications: number;
+      allergies: number;
+      prescriptions: number;
+    };
+  }> {
+    try {
+      const [documents, forms, medications, allergies, prescriptions] = await Promise.all([
+        this.getDocuments(userId),
+        this.getFormAnswerGroups(userId),
+        this.getMedications(userId),
+        this.getAllergies(userId),
+        this.getPrescriptions(userId),
+      ]);
+
+      const counts = {
+        documents: documents.length,
+        forms: forms.length,
+        medications: medications.length,
+        allergies: allergies.length,
+        prescriptions: prescriptions.length,
+      };
+
+      // Weight: Documents are most important (user's priority)
+      const score =
+        counts.documents * 10 +      // Primary criterion
+        counts.forms * 5 +            // Forms are valuable
+        counts.medications * 3 +      // Clinical data
+        counts.prescriptions * 3 +
+        counts.allergies * 2;
+
+      return { score, details: counts };
+    } catch (e) {
+      this.debugLog('Error calculating patient data richness:', e);
+      return {
+        score: 0,
+        details: {
+          documents: 0,
+          forms: 0,
+          medications: 0,
+          allergies: 0,
+          prescriptions: 0,
+        },
+      };
     }
   }
 

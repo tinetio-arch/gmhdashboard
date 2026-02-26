@@ -25,7 +25,9 @@ export function getPool(): Pool {
       user: DATABASE_USER,
       password: DATABASE_PASSWORD,
       ssl: DATABASE_SSLMODE === 'disable' ? false : { rejectUnauthorized: false },
-      max: 10
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000
     });
   }
 

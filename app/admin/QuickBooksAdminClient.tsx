@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { formatDateUTC, formatDateTimeUTC } from '@/lib/dateUtils';
 
 interface RevenueMetrics {
   dailyRevenue: number;
@@ -68,12 +69,25 @@ export default function QuickBooksAdminClient() {
   const [connected, setConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'matching'>('overview');
   const [clinicMetrics, setClinicMetrics] = useState<ClinicSyncMetrics | null>(null);
+  const [syncTriggered, setSyncTriggered] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
     loadData();
     checkConnection();
     loadPatientMatches();
+
+    // Auto-sync after successful OAuth reconnection
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('success') === 'true' && !syncTriggered) {
+        setSyncTriggered(true);
+        // Remove the query param to prevent re-triggering on refresh
+        window.history.replaceState({}, '', window.location.pathname);
+        // Trigger sync automatically
+        syncData();
+      }
+    }
   }, []);
 
   const loadData = async () => {
@@ -232,21 +246,19 @@ export default function QuickBooksAdminClient() {
         <nav className="flex space-x-4" aria-label="Tabs">
           <button
             onClick={() => setActiveTab('overview')}
-            className={`px-3 py-2 font-medium text-sm rounded-md ${
-              activeTab === 'overview'
-                ? 'bg-indigo-100 text-indigo-700'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
+            className={`px-3 py-2 font-medium text-sm rounded-md ${activeTab === 'overview'
+              ? 'bg-indigo-100 text-indigo-700'
+              : 'text-gray-500 hover:text-gray-700'
+              }`}
           >
             Overview
           </button>
           <button
             onClick={() => setActiveTab('matching')}
-            className={`px-3 py-2 font-medium text-sm rounded-md ${
-              activeTab === 'matching'
-                ? 'bg-indigo-100 text-indigo-700'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
+            className={`px-3 py-2 font-medium text-sm rounded-md ${activeTab === 'matching'
+              ? 'bg-indigo-100 text-indigo-700'
+              : 'text-gray-500 hover:text-gray-700'
+              }`}
           >
             Patient Matching
           </button>
@@ -266,249 +278,248 @@ export default function QuickBooksAdminClient() {
             </div>
           </div>
 
-      {/* Revenue Metrics */}
-      {metrics && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white p-6 rounded-lg shadow border">
-            <h3 className="text-lg font-semibold mb-2">Daily Revenue</h3>
-            <div className="text-3xl font-bold text-green-600">
-              {formatCurrency(metrics.dailyRevenue)}
-            </div>
-          </div>
-
-          <div className="bg-white p-6 rounded-lg shadow border">
-            <h3 className="text-lg font-semibold mb-2">Weekly Revenue</h3>
-            <div className="text-3xl font-bold text-blue-600">
-              {formatCurrency(metrics.weeklyRevenue)}
-            </div>
-          </div>
-
-          <div className="bg-white p-6 rounded-lg shadow border">
-            <h3 className="text-lg font-semibold mb-2">Monthly Revenue</h3>
-            <div className="text-3xl font-bold text-purple-600">
-              {formatCurrency(metrics.monthlyRevenue)}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Patient Statistics */}
-      {metrics && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white p-6 rounded-lg shadow border">
-            <h3 className="text-lg font-semibold mb-2">Patients on Recurring</h3>
-            <div className="text-3xl font-bold text-indigo-600">
-              {metrics.totalPatientsOnRecurring}
-            </div>
-          </div>
-
-          <div className="bg-white p-6 rounded-lg shadow border">
-            <h3 className="text-lg font-semibold mb-2">Payment Issues</h3>
-            <div className="text-3xl font-bold text-red-600">
-              {metrics.paymentIssues}
-            </div>
-          </div>
-
-          <div className="bg-white p-6 rounded-lg shadow border">
-            <h3 className="text-lg font-semibold mb-2">Unmatched Patients</h3>
-            <div className="text-3xl font-bold text-orange-600">
-              {metrics.unmatchedPatients}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {(patientMatches || clinicMetrics) && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-          <div className="bg-white p-4 rounded-lg shadow border">
-            <div className="inline-flex items-center gap-2 text-sm font-semibold text-gray-900">
-              <span className={`inline-flex h-2.5 w-2.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
-              QuickBooks Connected
-            </div>
-            <p className="text-sm text-gray-500 mt-1">
-              {(patientMatches?.totalMappings ?? metrics?.totalPatientsOnRecurring ?? 0).toLocaleString()} patients mapped
-            </p>
-          </div>
-          {clinicMetrics && (
-            <div className="bg-white p-4 rounded-lg shadow border">
-              <div className="inline-flex items-center gap-2 text-sm font-semibold text-gray-900">
-                <span className="inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
-                ClinicSync Connected
+          {/* Revenue Metrics */}
+          {metrics && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="bg-white p-6 rounded-lg shadow border">
+                <h3 className="text-lg font-semibold mb-2">Daily Revenue</h3>
+                <div className="text-3xl font-bold text-green-600">
+                  {formatCurrency(metrics.dailyRevenue)}
+                </div>
               </div>
-              <p className="text-sm text-gray-500 mt-1">
-                {formatNumber(clinicMetrics.mappedMemberships)} patients mapped
-              </p>
+
+              <div className="bg-white p-6 rounded-lg shadow border">
+                <h3 className="text-lg font-semibold mb-2">Weekly Revenue</h3>
+                <div className="text-3xl font-bold text-blue-600">
+                  {formatCurrency(metrics.weeklyRevenue)}
+                </div>
+              </div>
+
+              <div className="bg-white p-6 rounded-lg shadow border">
+                <h3 className="text-lg font-semibold mb-2">Monthly Revenue</h3>
+                <div className="text-3xl font-bold text-purple-600">
+                  {formatCurrency(metrics.monthlyRevenue)}
+                </div>
+              </div>
             </div>
           )}
-        </div>
-      )}
 
-      {clinicMetrics && (
-        <div className="mt-10">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
-            <div>
-              <h2 className="text-2xl font-semibold">ClinicSync (Jane)</h2>
-              <p className="text-sm text-gray-600 mt-1">
-                Monitor Jane memberships and launch the auto-matching workflow for ClinicSync patients.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={async () => {
-                  try {
-                    setLoading(true);
-                    const response = await fetch('/ops/api/admin/clinicsync/sync', {
-                      method: 'POST'
-                    });
-                    if (response.ok) {
-                      const result = await response.json();
-                      alert(`ClinicSync sync completed: ${result.message}`);
-                      loadData(); // Refresh metrics
-                    } else {
-                      const error = await response.json();
-                      alert(`ClinicSync sync failed: ${error.error}`);
-                    }
-                  } catch (error) {
-                    alert('Failed to sync ClinicSync data');
-                  } finally {
-                    setLoading(false);
-                  }
-                }}
-                className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 transition disabled:opacity-50"
-                disabled={loading}
-              >
-                {loading ? 'Syncing...' : 'Sync Jane Data'}
-              </button>
-              <button
-                onClick={() => router.push('/admin/membership-audit')}
-                className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 transition"
-              >
-                Auto-Match ClinicSync Patients
-              </button>
-            </div>
-          </div>
+          {/* Patient Statistics */}
+          {metrics && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="bg-white p-6 rounded-lg shadow border">
+                <h3 className="text-lg font-semibold mb-2">Patients on Recurring</h3>
+                <div className="text-3xl font-bold text-indigo-600">
+                  {metrics.totalPatientsOnRecurring}
+                </div>
+              </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div className="bg-white p-6 rounded-lg shadow border">
-              <h3 className="text-lg font-semibold mb-2">Daily Revenue</h3>
-              <div className="text-3xl font-bold text-green-600">
-                {formatCurrency(clinicMetrics.dailyRevenue)}
+              <div className="bg-white p-6 rounded-lg shadow border">
+                <h3 className="text-lg font-semibold mb-2">Payment Issues</h3>
+                <div className="text-3xl font-bold text-red-600">
+                  {metrics.paymentIssues}
+                </div>
+              </div>
+
+              <div className="bg-white p-6 rounded-lg shadow border">
+                <h3 className="text-lg font-semibold mb-2">Unmatched Patients</h3>
+                <div className="text-3xl font-bold text-orange-600">
+                  {metrics.unmatchedPatients}
+                </div>
               </div>
             </div>
-            <div className="bg-white p-6 rounded-lg shadow border">
-              <h3 className="text-lg font-semibold mb-2">Weekly Revenue</h3>
-              <div className="text-3xl font-bold text-blue-600">
-                {formatCurrency(clinicMetrics.weeklyRevenue)}
+          )}
+
+          {(patientMatches || clinicMetrics) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+              <div className="bg-white p-4 rounded-lg shadow border">
+                <div className="inline-flex items-center gap-2 text-sm font-semibold text-gray-900">
+                  <span className={`inline-flex h-2.5 w-2.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
+                  QuickBooks Connected
+                </div>
+                <p className="text-sm text-gray-500 mt-1">
+                  {(patientMatches?.totalMappings ?? metrics?.totalPatientsOnRecurring ?? 0).toLocaleString()} patients mapped
+                </p>
               </div>
-            </div>
-            <div className="bg-white p-6 rounded-lg shadow border">
-              <h3 className="text-lg font-semibold mb-2">Monthly Revenue</h3>
-              <div className="text-3xl font-bold text-purple-600">
-                {formatCurrency(clinicMetrics.monthlyRevenue)}
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
-            <div className="bg-white p-6 rounded-lg shadow border">
-              <h3 className="text-lg font-semibold mb-2">Total Memberships</h3>
-              <div className="text-3xl font-bold text-indigo-600">{formatNumber(clinicMetrics.totalMemberships)}</div>
-            </div>
-            <div className="bg-white p-6 rounded-lg shadow border">
-              <h3 className="text-lg font-semibold mb-2">Active Memberships</h3>
-              <div className="text-3xl font-bold text-green-600">{formatNumber(clinicMetrics.activeMemberships)}</div>
-            </div>
-            <div className="bg-white p-6 rounded-lg shadow border">
-              <h3 className="text-lg font-semibold mb-2">Payment Issues</h3>
-              <div className="text-3xl font-bold text-red-600">{formatNumber(clinicMetrics.paymentIssues)}</div>
-            </div>
-            <div className="bg-white p-6 rounded-lg shadow border">
-              <h3 className="text-lg font-semibold mb-2">Unmatched Patients</h3>
-              <div className="text-3xl font-bold text-orange-600">{formatNumber(clinicMetrics.unmatchedMemberships)}</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Payment Issues Table */}
-      <div className="bg-white rounded-lg shadow border">
-        <div className="p-6 border-b">
-          <h2 className="text-xl font-semibold">Payment Issues Requiring Attention</h2>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Patient
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Issue Type
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Amount Owed
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Days Overdue
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Created
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {issues.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-4 text-center text-gray-500">
-                    No payment issues found
-                  </td>
-                </tr>
-              ) : (
-                issues.map((issue) => (
-                  <tr key={issue.issue_id}>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="font-medium text-gray-900">{issue.patient_name}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                        issue.issue_type === 'failed_payment' ? 'bg-red-100 text-red-800' :
-                        issue.issue_type === 'overdue_invoice' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-gray-100 text-gray-800'
-                      }`}>
-                        {issue.issue_type.replace('_', ' ')}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-red-600 font-medium">
-                      {formatCurrency(issue.amount_owed)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {issue.days_overdue} days
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {new Date(issue.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <button
-                        onClick={() => router.push(`/patients/${issue.patient_id}`)}
-                        className="text-indigo-600 hover:text-indigo-900 mr-4"
-                      >
-                        View Patient
-                      </button>
-                      <button className="text-green-600 hover:text-green-900">
-                        Mark Resolved
-                      </button>
-                    </td>
-                  </tr>
-                ))
+              {clinicMetrics && (
+                <div className="bg-white p-4 rounded-lg shadow border">
+                  <div className="inline-flex items-center gap-2 text-sm font-semibold text-gray-900">
+                    <span className="inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
+                    ClinicSync Connected
+                  </div>
+                  <p className="text-sm text-gray-500 mt-1">
+                    {formatNumber(clinicMetrics.mappedMemberships)} patients mapped
+                  </p>
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+            </div>
+          )}
+
+          {clinicMetrics && (
+            <div className="mt-10">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-2xl font-semibold">ClinicSync (Jane)</h2>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Monitor Jane memberships and launch the auto-matching workflow for ClinicSync patients.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={async () => {
+                      try {
+                        setLoading(true);
+                        const response = await fetch('/ops/api/admin/clinicsync/sync', {
+                          method: 'POST'
+                        });
+                        if (response.ok) {
+                          const result = await response.json();
+                          alert(`ClinicSync sync completed: ${result.message}`);
+                          loadData(); // Refresh metrics
+                        } else {
+                          const error = await response.json();
+                          alert(`ClinicSync sync failed: ${error.error}`);
+                        }
+                      } catch (error) {
+                        alert('Failed to sync ClinicSync data');
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
+                    className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 transition disabled:opacity-50"
+                    disabled={loading}
+                  >
+                    {loading ? 'Syncing...' : 'Sync Jane Data'}
+                  </button>
+                  <button
+                    onClick={() => router.push('/admin/membership-audit')}
+                    className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 transition"
+                  >
+                    Auto-Match ClinicSync Patients
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div className="bg-white p-6 rounded-lg shadow border">
+                  <h3 className="text-lg font-semibold mb-2">Daily Revenue</h3>
+                  <div className="text-3xl font-bold text-green-600">
+                    {formatCurrency(clinicMetrics.dailyRevenue)}
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow border">
+                  <h3 className="text-lg font-semibold mb-2">Weekly Revenue</h3>
+                  <div className="text-3xl font-bold text-blue-600">
+                    {formatCurrency(clinicMetrics.weeklyRevenue)}
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow border">
+                  <h3 className="text-lg font-semibold mb-2">Monthly Revenue</h3>
+                  <div className="text-3xl font-bold text-purple-600">
+                    {formatCurrency(clinicMetrics.monthlyRevenue)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
+                <div className="bg-white p-6 rounded-lg shadow border">
+                  <h3 className="text-lg font-semibold mb-2">Total Memberships</h3>
+                  <div className="text-3xl font-bold text-indigo-600">{formatNumber(clinicMetrics.totalMemberships)}</div>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow border">
+                  <h3 className="text-lg font-semibold mb-2">Active Memberships</h3>
+                  <div className="text-3xl font-bold text-green-600">{formatNumber(clinicMetrics.activeMemberships)}</div>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow border">
+                  <h3 className="text-lg font-semibold mb-2">Payment Issues</h3>
+                  <div className="text-3xl font-bold text-red-600">{formatNumber(clinicMetrics.paymentIssues)}</div>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow border">
+                  <h3 className="text-lg font-semibold mb-2">Unmatched Patients</h3>
+                  <div className="text-3xl font-bold text-orange-600">{formatNumber(clinicMetrics.unmatchedMemberships)}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Payment Issues Table */}
+          <div className="bg-white rounded-lg shadow border">
+            <div className="p-6 border-b">
+              <h2 className="text-xl font-semibold">Payment Issues Requiring Attention</h2>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Patient
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Issue Type
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Amount Owed
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Days Overdue
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Created
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {issues.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-4 text-center text-gray-500">
+                        No payment issues found
+                      </td>
+                    </tr>
+                  ) : (
+                    issues.map((issue) => (
+                      <tr key={issue.issue_id}>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="font-medium text-gray-900">{issue.patient_name}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${issue.issue_type === 'failed_payment' ? 'bg-red-100 text-red-800' :
+                            issue.issue_type === 'overdue_invoice' ? 'bg-yellow-100 text-yellow-800' :
+                              'bg-gray-100 text-gray-800'
+                            }`}>
+                            {issue.issue_type.replace('_', ' ')}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-red-600 font-medium">
+                          {formatCurrency(issue.amount_owed)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {issue.days_overdue} days
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {formatDateUTC(issue.created_at)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <button
+                            onClick={() => router.push(`/patients/${issue.patient_id}`)}
+                            className="text-indigo-600 hover:text-indigo-900 mr-4"
+                          >
+                            View Patient
+                          </button>
+                          <button className="text-green-600 hover:text-green-900">
+                            Mark Resolved
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </>
       ) : (
         // Patient Matching Tab
@@ -587,11 +598,10 @@ export default function QuickBooksAdminClient() {
                           {match.matchReason}
                         </td>
                         <td className="px-6 py-4">
-                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                            match.confidence === 'high' ? 'bg-green-100 text-green-800' :
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${match.confidence === 'high' ? 'bg-green-100 text-green-800' :
                             match.confidence === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                            'bg-gray-100 text-gray-800'
-                          }`}>
+                              'bg-gray-100 text-gray-800'
+                            }`}>
                             {match.confidence}
                           </span>
                         </td>

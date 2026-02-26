@@ -1,4 +1,5 @@
 'use client';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 import React, { useState, useEffect } from 'react';
 
@@ -240,7 +241,7 @@ export default function PatientMergeTool() {
                         </div>
                         {patient.date_added && (
                           <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.25rem' }}>
-                            Added: {new Date(patient.date_added).toLocaleDateString()}
+                            Added: {formatDateUTC(patient.date_added)}
                           </div>
                         )}
                       </div>

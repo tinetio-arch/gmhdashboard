@@ -1,14 +1,55 @@
 export const dynamic = 'force-dynamic';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 import type { CSSProperties } from 'react';
 import { fetchRecentDeaLog } from '@/lib/deaQueries';
 import { requireUser } from '@/lib/auth';
+import { query } from '@/lib/db';
+import ChecksManager from './ChecksManager';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 
-export default async function DeaPage() {
-  await requireUser('write');
-  const rows = await fetchRecentDeaLog();
+export default async function DeaPage({ searchParams }: { searchParams: { startDate?: string; endDate?: string } }) {
+  const user = await requireUser('write');
+  const isAdmin = user.role === 'admin';
+  const startDate = searchParams.startDate || undefined;
+  const endDate = searchParams.endDate || undefined;
+  const rows = await fetchRecentDeaLog({ startDate, endDate });
+
+  // Fetch recent controlled substance checks (last 14 days)
+  const checksResult = await query(`
+    SELECT check_id, check_date, check_type, performed_by_name, performed_at,
+           system_vials_cb_30ml, system_vials_toprx_10ml,
+           physical_vials_cb_30ml, physical_vials_toprx_10ml,
+           system_remaining_ml_cb, system_remaining_ml_toprx,
+           physical_partial_ml_cb, physical_partial_ml_toprx,
+           discrepancy_found, discrepancy_ml_cb, discrepancy_ml_toprx,
+           discrepancy_notes, notes
+      FROM controlled_substance_checks
+     WHERE check_date >= (NOW() AT TIME ZONE 'America/Denver')::date - INTERVAL '14 days'
+     ORDER BY check_date DESC, check_type DESC
+  `);
+
+  const checks = checksResult.map((r: any) => ({
+    checkId: r.check_id,
+    checkDate: r.check_date?.toISOString?.() ?? String(r.check_date),
+    checkType: r.check_type,
+    performedByName: r.performed_by_name,
+    performedAt: r.performed_at,
+    systemVialsCb: Number(r.system_vials_cb_30ml),
+    systemVialsTr: Number(r.system_vials_toprx_10ml),
+    physicalVialsCb: Number(r.physical_vials_cb_30ml),
+    physicalVialsTr: Number(r.physical_vials_toprx_10ml),
+    systemMlCb: Number(r.system_remaining_ml_cb),
+    systemMlTr: Number(r.system_remaining_ml_toprx),
+    physicalPartialCb: Number(r.physical_partial_ml_cb),
+    physicalPartialTr: Number(r.physical_partial_ml_toprx),
+    discrepancyFound: r.discrepancy_found,
+    discrepancyMlCb: Number(r.discrepancy_ml_cb),
+    discrepancyMlTr: Number(r.discrepancy_ml_toprx),
+    discrepancyNotes: r.discrepancy_notes,
+    notes: r.notes
+  }));
   let totalDispensed = 0;
   let last30Dispensed = 0;
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -48,24 +89,53 @@ export default async function DeaPage() {
     <section>
       <h2 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>DEA Controlled Substance Log</h2>
       <p style={{ color: '#64748b', marginBottom: '1.5rem' }}>
-        Showing the most recent 200 dispenses. Use the export button to download a CSV for regulators.
+        {startDate || endDate
+          ? `Showing ${rows.length} dispenses${startDate ? ` from ${startDate}` : ''}${endDate ? ` to ${endDate}` : ''}.`
+          : `Showing the most recent ${rows.length} dispenses.`
+        } Use the export button to download a CSV for regulators.
       </p>
 
-      <form action={`${basePath}/api/export/dea`} method="post" style={{ marginBottom: '1rem' }}>
-        <button
-          type="submit"
+      <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'flex-end' }}>
+        <form action="" method="get" style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.85rem', color: '#475569' }}>
+            From
+            <input type="date" name="startDate" defaultValue={startDate || ''} style={dateInputStyle} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.85rem', color: '#475569' }}>
+            To
+            <input type="date" name="endDate" defaultValue={endDate || ''} style={dateInputStyle} />
+          </label>
+          <button type="submit" style={filterBtnStyle}>Filter</button>
+          {(startDate || endDate) && (
+            <a href={`${basePath}/dea`} style={{
+              ...filterBtnStyle,
+              background: 'rgba(148, 163, 184, 0.15)',
+              color: '#475569',
+              textDecoration: 'none',
+              display: 'inline-flex',
+              alignItems: 'center'
+            }}>Clear</a>
+          )}
+        </form>
+
+        <a
+          href={`${basePath}/api/export/dea${startDate && endDate ? `?startDate=${startDate}&endDate=${endDate}` : ''}`}
+          download
           style={{
             padding: '0.55rem 1.1rem',
             borderRadius: '0.5rem',
             border: '1px solid rgba(148, 163, 184, 0.2)',
             background: '#38bdf8',
             color: '#0f172a',
-            fontWeight: 600
+            fontWeight: 600,
+            cursor: 'pointer',
+            textDecoration: 'none',
+            marginLeft: 'auto'
           }}
         >
           Export CSV
-        </button>
-      </form>
+        </a>
+      </div>
 
       <div
         style={{
@@ -76,7 +146,7 @@ export default async function DeaPage() {
         }}
       >
         <div style={summaryCardStyle}>
-          <h3 style={summaryTitleStyle}>Total Dispensed (log window)</h3>
+          <h3 style={summaryTitleStyle}>Total Dispensed{startDate || endDate ? ' (filtered)' : ' (log window)'}</h3>
           <p style={summaryMetricStyle}>{totalDispensed.toFixed(1)} mL</p>
           <span style={summaryHintStyle}>Across {rows.length} dispense events</span>
         </div>
@@ -161,6 +231,8 @@ export default async function DeaPage() {
           </tbody>
         </table>
       </div>
+
+      <ChecksManager checks={checks} isAdmin={isAdmin} />
     </section>
   );
 }
@@ -196,6 +268,25 @@ const summaryHintStyle: CSSProperties = {
   color: '#64748b'
 };
 
+const dateInputStyle: CSSProperties = {
+  padding: '0.45rem 0.6rem',
+  borderRadius: '0.4rem',
+  border: '1px solid rgba(148, 163, 184, 0.28)',
+  backgroundColor: '#ffffff',
+  color: '#0f172a',
+  fontSize: '0.9rem'
+};
+
+const filterBtnStyle: CSSProperties = {
+  padding: '0.45rem 1rem',
+  borderRadius: '0.5rem',
+  border: '1px solid rgba(14, 165, 233, 0.3)',
+  background: 'rgba(14, 165, 233, 0.12)',
+  color: '#0284c7',
+  fontWeight: 600,
+  cursor: 'pointer'
+};
+
 const deaHeaderStyle: CSSProperties = {
   padding: '0.65rem 0.85rem',
   textAlign: 'left',
@@ -222,5 +313,5 @@ function formatDate(value: string | null) {
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return date.toLocaleDateString();
+  return formatDateUTC(date);
 }

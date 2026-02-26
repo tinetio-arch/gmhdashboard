@@ -31,27 +31,16 @@ type QuickBooksInvoiceRow = {
   qb_sync_date: string | null;
 };
 
-type ClinicSyncMembershipRow = {
-  clinicsync_patient_id: string;
-  membership_plan: string | null;
-  membership_status: string | null;
-  membership_tier: string | null;
-  pass_id: number | null;
-  balance_owing: string | number | null;
-  amount_due: string | number | null;
-  last_payment_at: string | null;
-  next_payment_due: string | null;
-  service_start_date: string | null;
-  contract_end_date: string | null;
-  is_active: boolean | null;
-  updated_at: string | null;
-};
-
-type ClinicSyncMappingRow = {
-  clinicsync_patient_id: string;
-  match_method: string | null;
-  match_confidence: string | number | null;
-  updated_at: string | null;
+type HealthieInvoiceRow = {
+  healthie_invoice_id: string;
+  healthie_client_id: string;
+  amount: string | number | null;
+  status: string | null;
+  due_date: string | null;
+  invoice_number: string | null;
+  sent_at: string | null;
+  paid_at: string | null;
+  created_at: string | null;
 };
 
 type PaymentIssueRow = {
@@ -147,32 +136,23 @@ export type PatientFinancialData = {
       depositAccount: string | null;
     }>;
   };
-  clinicsync: {
-    mapping: {
-      clinicsyncId: string;
-      matchMethod: string | null;
-      matchConfidence: number | null;
-      updatedAt: string | null;
-    } | null;
-    memberships: Array<{
-      clinicsyncId: string;
-      plan: string | null;
+  healthie: {
+    invoices: Array<{
+      id: string;
+      amount: number;
       status: string | null;
-      tier: string | null;
-      passId: number | null;
-      balanceOwing: number;
-      amountDue: number;
-      lastPaymentAt: string | null;
-      nextPaymentDue: string | null;
-      serviceStart: string | null;
-      contractEnd: string | null;
-      isActive: boolean;
-      updatedAt: string | null;
+      dueDate: string | null;
+      invoiceNumber: string | null;
+      sentAt: string | null;
+      paidAt: string | null;
     }>;
     stats: {
-      activeMemberships: number;
-      totalBalance: number;
-      nextPaymentDue: string | null;
+      totalPaid: number;
+      lastPaymentDate: string | null;
+      lastPaymentAmount: number;
+      invoiceCount: number;
+      unpaidCount: number;
+      unpaidTotal: number;
     };
   };
   paymentIssues: Array<{
@@ -190,8 +170,7 @@ export async function fetchPatientFinancialData(patientId: string): Promise<Pati
   const [
     qbMappingRows,
     qbInvoiceRows,
-    clinicMembershipRows,
-    clinicMappingRows,
+    healthieInvoiceRows,
     issueRows,
     membershipRows,
     salesReceiptRows,
@@ -229,41 +208,20 @@ export async function fetchPatientFinancialData(patientId: string): Promise<Pati
         LIMIT 25`,
       [patientId]
     ),
-        query<ClinicSyncMembershipRow>(
-          `SELECT clinicsync_patient_id,
-                  membership_plan,
-                  membership_status,
-                  membership_tier,
-                  pass_id,
-                  balance_owing,
-                  amount_due,
-                  last_payment_at::text,
-                  next_payment_due::text,
-                  service_start_date::text,
-                  contract_end_date::text,
-                  is_active,
-                  updated_at::text
-             FROM clinicsync_memberships
-            WHERE patient_id = $1
-               -- Include recently expired memberships (within last 90 days)
-               AND (is_active = TRUE 
-                    OR contract_end_date >= CURRENT_DATE - INTERVAL '90 days'
-                    OR updated_at >= CURRENT_DATE - INTERVAL '90 days')
-            ORDER BY is_active DESC, 
-                     COALESCE(contract_end_date, CURRENT_DATE) DESC,
-                     updated_at DESC
-            LIMIT 25`,
-          [patientId]
-        ),
-    query<ClinicSyncMappingRow>(
-      `SELECT clinicsync_patient_id,
-              match_method,
-              match_confidence,
-              updated_at
-         FROM patient_clinicsync_mapping
-        WHERE patient_id = $1
-        ORDER BY updated_at DESC
-        LIMIT 1`,
+    query<HealthieInvoiceRow>(
+      `SELECT hi.healthie_invoice_id,
+              hi.healthie_client_id,
+              hi.amount,
+              hi.status,
+              hi.due_date::text,
+              hi.invoice_number,
+              hi.sent_at::text,
+              hi.paid_at::text,
+              hi.created_at::text
+         FROM healthie_invoices hi
+        WHERE hi.patient_id = $1
+        ORDER BY COALESCE(hi.paid_at, hi.created_at) DESC NULLS LAST
+        LIMIT 25`,
       [patientId]
     ),
     query<PaymentIssueRow>(
@@ -326,13 +284,13 @@ export async function fetchPatientFinancialData(patientId: string): Promise<Pati
 
   const qbMapping = qbMappingRows[0]
     ? {
-        customerId: qbMappingRows[0].qb_customer_id,
-        name: qbMappingRows[0].qb_customer_name,
-        email: qbMappingRows[0].qb_customer_email,
-        matchMethod: qbMappingRows[0].match_method,
-        isActive: Boolean(qbMappingRows[0].is_active),
-        updatedAt: qbMappingRows[0].updated_at
-      }
+      customerId: qbMappingRows[0].qb_customer_id,
+      name: qbMappingRows[0].qb_customer_name,
+      email: qbMappingRows[0].qb_customer_email,
+      matchMethod: qbMappingRows[0].match_method,
+      isActive: Boolean(qbMappingRows[0].is_active),
+      updatedAt: qbMappingRows[0].updated_at
+    }
     : null;
 
   const qbInvoices = qbInvoiceRows.map((row) => ({
@@ -363,47 +321,33 @@ export async function fetchPatientFinancialData(patientId: string): Promise<Pati
     { openBalance: 0, openInvoices: 0, lastPaymentDate: null as string | null }
   );
 
-  const clinicMemberships = clinicMembershipRows.map((row) => ({
-    clinicsyncId: row.clinicsync_patient_id,
-    plan: row.membership_plan,
-    status: row.membership_status,
-    tier: row.membership_tier,
-    passId: row.pass_id,
-    balanceOwing: toNumber(row.balance_owing),
-    amountDue: toNumber(row.amount_due),
-    lastPaymentAt: row.last_payment_at,
-    nextPaymentDue: row.next_payment_due,
-    serviceStart: row.service_start_date,
-    contractEnd: row.contract_end_date,
-    isActive: Boolean(row.is_active),
-    updatedAt: row.updated_at
+  const healthieInvoices = healthieInvoiceRows.map((row) => ({
+    id: row.healthie_invoice_id,
+    amount: toNumber(row.amount),
+    status: row.status,
+    dueDate: row.due_date,
+    invoiceNumber: row.invoice_number,
+    sentAt: row.sent_at,
+    paidAt: row.paid_at,
   }));
 
-  const clinicStats = clinicMemberships.reduce(
-    (acc, membership) => {
-      if (membership.isActive) {
-        acc.activeMemberships += 1;
+  const healthieStats = healthieInvoices.reduce(
+    (acc, inv) => {
+      if (inv.status === 'paid') {
+        acc.totalPaid += inv.amount;
+        if (!acc.lastPaymentDate || (inv.paidAt && inv.paidAt > acc.lastPaymentDate)) {
+          acc.lastPaymentDate = inv.paidAt;
+          acc.lastPaymentAmount = inv.amount;
+        }
+      } else {
+        acc.unpaidCount += 1;
+        acc.unpaidTotal += inv.amount;
       }
-      acc.totalBalance += membership.balanceOwing;
-      if (!acc.nextPaymentDue || (membership.nextPaymentDue && membership.nextPaymentDue < acc.nextPaymentDue)) {
-        acc.nextPaymentDue = membership.nextPaymentDue;
-      }
+      acc.invoiceCount += 1;
       return acc;
     },
-    { activeMemberships: 0, totalBalance: 0, nextPaymentDue: null as string | null }
+    { totalPaid: 0, lastPaymentDate: null as string | null, lastPaymentAmount: 0, invoiceCount: 0, unpaidCount: 0, unpaidTotal: 0 }
   );
-
-  const clinicMapping = clinicMappingRows[0]
-    ? {
-        clinicsyncId: clinicMappingRows[0].clinicsync_patient_id,
-        matchMethod: clinicMappingRows[0].match_method,
-        matchConfidence:
-          clinicMappingRows[0].match_confidence !== null
-            ? Number(clinicMappingRows[0].match_confidence)
-            : null,
-        updatedAt: clinicMappingRows[0].updated_at
-      }
-    : null;
 
   const paymentIssues = issueRows.map((row) => ({
     issueId: row.issue_id,
@@ -417,14 +361,14 @@ export async function fetchPatientFinancialData(patientId: string): Promise<Pati
 
   const membershipSummary = membershipRows[0]
     ? {
-        programName: membershipRows[0].program_name,
-        status: membershipRows[0].status,
-        feeAmount: toNumber(membershipRows[0].fee_amount),
-        balanceOwed: toNumber(membershipRows[0].balance_owed),
-        nextChargeDate: membershipRows[0].next_charge_date,
-        lastChargeDate: membershipRows[0].last_charge_date,
-        updatedAt: membershipRows[0].updated_at
-      }
+      programName: membershipRows[0].program_name,
+      status: membershipRows[0].status,
+      feeAmount: toNumber(membershipRows[0].fee_amount),
+      balanceOwed: toNumber(membershipRows[0].balance_owed),
+      nextChargeDate: membershipRows[0].next_charge_date,
+      lastChargeDate: membershipRows[0].last_charge_date,
+      updatedAt: membershipRows[0].updated_at
+    }
     : null;
 
   return {
@@ -449,10 +393,9 @@ export async function fetchPatientFinancialData(patientId: string): Promise<Pati
         depositAccount: payment.deposit_account ?? payment.payment_method ?? null
       }))
     },
-    clinicsync: {
-      mapping: clinicMapping,
-      memberships: clinicMemberships,
-      stats: clinicStats
+    healthie: {
+      invoices: healthieInvoices,
+      stats: healthieStats,
     },
     paymentIssues
   };

@@ -1,4 +1,5 @@
 'use client';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -75,7 +76,7 @@ export default function MembershipReconciliationClient({ data }: Props) {
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return '—';
-    return new Date(dateStr).toLocaleDateString();
+    return formatDateUTC(dateStr);
   };
 
   if (!data.quickbooksConnected) {

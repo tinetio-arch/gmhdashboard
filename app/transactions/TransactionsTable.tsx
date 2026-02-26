@@ -122,7 +122,7 @@ export function TransactionsTable({ transactions, canDelete }: Props) {
               'Signature Note',
               'Status',
               'Notes',
-              ...(canDelete ? ['Actions'] : [])
+              'Actions'
             ].map((header) => (
               <th key={header} style={headerStyle}>
                 {header}
@@ -149,18 +149,52 @@ export function TransactionsTable({ transactions, canDelete }: Props) {
               <td style={cellStyle}>{tx.signature_note ?? '—'}</td>
               <td style={cellStyle}>{tx.signature_status ?? (tx.signed_at ? 'Signed' : 'Awaiting Signature')}</td>
               <td style={{ ...cellStyle, maxWidth: 320 }}>{tx.notes ?? '—'}</td>
-              {canDelete && (
-                <td style={cellStyle}>
+              <td style={cellStyle}>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
                     type="button"
-                    onClick={() => handleDelete(tx.dispense_id)}
-                    disabled={deletingId === tx.dispense_id}
-                    style={{ ...deleteButtonStyle, opacity: deletingId === tx.dispense_id ? 0.6 : 1 }}
+                    title="Print Zebra Label"
+                    onClick={() => {
+                      const params = new URLSearchParams({
+                        type: 'testosterone',
+                        patientName: tx.patient_name || '',
+                        patientDob: formatDate(tx.patient_dob),
+                        medication: 'Testosterone Cypionate 200mg/ml',
+                        dosage: tx.transaction_type === 'Dispense' ? (tx.regimen || `${formatMlWithUnit(tx.total_dispensed_ml)} SUBQ Weekly`) : 'Use as directed',
+                        lotNumber: tx.lot_number || '',
+                        vialNumber: tx.vial_external_id || '',
+                        amountDispensed: tx.total_dispensed_ml ? String(tx.total_dispensed_ml) : '',
+                        volume: tx.total_amount ? String(tx.total_amount) : '',
+                        provider: 'Dr. Aaron Whitten NMD - DEA: MW6359574',
+                        dateDispensed: formatDate(tx.dispense_date),
+                        expDate: formatDate(tx.expiration_date),
+                      });
+                      window.open(withBasePath(`/api/labels/generate?${params.toString()}`), '_blank');
+                    }}
+                    style={{
+                      padding: '0.45rem 0.9rem',
+                      borderRadius: '0.5rem',
+                      border: '1px solid rgba(14, 165, 233, 0.4)',
+                      background: 'rgba(14, 165, 233, 0.1)',
+                      color: '#0284c7',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
                   >
-                    {deletingId === tx.dispense_id ? 'Deleting…' : 'Delete'}
+                    Print Label
                   </button>
-                </td>
-              )}
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(tx.dispense_id)}
+                      disabled={deletingId === tx.dispense_id}
+                      style={{ ...deleteButtonStyle, opacity: deletingId === tx.dispense_id ? 0.6 : 1 }}
+                    >
+                      {deletingId === tx.dispense_id ? 'Deleting…' : 'Delete'}
+                    </button>
+                  )}
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>

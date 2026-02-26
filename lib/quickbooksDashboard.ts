@@ -1,9 +1,15 @@
 import { query } from '@/lib/db';
 
+export type RevenuePeriod = {
+  total: number;
+  quickbooks: number;
+  healthie: number;
+};
+
 export type QuickBooksDashboardMetrics = {
-  dailyRevenue: number;
-  weeklyRevenue: number;
-  monthlyRevenue: number;
+  daily: RevenuePeriod;
+  weekly: RevenuePeriod;
+  monthly: RevenuePeriod;
   paymentIssues: number;
   unmatchedPatients: number;
   totalPatientsOnRecurring: number;
@@ -45,18 +51,8 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
   const endOfWeek = new Date(startOfWeek);
   endOfWeek.setDate(endOfWeek.getDate() + 7);
 
-  const [
-    dailyReceiptRevenue,
-    dailyPaymentRevenue,
-    weeklyReceiptRevenue,
-    weeklyPaymentRevenue,
-    monthlyReceiptRevenue,
-    monthlyPaymentRevenue,
-    paymentIssues,
-    unmatchedPatients,
-    totalPatientsOnRecurring,
-  ] = await Promise.all([
-    // Daily: Sales receipts (recurring subscriptions)
+  const results = await Promise.all([
+    // 0: Daily: Sales receipts (recurring subscriptions)
     query<{ total: number }>(
       `SELECT COALESCE(SUM(amount), 0) AS total
          FROM quickbooks_sales_receipts
@@ -65,7 +61,7 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
           AND status IS DISTINCT FROM 'voided'`,
       [startOfToday],
     ),
-    // Daily: Payment transactions (one-time payments)
+    // 1: Daily: Payment transactions (one-time payments)
     query<{ total: number }>(
       `SELECT COALESCE(SUM(amount), 0) AS total
          FROM quickbooks_payment_transactions
@@ -73,7 +69,7 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
           AND amount > 0`,
       [startOfToday],
     ),
-    // Weekly: Sales receipts
+    // 2: Weekly: Sales receipts
     query<{ total: number }>(
       `SELECT COALESCE(SUM(amount), 0) AS total
          FROM quickbooks_sales_receipts
@@ -83,7 +79,7 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
           AND status IS DISTINCT FROM 'voided'`,
       [startOfWeek, endOfWeek],
     ),
-    // Weekly: Payment transactions
+    // 3: Weekly: Payment transactions
     query<{ total: number }>(
       `SELECT COALESCE(SUM(amount), 0) AS total
          FROM quickbooks_payment_transactions
@@ -92,7 +88,7 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
           AND amount > 0`,
       [startOfWeek, endOfWeek],
     ),
-    // Monthly: Sales receipts
+    // 4: Monthly: Sales receipts
     query<{ total: number }>(
       `SELECT COALESCE(SUM(amount), 0) AS total
          FROM quickbooks_sales_receipts
@@ -102,7 +98,7 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
           AND status IS DISTINCT FROM 'voided'`,
       [startOfMonth, startOfNextMonth],
     ),
-    // Monthly: Payment transactions
+    // 5: Monthly: Payment transactions
     query<{ total: number }>(
       `SELECT COALESCE(SUM(amount), 0) AS total
          FROM quickbooks_payment_transactions
@@ -111,6 +107,7 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
           AND amount > 0`,
       [startOfMonth, startOfNextMonth],
     ),
+    // 6: Payment Issues Count
     query<{ count: number }>(
       `SELECT COUNT(*) AS count
          FROM payment_issues pi
@@ -118,6 +115,7 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
         WHERE pi.resolved_at IS NULL
           AND ${QUICKBOOKS_METHOD_FILTER}`,
     ),
+    // 7: Unmatched Patients Count
     query<{ count: number }>(
       `SELECT COUNT(*) AS count
          FROM patients p
@@ -129,6 +127,7 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
                    AND m.is_active = TRUE
                )`,
     ),
+    // 8: Total Patients on Recurring
     query<{ count: number }>(
       `SELECT COUNT(DISTINCT p.patient_id) AS count
          FROM patients p
@@ -136,6 +135,24 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
            ON m.patient_id = p.patient_id
           AND m.is_active = TRUE
         WHERE ${QUICKBOOKS_METHOD_FILTER}`,
+    ),
+    // 9: Healthie Daily
+    query<{ total: number }>(
+      `SELECT COALESCE(SUM(amount), 0) AS total FROM healthie_invoices
+       WHERE paid_at >= $1 AND paid_at < $2 AND status IN ('paid', 'succeeded', 'processed')`,
+      [startOfToday, new Date(startOfToday.getTime() + 86400000)]
+    ),
+    // 10: Healthie Weekly
+    query<{ total: number }>(
+      `SELECT COALESCE(SUM(amount), 0) AS total FROM healthie_invoices
+       WHERE paid_at >= $1 AND paid_at < $2 AND status IN ('paid', 'succeeded', 'processed')`,
+      [startOfWeek, endOfWeek]
+    ),
+    // 11: Healthie Monthly
+    query<{ total: number }>(
+      `SELECT COALESCE(SUM(amount), 0) AS total FROM healthie_invoices
+       WHERE paid_at >= $1 AND paid_at < $2 AND status IN ('paid', 'succeeded', 'processed')`,
+      [startOfMonth, startOfNextMonth]
     ),
   ]);
 
@@ -145,13 +162,33 @@ export async function getQuickBooksDashboardMetrics(): Promise<QuickBooksDashboa
   const parseCount = (rows: { count?: number }[]) =>
     parseInt(rows[0]?.count?.toString() || '0', 10);
 
+  const qbDaily = parseTotal(results[0]) + parseTotal(results[1]);
+  const qbWeekly = parseTotal(results[2]) + parseTotal(results[3]);
+  const qbMonthly = parseTotal(results[4]) + parseTotal(results[5]);
+
+  const hDaily = parseTotal(results[9]);
+  const hWeekly = parseTotal(results[10]);
+  const hMonthly = parseTotal(results[11]);
+
   return {
-    dailyRevenue: parseTotal(dailyReceiptRevenue) + parseTotal(dailyPaymentRevenue),
-    weeklyRevenue: parseTotal(weeklyReceiptRevenue) + parseTotal(weeklyPaymentRevenue),
-    monthlyRevenue: parseTotal(monthlyReceiptRevenue) + parseTotal(monthlyPaymentRevenue),
-    paymentIssues: parseCount(paymentIssues),
-    unmatchedPatients: parseCount(unmatchedPatients),
-    totalPatientsOnRecurring: parseCount(totalPatientsOnRecurring),
+    daily: {
+      total: qbDaily + hDaily,
+      quickbooks: qbDaily,
+      healthie: hDaily
+    },
+    weekly: {
+      total: qbWeekly + hWeekly,
+      quickbooks: qbWeekly,
+      healthie: hWeekly
+    },
+    monthly: {
+      total: qbMonthly + hMonthly,
+      quickbooks: qbMonthly,
+      healthie: hMonthly
+    },
+    paymentIssues: parseCount(results[6]),
+    unmatchedPatients: parseCount(results[7]),
+    totalPatientsOnRecurring: parseCount(results[8]),
   };
 }
 
@@ -198,6 +235,3 @@ export async function getQuickBooksUnmatchedPatients(limit = 10): Promise<QuickB
     [limit],
   );
 }
-
-
-

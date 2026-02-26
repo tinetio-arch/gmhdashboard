@@ -1,4 +1,5 @@
 'use client';
+import { formatDateTimeUTC } from '@/lib/dateUtils';
 
 import { useState, useEffect } from 'react';
 import { withBasePath } from '@/lib/basePath';
@@ -332,7 +333,7 @@ export default function GHLManagementClient() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-600">
-                      {status.ghl_last_synced_at ? new Date(status.ghl_last_synced_at).toLocaleString() : '—'}
+                      {status.ghl_last_synced_at ? formatDateTimeUTC(status.ghl_last_synced_at) : '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-red-600 truncate max-w-xs" title={status.ghl_sync_error || ''}>
                       {status.ghl_sync_error || '—'}
@@ -411,7 +412,7 @@ export default function GHLManagementClient() {
                 {syncHistory.slice(0, 100).map((entry) => (
                   <tr key={entry.sync_id}>
                     <td className="px-4 py-3 text-sm text-gray-600">
-                      {new Date(entry.created_at).toLocaleString()}
+                      {formatDateTimeUTC(entry.created_at)}
                     </td>
                     <td className="px-4 py-3 text-sm">{entry.patient_name || '—'}</td>
                     <td className="px-4 py-3 text-sm">

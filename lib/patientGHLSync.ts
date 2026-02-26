@@ -3,7 +3,7 @@
  * Handles bidirectional sync between GMH dashboard and GoHighLevel CRM
  */
 
-import { createGHLClient, type GHLClient, type GHLContact } from './ghl';
+import { createGHLClient, getGHLClientForPatient, type GHLClient, type GHLContact } from './ghl';
 import { query } from './db';
 import type { PatientDataEntryRow } from './patientQueries';
 
@@ -137,7 +137,7 @@ async function ensureGHLTags(ghlClient: GHLClient, tagNames: string[]): Promise<
       const tag = await ghlClient.findOrCreateTag(tagName);
       if (tag.id) {
         tagIds.push(tag.id);
-        
+
         // Update our mapping table with the GHL tag ID if we don't have it
         await query(
           `UPDATE ghl_tag_mappings 
@@ -159,23 +159,23 @@ async function ensureGHLTags(ghlClient: GHLClient, tagNames: string[]): Promise<
  */
 function normalizePhone(phone: string | null): string | undefined {
   if (!phone) return undefined;
-  
+
   // Remove all non-digits
   const digits = phone.replace(/\D/g, '');
-  
+
   if (digits.length === 0) return undefined;
   if (digits.length < 10) return undefined; // Invalid
-  
+
   // If 10 digits, assume US and prefix +1
   if (digits.length === 10) {
     return `+1${digits}`;
   }
-  
+
   // If 11 digits starting with 1, prefix +
   if (digits.length === 11 && digits[0] === '1') {
     return `+${digits}`;
   }
-  
+
   // Default: assume US, take last 10 digits
   return `+1${digits.slice(-10)}`;
 }
@@ -199,21 +199,21 @@ function parseName(fullName: string | null): { firstName: string; lastName: stri
   if (!fullName || !fullName.trim()) {
     return { firstName: '', lastName: '' };
   }
-  
+
   let name = fullName.trim();
-  
+
   // Remove common titles
   const titles = ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Miss', 'Rev.', 'Prof.'];
   for (const title of titles) {
     const regex = new RegExp(`^${title}\\s+`, 'i');
     name = name.replace(regex, '');
   }
-  
+
   const parts = name.split(/\s+/).filter(p => p.length > 0);
-  
+
   if (parts.length === 0) return { firstName: '', lastName: '' };
   if (parts.length === 1) return { firstName: toTitleCase(parts[0]), lastName: '' };
-  
+
   return {
     firstName: toTitleCase(parts[0]),
     lastName: parts.slice(1).map(p => toTitleCase(p)).join(' ')
@@ -232,22 +232,22 @@ function cleanAddress(patient: PatientDataEntryRow): {
 } {
   let state = patient.state?.trim().toUpperCase() || '';
   let postalCode = patient.postal_code?.trim() || '';
-  
+
   // Detect swapped state/ZIP (state has 5 digits)
   if (state.length === 5 && /^\d{5}$/.test(state)) {
     const temp = state;
     state = postalCode.length === 2 ? postalCode.toUpperCase() : 'AZ';
     postalCode = temp;
   }
-  
+
   // Validate state (must be 2 letters)
   if (state.length !== 2) {
     state = 'AZ'; // Default to Arizona
   }
-  
+
   // Clean postal code (5 digits only)
   postalCode = postalCode.replace(/\D/g, '').slice(0, 5);
-  
+
   return {
     address1: toTitleCase(patient.address_line1),
     city: toTitleCase(patient.city),
@@ -267,7 +267,7 @@ function cleanAddress(patient: PatientDataEntryRow): {
 function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> {
   const { firstName, lastName } = parseName(patient.patient_name);
   const addressData = cleanAddress(patient);
-  
+
   const contact: Partial<GHLContact> = {
     firstName: firstName || undefined,
     lastName: lastName || undefined,
@@ -294,7 +294,7 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
   const addCustomField = (key: string, value: string | null | undefined) => {
     // Convert value to string if needed
     let stringValue = value !== null && value !== undefined ? String(value) : '';
-    
+
     // For lab date fields, format as mm-dd-yyyy for GHL
     if (key === 'M9UY8UHBU8vI4lKBWN7w' || key === 'cMaBe12wckOiBAYb6T3e') {
       if (stringValue && stringValue.trim()) {
@@ -327,7 +327,7 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
           console.error(`[GHL Sync] Date formatting error:`, e, `for value: ${stringValue}`);
         }
       }
-      
+
       // GHL updateContact expects `field` (or `id`) for existing custom fields
       // Try both `field` and `id` to ensure GHL accepts it
       contact.customFields!.push({
@@ -338,7 +338,7 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
       debugLog(`[GHL Sync] Added lab date field: field=${key}, value=${stringValue || '(empty)'}`);
       return;
     }
-    
+
     // For all other fields, only add if value exists and is not empty
     const trimmed = stringValue.trim();
     if (trimmed !== '') {
@@ -349,14 +349,14 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
     }
   };
 
-    // CRITICAL: Lab dates - GMH ALWAYS WINS (even if empty, overwrites GHL)
-    // These are the most important fields per user requirements
-    // Use the correct GHL custom field IDs (not names)
-    debugLog(`[GHL Sync] Adding lab dates for ${patient.patient_name}: last_lab=${patient.last_lab}, next_lab=${patient.next_lab}`);
-    // Use the actual GHL field IDs so the date formatting logic triggers and fields update correctly
-    addCustomField('M9UY8UHBU8vI4lKBWN7w', patient.last_lab);      // Date of Last Lab Test
-    addCustomField('cMaBe12wckOiBAYb6T3e', patient.next_lab);      // Date of Next Lab Test
-  
+  // CRITICAL: Lab dates - GMH ALWAYS WINS (even if empty, overwrites GHL)
+  // These are the most important fields per user requirements
+  // Use the correct GHL custom field IDs (not names)
+  debugLog(`[GHL Sync] Adding lab dates for ${patient.patient_name}: last_lab=${patient.last_lab}, next_lab=${patient.next_lab}`);
+  // Use the actual GHL field IDs so the date formatting logic triggers and fields update correctly
+  addCustomField('M9UY8UHBU8vI4lKBWN7w', patient.last_lab);      // Date of Last Lab Test
+  addCustomField('cMaBe12wckOiBAYb6T3e', patient.next_lab);      // Date of Next Lab Test
+
   // Payment and client information
   addCustomField('method_of_payment', patient.method_of_payment);
   addCustomField('patient_status', patient.alert_status || patient.status_key);
@@ -364,30 +364,30 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
   addCustomField('regimen', patient.regimen);
   addCustomField('service_start_date', patient.service_start_date);
   addCustomField('contract_end', patient.contract_end);
-  
+
   // Notes fields
   addCustomField('patient_notes', patient.patient_notes);
   addCustomField('lab_notes', patient.lab_notes);
-  
+
   // Membership information
   addCustomField('membership_owes', patient.membership_owes);
   addCustomField('membership_program', patient.membership_program);
   addCustomField('membership_status', patient.membership_status);
   addCustomField('membership_balance', patient.membership_balance);
-  
+
   // Supply information
   addCustomField('last_supply_date', patient.last_supply_date);
   addCustomField('eligible_for_next_supply', patient.eligible_for_next_supply);
   addCustomField('supply_status', patient.supply_status);
-  
+
   // Charge dates
   addCustomField('next_charge_date', patient.next_charge_date);
   addCustomField('last_charge_date', patient.last_charge_date);
-  
+
   // DEA information
   addCustomField('last_controlled_dispense_at', patient.last_controlled_dispense_at);
   addCustomField('last_dea_drug', patient.last_dea_drug);
-  
+
   // Date of birth
   addCustomField('date_of_birth', patient.date_of_birth);
 
@@ -397,7 +397,7 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
       delete contact[key as keyof typeof contact];
     }
   });
-  
+
   // If customFields is empty, set to undefined (don't send empty array)
   if (contact.customFields && contact.customFields.length === 0) {
     contact.customFields = undefined;
@@ -420,9 +420,14 @@ function formatPatientForGHL(patient: PatientDataEntryRow): Partial<GHLContact> 
  */
 export async function syncPatientToGHL(
   patient: PatientDataEntryRow,
-  userId?: string
+  userId?: string,
+  ghlLocationId?: string
 ): Promise<{ success: boolean; ghlContactId?: string; error?: string }> {
-  const ghlClient = createGHLClient();
+  // Get the appropriate GHL client based on patient's clinic/type
+  // Men's Health patients → Men's Health token, Others → Primary Care token
+  const ghlClient = ghlLocationId
+    ? createGHLClient(ghlLocationId)  // If explicit location passed, use generic client
+    : getGHLClientForPatient(patient.clinic, patient.client_type_key); // Auto-detect location
   if (!ghlClient) {
     return { success: false, error: 'GHL client not configured' };
   }
@@ -485,7 +490,7 @@ export async function syncPatientToGHL(
         console.error(`[GHL Sync] Step 1 ERROR: Failed to search by email:`, error);
       }
     }
-    
+
     // STEP 2: If not found by email, try to find by phone
     if (!ghlContact && patient.phone_number) {
       debugLog(`[GHL Sync] Step 2: Searching for contact by phone: ${patient.phone_number}`);
@@ -522,12 +527,12 @@ export async function syncPatientToGHL(
     // STEP 4: If still no contact found, CREATE A NEW CONTACT
     if (!ghlContact) {
       debugLog(`[GHL Sync] Step 4: Contact not found - creating new contact in GHL for ${patient.patient_name}`);
-      
+
       const contactData = formatPatientForGHL(patient);
       const tagNames = await calculatePatientTags(patient);
       await ensureGHLTags(ghlClient, tagNames);
       contactData.tags = tagNames;
-      
+
       try {
         // Create the contact in GHL
         const createdContact = await ghlClient.createContact(contactData);
@@ -554,18 +559,18 @@ export async function syncPatientToGHL(
       actualContact = (ghlContact as any).contact;
       debugLog(`[GHL Sync] Step 4a: Unwrapped contact from nested structure`);
     }
-    
+
     if (GHL_SYNC_DEBUG) {
       console.log(`[GHL Sync] Step 4: Extracting contact ID from:`, JSON.stringify(actualContact, null, 2));
     }
-    
+
     // Try multiple possible ID fields
-    const contactId = 
-      actualContact.id || 
-      (actualContact as any).contactId || 
-      (actualContact as any)._id || 
+    const contactId =
+      actualContact.id ||
+      (actualContact as any).contactId ||
+      (actualContact as any)._id ||
       (actualContact as any).contact_id;
-    
+
     // STEP 6: Validate that we have a contact ID
     if (!contactId) {
       const errorMsg = `Contact found but missing ID. Email: ${patient.email || patient.qbo_customer_email || 'none'}, Phone: ${patient.phone_number || 'none'}`;
@@ -579,12 +584,12 @@ export async function syncPatientToGHL(
       );
       return { success: false, error: errorMsg };
     }
-    
+
     debugLog(`[GHL Sync] Step 5 SUCCESS: Extracted contact ID: ${contactId}`);
 
     // Prepare contact data for update
     const contactData = formatPatientForGHL(patient);
-    
+
     // For inactive patients, we still sync but with minimal data and no tags
     // This ensures GHL reflects the inactive status
 
@@ -641,7 +646,7 @@ export async function syncPatientToGHL(
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    
+
     // Handle "duplicated contacts" error - this means the contact already exists in GHL
     if (errorMessage.includes('duplicated contacts') || errorMessage.includes('duplicate')) {
       // Try to find the existing contact and link to it
@@ -655,7 +660,7 @@ export async function syncPatientToGHL(
         if (!existingContact && patient.phone_number) {
           existingContact = await ghlClient.findContactByPhone(patient.phone_number);
         }
-        
+
         if (existingContact) {
           const existingContactId = existingContact.id || (existingContact as any).contactId;
           if (existingContactId) {
@@ -676,7 +681,7 @@ export async function syncPatientToGHL(
         console.error(`Failed to link duplicate contact for ${patient.patient_name}:`, linkError);
       }
     }
-    
+
     // Update patient record with error
     await query(
       `UPDATE patients 
@@ -723,20 +728,20 @@ export async function syncMultiplePatients(
   // Sync each patient with rate limiting to avoid "Too Many Requests"
   for (let i = 0; i < patients.length; i++) {
     const patient = patients[i];
-    
+
     // Add delay between requests (except first one) - 200ms = ~5 requests/second
     if (i > 0) {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
-    
+
     const result = await syncPatientToGHL(patient, userId);
-    
+
     if (result.success) {
       succeeded.push(patient.patient_id);
     } else {
       failed.push(patient.patient_id);
       errors[patient.patient_id] = result.error || 'Unknown error';
-      
+
       // If rate limited, add longer delay before next request
       if (result.error?.includes('Too Many Requests')) {
         await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
@@ -812,10 +817,10 @@ export async function syncAllPatientsToGHL(userId?: string, forceAll: boolean = 
 }> {
   // If forceAll is true, resync ALL patients regardless of sync status
   // Otherwise, only sync patients that need syncing
-  const patientsToSync = forceAll 
+  const patientsToSync = forceAll
     ? await getAllPatientsForForcedResync(500)
     : await getPatientsNeedingSync(500);
-  
+
   if (patientsToSync.length === 0) {
     return { total: 0, succeeded: 0, failed: 0, errors: [] };
   }

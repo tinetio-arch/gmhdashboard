@@ -16,8 +16,12 @@
  * 3. Run: npm run telegram:bot
  */
 
+// Load environment variables from main .env file
+import * as dotenv from 'dotenv';
+dotenv.config({ path: '/home/ec2-user/.env' });
+
 import snowflake from 'snowflake-sdk';
-import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
+// import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime'; // Replaced with Gemini
 import { patientsService } from '@/lib/patients';
 import { fetchGraphQL } from '@/lib/healthie/financials';
 import * as fs from 'fs';
@@ -54,6 +58,498 @@ function loadDiscoveredSchema(): string {
 }
 
 const DISCOVERED_SCHEMA = loadDiscoveredSchema();
+
+// ============================================================================
+// GEMINI API CLIENT - Replaces AWS Bedrock Claude
+// ============================================================================
+const GOOGLE_AI_API_KEY = process.env.GOOGLE_AI_API_KEY;
+
+async function callGemini(prompt: string, maxTokens: number = 1000, temperature: number = 0): Promise<string> {
+  if (!GOOGLE_AI_API_KEY) {
+    throw new Error('GOOGLE_AI_API_KEY not configured');
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature,
+        maxOutputTokens: maxTokens
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+    throw new Error('Invalid Gemini response format');
+  }
+
+  return data.candidates[0].content.parts[0].text.trim();
+}
+
+// ============================================================================
+// FUZZY NAME MATCHING - For patient search with name variations
+// ============================================================================
+
+// Common name variations/nicknames
+const NAME_VARIATIONS: { [key: string]: string[] } = {
+  'jennifer': ['jen', 'jenny', 'jenn'],
+  'robert': ['rob', 'bob', 'bobby', 'robbie'],
+  'william': ['will', 'bill', 'billy', 'willy'],
+  'richard': ['rick', 'rich', 'dick', 'ricky'],
+  'michael': ['mike', 'mikey', 'mick'],
+  'james': ['jim', 'jimmy', 'jamie'],
+  'john': ['johnny', 'jon'],
+  'joseph': ['joe', 'joey'],
+  'thomas': ['tom', 'tommy'],
+  'timothy': ['tim', 'timmy'],
+  'christopher': ['chris', 'topher'],
+  'anthony': ['tony', 'ant'],
+  'daniel': ['dan', 'danny'],
+  'matthew': ['matt', 'matty'],
+  'andrew': ['andy', 'drew'],
+  'david': ['dave', 'davey'],
+  'steven': ['steve', 'stevie'],
+  'stephen': ['steve', 'stevie'],
+  'nicholas': ['nick', 'nicky'],
+  'jonathan': ['jon', 'johnny'],
+  'katherine': ['kate', 'kathy', 'katie', 'kat'],
+  'catherine': ['cathy', 'kate', 'katie', 'cat'],
+  'elizabeth': ['liz', 'lizzy', 'beth', 'betsy', 'eliza'],
+  'margaret': ['maggie', 'meg', 'peggy', 'marge'],
+  'patricia': ['pat', 'patty', 'trish'],
+  'jessica': ['jess', 'jessie'],
+  'stephanie': ['steph', 'stephie'],
+  'christina': ['chris', 'christy', 'tina'],
+  'rebecca': ['becky', 'becca'],
+  'alexandra': ['alex', 'lexi', 'alexa'],
+  'samantha': ['sam', 'sammy'],
+  'victoria': ['vicky', 'vic', 'tori'],
+  'heather': ['heath'],
+  'benjamin': ['ben', 'benny'],
+  'alexander': ['alex', 'xander'],
+  'zachary': ['zach', 'zack'],
+  'gregory': ['greg', 'gregg'],
+  'edward': ['ed', 'eddie', 'ted', 'teddy'],
+  'frederick': ['fred', 'freddy', 'rick'],
+  'phillip': ['phil'],
+  'patrick': ['pat', 'paddy'],
+  'lawrence': ['larry', 'lars'],
+  'raymond': ['ray'],
+  'gerald': ['gerry', 'jerry'],
+  'eugene': ['gene'],
+  'theodore': ['ted', 'teddy', 'theo'],
+  'ronald': ['ron', 'ronny'],
+  'donald': ['don', 'donny'],
+  'leonard': ['leo', 'lenny'],
+  'harold': ['harry', 'hal'],
+  'walter': ['walt', 'wally'],
+  'arthur': ['art', 'artie'],
+  'albert': ['al', 'bert', 'bertie'],
+  'charles': ['charlie', 'chuck', 'chas'],
+  'henry': ['hank', 'harry'],
+  'francis': ['frank', 'fran'],
+  'george': ['georgie'],
+  'louis': ['lou', 'louie'],
+  'peter': ['pete'],
+  'vincent': ['vince', 'vinny'],
+  'ann': ['annie', 'anna', 'anne'],
+  'susan': ['sue', 'susie', 'suzy'],
+  'barbara': ['barb', 'barbie'],
+  'nancy': ['nan'],
+  'deborah': ['deb', 'debbie'],
+  'sharon': ['shari'],
+  'donna': ['donnie'],
+  'carol': ['carrie'],
+  'diane': ['di'],
+  'dorothy': ['dot', 'dottie', 'dory'],
+  'helen': ['nell', 'nellie'],
+  'virginia': ['ginny', 'ginger'],
+  'mildred': ['millie', 'milly'],
+  'evelyn': ['eve', 'evie'],
+  'abigail': ['abby', 'gail'],
+  'madeline': ['maddie', 'maddy'],
+  'olivia': ['liv', 'livvy'],
+  'natalie': ['nat', 'natty'],
+  'caroline': ['carol', 'carrie'],
+  'allison': ['ally', 'allie'],
+  'brittany': ['britt'],
+  'kimberly': ['kim', 'kimmie'],
+  'melanie': ['mel', 'mellie'],
+  'ashley': ['ash'],
+  'andrea': ['andie', 'andy'],
+  'michelle': ['shelly', 'micki'],
+  'jacqueline': ['jackie', 'jacqui'],
+  'brenda': ['bren'],
+  'angela': ['angie', 'angel'],
+  'pamela': ['pam', 'pammie'],
+};
+
+// Levenshtein distance for typo tolerance
+function levenshtein(a: string, b: string): number {
+  const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) matrix[0][i] = i;
+  for (let j = 0; j <= b.length; j++) matrix[j][0] = j;
+  for (let j = 1; j <= b.length; j++) {
+    for (let i = 1; i <= a.length; i++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[j][i] = Math.min(matrix[j][i - 1] + 1, matrix[j - 1][i] + 1, matrix[j - 1][i - 1] + cost);
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+// Check if two names match with fuzzy matching
+function fuzzyNameMatch(searchName: string, patientName: string): boolean {
+  const search = searchName.toLowerCase().trim();
+  const patient = patientName.toLowerCase().trim();
+
+  // Exact match
+  if (patient.includes(search) || search.includes(patient)) return true;
+
+  // Split into first/last name parts
+  const searchParts = search.split(/\s+/);
+  const patientParts = patient.split(/\s+/);
+
+  // Check each search part against patient parts
+  for (const searchPart of searchParts) {
+    let matchFound = false;
+
+    for (const patientPart of patientParts) {
+      // Direct match
+      if (patientPart.includes(searchPart) || searchPart.includes(patientPart)) {
+        matchFound = true;
+        break;
+      }
+
+      // Check name variations (Jennifer = Jen)
+      const variations = NAME_VARIATIONS[searchPart] || [];
+      const reverseVariations = Object.entries(NAME_VARIATIONS)
+        .filter(([_, v]) => v.includes(searchPart))
+        .map(([k, _]) => k);
+
+      const allVariations = [...variations, ...reverseVariations];
+
+      if (allVariations.some(v => patientPart.includes(v) || v.includes(patientPart))) {
+        matchFound = true;
+        break;
+      }
+
+      // Levenshtein distance for typos (allow 2 char difference for longer names)
+      const maxDist = searchPart.length > 5 ? 2 : 1;
+      if (levenshtein(searchPart, patientPart) <= maxDist) {
+        matchFound = true;
+        break;
+      }
+    }
+
+    if (!matchFound) return false;
+  }
+
+  return true;
+}
+
+// ============================================================================
+// GEMINI FUNCTION CALLING - For Agentic Tool Use
+// ============================================================================
+
+// Tool definitions for Gemini function calling
+const AGENTIC_TOOLS = {
+  function_declarations: [
+    {
+      name: "search_patients",
+      description: "Search for patients by name, phone number, or email. Returns patient info including IDs.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Patient name, phone, or email to search for" }
+        },
+        required: ["query"]
+      }
+    },
+    {
+      name: "get_patient_labs",
+      description: "Get the most recent lab results for a patient from Healthie",
+      parameters: {
+        type: "object",
+        properties: {
+          patient_id: { type: "string", description: "Patient ID or Healthie client ID" }
+        },
+        required: ["patient_id"]
+      }
+    },
+    {
+      name: "send_email",
+      description: "Send an email to a patient or staff member",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Recipient email address" },
+          subject: { type: "string", description: "Email subject line" },
+          body: { type: "string", description: "Email body content (plain text or HTML)" }
+        },
+        required: ["to", "subject", "body"]
+      }
+    },
+    {
+      name: "create_healthie_task",
+      description: "Create a task in Healthie for follow-up actions",
+      parameters: {
+        type: "object",
+        properties: {
+          patient_id: { type: "string", description: "Healthie client ID" },
+          content: { type: "string", description: "Task description" },
+          due_date: { type: "string", description: "Due date in YYYY-MM-DD format (optional)" }
+        },
+        required: ["patient_id", "content"]
+      }
+    }
+  ]
+};
+
+interface GeminiFunctionCall {
+  name: string;
+  args: Record<string, any>;
+}
+
+interface GeminiToolResponse {
+  text?: string;
+  functionCall?: GeminiFunctionCall;
+}
+
+async function callGeminiWithTools(prompt: string, systemPrompt?: string): Promise<GeminiToolResponse> {
+  if (!GOOGLE_AI_API_KEY) {
+    throw new Error('GOOGLE_AI_API_KEY not configured');
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
+
+  const contents: any[] = [];
+
+  // Add system instruction if provided
+  if (systemPrompt) {
+    contents.push({ role: "user", parts: [{ text: systemPrompt }] });
+    contents.push({ role: "model", parts: [{ text: "I understand. I will help with clinic operations using the available tools." }] });
+  }
+
+  contents.push({ role: "user", parts: [{ text: prompt }] });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents,
+      tools: [AGENTIC_TOOLS],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: 1000
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  const candidate = data.candidates?.[0]?.content?.parts?.[0];
+
+  if (!candidate) {
+    throw new Error('Invalid Gemini response format');
+  }
+
+  // Check if Gemini wants to call a function
+  if (candidate.functionCall) {
+    return {
+      functionCall: {
+        name: candidate.functionCall.name,
+        args: candidate.functionCall.args || {}
+      }
+    };
+  }
+
+  // Otherwise return text response
+  return { text: candidate.text?.trim() };
+}
+
+// Tool execution handlers
+async function executeAgenticTool(toolName: string, args: Record<string, any>): Promise<string> {
+  console.log(`[Agentic] Executing tool: ${toolName}`, args);
+
+  switch (toolName) {
+    case 'search_patients':
+      return await toolSearchPatients(args.query);
+    case 'get_patient_labs':
+      return await toolGetPatientLabs(args.patient_id);
+    case 'send_email':
+      return await toolSendEmail(args.to, args.subject, args.body);
+    case 'create_healthie_task':
+      return await toolCreateHealthieTask(args.patient_id, args.content, args.due_date);
+    default:
+      return `Unknown tool: ${toolName}`;
+  }
+}
+
+// Tool: Search Patients
+async function toolSearchPatients(query: string): Promise<string> {
+  try {
+    const conn = await connectSnowflake();
+    const sql = `
+      SELECT PATIENT_ID, PATIENT_NAME, EMAIL, PHONE_NUMBER, HEALTHIE_CLIENT_ID, STATUS
+      FROM GMH_CLINIC.PATIENT_DATA.PATIENT_360_VIEW
+      WHERE (PATIENT_NAME ILIKE ? OR EMAIL ILIKE ? OR PHONE_NUMBER ILIKE ?)
+        AND STATUS = 'Active'
+      LIMIT 5
+    `;
+
+    const rows: any[] = await new Promise((resolve, reject) => {
+      conn.execute({
+        sqlText: sql,
+        binds: [`%${query}%`, `%${query}%`, `%${query}%`],
+        complete: (err: any, stmt: any, rows: any) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      });
+    });
+
+    conn.destroy(() => { });
+
+    if (rows.length === 0) {
+      return JSON.stringify({ found: false, message: `No patients found matching "${query}"` });
+    }
+
+    return JSON.stringify({ found: true, patients: rows });
+  } catch (error: any) {
+    return JSON.stringify({ error: error.message });
+  }
+}
+
+// Tool: Get Patient Labs (from Healthie)
+async function toolGetPatientLabs(patientId: string): Promise<string> {
+  try {
+    // First get the Healthie client ID from our database
+    const conn = await connectSnowflake();
+    const sql = `
+      SELECT HEALTHIE_CLIENT_ID 
+      FROM GMH_CLINIC.PATIENT_DATA.PATIENT_360_VIEW 
+      WHERE PATIENT_ID = ? OR HEALTHIE_CLIENT_ID = ?
+      LIMIT 1
+    `;
+
+    const rows: any[] = await new Promise((resolve, reject) => {
+      conn.execute({
+        sqlText: sql,
+        binds: [patientId, patientId],
+        complete: (err: any, stmt: any, rows: any) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      });
+    });
+    conn.destroy(() => { });
+
+    const healthieId = rows[0]?.HEALTHIE_CLIENT_ID;
+    if (!healthieId) {
+      return JSON.stringify({ error: "Patient not found or no Healthie ID linked" });
+    }
+
+    // Query Healthie for lab orders
+    const labQuery = `
+      query GetLabOrders($user_id: ID!) {
+        labOrders(user_id: $user_id, per_page: 5) {
+          id
+          created_at
+          status
+          lab { name }
+          document { display_name }
+        }
+      }
+    `;
+
+    const labData = await fetchHealthieGraphQL<any>(labQuery, { user_id: healthieId });
+
+    if (!labData?.labOrders?.length) {
+      return JSON.stringify({ message: "No lab orders found for this patient" });
+    }
+
+    return JSON.stringify({ labs: labData.labOrders });
+  } catch (error: any) {
+    return JSON.stringify({ error: error.message });
+  }
+}
+
+// Tool: Send Email via AWS SES
+async function toolSendEmail(to: string, subject: string, body: string): Promise<string> {
+  try {
+    const { SESClient, SendEmailCommand } = await import('@aws-sdk/client-ses');
+    const ses = new SESClient({ region: process.env.AWS_REGION || 'us-east-2' });
+
+    const command = new SendEmailCommand({
+      Source: process.env.SES_FROM_EMAIL || 'noreply@nowoptimal.com',
+      Destination: { ToAddresses: [to] },
+      Message: {
+        Subject: { Data: subject },
+        Body: {
+          Text: { Data: body },
+          Html: { Data: body.replace(/\n/g, '<br>') }
+        }
+      }
+    });
+
+    await ses.send(command);
+    return JSON.stringify({ success: true, message: `Email sent to ${to}` });
+  } catch (error: any) {
+    return JSON.stringify({ error: error.message });
+  }
+}
+
+// Tool: Create Healthie Task
+async function toolCreateHealthieTask(patientId: string, content: string, dueDate?: string): Promise<string> {
+  try {
+    const mutation = `
+      mutation CreateTask($user_id: ID!, $content: String!, $due_date: String) {
+        createTask(input: {
+          user_id: $user_id
+          content: $content
+          due_date: $due_date
+        }) {
+          task {
+            id
+            content
+            due_date
+          }
+          messages { field message }
+        }
+      }
+    `;
+
+    const result = await fetchHealthieGraphQL<any>(mutation, {
+      user_id: patientId,
+      content,
+      due_date: dueDate
+    });
+
+    if (result?.createTask?.messages?.length) {
+      return JSON.stringify({ error: result.createTask.messages });
+    }
+
+    return JSON.stringify({ success: true, task: result?.createTask?.task });
+  } catch (error: any) {
+    return JSON.stringify({ error: error.message });
+  }
+}
 
 // ============================================================================
 // MISSING DATA LOGGER - Track what users ask for that we don't have
@@ -260,8 +756,8 @@ ORDER BY TOTAL_OWED DESC;
 8. For dispense history: Join DISPENSES to VIALS on VIAL_ID and to PATIENT_360_VIEW on PATIENT_ID.
 `;
 
-// Bedrock client
-const bedrock = new BedrockRuntimeClient({ region: process.env.AWS_REGION || 'us-east-2' });
+// Bedrock client - now using Gemini instead
+// const bedrock = new BedrockRuntimeClient({ region: process.env.AWS_REGION || 'us-east-2' });
 
 // ============================================================================
 // HEALTHIE API DIRECT QUERIES (for real-time billing data)
@@ -299,7 +795,7 @@ async function fetchHealthieGraphQL<T>(query: string, variables: Record<string, 
 async function findHealthieUser(patientName: string): Promise<any | null> {
   const query = `
     query FindUser($keywords: String!) {
-      users(keywords: $keywords, page_size: 5) {
+      users(keywords: $keywords, active_status: "Active", page_size: 10) {
         id
         email
         first_name
@@ -307,6 +803,7 @@ async function findHealthieUser(patientName: string): Promise<any | null> {
         phone_number
         gender
         dob
+        active
         active_tags { id name }
         locations {
           id
@@ -322,7 +819,10 @@ async function findHealthieUser(patientName: string): Promise<any | null> {
     }
   `;
   const data = await fetchHealthieGraphQL<any>(query, { keywords: patientName });
-  return data?.users?.[0] || null;
+  // CRITICAL: Filter to only EXPLICITLY active users - Healthie API bug ignores active_status with keywords
+  // Must check active === true (not just !== false) because archived users may have active: null/undefined
+  const activeUsers = (data?.users || []).filter((u: any) => u.active === true);
+  return activeUsers[0] || null;
 }
 
 async function fetchHealthieBillingItems(clientId: string): Promise<any[]> {
@@ -822,14 +1322,52 @@ function isFinancialQuery(text: string): boolean {
 }
 
 async function connectSnowflake() {
-  const conn = snowflake.createConnection({
+  // Base configuration
+  const connectionConfig: any = {
     account: process.env.SNOWFLAKE_ACCOUNT!,
     username: process.env.SNOWFLAKE_USER || process.env.SNOWFLAKE_USERNAME!,
-    password: process.env.SNOWFLAKE_PASSWORD!,
     warehouse: process.env.SNOWFLAKE_WAREHOUSE!,
     database: process.env.SNOWFLAKE_DATABASE!,
     schema: process.env.SNOWFLAKE_SCHEMA
-  });
+  };
+
+  const privateKeyPath = '/home/ec2-user/.snowflake/rsa_key_new.p8';
+  // No passphrase for unencrypted key
+
+  // Check if private key exists for key-pair auth
+  if (fs.existsSync(privateKeyPath)) {
+    try {
+      console.log('[Snowflake] Found private key file at:', privateKeyPath);
+      const privateKeyVal = fs.readFileSync(privateKeyPath, 'utf8');
+
+      // Use key-pair authentication
+      connectionConfig.authenticator = 'SNOWFLAKE_JWT';
+      connectionConfig.privateKey = privateKeyVal;
+      // No passphrase needed for unencrypted key
+
+      // EXPLICITLY ensure no password is set
+      delete connectionConfig.password;
+
+      console.log('[Snowflake] configured for Key-Pair Authentication');
+    } catch (e) {
+      console.error('[Snowflake] Error reading private key:', e);
+      // Fallback
+      connectionConfig.password = process.env.SNOWFLAKE_PASSWORD!;
+    }
+  } else {
+    // Fall back to password auth
+    connectionConfig.password = process.env.SNOWFLAKE_PASSWORD!;
+    console.log('[Snowflake] Using Password Authentication');
+  }
+
+  // Debug log (sanitized)
+  const debugConfig = { ...connectionConfig };
+  if (debugConfig.password) debugConfig.password = '***';
+  if (debugConfig.privateKey) debugConfig.privateKey = '***';
+  if (debugConfig.privateKeyPass) debugConfig.privateKeyPass = '***';
+  console.log('[Snowflake] Connection Config:', JSON.stringify(debugConfig));
+
+  const conn = snowflake.createConnection(connectionConfig);
 
   await new Promise((resolve, reject) => {
     conn.connect((err: any) => {
@@ -946,28 +1484,14 @@ CRITICAL INSTRUCTIONS:
 2. For provider patient counts: Query PROVIDERS.PATIENT_COUNT directly - NEVER count from PATIENTS table
 3. For "Carrie Boyd" or "TopRX" testosterone: These are MEDICATION TYPES, not patient names - use VIALS.DEA_DRUG_NAME and DISPENSES.MEDICATION_NAME
 4. Use the EXACT queries from the schema examples when they match the question
+5. ALWAYS use "GMH_CLINIC" (with underscore) for the database name. NEVER use "GMHCLINIC".
+6. ALWAYS use "PATIENT_DATA" and "FINANCIAL_DATA" (with underscores). NEVER use "PATIENTDATA" or "FINANCIALDATA".
 
 Generate a Snowflake SQL query to answer this question.
 ${contextHint ? 'IMPORTANT: This is a follow-up question - keep the same patient/filter context from the previous query!' : ''}`;
 
-  const command = new InvokeModelCommand({
-    modelId: 'us.anthropic.claude-3-haiku-20240307-v1:0',
-    contentType: 'application/json',
-    accept: 'application/json',
-    body: JSON.stringify({
-      anthropic_version: 'bedrock-2023-05-31',
-      max_tokens: 1000,
-      temperature: 0,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
-    })
-  });
-
-  const response = await bedrock.send(command);
-  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-  let result = responseBody.content[0].text.trim();
+  // Use Gemini instead of Bedrock
+  let result = await callGemini(prompt, 1000, 0);
 
   // Remove markdown code blocks
   result = result.replace(/```sql\n?|\n?```/g, '');
@@ -978,6 +1502,12 @@ ${contextHint ? 'IMPORTANT: This is a follow-up question - keep the same patient
   if (sqlMatch) {
     result = sqlMatch[0].trim();
   }
+
+  // FIX HALLUCINATED SCHEMA NAMES - Claude keeps dropping underscores
+  result = result.replace(/GMHCLINIC\./gi, 'GMH_CLINIC.');
+  result = result.replace(/\.PATIENTDATA\./gi, '.PATIENT_DATA.');
+  result = result.replace(/\.FINANCIALDATA\./gi, '.FINANCIAL_DATA.');
+  result = result.replace(/\.INTEGRATIONLOGS\./gi, '.INTEGRATION_LOGS.');
 
   return result;
 }
@@ -1027,27 +1557,13 @@ Common fixes needed:
 - For VIALS table: use DEA_DRUG_NAME (not DRUG_NAME), no CONTROLLED_SUBSTANCE or PATIENT_ID columns
 - For patient provider info: PATIENT_360_VIEW doesn't have PROVIDER column. Provider info may not be available.
 - Always verify column names against the schema provided above.
+- ALWAYS use "GMH_CLINIC" (with underscore) for the database name. NEVER use "GMHCLINIC".
+- ALWAYS use "PATIENT_DATA" and "FINANCIAL_DATA" (with underscores). NEVER use "PATIENTDATA" or "FINANCIALDATA".
 
 Generate ONLY the corrected SQL query. No explanations.`;
 
-  const command = new InvokeModelCommand({
-    modelId: 'us.anthropic.claude-3-haiku-20240307-v1:0',
-    contentType: 'application/json',
-    accept: 'application/json',
-    body: JSON.stringify({
-      anthropic_version: 'bedrock-2023-05-31',
-      max_tokens: 1000,
-      temperature: 0,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
-    })
-  });
-
-  const response = await bedrock.send(command);
-  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-  let result = responseBody.content[0].text.trim();
+  // Use Gemini instead of Bedrock
+  let result = await callGemini(prompt, 1000, 0);
 
   // Remove markdown code blocks
   result = result.replace(/```sql\n?|\n?```/g, '');
@@ -1057,6 +1573,12 @@ Generate ONLY the corrected SQL query. No explanations.`;
   if (sqlMatch) {
     result = sqlMatch[0].trim();
   }
+
+  // FIX HALLUCINATED SCHEMA NAMES - Claude keeps dropping underscores
+  result = result.replace(/GMHCLINIC\./gi, 'GMH_CLINIC.');
+  result = result.replace(/\.PATIENTDATA\./gi, '.PATIENT_DATA.');
+  result = result.replace(/\.FINANCIALDATA\./gi, '.FINANCIAL_DATA.');
+  result = result.replace(/\.INTEGRATIONLOGS\./gi, '.INTEGRATION_LOGS.');
 
   return result;
 }
@@ -1101,37 +1623,28 @@ async function executeQueryWithRetry(
 }
 
 async function formatAnswer(question: string, sql: string, results: any[], additionalContext: string = ''): Promise<string> {
-  const prompt = `You are a helpful medical assistant providing clinic data insights.
+  const prompt = `You are a clinic data assistant. Answer BRIEFLY.
 
-User Question: ${question}
+Question: ${question}
 ${additionalContext}
-SQL Query Used (Snowflake):
-${sql}
+SQL Used: ${sql}
 
-Query Results:
-${JSON.stringify(results, null, 2)}
+Results: ${JSON.stringify(results, null, 2)}
 
-Provide a clear, concise answer in natural language. Format numbers nicely. Keep it under 300 words.
-If there are multiple results, summarize key findings. Use emojis sparingly for clarity.`;
+RULES:
+1. Be EXTREMELY BRIEF - 1-3 sentences max
+2. Just state the key numbers/facts directly
+3. NO emojis, NO filler phrases, NO explanations of what the query does
+4. If showing patient names, just list them
+5. When asked "who were my patients" after a previous question, relate it to that context
 
-  const command = new InvokeModelCommand({
-    modelId: 'us.anthropic.claude-3-haiku-20240307-v1:0',
-    contentType: 'application/json',
-    accept: 'application/json',
-    body: JSON.stringify({
-      anthropic_version: 'bedrock-2023-05-31',
-      max_tokens: 800,
-      temperature: 0.3,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
-    })
-  });
+BAD: "Based on the data provided, the clinic generated a total of $480.00 in revenue from..."
+GOOD: "Last week: $480 revenue from 4 payments."
 
-  const response = await bedrock.send(command);
-  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-  return responseBody.content[0].text.trim();
+BAD: "Here's a summary of the key findings from the inventory data..."
+GOOD: "Testosterone inventory: 14 Carrie Boyd vials (419ml), 33 TopRX vials (330ml)."`;
+
+  return await callGemini(prompt, 300, 0.1);
 }
 
 async function sendMessage(chatId: number, text: string, parseMode?: 'Markdown' | 'HTML') {
@@ -1349,12 +1862,330 @@ async function handleHealthieFinance(chatId: number, patientName: string) {
   }
 }
 
+// ========== HELPER: Build full session keyboard (module scope) ==========
+function buildSessionKeyboard(sessionId: string, sessionData: any): any[][] {
+  const pi = sessionData.classification?.patient_identification;
+  // Only trust patient_id if manually assigned OR not flagged for manual verification
+  const patientId = pi?.patient_id && (!pi?.requires_manual_verification || pi?.manually_assigned) ? pi.patient_id : null;
+  const docs = sessionData.documents || {};
+  const selectedTypes: string[] = sessionData.selected_types || ['soap_note'];
+  const buttonRows: any[][] = [];
+
+  const docLabelsMap: Record<string, string> = {
+    'work_note': 'Work Note',
+    'school_note': 'School Note',
+    'discharge_instructions': 'Discharge',
+    'care_plan': 'Care Plan'
+  };
+
+  // Row 1: View and Edit
+  buttonRows.push([
+    { text: "📄 View Full SOAP", callback_data: `view_soap_${sessionId}` },
+    { text: "✏️ Edit via AI", callback_data: `edit_help_${sessionId}` }
+  ]);
+
+  // Row 2: Add buttons for docs not yet generated
+  const addRow: any[] = [];
+  if (!docs.work_note) addRow.push({ text: "➕ Work Note", callback_data: `add_work_note_${sessionId}` });
+  if (!docs.school_note) addRow.push({ text: "➕ School Note", callback_data: `add_school_note_${sessionId}` });
+  if (addRow.length) buttonRows.push(addRow);
+
+  const addRow2: any[] = [];
+  if (!docs.discharge_instructions) addRow2.push({ text: "➕ Discharge", callback_data: `add_discharge_${sessionId}` });
+  if (!docs.care_plan) addRow2.push({ text: "➕ Care Plan", callback_data: `add_care_plan_${sessionId}` });
+  if (addRow2.length) buttonRows.push(addRow2);
+
+  // Row 3: Toggle generated docs — ✅ = selected for upload, ❌ = skipped + 👁️ View
+  for (const [docKey, docLabel] of Object.entries(docLabelsMap)) {
+    if (docs[docKey]) {
+      const isSelected = selectedTypes.includes(docKey);
+      const icon = isSelected ? '✅' : '❌';
+      buttonRows.push([
+        { text: `${icon} ${docLabel}`, callback_data: `toggle_${docKey}_${sessionId}` },
+        { text: `👁️ View`, callback_data: `view_doc_${docKey}_${sessionId}` }
+      ]);
+    }
+  }
+
+  // Row 4: Change Patient
+  buttonRows.push([
+    { text: "🔄 Change Patient", callback_data: `change_patient_${sessionId}` }
+  ]);
+
+  // Row 5: Confirm & Send / Discard
+  if (patientId) {
+    buttonRows.push([
+      { text: "🚀 Confirm & Send", callback_data: `confirm_send_${sessionId}` },
+      { text: "🗑️ Discard", callback_data: `reject_${sessionId}` }
+    ]);
+  } else {
+    buttonRows.push([
+      { text: "⚠️ SELECT PATIENT FIRST", callback_data: `change_patient_${sessionId}` }
+    ]);
+    buttonRows.push([
+      { text: "🗑️ Discard", callback_data: `reject_${sessionId}` }
+    ]);
+  }
+
+  // Row 6: Pending Sessions
+  buttonRows.push([
+    { text: "📋 Pending Sessions", callback_data: "pending_sessions" }
+  ]);
+
+  return buttonRows;
+}
+
 async function handleMessage(chatId: number, text: string, username?: string) {
   console.log(`[Bot] Message from ${username} (${chatId}): ${text}`);
 
   if (AUTHORIZED_CHAT_IDS.length > 0 && !AUTHORIZED_CHAT_IDS.includes(chatId)) {
     await sendMessage(chatId, '⛔ You are not authorized to use this bot.');
     return;
+  }
+
+  // CHECK FOR PENDING PATIENT SEARCH (from Change Patient button)
+  const pendingSearchFile = `/tmp/telegram_approvals/pending_patient_search_${chatId}.json`;
+  if (fs.existsSync(pendingSearchFile)) {
+    console.log(`[Bot] Pending patient search found for ${chatId}, processing: ${text}`);
+
+    try {
+      console.log(`[Bot] Step 1: Reading pending file ${pendingSearchFile}`);
+      const pendingData = JSON.parse(fs.readFileSync(pendingSearchFile, 'utf8'));
+      const sessionId = pendingData.session_id;
+      console.log(`[Bot] Step 2: Got session ID ${sessionId}`);
+
+      // Search for patient in Healthie (ACTIVE patients only)
+      const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY;
+      console.log(`[Bot] Step 3: HEALTHIE_API_KEY: ${HEALTHIE_API_KEY ? 'SET' : 'NOT SET'}`);
+
+      const searchQuery = `
+        query SearchPatients($keyword: String) {
+          users(keywords: $keyword, active_status: "Active", sort_by: "last_name_asc", should_paginate: false) {
+            id
+            first_name
+            last_name
+            dob
+            email
+            active
+          }
+        }
+      `;
+
+      console.log(`[Bot] Step 4: Calling Healthie API for "${text}"...`);
+
+      const searchResponse = await fetch('https://api.gethealthie.com/graphql', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+          'Content-Type': 'application/json',
+          'AuthorizationSource': 'API'
+        },
+        body: JSON.stringify({ query: searchQuery, variables: { keyword: text } })
+      });
+
+      console.log(`[Bot] Step 5: Got Healthie response, status=${searchResponse.status}`);
+
+      const searchResult: any = await searchResponse.json();
+      console.log(`[Bot] Healthie search response for "${text}": status=${searchResponse.status}, patients=${searchResult.data?.users?.length || 0}, errors=${JSON.stringify(searchResult.errors || null)}`);
+
+      const patients = searchResult.data?.users || [];
+
+      // Filter by name match AND active status (Healthie keyword search ignores active_status filter!)
+      const filtered = patients.filter((p: any) => {
+        // CRITICAL: Must check active field - Healthie API bug ignores active_status with keywords
+        // Use strict === true check: archived patients may have active: null/undefined (not just false)
+        if (p.active !== true) return false;
+
+        const fullName = `${p.first_name || ''} ${p.last_name || ''}`;
+        // Use fuzzy matching for name variations (Jennifer = Jen, etc)
+        return fuzzyNameMatch(text, fullName);
+      });
+
+      // Deduplicate by Healthie user ID (archived+unarchived copies may both appear)
+      const seenIds = new Set<string>();
+      const deduped = filtered.filter((p: any) => {
+        if (seenIds.has(p.id)) return false;
+        seenIds.add(p.id);
+        return true;
+      }).slice(0, 5); // Limit to 5 results
+
+      console.log(`[Bot] Filtered to ${deduped.length} active matches (${filtered.length} before dedup) for "${text}"`);
+
+      if (deduped.length === 0) {
+        await sendMessage(chatId, `⚠️ No active patients found matching "${text}".\n\nType another name to search, or use /sessions to go back.`);
+        // Keep pending file so user can try again
+        return;
+      }
+
+      // Build selection buttons (callback_data must be <= 64 bytes for Telegram!)
+      const buttons: any[] = [];
+      for (const p of deduped) {
+        const name = `${p.first_name || ''} ${p.last_name || ''}`.trim();
+        const dob = p.dob ? ` (${p.dob})` : '';
+        // Use short prefix 'sp_' and no name to stay under 64 bytes
+        const callbackData = `sp_${sessionId}_${p.id}`;
+        console.log(`[Bot] Button callback_data: ${callbackData} (${callbackData.length} bytes)`);
+        buttons.push([{
+          text: `${name}${dob}`,
+          callback_data: callbackData
+        }]);
+      }
+      buttons.push([{ text: '❌ Cancel', callback_data: 'cancel_patient_search' }]);
+
+      console.log(`[Bot] Sending patient selection to Telegram for ${deduped.length} patients`);
+
+      const sendResponse = await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `🔍 Found ${deduped.length} patient(s) matching "${text}":\n\nSelect the correct patient:`,
+          reply_markup: { inline_keyboard: buttons }
+        })
+      });
+
+      const sendResult = await sendResponse.json();
+      if (!sendResult.ok) {
+        console.error(`[Bot] ❌ Telegram sendMessage failed:`, JSON.stringify(sendResult));
+        // Try without inline keyboard in case that's the issue
+        await sendMessage(chatId, `❌ Failed to show patient buttons. Error: ${sendResult.description}. Try /sessions and search again.`);
+      } else {
+        console.log(`[Bot] ✅ Patient selection sent successfully`);
+      }
+
+      // Remove pending file after showing results (user will select)
+      fs.unlinkSync(pendingSearchFile);
+
+    } catch (err: any) {
+      console.error('[Bot] Error in patient search:', err);
+      await sendMessage(chatId, `❌ Error searching patients: ${err?.message || err}`);
+      fs.unlinkSync(pendingSearchFile);
+    }
+    return;
+  }
+
+  // CHECK FOR ACTIVE EDIT MODE (from Edit via AI button)
+  const activeEditFile = `/tmp/telegram_approvals/active_edit_${chatId}.json`;
+  if (fs.existsSync(activeEditFile) && !text.startsWith('/')) {
+    console.log(`[Bot] ✏️ Edit mode active for ${chatId}, applying edit: "${text}"`);
+    try {
+      const editData = JSON.parse(fs.readFileSync(activeEditFile, 'utf8'));
+      const sessionId = editData.session_id;
+      const documentType = editData.document_type || 'soap_note'; // Track which document to edit
+      const sessionFile = `/tmp/scribe_sessions/${sessionId}.json`;
+
+      if (!fs.existsSync(sessionFile)) {
+        await sendMessage(chatId, '⚠️ Session not found. Edit mode cancelled.');
+        fs.unlinkSync(activeEditFile);
+        return;
+      }
+
+      const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+      const currentDoc = sessionData.documents?.[documentType] || '';
+      const patientName = sessionData.patient_name || 'Patient';
+
+      const docTypeLabels: Record<string, string> = {
+        'soap_note': 'SOAP note',
+        'discharge_instructions': 'Discharge Instructions',
+        'work_note': 'Work Excuse Note',
+        'school_note': 'School Excuse Note',
+        'care_plan': 'Care Plan'
+      };
+      const docLabel = docTypeLabels[documentType] || documentType;
+
+      await sendMessage(chatId, `⏳ Applying edit to ${patientName}'s ${docLabel}...`);
+
+      // Use Gemini to apply the edit intelligently
+      const GEMINI_API_KEY = process.env.GOOGLE_AI_API_KEY;
+      if (!GEMINI_API_KEY) {
+        await sendMessage(chatId, '❌ Gemini API key not configured.');
+        fs.unlinkSync(activeEditFile);
+        return;
+      }
+
+      const editPrompt = `You are editing a medical document (${docLabel}). Apply the following edit instruction to the document below. Return ONLY the complete updated document with the edit applied. Do not add any commentary, explanations, or markdown formatting around the document itself — just return the full updated document.
+
+EDIT INSTRUCTION: ${text}
+
+CURRENT ${docLabel.toUpperCase()}:
+${currentDoc}`;
+
+      const geminiResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: editPrompt }] }],
+            generationConfig: { temperature: 0.2, maxOutputTokens: 4096 }
+          })
+        }
+      );
+
+      const geminiResult: any = await geminiResponse.json();
+      console.log(`[Bot] Edit Gemini response status: ${geminiResponse.status}`);
+      const updatedDoc = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!updatedDoc) {
+        console.error('[Bot] Edit failed - Gemini response:', JSON.stringify(geminiResult).substring(0, 500));
+        await sendMessage(chatId, '❌ Failed to generate edit. Please try again.');
+        return;
+      }
+
+      // Save the updated document (correct type)
+      sessionData.documents[documentType] = updatedDoc;
+      sessionData.updated_at = new Date().toISOString();
+      fs.writeFileSync(sessionFile, JSON.stringify(sessionData, null, 2));
+
+      // Clear edit mode
+      fs.unlinkSync(activeEditFile);
+
+      // Confirm edit and show keyboard
+      const preview = updatedDoc.length > 800 ? updatedDoc.substring(0, 800) + '...' : updatedDoc;
+      const keyboard = { inline_keyboard: buildSessionKeyboard(sessionId, sessionData) };
+
+      // Send without parse_mode since SOAP content has markdown chars that break Telegram's parser
+      const sendResult = await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `✅ ${docLabel} Updated for ${patientName}\n\n${preview}`,
+          reply_markup: keyboard
+        })
+      });
+      const sendResultJson: any = await sendResult.json();
+      if (!sendResultJson.ok) {
+        console.error('[Bot] Edit confirmation send failed:', JSON.stringify(sendResultJson));
+      }
+
+      console.log(`[Bot] ✅ Edit applied to ${documentType} in session ${sessionId} for ${patientName}`);
+    } catch (err: any) {
+      console.error('[Bot] Edit mode error:', err);
+      await sendMessage(chatId, `❌ Error applying edit: ${err?.message || err}`);
+      try { fs.unlinkSync(activeEditFile); } catch { }
+    }
+    return;
+  }
+
+  // CHECK FOR SCRIBE LOCK (Collision Avoidance)
+  // BUT: Allow slash commands to bypass scribe lock - they should be handled by bot
+  const lockFile = `/tmp/scribe_lock_${chatId}`;
+  const isSlashCommand = text.startsWith('/');
+
+  if (fs.existsSync(lockFile) && !isSlashCommand) {
+    console.log(`[Bot] Scribe lock active for ${chatId}. Forwarding message to Scribe...`);
+
+    const responseDir = "/tmp/telegram_approvals";
+    if (!fs.existsSync(responseDir)) fs.mkdirSync(responseDir);
+
+    fs.writeFileSync(
+      path.join(responseDir, `text_response_${chatId}.json`),
+      JSON.stringify({ text, timestamp: Date.now() })
+    );
+    return; // Stop processing - let Scribe handle it
+  } else if (fs.existsSync(lockFile) && isSlashCommand) {
+    console.log(`[Bot] Scribe lock active but allowing slash command: ${text}`);
   }
 
   // Normalize text for command matching (lowercase)
@@ -1382,7 +2213,12 @@ I can answer questions about your clinic data. I automatically:
 • "Update address for John Smith to 123 Main St, City, ST 12345"
 • "Change phone number for Jane Doe to 555-123-4567"
 • "Set email for Bob Wilson to new@email.com"
-• "Update DOB for James Lentz to 1985-03-15"
+
+🤖 *Agentic AI Commands (NEW!):*
+• /agent find John Smith - Search patients
+• /agent get labs for John Smith - Get lab results
+• /agent send John Smith his latest lab results - Multi-step action!
+• /agent create task for John: call to follow up
 
 Just ask your question in plain English!`, 'Markdown');
     return;
@@ -1471,6 +2307,60 @@ Just ask your question in plain English!`, 'Markdown');
     const query = text.substring('/healthie '.length).trim();
     console.log(`[Bot] Handling /healthie command for: ${query}`);
     await handleHealthieFinance(chatId, query);
+    return;
+  }
+
+  // Handle /agent command - Agentic AI with function calling
+  if (textLower.startsWith('/agent ')) {
+    const query = text.substring('/agent '.length).trim();
+    console.log(`[Bot] 🤖 Agentic query: "${query}"`);
+    await sendTyping(chatId);
+
+    try {
+      const systemPrompt = `You are an AI assistant for a men's health clinic. You have access to tools for:
+- Searching patients (by name, phone, email)
+- Getting patient lab results from Healthie
+- Sending emails via AWS SES
+- Creating tasks in Healthie
+
+When a user asks you to do something, use the appropriate tool. For multi-step tasks, you may need to call multiple tools.
+Always confirm what you're doing before sending emails.`;
+
+      // First call - get tool selection from Gemini
+      let response = await callGeminiWithTools(query, systemPrompt);
+      let maxIterations = 5;
+      let iteration = 0;
+      let conversationLog = `🤖 *Agentic AI Processing*\n\nQuery: "${query}"\n\n`;
+
+      // Execute tools in a loop until Gemini returns text (done)
+      while (response.functionCall && iteration < maxIterations) {
+        iteration++;
+        const { name, args } = response.functionCall;
+        conversationLog += `*Step ${iteration}:* Calling \`${name}\`\n`;
+
+        // Execute the tool
+        console.log(`[Agentic] Step ${iteration}: Executing ${name}`, args);
+        const toolResult = await executeAgenticTool(name, args);
+        console.log(`[Agentic] Tool result:`, toolResult.substring(0, 200));
+
+        // Send tool result back to Gemini for next step
+        const followUpPrompt = `Tool "${name}" returned: ${toolResult}\n\nBased on this result, what should I do next? If the task is complete, provide a summary for the user.`;
+        response = await callGeminiWithTools(followUpPrompt, systemPrompt);
+      }
+
+      // Send final response
+      if (response.text) {
+        conversationLog += `\n*Result:*\n${response.text}`;
+      } else if (response.functionCall) {
+        conversationLog += `\n⚠️ Max iterations reached. Last tool: ${response.functionCall.name}`;
+      }
+
+      await sendMessage(chatId, conversationLog, 'Markdown');
+
+    } catch (error: any) {
+      console.error('[Agentic] Error:', error);
+      await sendMessage(chatId, `❌ Agentic error: ${error.message}`);
+    }
     return;
   }
 
@@ -1713,7 +2603,7 @@ async function main() {
         console.log(`[Bot] Processing update ${update.update_id}: ${update.message ? 'message' : update.callback_query ? 'callback_query' : 'other'}`);
         // Handle Message
         if (update.message && update.message.text) {
-          const { chat: { id: chatId }, text, from } = update.message;
+          const { chat: { id: chatId }, text, from, reply_to_message } = update.message;
           const username = from?.username || from?.first_name;
 
           // Also write text to IPC file for Python scribe (for "Edit with AI" feedback)
@@ -1721,18 +2611,108 @@ async function main() {
             const approvalDir = '/tmp/telegram_approvals';
             if (!fs.existsSync(approvalDir)) fs.mkdirSync(approvalDir, { recursive: true });
 
-            // Write text response for Python to pick up
+            // 1. Write generic latest text response (fallback)
             fs.writeFileSync(
               path.join(approvalDir, `text_response_${chatId}.json`),
               JSON.stringify({ text, timestamp: Date.now(), from: username })
             );
-            console.log(`[Bot] 💬 Saved text response for IPC: "${text.substring(0, 50)}..."`);
+
+            // 2. Write specific REPLY response if applicable
+            if (reply_to_message) {
+              const replyId = reply_to_message.message_id;
+              fs.writeFileSync(
+                path.join(approvalDir, `${replyId}_text.json`),
+                JSON.stringify({ text, timestamp: Date.now(), from: username, action: text })
+                // 'action' key for compatibility with existing generic readers expecting generic json
+              );
+              console.log(`[Bot] 💬 Saved REPLY for msg ${replyId}: "${text.substring(0, 30)}..."`);
+            }
+
+            console.log(`[Bot] 💬 Saved text response for IPC`);
           } catch (err) {
             console.error('[Bot] Failed to save text response IPC:', err);
+          }
+          // ========== SCRIBE SESSIONS COMMAND ==========
+          if (text.toLowerCase().startsWith('/session')) {
+            console.log('[Bot] 📋 /sessions command - handling directly');
+            const sessionsDir = '/tmp/scribe_sessions';
+            try {
+              if (!fs.existsSync(sessionsDir)) {
+                await sendMessage(chatId, '📋 No pending sessions.');
+                continue;
+              }
+              const files = fs.readdirSync(sessionsDir).filter((f: string) => f.endsWith('.json'));
+              const sessions: any[] = [];
+              const submittedToday: any[] = [];
+              const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+              for (const file of files) {
+                const data = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
+                if (Number(data.chat_id) !== Number(chatId)) continue;
+
+                if (data.status === 'SUBMITTED' || data.status === 'SENT') {
+                  // Show recent submitted sessions as reopenable (last 7 days)
+                  const createdDate = (data.created_at || '').slice(0, 10);
+                  if (createdDate >= sevenDaysAgo) {
+                    submittedToday.push(data);
+                  }
+                  continue;
+                }
+                if (data.status === 'DISCARDED') continue;
+                sessions.push(data);
+              }
+              sessions.sort((a: any, b: any) => (b.created_at || '').localeCompare(a.created_at || ''));
+              submittedToday.sort((a: any, b: any) => (b.created_at || '').localeCompare(a.created_at || ''));
+
+              if (sessions.length === 0 && submittedToday.length === 0) {
+                await sendMessage(chatId, '📋 No pending sessions.\n\nAll patient visits have been completed or discarded.');
+              } else {
+                let msg = '';
+                const buttons: any[][] = [];
+
+                if (sessions.length > 0) {
+                  msg += '📋 *PENDING SCRIBE SESSIONS*\n\nTap to switch:\n\n';
+                  for (const s of sessions.slice(0, 10)) {
+                    const patientId = s.classification?.patient_identification?.patient_id || s.patient_id;
+                    const icon = patientId ? '🟡' : '🔴';
+                    const time = s.created_at ? new Date(s.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '?';
+                    msg += `${icon} *${s.patient_name}* (${time}) - ${s.status}\n`;
+                    buttons.push([{ text: `${icon} ${s.patient_name} (${time})`, callback_data: `switch_session_${s.session_id}` }]);
+                  }
+                }
+
+                if (submittedToday.length > 0) {
+                  msg += '\n✅ *RECENTLY SUBMITTED* (tap to reopen & edit):\n\n';
+                  for (const s of submittedToday.slice(0, 5)) {
+                    const time = s.created_at ? new Date(s.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '?';
+                    msg += `✅ *${s.patient_name}* (${time})\n`;
+                    buttons.push([{ text: `🔄 Reopen ${s.patient_name} (${time})`, callback_data: `reopen_${s.session_id}` }]);
+                  }
+                }
+
+                buttons.push([{ text: '🔙 Back', callback_data: 'cancel_pending' }]);
+                await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chat_id: chatId,
+                    text: msg,
+                    parse_mode: 'Markdown',
+                    reply_markup: { inline_keyboard: buttons }
+                  })
+                });
+              }
+            } catch (err) {
+              console.error('[Bot] Error listing sessions:', err);
+              await sendMessage(chatId, '❌ Error listing sessions.');
+            }
+            continue;
           }
 
           handleMessage(chatId, text, username).catch(err => console.error('[Bot] Message handling error:', err));
         }
+
+        // buildSessionKeyboard is defined at module scope (above handleMessage)
 
         // Handle Callback Query (Buttons)
         if (update.callback_query) {
@@ -1767,8 +2747,1247 @@ async function main() {
 
               // Optional: Update message to show status
               if (cb.message?.chat?.id) {
-                const statusEmoji = action === 'approve' ? '✅ APPROVED' : action === 'reject' ? '❌ REJECTED' : '📝 EDIT REQUESTED';
-                await sendMessage(cb.message.chat.id, `Received: ${statusEmoji}`);
+                // Don't spam chat for toggle actions or confirm_final_send
+                if (!action.startsWith('toggle_') && !action.startsWith('confirm_final_send') && !action.startsWith('reopen_')) {
+                  let statusEmoji = '📝 PROCESSING';
+                  if (action === 'approve' || action.startsWith('confirm_send')) {
+                    statusEmoji = '✅ REVIEWING';
+                  } else if (action === 'reject' || action.startsWith('reject_')) {
+                    statusEmoji = '❌ REJECTED';
+                  } else if (action.startsWith('view_soap')) {
+                    statusEmoji = '📄 VIEWING SOAP';
+                  } else if (action.startsWith('add_')) {
+                    statusEmoji = `➕ ADDING ${action.replace('add_', '').split('_')[0].toUpperCase()}`;
+                  } else if (action.startsWith('edit_help')) {
+                    statusEmoji = '✏️ EDIT MODE';
+                  }
+                  await sendMessage(cb.message.chat.id, `Received: ${statusEmoji}`);
+                }
+
+                // ========== TOGGLE DOCUMENT SELECTION ==========
+                if (action.startsWith('toggle_')) {
+                  // Parse: toggle_{docType}_{sessionId}
+                  const toggleParts = action.replace('toggle_', '').split('_');
+                  // Session ID is everything after the doc type. Doc types: work_note, school_note, discharge_instructions, care_plan
+                  let toggleDocType = '';
+                  let toggleSessionId = '';
+                  for (const dt of ['discharge_instructions', 'work_note', 'school_note', 'care_plan']) {
+                    if (action.startsWith(`toggle_${dt}_`)) {
+                      toggleDocType = dt;
+                      toggleSessionId = action.replace(`toggle_${dt}_`, '');
+                      break;
+                    }
+                  }
+
+                  if (toggleDocType && toggleSessionId) {
+                    try {
+                      const sessionFile = `/tmp/scribe_sessions/${toggleSessionId}.json`;
+                      if (fs.existsSync(sessionFile)) {
+                        const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                        if (!sessionData.selected_types) sessionData.selected_types = ['soap_note'];
+
+                        const idx = sessionData.selected_types.indexOf(toggleDocType);
+                        if (idx >= 0) {
+                          sessionData.selected_types.splice(idx, 1);
+                          console.log(`[Bot] ❌ Deselected ${toggleDocType} for session ${toggleSessionId}`);
+                        } else {
+                          sessionData.selected_types.push(toggleDocType);
+                          console.log(`[Bot] ✅ Selected ${toggleDocType} for session ${toggleSessionId}`);
+                        }
+
+                        sessionData.updated_at = new Date().toISOString();
+                        fs.writeFileSync(sessionFile, JSON.stringify(sessionData, null, 2));
+
+                        // Refresh keyboard with updated selection state
+                        const toggleKeyboard = { inline_keyboard: buildSessionKeyboard(toggleSessionId, sessionData) };
+                        const selectedCount = sessionData.selected_types.length;
+                        await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            chat_id: cb.message.chat.id,
+                            text: `📋 ${selectedCount} document(s) selected for upload`,
+                            reply_markup: toggleKeyboard
+                          })
+                        });
+                      }
+                    } catch (err: any) {
+                      console.error('[Bot] Toggle error:', err);
+                    }
+                  }
+                  continue;
+                }
+
+                // ========== REOPEN SUBMITTED SESSION ==========
+                if (action.startsWith('reopen_')) {
+                  const reopenSessionId = action.replace('reopen_', '');
+                  console.log(`[Bot] 🔄 Reopening submitted session: ${reopenSessionId}`);
+                  const sessionFile = `/tmp/scribe_sessions/${reopenSessionId}.json`;
+                  try {
+                    if (fs.existsSync(sessionFile)) {
+                      const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                      // Keep chart_note_id for smart resubmit (updateFormAnswerGroup)
+                      sessionData.status = 'REOPENED';
+                      sessionData.reopened_at = new Date().toISOString();
+                      sessionData.updated_at = new Date().toISOString();
+                      fs.writeFileSync(sessionFile, JSON.stringify(sessionData, null, 2));
+
+                      const patientName = sessionData.patient_name || 'Unknown';
+                      const soapNote = sessionData.documents?.soap_note || 'No SOAP note';
+                      const preview = soapNote.length > 500 ? soapNote.substring(0, 500) + '...' : soapNote;
+
+                      const keyboard = { inline_keyboard: buildSessionKeyboard(reopenSessionId, sessionData) };
+
+                      await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          chat_id: cb.message.chat.id,
+                          text: `🔄 **Session Reopened: ${patientName}**\n\nChart Note ID: ${sessionData.chart_note_id || 'N/A'}\n(Resubmit will UPDATE the existing note)\n\n${preview}`,
+                          parse_mode: 'Markdown',
+                          reply_markup: keyboard
+                        })
+                      });
+                      console.log(`[Bot] ✅ Session ${reopenSessionId} reopened (chart_note_id: ${sessionData.chart_note_id})`);
+                    } else {
+                      await sendMessage(cb.message.chat.id, '⚠️ Session file not found.');
+                    }
+                  } catch (err: any) {
+                    console.error('[Bot] Reopen error:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error reopening session: ${err?.message || err}`);
+                  }
+                  continue;
+                }
+
+                // ========== SWITCH SESSION CALLBACK ==========
+                if (action.startsWith('switch_session_')) {
+                  const sessionId = action.replace('switch_session_', '');
+                  console.log(`[Bot] 🔄 Switching to session: ${sessionId}`);
+                  const sessionFile = `/tmp/scribe_sessions/${sessionId}.json`;
+                  try {
+                    if (fs.existsSync(sessionFile)) {
+                      const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                      const patientName = sessionData.patient_name || 'Unknown';
+                      const patientId = sessionData.classification?.patient_identification?.patient_id;
+                      const soapNote = sessionData.documents?.soap_note || 'No SOAP note available';
+                      const statusIcon = patientId ? '🟡 READY' : '🔴 UNKNOWN';
+
+                      // Build full button set like Python scribe
+                      const preview = soapNote.length > 500 ? soapNote.substring(0, 500) + '...' : soapNote;
+                      const hasWorkNote = sessionData.documents?.work_note;
+                      const hasSchoolNote = sessionData.documents?.school_note;
+                      const hasDischarge = sessionData.documents?.discharge_instructions;
+                      const hasCarePlan = sessionData.documents?.care_plan;
+
+                      const buttonRows = buildSessionKeyboard(sessionId, sessionData);
+                      const buttons = { inline_keyboard: buttonRows };
+                      // Send without parse_mode to avoid markdown conflicts with SOAP content
+                      const response = await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          chat_id: cb.message.chat.id,
+                          text: `📋 ${patientName} (${statusIcon})\n\n${preview}`,
+                          reply_markup: buttons
+                        })
+                      });
+                      const result = await response.json();
+                      if (!result.ok) {
+                        console.error('[Bot] Telegram API error:', result);
+                      }
+                    } else {
+                      await sendMessage(cb.message.chat.id, `❌ Session not found: ${sessionId}`);
+                    }
+                  } catch (err: any) {
+                    console.error('[Bot] Error switching session:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error loading session: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== SCRIBE LOCK CHECK FOR DIRECT HANDLERS ==========
+                // If Python scribe is actively running (scribe_lock exists), let IT handle these callbacks
+                // TypeScript only handles these for ORPHANED sessions (no scribe_lock)
+                const scribeLockFile = `/tmp/scribe_lock_${cb.message.chat.id}`;
+                const scribeLockExists = fs.existsSync(scribeLockFile);
+
+                if (scribeLockExists) {
+                  console.log(`[Bot] Scribe lock exists - skipping TS handlers, letting Python handle: ${action}`);
+                  // Don't process - Python scribe will handle via its approval loop
+                  continue;
+                }
+
+                // ========== CHANGE PATIENT CALLBACK (Direct Handling for ORPHANED sessions) ==========
+                if (action === 'change_patient' || action.startsWith('change_patient_')) {
+                  const callbackSessionId = action.startsWith('change_patient_') ? action.replace('change_patient_', '') : null;
+                  console.log(`[Bot] 🔄 Change patient requested for chat ${cb.message.chat.id}, sessionId: ${callbackSessionId || 'auto-detect'}`);
+                  try {
+                    const sessionsDir = '/tmp/scribe_sessions';
+                    let targetSessionId = callbackSessionId || '';
+
+                    // If no session ID provided, find latest active session (fallback)
+                    if (!targetSessionId && fs.existsSync(sessionsDir)) {
+                      let latestTime = 0;
+                      const files = fs.readdirSync(sessionsDir).filter((f: string) => f.endsWith('.json'));
+                      for (const file of files) {
+                        try {
+                          const data = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
+                          if (Number(data.chat_id) === Number(cb.message.chat.id) &&
+                            data.status !== 'SENT' && data.status !== 'DISCARDED' && data.status !== 'SUBMITTED') {
+                            const sessionTime = new Date(data.created_at || data.updated_at || 0).getTime();
+                            if (sessionTime > latestTime) {
+                              latestTime = sessionTime;
+                              targetSessionId = data.session_id;
+                            }
+                          }
+                        } catch (e) { /* skip invalid files */ }
+                      }
+                    }
+
+                    if (targetSessionId) {
+                      // Save pending patient search state
+                      const approvalDir = '/tmp/telegram_approvals';
+                      if (!fs.existsSync(approvalDir)) fs.mkdirSync(approvalDir, { recursive: true });
+
+                      const pendingFile = path.join(approvalDir, `pending_patient_search_${cb.message.chat.id}.json`);
+                      fs.writeFileSync(pendingFile, JSON.stringify({
+                        session_id: targetSessionId,
+                        action: 'patient_search',
+                        timestamp: Date.now()
+                      }));
+
+                      await sendMessage(cb.message.chat.id,
+                        `🔍 **Change Patient**\n\nReply with the patient name to search for:\n\n(e.g., "Tim Burke" or "Steve Schott")`);
+                    } else {
+                      await sendMessage(cb.message.chat.id, '⚠️ No active session found. Use /sessions to select one first.');
+                    }
+                  } catch (err: any) {
+                    console.error('[Bot] Error in change_patient:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== CONFIRM SEND CALLBACK (Direct Handling) ==========
+                if (action === 'confirm_send' || action.startsWith('confirm_send_')) {
+                  // Parse session ID from callback if present
+                  const callbackSessionId = action.startsWith('confirm_send_') ? action.replace('confirm_send_', '') : null;
+                  console.log(`[Bot] 🚀 Confirm send requested for chat ${cb.message.chat.id}, sessionId: ${callbackSessionId || 'auto-detect'}`);
+
+                  try {
+                    const sessionsDir = '/tmp/scribe_sessions';
+                    let targetSession: any = null;
+
+                    // If session ID provided, load that specific session
+                    if (callbackSessionId) {
+                      const sessionFile = path.join(sessionsDir, `${callbackSessionId}.json`);
+                      if (fs.existsSync(sessionFile)) {
+                        const data = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                        targetSession = { ...data, file: sessionFile };
+                      }
+                    }
+
+                    // Fallback: find latest active session for this chat (legacy support)
+                    if (!targetSession && fs.existsSync(sessionsDir)) {
+                      let latestTime = 0;
+                      const files = fs.readdirSync(sessionsDir).filter((f: string) => f.endsWith('.json'));
+                      for (const file of files) {
+                        try {
+                          const data = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
+                          if (Number(data.chat_id) === Number(cb.message.chat.id) &&
+                            data.status !== 'SENT' && data.status !== 'DISCARDED' && data.status !== 'SUBMITTED') {
+                            const sessionTime = new Date(data.created_at || data.updated_at || 0).getTime();
+                            if (sessionTime > latestTime) {
+                              latestTime = sessionTime;
+                              targetSession = { ...data, file: path.join(sessionsDir, file) };
+                            }
+                          }
+                        } catch (e) { /* skip invalid files */ }
+                      }
+                    }
+
+                    if (!targetSession) {
+                      await sendMessage(cb.message.chat.id, '⚠️ No active session found. Use /sessions to select one first.');
+                      continue;
+                    }
+
+                    // CRITICAL: Skip if session was already submitted by Python scribe
+                    // This prevents dual-upload when Python scribe submits first then TS picks up the same callback
+                    if (targetSession.status === 'SUBMITTED' && !targetSession.reopened_at) {
+                      console.log(`[Bot] ⏭️ Session already SUBMITTED - skipping TS confirm_send (Python scribe handled it)`);
+                      continue;
+                    }
+
+                    const patientId = targetSession.classification?.patient_identification?.patient_id;
+                    const soapNote = targetSession.documents?.soap_note;
+                    const patientName = targetSession.patient_name || 'Unknown';
+
+                    if (!patientId) {
+                      await sendMessage(cb.message.chat.id, '⚠️ **Cannot submit - Patient is UNKNOWN!**\n\nPlease tap **🔄 Change Patient** first to assign a patient.');
+                      continue;
+                    }
+
+                    if (!soapNote) {
+                      await sendMessage(cb.message.chat.id, '⚠️ No SOAP note in session!');
+                      continue;
+                    }
+
+                    // --- PRE-SEND CONFIRMATION SUMMARY ---
+                    const selectedTypes: string[] = Array.isArray(targetSession.selected_types)
+                      ? [...targetSession.selected_types]
+                      : ['soap_note'];
+                    if (!selectedTypes.includes('soap_note')) selectedTypes.unshift('soap_note');
+
+                    console.log(`[Bot] confirm_send selected_types from file:`, targetSession.selected_types);
+                    console.log(`[Bot] confirm_send resolved selectedTypes:`, selectedTypes);
+
+                    const docTitleMap: Record<string, string> = {
+                      'soap_note': '📋 SOAP Note',
+                      'discharge_instructions': '📄 Discharge Instructions',
+                      'work_note': '📝 Work Excuse Note',
+                      'school_note': '🏫 School Excuse Note',
+                      'care_plan': '🎯 Care Plan'
+                    };
+
+                    let summaryLines: string[] = [];
+                    summaryLines.push(`📋 **Ready to send to Healthie for ${patientName}:**\n`);
+                    summaryLines.push(`✅ SOAP Note → Chart Note form`);
+
+                    for (const [dk, dt] of Object.entries(docTitleMap)) {
+                      if (dk === 'soap_note') continue;
+                      const hasDoc = targetSession.documents?.[dk];
+                      if (hasDoc) {
+                        const isSelected = selectedTypes.includes(dk);
+                        console.log(`[Bot] confirm_send doc ${dk}: hasDoc=${!!hasDoc}, isSelected=${isSelected}`);
+                        summaryLines.push(`${isSelected ? '✅' : '❌'} ${dt}${isSelected ? ' → will upload as chart note' : ' → skipped'}`);
+                      }
+                    }
+
+                    summaryLines.push(`\n👤 Patient: ${patientName}`);
+
+                    const confirmButtons = {
+                      inline_keyboard: [
+                        [
+                          { text: "✅ Yes, Send Now", callback_data: `confirm_final_send_${targetSession.session_id || ''}` },
+                          { text: "↩️ Go Back", callback_data: `switch_session_${targetSession.session_id || ''}` }
+                        ]
+                      ]
+                    };
+
+                    await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        chat_id: cb.message.chat.id,
+                        text: summaryLines.join('\n'),
+                        reply_markup: confirmButtons
+                      })
+                    });
+                  } catch (err: any) {
+                    console.error('[Bot] Error in confirm_send:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== CONFIRM FINAL SEND (Actual Upload) ==========
+                if (action.startsWith('confirm_final_send')) {
+                  const sessionIdFromAction = action.replace('confirm_final_send_', '');
+                  try {
+                    const sessionsDir = '/tmp/scribe_sessions';
+                    let targetSession: any = null;
+
+                    if (sessionIdFromAction && fs.existsSync(`${sessionsDir}/${sessionIdFromAction}.json`)) {
+                      const data = JSON.parse(fs.readFileSync(`${sessionsDir}/${sessionIdFromAction}.json`, 'utf8'));
+                      targetSession = { ...data, file: `${sessionsDir}/${sessionIdFromAction}.json` };
+                    } else {
+                      let latestTime = 0;
+                      if (fs.existsSync(sessionsDir)) {
+                        const files = fs.readdirSync(sessionsDir).filter((f: string) => f.endsWith('.json'));
+                        for (const file of files) {
+                          try {
+                            const data = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
+                            if (Number(data.chat_id) === Number(cb.message.chat.id) &&
+                              data.status !== 'SENT' && data.status !== 'DISCARDED' && data.status !== 'SUBMITTED') {
+                              const sessionTime = new Date(data.created_at || data.updated_at || 0).getTime();
+                              if (sessionTime > latestTime) {
+                                latestTime = sessionTime;
+                                targetSession = { ...data, file: path.join(sessionsDir, file) };
+                              }
+                            }
+                          } catch (e) { /* skip */ }
+                        }
+                      }
+                    }
+
+                    if (!targetSession) {
+                      await sendMessage(cb.message.chat.id, '⚠️ No active session found.');
+                      continue;
+                    }
+
+                    // DUPLICATE UPLOAD PROTECTION:
+                    // Skip if session was already submitted very recently (within 30s) and not reopened
+                    // This catches race conditions where both Python scribe and TS bot try to upload
+                    if (targetSession.status === 'SUBMITTED' && !targetSession.reopened_at) {
+                      const submittedAt = targetSession.submitted_at ? new Date(targetSession.submitted_at).getTime() : 0;
+                      const elapsed = Date.now() - submittedAt;
+                      if (elapsed < 30000) {
+                        console.log(`[Bot] ⏭️ Session already submitted ${elapsed}ms ago - skipping duplicate upload`);
+                        await sendMessage(cb.message.chat.id, `✅ Already submitted! [View in Healthie](https://secure.gethealthie.com/users/${targetSession.classification?.patient_identification?.patient_id})`);
+                        continue;
+                      }
+                    }
+
+                    const pi = targetSession.classification?.patient_identification;
+                    // Safety: only trust patient_id if manually assigned OR not flagged for verification
+                    const patientId = pi?.patient_id && (!pi?.requires_manual_verification || pi?.manually_assigned) ? pi.patient_id : null;
+                    const soapNote = targetSession.documents?.soap_note;
+                    const patientName = targetSession.patient_name || 'Unknown';
+                    const selectedTypes: string[] = targetSession.selected_types || ['soap_note'];
+
+                    if (!patientId) {
+                      await sendMessage(cb.message.chat.id, '⚠️ Cannot submit - no patient assigned!');
+                      continue;
+                    }
+
+                    const isResubmit = !!targetSession.chart_note_id;
+                    await sendMessage(cb.message.chat.id, `📤 ${isResubmit ? 'Updating' : 'Uploading'} ${selectedTypes.length} document(s) for **${patientName}**...`);
+
+                    const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY;
+
+                    // --- 1. SOAP NOTE (always) ---
+                    if (soapNote) {
+                      const SOAP_FORM_ID = "2898601";
+                      const FIELD_IDS = {
+                        subjective: "37256657",
+                        objective: "37256658",
+                        assessment: "37256659",
+                        plan: "37256660"
+                      };
+
+                      const parseSoapSections = (note: string) => {
+                        const sections: { [key: string]: string } = { subjective: '', objective: '', assessment: '', plan: '' };
+                        const subMatch = note.match(/SUBJECTIVE[\s\S]*?(?=OBJECTIVE|$)/i);
+                        const objMatch = note.match(/OBJECTIVE[\s\S]*?(?=ASSESSMENT|$)/i);
+                        const assMatch = note.match(/ASSESSMENT[\s\S]*?(?=PLAN|$)/i);
+                        const planMatch = note.match(/PLAN[\s\S]*/i);
+                        if (subMatch) sections.subjective = subMatch[0].replace(/^SUBJECTIVE\s*/i, '').trim();
+                        if (objMatch) sections.objective = objMatch[0].replace(/^OBJECTIVE\s*/i, '').trim();
+                        if (assMatch) sections.assessment = assMatch[0].replace(/^ASSESSMENT\s*/i, '').trim();
+                        if (planMatch) sections.plan = planMatch[0].replace(/^PLAN\s*/i, '').trim();
+                        return sections;
+                      };
+
+                      const formatSectionHtml = (text: string): string => {
+                        if (!text || !text.trim()) return ' ';
+                        let html = text;
+                        html = html.replace(/^\s*[-*]\s+/gm, '<br/>&nbsp;&nbsp;• ');
+                        html = html.replace(/\*\*(.*?)\*\*:/g, '<br/><span style="font-size:15px; font-weight:bold; color:#34495e;">$1:</span>');
+                        html = html.replace(/^\s*([A-Za-z][A-Za-z\s/]+):/gm, '<br/><strong>$1:</strong>');
+                        html = html.replace(/\n/g, '<br/>');
+                        html = html.replace(/<br\/><br\/><br\/>/g, '<br/><br/>');
+                        return html;
+                      };
+
+                      const sections = parseSoapSections(soapNote);
+                      const formattedSections = {
+                        subjective: formatSectionHtml(sections.subjective),
+                        objective: formatSectionHtml(sections.objective),
+                        assessment: formatSectionHtml(sections.assessment),
+                        plan: formatSectionHtml(sections.plan)
+                      };
+
+                      const form_answers = [
+                        { custom_module_id: FIELD_IDS.subjective, answer: formattedSections.subjective, user_id: patientId },
+                        { custom_module_id: FIELD_IDS.objective, answer: formattedSections.objective, user_id: patientId },
+                        { custom_module_id: FIELD_IDS.assessment, answer: formattedSections.assessment, user_id: patientId },
+                        { custom_module_id: FIELD_IDS.plan, answer: formattedSections.plan, user_id: patientId }
+                      ];
+
+                      // Smart resubmit: update if chart_note_id exists, otherwise create
+                      const existingChartNoteId = targetSession.chart_note_id;
+                      let mutation: string;
+                      let variables: any;
+
+                      if (existingChartNoteId) {
+                        console.log(`[Bot] 🔄 Updating existing chart note ${existingChartNoteId}`);
+                        mutation = `
+                          mutation UpdateFormAnswerGroup($input: updateFormAnswerGroupInput!) {
+                            updateFormAnswerGroup(input: $input) {
+                              form_answer_group { id }
+                              messages { field message }
+                            }
+                          }
+                        `;
+                        variables = {
+                          input: {
+                            id: existingChartNoteId,
+                            finished: true,
+                            form_answers: form_answers
+                          }
+                        };
+                      } else {
+                        mutation = `
+                          mutation CreateFormAnswerGroup($input: createFormAnswerGroupInput!) {
+                            createFormAnswerGroup(input: $input) {
+                              form_answer_group { id }
+                            }
+                          }
+                        `;
+                        variables = {
+                          input: {
+                            custom_module_form_id: SOAP_FORM_ID,
+                            user_id: patientId,
+                            finished: true,
+                            form_answers: form_answers
+                          }
+                        };
+                      }
+
+                      const healthieResponse = await fetch('https://api.gethealthie.com/graphql', {
+                        method: 'POST',
+                        headers: {
+                          'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                          'Content-Type': 'application/json',
+                          'AuthorizationSource': 'API'
+                        },
+                        body: JSON.stringify({ query: mutation, variables })
+                      });
+
+                      const result: any = await healthieResponse.json();
+                      if (result.errors) {
+                        console.error('[Bot] Healthie error:', result.errors);
+                        await sendMessage(cb.message.chat.id, `❌ SOAP upload error: ${JSON.stringify(result.errors)}`);
+                        // Don't continue — still finalize session status below
+                      }
+
+                      const mutationKey = existingChartNoteId ? 'updateFormAnswerGroup' : 'createFormAnswerGroup';
+                      const chartNoteId = result.data?.[mutationKey]?.form_answer_group?.id;
+                      if (chartNoteId) {
+                        targetSession.chart_note_id = chartNoteId;
+                        const verb = existingChartNoteId ? 'updated' : 'submitted';
+                        await sendMessage(cb.message.chat.id, `✅ SOAP Note ${verb} (ID: ${chartNoteId})`);
+                      } else if (existingChartNoteId) {
+                        // Update failed (e.g. chart note deleted in Healthie) - fallback to create new
+                        console.log(`[Bot] ⚠️ Update of chart note ${existingChartNoteId} failed, falling back to create new`);
+                        const createMutation = `
+                          mutation CreateFormAnswerGroup($input: createFormAnswerGroupInput!) {
+                            createFormAnswerGroup(input: $input) {
+                              form_answer_group { id }
+                            }
+                          }
+                        `;
+                        const createVariables = {
+                          input: {
+                            custom_module_form_id: SOAP_FORM_ID,
+                            user_id: patientId,
+                            finished: true,
+                            form_answers: form_answers
+                          }
+                        };
+                        const createResponse = await fetch('https://api.gethealthie.com/graphql', {
+                          method: 'POST',
+                          headers: {
+                            'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                            'Content-Type': 'application/json',
+                            'AuthorizationSource': 'API'
+                          },
+                          body: JSON.stringify({ query: createMutation, variables: createVariables })
+                        });
+                        const createResult: any = await createResponse.json();
+                        const newChartNoteId = createResult.data?.createFormAnswerGroup?.form_answer_group?.id;
+                        if (newChartNoteId) {
+                          targetSession.chart_note_id = newChartNoteId;
+                          await sendMessage(cb.message.chat.id, `✅ SOAP Note created as new (ID: ${newChartNoteId}) — previous note was deleted in Healthie`);
+                        } else {
+                          console.error('[Bot] Fallback create also failed:', JSON.stringify(createResult));
+                          await sendMessage(cb.message.chat.id, '❌ Failed to submit SOAP Note.');
+                        }
+                      } else {
+                        console.error('[Bot] SOAP mutation response:', JSON.stringify(result));
+                        await sendMessage(cb.message.chat.id, '❌ Failed to submit SOAP Note.');
+                      }
+                    }
+
+                    // --- 2. UPLOAD SELECTED ADDITIONAL DOCS AS PDFs ---
+                    const additionalDocs: Record<string, string> = {
+                      'discharge_instructions': 'Discharge Instructions',
+                      'work_note': 'Work Excuse Note',
+                      'school_note': 'School Excuse Note',
+                      'care_plan': 'Care Plan'
+                    };
+
+
+                    for (const [docKey, docTitle] of Object.entries(additionalDocs)) {
+                      if (!selectedTypes.includes(docKey)) {
+                        console.log(`[Bot] ⏭️ Skipping ${docTitle} (not selected)`);
+                        continue;
+                      }
+
+                      const docContent = targetSession.documents?.[docKey];
+                      if (docContent && typeof docContent === 'string' && docContent.length > 10) {
+                        try {
+                          // Generate PDF using Python pdf_generator CLI wrapper
+                          const { execSync } = require('child_process');
+                          const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                          const safePatientName = patientName.replace(/[^a-zA-Z0-9]/g, '_');
+                          const pdfPath = `/tmp/${docKey}_${safePatientName}_${timestamp}.pdf`;
+
+                          // For discharge/care plan, write content to temp file
+                          let contentFile = '';
+                          if (docKey === 'discharge_instructions' || docKey === 'care_plan') {
+                            contentFile = `/tmp/${docKey}_content_${timestamp}.txt`;
+                            fs.writeFileSync(contentFile, docContent);
+                          }
+
+                          // Call the CLI wrapper
+                          const cliCmd = contentFile
+                            ? `python3 /home/ec2-user/scripts/scribe/generate_pdf_cli.py "${docKey}" "${patientName}" "${pdfPath}" "${contentFile}"`
+                            : `python3 /home/ec2-user/scripts/scribe/generate_pdf_cli.py "${docKey}" "${patientName}" "${pdfPath}"`;
+
+                          const pyResult = execSync(cliCmd, { timeout: 15000, encoding: 'utf8' });
+                          console.log(`[Bot] 📄 PDF generated: ${pdfPath} (${pyResult.trim()})`);
+
+                          // Clean up content temp file
+                          if (contentFile) try { fs.unlinkSync(contentFile); } catch { }
+
+                          // Read and base64 encode the PDF
+                          const pdfBytes = fs.readFileSync(pdfPath);
+                          const pdfBase64 = pdfBytes.toString('base64');
+
+                          // Upload via Healthie createDocument mutation
+                          const docMutation = `
+                            mutation CreateDocument($input: createDocumentInput!) {
+                              createDocument(input: $input) {
+                                document { id display_name }
+                                messages { field message }
+                              }
+                            }
+                          `;
+
+                          const docVariables = {
+                            input: {
+                              rel_user_id: patientId,
+                              display_name: `${docTitle} - ${patientName} - ${new Date().toLocaleDateString()}`,
+                              file_string: `data:application/pdf;base64,${pdfBase64}`,
+                              description: `${docTitle} generated by AI Scribe`,
+                              share_with_rel: true
+                            }
+                          };
+
+                          const docResponse = await fetch('https://api.gethealthie.com/graphql', {
+                            method: 'POST',
+                            headers: {
+                              'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                              'Content-Type': 'application/json',
+                              'AuthorizationSource': 'API'
+                            },
+                            body: JSON.stringify({ query: docMutation, variables: docVariables })
+                          });
+
+                          const docResult: any = await docResponse.json();
+                          const docId = docResult.data?.createDocument?.document?.id;
+                          if (docId) {
+                            console.log(`[Bot] ✅ Uploaded ${docTitle} as PDF document (ID: ${docId})`);
+                            await sendMessage(cb.message.chat.id, `✅ ${docTitle} uploaded as PDF (ID: ${docId})`);
+                          } else {
+                            console.error(`[Bot] Failed to upload ${docTitle}:`, JSON.stringify(docResult));
+                            await sendMessage(cb.message.chat.id, `⚠️ ${docTitle} upload failed: ${JSON.stringify(docResult.errors || docResult.data?.createDocument?.messages || 'Unknown error')}`);
+                          }
+
+                          // Clean up temp PDF
+                          try { fs.unlinkSync(pdfPath); } catch { }
+                        } catch (docErr: any) {
+                          console.error(`[Bot] Error uploading ${docTitle}:`, docErr);
+                          await sendMessage(cb.message.chat.id, `⚠️ ${docTitle} PDF generation/upload failed: ${docErr?.message || docErr}`);
+                        }
+                      }
+                    }
+
+                    // --- 3. FINALIZE ---
+                    targetSession.status = 'SUBMITTED';
+                    targetSession.submitted_at = new Date().toISOString();
+                    fs.writeFileSync(targetSession.file, JSON.stringify(targetSession, null, 2));
+
+                    const doneVerb = isResubmit ? 'updated' : 'sent';
+                    await sendMessage(cb.message.chat.id, `✅ **All done!** ${selectedTypes.length} document(s) ${doneVerb} for ${patientName}.\n\n[View Chart in Healthie](https://secure.gethealthie.com/users/${patientId})`);
+                  } catch (err: any) {
+                    console.error('[Bot] Error in confirm_final_send:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== SELECT PATIENT CALLBACK ==========
+                // Handles both old format (select_patient_...) and new short format (sp_...)
+                if (action.startsWith('select_patient_') || action.startsWith('sp_')) {
+                  // New short format: sp_{sessionId}_{patientId} (sessionId has underscores)
+                  // Old format: select_patient_{sessionId}_{patientId}_{name}
+                  let sessionId: string;
+                  let patientId: string;
+
+                  if (action.startsWith('sp_')) {
+                    // New short format: sp_20260130_150200_jennifer_frederick_12746172
+                    const parts = action.replace('sp_', '').split('_');
+                    patientId = parts.pop()!; // Last part is always patient ID
+                    sessionId = parts.join('_'); // Rest is session ID
+                  } else {
+                    // Old format parsing (for backwards compatibility)
+                    const parts = action.replace('select_patient_', '').split('_');
+                    sessionId = parts.slice(0, -2).join('_');
+                    patientId = parts[parts.length - 2];
+                  }
+
+                  console.log(`[Bot] 👤 Selecting patient ${patientId} for session ${sessionId}`);
+
+                  try {
+                    // Fetch patient name from Healthie API
+                    const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY;
+                    const patientQuery = `query { user(id: "${patientId}") { id first_name last_name dob } }`;
+                    const patientResp = await fetch('https://api.gethealthie.com/graphql', {
+                      method: 'POST',
+                      headers: {
+                        'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                        'Content-Type': 'application/json',
+                        'AuthorizationSource': 'API'
+                      },
+                      body: JSON.stringify({ query: patientQuery })
+                    });
+                    const patientResult: any = await patientResp.json();
+                    const patientData = patientResult.data?.user;
+                    const patientName = patientData ? `${patientData.first_name || ''} ${patientData.last_name || ''}`.trim() : 'Unknown';
+                    console.log(`[Bot] 👤 Fetched patient name: ${patientName}`);
+
+                    const sessionFile = `/tmp/scribe_sessions/${sessionId}.json`;
+                    if (fs.existsSync(sessionFile)) {
+                      const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+
+                      // Update patient identification
+                      if (!sessionData.classification) sessionData.classification = {};
+                      if (!sessionData.classification.patient_identification) {
+                        sessionData.classification.patient_identification = {};
+                      }
+
+                      // Store old patient name for SOAP content replacement
+                      const oldPatientName = sessionData.patient_name;
+
+                      sessionData.classification.patient_identification.patient_id = patientId;
+                      sessionData.classification.patient_identification.matched_name = patientName;
+                      sessionData.classification.patient_identification.manually_assigned = true;
+                      sessionData.classification.patient_identification.confidence = 1.0;
+                      sessionData.patient_name = patientName;
+                      sessionData.updated_at = new Date().toISOString();
+
+                      // Replace old patient name in SOAP content if different
+                      if (oldPatientName && oldPatientName !== patientName && sessionData.documents?.soap_note) {
+                        const oldSoap = sessionData.documents.soap_note;
+                        // Replace old name with new name in SOAP
+                        sessionData.documents.soap_note = oldSoap.replace(new RegExp(oldPatientName, 'gi'), patientName);
+                        console.log(`[Bot] 📝 Replaced "${oldPatientName}" with "${patientName}" in SOAP content`);
+                      }
+
+                      fs.writeFileSync(sessionFile, JSON.stringify(sessionData, null, 2));
+
+                      // Show updated session with full keyboard
+                      const preview = (sessionData.documents?.soap_note || '').substring(0, 300) + '...';
+                      const spButtons = { inline_keyboard: buildSessionKeyboard(sessionId, sessionData) };
+
+                      await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          chat_id: cb.message.chat.id,
+                          text: `✅ **Patient assigned: ${patientName}**\n\n📋 Session ready to submit:\n\n${preview}`,
+                          reply_markup: spButtons
+                        })
+                      });
+                    } else {
+                      await sendMessage(cb.message.chat.id, `❌ Session not found: ${sessionId}`);
+                    }
+                  } catch (err: any) {
+                    console.error('[Bot] Error selecting patient:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== CANCEL PATIENT SEARCH CALLBACK ==========
+                if (action === 'cancel_patient_search') {
+                  // Remove any pending search file
+                  const pendingFile = `/tmp/telegram_approvals/pending_patient_search_${cb.message.chat.id}.json`;
+                  if (fs.existsSync(pendingFile)) {
+                    fs.unlinkSync(pendingFile);
+                  }
+                  await sendMessage(cb.message.chat.id, '❌ Patient search cancelled. Use /sessions to view pending sessions.');
+                }
+
+                // ========== ADD DOCUMENT CALLBACKS (Work Note, School Note, Discharge, Care Plan) ==========
+                if (action.startsWith('add_work_note_') || action.startsWith('add_school_note_') ||
+                  action.startsWith('add_discharge_') || action.startsWith('add_care_plan_')) {
+
+                  // Parse action to get document type and session ID
+                  const match = action.match(/^add_([^_]+(?:_[^_]+)?(?:_note|_instructions|_plan)?)_(.+)$/);
+                  let docType = '';
+                  let sessionId = '';
+
+                  if (action.startsWith('add_work_note_')) {
+                    docType = 'work_note';
+                    sessionId = action.replace('add_work_note_', '');
+                  } else if (action.startsWith('add_school_note_')) {
+                    docType = 'school_note';
+                    sessionId = action.replace('add_school_note_', '');
+                  } else if (action.startsWith('add_discharge_')) {
+                    docType = 'discharge_instructions';
+                    sessionId = action.replace('add_discharge_', '');
+                  } else if (action.startsWith('add_care_plan_')) {
+                    docType = 'care_plan';
+                    sessionId = action.replace('add_care_plan_', '');
+                  }
+
+                  console.log(`[Bot] ➕ Adding ${docType} for session ${sessionId}`);
+
+                  const docLabels: Record<string, string> = {
+                    'work_note': 'Work Excuse Note',
+                    'school_note': 'School Excuse Note',
+                    'discharge_instructions': 'Discharge Instructions',
+                    'care_plan': 'Care Plan'
+                  };
+
+                  try {
+                    const sessionFile = `/tmp/scribe_sessions/${sessionId}.json`;
+                    if (fs.existsSync(sessionFile)) {
+                      const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                      const soapNote = sessionData.documents?.soap_note || '';
+                      const patientName = sessionData.patient_name || 'Patient';
+
+                      await sendMessage(cb.message.chat.id, `⏳ Generating ${docLabels[docType]} for ${patientName}...`);
+
+                      // Generate document using Gemini AI
+                      const GEMINI_API_KEY = process.env.GOOGLE_AI_API_KEY;
+                      console.log(`[Bot] 🔑 GOOGLE_AI_API_KEY loaded: ${GEMINI_API_KEY ? 'YES (' + GEMINI_API_KEY.substring(0, 10) + '...)' : 'NO'}`);
+                      if (!GEMINI_API_KEY) {
+                        console.log('[Bot] ❌ GOOGLE_AI_API_KEY is undefined - dotenv may not have loaded');
+                        await sendMessage(cb.message.chat.id, '❌ Error: Gemini API key not configured');
+                        continue;
+                      }
+
+                      const prompts: Record<string, string> = {
+                        'work_note': `Based on this SOAP note, generate a professional Work Excuse Note for the patient. Include the date, patient name, that they were seen today, and any work restrictions or return-to-work date as appropriate. Keep it concise and professional.\n\nClinic: NowOptimal Network\nPhone: 928-277-0001\nEmail: hello@nowoptimal.com\nWebsite: nowoptimal.com\n\nSOAP Note:\n${soapNote}\n\nPatient Name: ${patientName}\nDate: ${new Date().toLocaleDateString()}`,
+                        'school_note': `Based on this SOAP note, generate a School Excuse Note for the patient. Include the date, patient name, that they were seen today, and any school restrictions or return-to-school date as appropriate. Keep it concise and professional.\n\nClinic: NowOptimal Network\nPhone: 928-277-0001\nEmail: hello@nowoptimal.com\nWebsite: nowoptimal.com\n\nSOAP Note:\n${soapNote}\n\nPatient Name: ${patientName}\nDate: ${new Date().toLocaleDateString()}`,
+                        'discharge_instructions': `You are generating Discharge Instructions for a patient visit at NowOptimal Network.
+
+CRITICAL FORMATTING RULES:
+- Do NOT use any markdown symbols: no #, ##, **, *, or backticks
+- Do NOT use asterisks for bullet points or emphasis
+- Use clean plain text only
+- Use ALL CAPS for section headers (e.g., MEDICATIONS, WOUND CARE, FOLLOW-UP)
+- Use dashes (-) for bullet points
+- Use plain text for emphasis, no special characters
+- Leave a blank line between sections for readability
+
+BRANDING:
+- Practice name: NowOptimal Network
+- Phone: 928-277-0001
+- Email: hello@nowoptimal.com
+- Website: nowoptimal.com
+
+STRUCTURE:
+1. Start with patient name and date on separate lines
+2. A brief warm opening paragraph (1-2 sentences)
+3. MEDICATIONS section with each medication on its own line, including name, dose, and clear instructions
+4. Any relevant care sections (WOUND CARE, ACTIVITY, etc.)
+5. WARNING SIGNS - when to call the office
+6. FOLLOW-UP section
+7. End with: "Questions or concerns? Contact us at 928-277-0001 or hello@nowoptimal.com"
+
+Write in warm, patient-friendly language. Be thorough but concise.
+
+SOAP Note:
+${soapNote}
+
+Patient Name: ${patientName}
+Date: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`,
+                        'care_plan': `Based on this SOAP note, generate a comprehensive Care Plan. Include goals, interventions, patient education, and follow-up schedule. Format it professionally.\n\nClinic: NowOptimal Network\nPhone: 928-277-0001\nEmail: hello@nowoptimal.com\n\nSOAP Note:\n${soapNote}\n\nPatient Name: ${patientName}`
+                      };
+
+                      const geminiResponse = await fetch(
+                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+                        {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            contents: [{ parts: [{ text: prompts[docType] }] }],
+                            generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
+                          })
+                        }
+                      );
+
+                      const geminiResult: any = await geminiResponse.json();
+                      const generatedDoc = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || 'Error generating document';
+
+                      // Save to session and auto-select for upload
+                      sessionData.documents[docType] = generatedDoc;
+                      if (!sessionData.selected_types) sessionData.selected_types = ['soap_note'];
+                      if (!sessionData.selected_types.includes(docType)) {
+                        sessionData.selected_types.push(docType);
+                      }
+                      sessionData.updated_at = new Date().toISOString();
+                      fs.writeFileSync(sessionFile, JSON.stringify(sessionData, null, 2));
+
+                      // Send the generated document
+                      await sendMessage(cb.message.chat.id, `✅ **${docLabels[docType]} Generated:**\n\n${generatedDoc.substring(0, 2000)}`);
+
+                      // Show action buttons for the generated doc (including edit button for this specific doc type)
+                      const docActionButtons = {
+                        inline_keyboard: [
+                          [
+                            { text: '✏️ Edit', callback_data: `edit_doc_${docType}_${sessionId}` },
+                            { text: '📄 View Full', callback_data: `view_doc_${docType}_${sessionId}` }
+                          ],
+                          ...buildSessionKeyboard(sessionId, sessionData)
+                        ]
+                      };
+                      await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          chat_id: cb.message.chat.id,
+                          text: `📄 ${docLabels[docType]} saved to session.`,
+                          reply_markup: docActionButtons
+                        })
+                      });
+
+                    } else {
+                      await sendMessage(cb.message.chat.id, `❌ Session not found: ${sessionId}`);
+                    }
+                  } catch (err: any) {
+                    console.error(`[Bot] Error generating ${docType}:`, err);
+                    await sendMessage(cb.message.chat.id, `❌ Error generating document: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== PENDING SESSIONS CALLBACK ==========
+                if (action === 'pending_sessions') {
+                  console.log(`[Bot] 📋 Pending sessions requested via callback`);
+                  // Reuse the same logic as /sessions command
+                  try {
+                    const sessionsDir = '/tmp/scribe_sessions';
+                    const sessions: any[] = [];
+                    const submittedToday: any[] = [];
+                    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+                    if (fs.existsSync(sessionsDir)) {
+                      const files = fs.readdirSync(sessionsDir).filter((f: string) => f.endsWith('.json'));
+                      for (const file of files) {
+                        try {
+                          const data = JSON.parse(fs.readFileSync(`${sessionsDir}/${file}`, 'utf8'));
+
+                          if (data.status === 'SUBMITTED' || data.status === 'SENT') {
+                            const createdDate = (data.created_at || '').slice(0, 10);
+                            if (createdDate >= sevenDaysAgo) {
+                              submittedToday.push({
+                                id: file.replace('.json', ''),
+                                name: data.patient_name || 'Unknown',
+                                createdAt: data.created_at,
+                                session_id: data.session_id || file.replace('.json', '')
+                              });
+                            }
+                            continue;
+                          }
+
+                          if (data.status !== 'DISCARDED') {
+                            sessions.push({
+                              id: file.replace('.json', ''),
+                              name: data.patient_name || 'Unknown',
+                              status: data.status || 'UNKNOWN',
+                              patientId: data.classification?.patient_identification?.patient_id,
+                              createdAt: data.created_at
+                            });
+                          }
+                        } catch { /* skip invalid */ }
+                      }
+                    }
+
+                    if (sessions.length === 0 && submittedToday.length === 0) {
+                      await sendMessage(cb.message.chat.id, '📋 No pending sessions. Upload an audio recording to create one.');
+                    } else {
+                      let msg = '';
+                      const buttons: any[][] = [];
+
+                      if (sessions.length > 0) {
+                        msg += '📋 PENDING SCRIBE SESSIONS\n\nTap to switch:\n';
+                        for (const s of sessions.slice(0, 8)) {
+                          buttons.push([{
+                            text: `${s.patientId ? '🟡' : '🔴'} ${s.name} (${new Date(s.createdAt).toLocaleTimeString()}) - ${s.status}`,
+                            callback_data: `switch_session_${s.id}`
+                          }]);
+                        }
+                      }
+
+                      if (submittedToday.length > 0) {
+                        msg += '\n✅ RECENTLY SUBMITTED (tap to reopen & edit):\n';
+                        for (const s of submittedToday.slice(0, 5)) {
+                          const time = new Date(s.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                          buttons.push([{
+                            text: `🔄 Reopen ${s.name} (${time})`,
+                            callback_data: `reopen_${s.session_id}`
+                          }]);
+                        }
+                      }
+
+                      await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          chat_id: cb.message.chat.id,
+                          text: msg,
+                          reply_markup: { inline_keyboard: buttons }
+                        })
+                      });
+                    }
+                  } catch (err: any) {
+                    console.error('[Bot] Error listing sessions:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== REJECT/DISCARD CALLBACK ==========
+                if (action === 'reject' || action.startsWith('reject_')) {
+                  const callbackSessionId = action.startsWith('reject_') ? action.replace('reject_', '') : null;
+                  console.log(`[Bot] 🗑️ Discard requested for chat ${cb.message.chat.id}, sessionId: ${callbackSessionId || 'auto-detect'}`);
+                  try {
+                    const sessionsDir = '/tmp/scribe_sessions';
+                    let discarded = false;
+
+                    // If session ID provided, discard that specific session
+                    if (callbackSessionId) {
+                      const sessionFile = path.join(sessionsDir, `${callbackSessionId}.json`);
+                      if (fs.existsSync(sessionFile)) {
+                        const data = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                        data.status = 'DISCARDED';
+                        data.discarded_at = new Date().toISOString();
+                        fs.writeFileSync(sessionFile, JSON.stringify(data, null, 2));
+                        discarded = true;
+                        await sendMessage(cb.message.chat.id, `🗑️ Session for **${data.patient_name}** has been discarded.`);
+                      }
+                    }
+
+                    // Fallback: find latest active session (legacy support)
+                    if (!discarded && fs.existsSync(sessionsDir)) {
+                      const files = fs.readdirSync(sessionsDir).filter((f: string) => f.endsWith('.json'));
+                      for (const file of files) {
+                        try {
+                          const filePath = path.join(sessionsDir, file);
+                          const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                          if (Number(data.chat_id) === Number(cb.message.chat.id) &&
+                            data.status !== 'SENT' && data.status !== 'DISCARDED' && data.status !== 'SUBMITTED') {
+                            data.status = 'DISCARDED';
+                            data.discarded_at = new Date().toISOString();
+                            fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+                            discarded = true;
+                            await sendMessage(cb.message.chat.id, `🗑️ Session for **${data.patient_name}** has been discarded.`);
+                            break;
+                          }
+                        } catch (e) { /* skip invalid files */ }
+                      }
+                    }
+
+                    if (!discarded) {
+                      await sendMessage(cb.message.chat.id, '⚠️ No active session found to discard.');
+                    }
+                  } catch (err: any) {
+                    console.error('[Bot] Error in reject:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== EDIT HELP CALLBACK ==========
+                if (action.startsWith('edit_help') || action.startsWith('edit_doc_')) {
+                  // Parse session ID - handle both formats:
+                  // edit_help_{sessionId} 
+                  // edit_doc_{docType}_{sessionId}
+                  let sessionId = '';
+                  if (action.startsWith('edit_doc_')) {
+                    // Extract session ID after the doc type
+                    for (const dt of ['discharge_instructions', 'work_note', 'school_note', 'care_plan']) {
+                      if (action.startsWith(`edit_doc_${dt}_`)) {
+                        sessionId = action.replace(`edit_doc_${dt}_`, '');
+                        break;
+                      }
+                    }
+                  } else {
+                    sessionId = action.includes('_') ? action.split('_').slice(2).join('_') : '';
+                  }
+                  console.log(`[Bot] ✏️ Edit mode for session: ${sessionId || 'latest'}`);
+                  try {
+                    // Find the session to edit
+                    let targetSessionId = sessionId;
+                    if (!targetSessionId) {
+                      // Find latest session for this chat
+                      const sessionsDir = '/tmp/scribe_sessions';
+                      const files = fs.readdirSync(sessionsDir).filter((f: string) => f.endsWith('.json'));
+                      for (const file of files) {
+                        const data = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
+                        if (Number(data.chat_id) === Number(cb.message.chat.id) &&
+                          data.status !== 'SENT' && data.status !== 'DISCARDED') {
+                          targetSessionId = data.session_id;
+                          break;
+                        }
+                      }
+                    }
+                    if (targetSessionId) {
+                      // Save edit mode state - default to soap_note unless a specific doc type is provided
+                      const approvalDir = '/tmp/telegram_approvals';
+                      const activeEditFile = path.join(approvalDir, `active_edit_${cb.message.chat.id}.json`);
+                      // Parse document type from action: edit_help_{sessionId} or edit_doc_{docType}_{sessionId}
+                      let editDocType = 'soap_note';  // default
+                      if (action.startsWith('edit_doc_')) {
+                        // Format: edit_doc_{docType}_{sessionId}
+                        for (const dt of ['discharge_instructions', 'work_note', 'school_note', 'care_plan']) {
+                          if (action.startsWith(`edit_doc_${dt}_`)) {
+                            editDocType = dt;
+                            break;
+                          }
+                        }
+                      } else {
+                        // Generic edit_help button - check which documents exist and offer selection
+                        const sessionFile = `/tmp/scribe_sessions/${targetSessionId}.json`;
+                        if (fs.existsSync(sessionFile)) {
+                          const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                          const docs = sessionData.documents || {};
+                          const availableDocs: { key: string; label: string }[] = [];
+                          if (docs.soap_note) availableDocs.push({ key: 'soap_note', label: '📋 SOAP Note' });
+                          if (docs.discharge_instructions) availableDocs.push({ key: 'discharge_instructions', label: '📄 Discharge Instructions' });
+                          if (docs.work_note) availableDocs.push({ key: 'work_note', label: '📝 Work Excuse Note' });
+                          if (docs.school_note) availableDocs.push({ key: 'school_note', label: '🏫 School Excuse Note' });
+                          if (docs.care_plan) availableDocs.push({ key: 'care_plan', label: '🎯 Care Plan' });
+
+                          if (availableDocs.length > 1) {
+                            // Multiple docs - show selection buttons
+                            const editButtons = availableDocs.map(d => ([{
+                              text: `✏️ Edit ${d.label}`,
+                              callback_data: `edit_doc_${d.key}_${targetSessionId}`
+                            }]));
+                            await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                chat_id: cb.message.chat.id,
+                                text: '✏️ Which document would you like to edit?',
+                                reply_markup: { inline_keyboard: editButtons }
+                              })
+                            });
+                            break; // Don't enter edit mode yet - wait for user selection
+                          } else if (availableDocs.length === 1) {
+                            // Only one doc - auto-select it
+                            editDocType = availableDocs[0].key;
+                          }
+                        }
+                      }
+
+                      const editDocLabels: Record<string, string> = {
+                        'soap_note': 'SOAP note',
+                        'discharge_instructions': 'Discharge Instructions',
+                        'work_note': 'Work Excuse Note',
+                        'school_note': 'School Excuse Note',
+                        'care_plan': 'Care Plan'
+                      };
+
+                      fs.writeFileSync(activeEditFile, JSON.stringify({
+                        session_id: targetSessionId,
+                        mode: 'edit',
+                        document_type: editDocType,
+                        timestamp: Date.now()
+                      }));
+                      await sendMessage(cb.message.chat.id,
+                        `✏️ EDIT MODE ACTIVE — Editing **${editDocLabels[editDocType] || editDocType}**\n\nType your edit instruction, for example:\n• "Remove shortness of breath"\n• "Change Progesterone to 200mg"\n• "Add follow-up in 2 weeks"\n\nType your instruction now:`);
+                    } else {
+                      await sendMessage(cb.message.chat.id, '⚠️ No active session found. Use /sessions to select one.');
+                    }
+                  } catch (err: any) {
+                    console.error('[Bot] Error entering edit mode:', err);
+                    await sendMessage(cb.message.chat.id, `❌ Error: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== VIEW SOAP CALLBACK ==========
+                if (action.startsWith('view_soap_')) {
+                  const sessionId = action.replace('view_soap_', '');
+                  try {
+                    const sessionFile = `/tmp/scribe_sessions/${sessionId}.json`;
+                    if (fs.existsSync(sessionFile)) {
+                      const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                      const soapNote = sessionData.documents?.soap_note || 'No SOAP note available';
+                      // Split into chunks if too long
+                      const chunks = soapNote.match(/.{1,4000}/gs) || [soapNote];
+                      for (const chunk of chunks) {
+                        await sendMessage(cb.message.chat.id, chunk);
+                      }
+                      // Show full keyboard after SOAP view
+                      const vsButtons = { inline_keyboard: buildSessionKeyboard(sessionId, sessionData) };
+                      await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          chat_id: cb.message.chat.id,
+                          text: '👇 Actions:',
+                          reply_markup: vsButtons
+                        })
+                      });
+                    }
+                  } catch (err: any) {
+                    await sendMessage(cb.message.chat.id, `❌ Error viewing SOAP: ${err?.message || err}`);
+                  }
+                }
+
+                // ========== VIEW DOCUMENT CALLBACK (discharge, work note, etc.) ==========
+                if (action.startsWith('view_doc_')) {
+                  // Parse: view_doc_{docType}_{sessionId}
+                  let viewDocType = '';
+                  let viewSessionId = '';
+                  for (const dt of ['discharge_instructions', 'work_note', 'school_note', 'care_plan']) {
+                    if (action.startsWith(`view_doc_${dt}_`)) {
+                      viewDocType = dt;
+                      viewSessionId = action.replace(`view_doc_${dt}_`, '');
+                      break;
+                    }
+                  }
+
+                  const docTitles: Record<string, string> = {
+                    'discharge_instructions': '📄 Discharge Instructions',
+                    'work_note': '📝 Work Excuse Note',
+                    'school_note': '🏫 School Excuse Note',
+                    'care_plan': '🎯 Care Plan'
+                  };
+
+                  if (viewDocType && viewSessionId) {
+                    try {
+                      const sessionFile = `/tmp/scribe_sessions/${viewSessionId}.json`;
+                      if (fs.existsSync(sessionFile)) {
+                        const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                        const docContent = sessionData.documents?.[viewDocType];
+                        if (docContent) {
+                          const title = docTitles[viewDocType] || viewDocType;
+                          const fullText = `**${title}**\n\n${docContent}`;
+                          const chunks = fullText.match(/.{1,4000}/gs) || [fullText];
+                          for (const chunk of chunks) {
+                            await sendMessage(cb.message.chat.id, chunk);
+                          }
+                        } else {
+                          await sendMessage(cb.message.chat.id, `⚠️ No ${docTitles[viewDocType] || viewDocType} found in session.`);
+                        }
+                        // Show keyboard after viewing
+                        const vdButtons = { inline_keyboard: buildSessionKeyboard(viewSessionId, sessionData) };
+                        await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            chat_id: cb.message.chat.id,
+                            text: '👇 Actions:',
+                            reply_markup: vdButtons
+                          })
+                        });
+                      }
+                    } catch (err: any) {
+                      await sendMessage(cb.message.chat.id, `❌ Error viewing document: ${err?.message || err}`);
+                    }
+                  }
+                }
               }
             } catch (err) {
               console.error('[Bot] Failed to save approval IPC:', err);

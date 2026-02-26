@@ -5,6 +5,7 @@ import {
   DEFAULT_TESTOSTERONE_DEA_CODE,
   DEFAULT_TESTOSTERONE_VENDOR,
   TESTOSTERONE_VENDORS,
+  WASTE_PER_SYRINGE,
   normalizeTestosteroneVendor
 } from './testosterone';
 
@@ -60,6 +61,9 @@ export type TransactionRow = {
   signature_status: string | null;
   prescribing_provider_id: string | null;
   prescribing_provider_name: string | null;
+  regimen: string | null;
+  expiration_date: string | null;
+  lot_number: string | null;
 };
 
 export type ProviderSignatureRow = {
@@ -193,7 +197,12 @@ function normalizeVialRow(row: {
   };
 }
 
-export async function fetchInventory(): Promise<VialRow[]> {
+export async function fetchInventory(options?: { showAll?: boolean }): Promise<VialRow[]> {
+  const showAll = options?.showAll ?? false;
+  const whereClause = showAll
+    ? ''
+    : `WHERE remaining_volume_ml::numeric > 0`;
+
   const rows = await query<VialRow>(
     `SELECT
         vial_id,
@@ -210,6 +219,7 @@ export async function fetchInventory(): Promise<VialRow[]> {
         location,
         notes
      FROM vials
+     ${whereClause}
      ORDER BY expiration_date ASC NULLS LAST, external_id ASC`
   );
 
@@ -273,6 +283,7 @@ export async function fetchTransactions(limit = 250): Promise<TransactionRow[]> 
         d.vial_external_id,
         COALESCE(p.full_name, d.patient_name) AS patient_name,
         p.dob AS patient_dob,
+        p.regimen,
         d.total_dispensed_ml,
         d.syringe_count,
         d.dose_per_syringe_ml,
@@ -287,11 +298,12 @@ export async function fetchTransactions(limit = 250): Promise<TransactionRow[]> 
         CASE
           WHEN v.size_ml IS NOT NULL AND v.remaining_volume_ml IS NOT NULL
           THEN (v.size_ml - v.remaining_volume_ml)::text
-          ELSE NULL
         END AS dispensed_total_vial,
         v.remaining_volume_ml::text AS remaining_volume_ml,
+        v.expiration_date,
+        v.lot_number,
         d.created_by,
-        cu.display_name AS created_by_name,
+        COALESCE(cu.display_name, d.recorded_by) AS created_by_name,
         d.created_by_role,
         d.signed_by,
         su.display_name AS signed_by_name,
@@ -335,7 +347,8 @@ export async function fetchProviderSignatureQueue(): Promise<ProviderSignatureRo
         signature_note
      FROM provider_signature_queue_v
      WHERE COALESCE(signature_status, 'awaiting_signature') <> 'signed'
-     ORDER BY dispense_date DESC NULLS LAST, dispense_id DESC`
+     ORDER BY dispense_date DESC NULLS LAST, dispense_id DESC
+     LIMIT 200`
   );
 }
 
@@ -637,7 +650,21 @@ export type CreateDispenseResult = {
   updatedRemainingMl: string | null;
 };
 
-const WASTE_PER_SYRINGE = 0.1;
+// WASTE_PER_SYRINGE is now imported from lib/testosterone.ts
+
+// Check if today's MORNING controlled substance check has been completed
+// (EOD check is optional - does not block dispensing)
+// Uses America/Denver timezone since CURRENT_DATE is UTC and the clinic is in Mountain time.
+// Without this, after 5 PM Mountain (= midnight UTC), the query looks for "tomorrow's" check.
+async function isTodayCheckCompleted(client: any): Promise<boolean> {
+  const result = await client.query(`
+    SELECT check_id FROM controlled_substance_checks
+    WHERE check_date = (NOW() AT TIME ZONE 'America/Denver')::date
+      AND check_type = 'morning'
+    LIMIT 1
+  `);
+  return result.rowCount > 0;
+}
 
 export async function createDispense(input: NewDispenseInput): Promise<CreateDispenseResult> {
   const client = await getPool().connect();
@@ -653,7 +680,8 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
     }>(
       `SELECT vial_id, controlled_substance, dea_drug_name, dea_drug_code, remaining_volume_ml
          FROM vials
-        WHERE external_id = $1`,
+        WHERE external_id = $1
+        FOR UPDATE`,
       [input.vialExternalId.trim()]
     );
 
@@ -662,6 +690,27 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
     }
 
     const vialRow = vialLookup.rows[0];
+
+    // DEA Compliance: Require morning check before dispensing controlled substances
+    if (vialRow.controlled_substance) {
+      const checkDone = await isTodayCheckCompleted(client);
+      if (!checkDone) {
+        throw new Error(
+          `Daily controlled substance audit not completed. ` +
+          `Staff must complete the morning inventory check before dispensing. ` +
+          `Use Telegram: /check cb:[full],[partial] tr:[count] or complete via dashboard.`
+        );
+      }
+    }
+
+    // DEA Compliance: Prevent dispensing from vials with no remaining volume
+    const currentRemaining = parseFloat(vialRow.remaining_volume_ml ?? '0');
+    if (currentRemaining <= 0) {
+      throw new Error(
+        `Cannot dispense from vial "${input.vialExternalId}" - it has 0 mL remaining. ` +
+        `Select a vial with available volume.`
+      );
+    }
 
     let patientId = input.patientId ?? null;
     let patientInfo: {
@@ -674,15 +723,19 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
     } | null = null;
 
     if (!patientId && input.patientName) {
+      // Only match if exactly ONE patient has this name; otherwise skip to avoid mismatches
       const patientLookup = await client.query<{ patient_id: string }>(
         `SELECT patient_id
            FROM patients
-          WHERE LOWER(full_name) = LOWER($1)
-          LIMIT 1`,
+          WHERE LOWER(full_name) = LOWER($1)`,
         [input.patientName.trim()]
       );
-      if (patientLookup.rowCount) {
+      if (patientLookup.rowCount === 1) {
         patientId = patientLookup.rows[0].patient_id;
+      } else if ((patientLookup.rowCount ?? 0) > 1) {
+        console.warn(
+          `[createDispense] Ambiguous patient name "${input.patientName}" matched ${patientLookup.rowCount} records — skipping auto-match`
+        );
       }
     }
 
@@ -822,6 +875,14 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
         [vialRow.vial_id, totalDispensedMl ?? 0, wasteMl ?? 0]
       );
       updatedRemaining = remainingUpdate.rows[0]?.remaining_volume_ml ?? null;
+
+      // Auto-mark vial as Empty when fully depleted
+      if (parseFloat(updatedRemaining ?? '0') <= 0) {
+        await client.query(
+          `UPDATE vials SET status = 'Empty', updated_at = NOW() WHERE vial_id = $1`,
+          [vialRow.vial_id]
+        );
+      }
     }
 
     let deaTransactionId: string | null = null;
@@ -934,7 +995,19 @@ export async function deleteVial(vialId: string, cascade: { removeLogs?: boolean
   try {
     await client.query('BEGIN');
     if (removeLogs) {
+      // Nullify staged_doses FK references to DEA transactions that will be deleted
+      await client.query(
+        `UPDATE staged_doses SET dispense_dea_tx_id = NULL
+         WHERE dispense_dea_tx_id IN (SELECT dea_tx_id FROM dea_transactions WHERE vial_id = $1)`,
+        [vialId]
+      );
+      // Nullify staged_doses FK reference to the vial itself
+      await client.query(
+        `UPDATE staged_doses SET vial_id = NULL WHERE vial_id = $1`,
+        [vialId]
+      );
       await client.query('DELETE FROM dea_transactions WHERE vial_id = $1', [vialId]);
+      // dispense_history cascades automatically via ON DELETE CASCADE on dispenses
       await client.query('DELETE FROM dispenses WHERE vial_id = $1', [vialId]);
     }
     await client.query('DELETE FROM vials WHERE vial_id = $1', [vialId]);
@@ -960,8 +1033,10 @@ export async function deleteDispense(
       vial_external_id: string | null;
       total_dispensed_ml: string | null;
       waste_ml: string | null;
+      patient_name: string | null;
+      transaction_type: string | null;
     }>(
-      `SELECT vial_id, vial_external_id, total_dispensed_ml, waste_ml
+      `SELECT vial_id, vial_external_id, total_dispensed_ml, waste_ml, patient_name, transaction_type
          FROM dispenses
         WHERE dispense_id = $1`,
       [dispenseId]
@@ -977,21 +1052,50 @@ export async function deleteDispense(
     const amountToRestore =
       (dispensed ? Number.parseFloat(dispensed) : 0) + (waste ? Number.parseFloat(waste) : 0);
 
+    // Audit trail (#6): record deletion event BEFORE removing the dispense
+    if (actor) {
+      await recordDispenseEvent(client, {
+        dispenseId,
+        eventType: 'deleted',
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        payload: {
+          vialId,
+          vialExternalId,
+          totalDispensedMl: dispensed,
+          wasteMl: waste,
+          patientName: dispenseResult.rows[0].patient_name,
+          transactionType: dispenseResult.rows[0].transaction_type,
+          amountRestored: amountToRestore
+        }
+      });
+    }
+
     await client.query('DELETE FROM dea_transactions WHERE dispense_id = $1', [dispenseId]);
+    await client.query('DELETE FROM dispense_history WHERE dispense_id = $1', [dispenseId]);
     await client.query('DELETE FROM dispenses WHERE dispense_id = $1', [dispenseId]);
 
+    // Cap at size_ml to prevent overfilling (#1)
     if (amountToRestore > 0) {
       if (vialId) {
         await client.query(
           `UPDATE vials
-              SET remaining_volume_ml = COALESCE(remaining_volume_ml, 0) + $2
+              SET remaining_volume_ml = LEAST(
+                    COALESCE(size_ml, 9999),
+                    COALESCE(remaining_volume_ml, 0) + $2
+                  ),
+                  status = CASE WHEN remaining_volume_ml::numeric <= 0 AND $2 > 0 THEN 'Active' ELSE status END
             WHERE vial_id = $1`,
           [vialId, amountToRestore]
         );
       } else if (vialExternalId) {
         await client.query(
           `UPDATE vials
-              SET remaining_volume_ml = COALESCE(remaining_volume_ml, 0) + $2
+              SET remaining_volume_ml = LEAST(
+                    COALESCE(size_ml, 9999),
+                    COALESCE(remaining_volume_ml, 0) + $2
+                  ),
+                  status = CASE WHEN remaining_volume_ml::numeric <= 0 AND $2 > 0 THEN 'Active' ELSE status END
             WHERE external_id = $1`,
           [vialExternalId, amountToRestore]
         );

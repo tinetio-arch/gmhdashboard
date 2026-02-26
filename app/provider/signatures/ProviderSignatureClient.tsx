@@ -1,4 +1,5 @@
 'use client';
+import { formatDateUTC, formatDateTimeUTC } from '@/lib/dateUtils';
 
 import { Fragment, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -261,7 +262,7 @@ export default function ProviderSignatureClient({
               Last Signature
             </span>
             <div style={{ fontSize: '1rem', color: '#0f172a', marginTop: '0.25rem' }}>
-              {summary.most_recent_signed_at ? new Date(summary.most_recent_signed_at).toLocaleString() : '—'}
+              {summary.most_recent_signed_at ? formatDateTimeUTC(summary.most_recent_signed_at) : '—'}
             </div>
           </div>
         </div>
@@ -322,7 +323,7 @@ export default function ProviderSignatureClient({
                   return (
                     <Fragment key={row.dispense_id}>
                       <tr>
-                        <td style={rowCellStyle}>{row.dispense_date ? new Date(row.dispense_date).toLocaleDateString() : '—'}</td>
+                        <td style={rowCellStyle}>{row.dispense_date ? formatDateUTC(row.dispense_date) : '—'}</td>
                         <td style={rowCellStyle}>
                           <div style={{ fontWeight: 600 }}>{row.patient_name ?? '—'}</div>
                           <div style={{ color: '#475569', fontSize: '0.85rem', marginTop: '0.15rem' }}>
@@ -396,7 +397,7 @@ function HistoryTimeline({ events }: { events: DispenseHistoryEvent[] }) {
       {events.map((event) => (
         <li key={event.event_id} style={{ display: 'flex', gap: '1rem' }}>
           <div style={{ minWidth: 160, fontWeight: 600, color: '#475569' }}>
-            {new Date(event.created_at).toLocaleString()}
+            {formatDateTimeUTC(event.created_at)}
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600, color: '#0f172a', textTransform: 'capitalize' }}>{event.event_type.replace('_', ' ')}</div>

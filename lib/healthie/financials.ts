@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import fetch from 'node-fetch';
 import snowflake from 'snowflake-sdk';
+import fs from 'fs';
+import crypto from 'crypto';
 
 export type BillingItem = {
   id: string;
@@ -19,6 +21,8 @@ const {
   SNOWFLAKE_ACCOUNT,
   SNOWFLAKE_USER,
   SNOWFLAKE_PASSWORD,
+  SNOWFLAKE_SERVICE_USER,
+  SNOWFLAKE_PRIVATE_KEY_PATH,
   SNOWFLAKE_WAREHOUSE = 'GMH_WAREHOUSE',
   SNOWFLAKE_DATABASE = 'GMH_CLINIC',
   SNOWFLAKE_SCHEMA = 'FINANCIAL_DATA',
@@ -30,11 +34,13 @@ function assertEnv(name: string, value: string | undefined) {
 }
 
 export async function fetchGraphQL<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const res = await fetch(HEALTHIE_API_URL, {
+  const apiUrl = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
+  const apiKey = process.env.HEALTHIE_API_KEY;
+  const res = await fetch(apiUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      authorization: `Basic ${assertEnv('HEALTHIE_API_KEY', HEALTHIE_API_KEY)}`,
+      authorization: `Basic ${assertEnv('HEALTHIE_API_KEY', apiKey)}`,
       authorizationsource: 'API',
     },
     body: JSON.stringify({ query, variables }),
@@ -88,13 +94,43 @@ export async function fetchBillingItems(): Promise<BillingItem[]> {
 }
 
 export function getSnowflakeConnection() {
+  // Read env vars at call time (not module load time) because ESM import
+  // hoisting means this module loads before dotenv.config() runs in callers
+  const sfAccount = process.env.SNOWFLAKE_ACCOUNT;
+  const sfServiceUser = process.env.SNOWFLAKE_SERVICE_USER;
+  const sfPrivateKeyPath = process.env.SNOWFLAKE_PRIVATE_KEY_PATH;
+  const sfWarehouse = process.env.SNOWFLAKE_WAREHOUSE || 'GMH_WAREHOUSE';
+  const sfDatabase = process.env.SNOWFLAKE_DATABASE || 'GMH_CLINIC';
+  const sfSchema = process.env.SNOWFLAKE_SCHEMA || 'FINANCIAL_DATA';
+
+  // Prefer key-pair auth (required now that Snowflake enforces MFA)
+  if (sfPrivateKeyPath && sfServiceUser) {
+    console.log(`[Snowflake] Using key-pair auth with service user: ${sfServiceUser}`);
+    // Read key file and export as PEM string (per Snowflake Node.js SDK docs)
+    const keyFile = fs.readFileSync(sfPrivateKeyPath);
+    const keyObj = crypto.createPrivateKey({ key: keyFile, format: 'pem' });
+    const privateKey = keyObj.export({ format: 'pem', type: 'pkcs8' });
+
+    return snowflake.createConnection({
+      account: assertEnv('SNOWFLAKE_ACCOUNT', sfAccount),
+      username: sfServiceUser,
+      authenticator: 'SNOWFLAKE_JWT',
+      privateKey: privateKey,
+      warehouse: sfWarehouse,
+      database: sfDatabase,
+      schema: sfSchema,
+    });
+  }
+
+  // Fallback to password auth (will fail if MFA is enforced)
+  console.warn('[Snowflake] ⚠️ Using password auth - may fail if MFA is required. Set SNOWFLAKE_PRIVATE_KEY_PATH and SNOWFLAKE_SERVICE_USER for key-pair auth.');
   return snowflake.createConnection({
-    account: assertEnv('SNOWFLAKE_ACCOUNT', SNOWFLAKE_ACCOUNT),
-    username: assertEnv('SNOWFLAKE_USER', SNOWFLAKE_USER),
-    password: assertEnv('SNOWFLAKE_PASSWORD', SNOWFLAKE_PASSWORD),
-    warehouse: SNOWFLAKE_WAREHOUSE,
-    database: SNOWFLAKE_DATABASE,
-    schema: SNOWFLAKE_SCHEMA,
+    account: assertEnv('SNOWFLAKE_ACCOUNT', sfAccount),
+    username: assertEnv('SNOWFLAKE_USER', process.env.SNOWFLAKE_USER),
+    password: assertEnv('SNOWFLAKE_PASSWORD', process.env.SNOWFLAKE_PASSWORD),
+    warehouse: sfWarehouse,
+    database: sfDatabase,
+    schema: sfSchema,
   });
 }
 

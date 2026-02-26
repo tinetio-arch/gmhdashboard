@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOP: Lab Management System | NOW Men's Health</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            min-height: 100vh;
+            color: #e2e8f0;
+            line-height: 1.6;
+        }
+        .container { max-width: 900px; margin: 0 auto; padding: 2rem; }
+        h1 { 
+            font-size: 2.5rem; 
+            background: linear-gradient(135deg, #60a5fa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+        .subtitle { color: #94a3b8; font-size: 1.1rem; margin-bottom: 2rem; }
+        .updated { color: #64748b; font-size: 0.9rem; margin-bottom: 2rem; }
+        h2 { 
+            color: #38bdf8; 
+            font-size: 1.5rem; 
+            margin: 2rem 0 1rem; 
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #334155;
+        }
+        h3 { color: #a5b4fc; font-size: 1.2rem; margin: 1.5rem 0 0.75rem; }
+        p { margin-bottom: 1rem; color: #cbd5e1; }
+        ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
+        li { margin-bottom: 0.5rem; color: #cbd5e1; }
+        .card {
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid #334155;
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            margin: 1rem 0;
+        }
+        .feature-new {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(59, 130, 246, 0.1));
+            border: 1px solid #10b981;
+        }
+        .badge-new {
+            background: #10b981;
+            color: #000;
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            margin-left: 0.5rem;
+        }
+        .step-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            background: #3b82f6;
+            color: #fff;
+            border-radius: 50%;
+            font-weight: 700;
+            font-size: 0.9rem;
+            margin-right: 0.75rem;
+        }
+        .warning {
+            background: rgba(245, 158, 11, 0.15);
+            border-left: 4px solid #f59e0b;
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 0 0.5rem 0.5rem 0;
+        }
+        .warning-title { color: #fbbf24; font-weight: 600; margin-bottom: 0.5rem; }
+        .tip {
+            background: rgba(59, 130, 246, 0.15);
+            border-left: 4px solid #3b82f6;
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 0 0.5rem 0.5rem 0;
+        }
+        .tip-title { color: #60a5fa; font-weight: 600; margin-bottom: 0.5rem; }
+        code {
+            background: #1e293b;
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.25rem;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.9rem;
+            color: #f472b6;
+        }
+        .emoji { font-size: 1.1rem; margin-right: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border: 1px solid #334155;
+        }
+        th { background: #1e293b; color: #60a5fa; font-weight: 600; }
+        td { color: #cbd5e1; }
+        @media print {
+            body { background: #fff; color: #000; }
+            .card { border: 1px solid #ccc; }
+            h1, h2, h3 { color: #000; -webkit-text-fill-color: #000; }
+            p, li, td { color: #333; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Lab Management System</h1>
+        <p class="subtitle">Standard Operating Procedure for Ordering Labs & Reviewing Results</p>
+        <p class="updated">Last Updated: January 28, 2026 | Version 2.0</p>
+
+        <!-- Access Instructions -->
+        <h2>📍 Accessing the Lab Dashboard</h2>
+        <div class="card">
+            <ol>
+                <li><span class="step-number">1</span>Go to <code>https://nowoptimal.com/ops/</code></li>
+                <li><span class="step-number">2</span>Log in with your staff credentials</li>
+                <li><span class="step-number">3</span>Click <strong>Labs</strong> in the navigation menu</li>
+            </ol>
+        </div>
+
+        <!-- Dashboard Overview -->
+        <h2>📊 Dashboard Overview</h2>
+        <p>The Labs dashboard has three main tabs:</p>
+        <table>
+            <tr>
+                <th>Tab</th>
+                <th>Purpose</th>
+            </tr>
+            <tr>
+                <td><strong>Review Queue</strong></td>
+                <td>Lab results waiting for provider review & Healthie upload</td>
+            </tr>
+            <tr>
+                <td><strong>Order Labs</strong></td>
+                <td>Outbound lab orders sent to Access Medical Labs</td>
+            </tr>
+            <tr>
+                <td><strong>History</strong></td>
+                <td>Previously approved and uploaded lab results</td>
+            </tr>
+        </table>
+
+        <!-- Ordering Labs -->
+        <h2>🔬 Ordering Labs</h2>
+        <div class="card">
+            <h3>Creating a New Lab Order</h3>
+            <ol>
+                <li><span class="step-number">1</span>Go to <strong>Order Labs</strong> tab</li>
+                <li><span class="step-number">2</span>Click <strong>+ Order Lab</strong> button</li>
+                <li><span class="step-number">3</span>Select the <strong>Patient</strong> from search</li>
+                <li><span class="step-number">4</span>Choose the appropriate <strong>Test Panel</strong>:
+                    <ul>
+                        <li><strong>9757</strong> - Male Pre-Required Panel</li>
+                        <li><strong>9761</strong> - Male Post Panel</li>
+                        <li><strong>9765</strong> - Female Pre-Required Panel</li>
+                        <li><strong>9760</strong> - Female Post Panel</li>
+                        <li><strong>146</strong> - PSA Only</li>
+                    </ul>
+                </li>
+                <li><span class="step-number">5</span>Review patient demographics and submit</li>
+            </ol>
+        </div>
+
+        <div class="warning">
+            <p class="warning-title">⚠️ Restricted Tests</p>
+            <p>Some tests require admin approval before submission (e.g., L509 Lipid Panel, 202 HbA1c). These orders will show <strong>Pending Approval</strong> status.</p>
+        </div>
+
+        <!-- NEW: Requisition PDF -->
+        <div class="card feature-new">
+            <h3><span class="emoji">📄</span>Print Lab Requisition <span class="badge-new">NEW</span></h3>
+            <p>After an order is submitted to Access Labs, you can print the requisition form for the patient:</p>
+            <ol>
+                <li><span class="step-number">1</span>Go to <strong>Order Labs</strong> tab</li>
+                <li><span class="step-number">2</span>Find the submitted order in the table</li>
+                <li><span class="step-number">3</span>Click the <strong>📄 Print</strong> button in the Requisition column</li>
+                <li><span class="step-number">4</span>PDF opens in new tab - print or save for patient</li>
+            </ol>
+            <div class="tip">
+                <p class="tip-title">💡 Tip</p>
+                <p>Give this requisition to the patient so they can visit any Access Medical Labs location for their draw.</p>
+            </div>
+        </div>
+
+        <!-- NEW: Delete Orders -->
+        <div class="card feature-new">
+            <h3><span class="emoji">🗑️</span>Delete Lab Orders <span class="badge-new">NEW</span></h3>
+            <p>Orders can be removed from the dashboard if entered in error:</p>
+            <ol>
+                <li><span class="step-number">1</span>Find the order in the <strong>Order Labs</strong> tab</li>
+                <li><span class="step-number">2</span>Click the <strong>🗑️ Delete</strong> button in Actions column</li>
+                <li><span class="step-number">3</span>Confirm the deletion</li>
+            </ol>
+            <div class="warning">
+                <p class="warning-title">⚠️ Important</p>
+                <p>Deleting only removes from our dashboard. If the order was already submitted to Access Labs, you must <strong>contact Access Labs directly</strong> to cancel the lab order.</p>
+            </div>
+        </div>
+
+        <!-- Reviewing Results -->
+        <h2>📋 Reviewing Lab Results</h2>
+        <div class="card">
+            <h3>Daily Result Review Process</h3>
+            <ol>
+                <li><span class="step-number">1</span>Go to <strong>Review Queue</strong> tab</li>
+                <li><span class="step-number">2</span>Check the <strong>Pending Review</strong> count</li>
+                <li><span class="step-number">3</span>For each result:
+                    <ul>
+                        <li>Click <strong>📄 View Results</strong> to see full lab report</li>
+                        <li>Verify patient match (check Match % column)</li>
+                        <li>Review for critical values (🚨 alerts)</li>
+                    </ul>
+                </li>
+                <li><span class="step-number">4</span>Click <strong>✓ Approve</strong> to upload to Healthie (visible to patient)</li>
+                <li><span class="step-number">5</span>Or click <strong>Reject</strong> for incorrect/duplicate results</li>
+            </ol>
+        </div>
+
+        <!-- Critical Alerts -->
+        <h2>🚨 Critical Lab Alerts</h2>
+        <p>The system automatically flags critical results:</p>
+        <table>
+            <tr>
+                <th>Severity</th>
+                <th>Meaning</th>
+                <th>Action</th>
+            </tr>
+            <tr>
+                <td style="background: #fee2e2; color: #dc2626;">🚨 CRITICAL</td>
+                <td>Life-threatening values</td>
+                <td>Notify provider immediately, call patient</td>
+            </tr>
+            <tr>
+                <td style="background: #fef3c7; color: #92400e;">⚠️ URGENT</td>
+                <td>Significantly abnormal</td>
+                <td>Provider review within 24 hours</td>
+            </tr>
+            <tr>
+                <td style="background: #e0f2fe; color: #0369a1;">📊 Significant</td>
+                <td>Outside normal range</td>
+                <td>Include in next visit discussion</td>
+            </tr>
+        </table>
+
+        <!-- Quick Reference -->
+        <h2>📝 Quick Reference</h2>
+        <div class="card">
+            <h3>Test Patient for Testing</h3>
+            <p>When testing the system, use:</p>
+            <ul>
+                <li><strong>Patient Name:</strong> TEST, PATIENT</li>
+                <li><strong>Insurance ID:</strong> 13</li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h3>Access Labs Contact</h3>
+            <p>For cancellations or issues with submitted orders:</p>
+            <ul>
+                <li><strong>Phone:</strong> Contact Access Medical Labs directly</li>
+                <li><strong>Portal:</strong> <a href="https://access.labsvc.net" style="color: #60a5fa;">access.labsvc.net</a></li>
+            </ul>
+        </div>
+
+        <!-- Version History -->
+        <h2>📚 Version History</h2>
+        <table>
+            <tr>
+                <th>Version</th>
+                <th>Date</th>
+                <th>Changes</th>
+            </tr>
+            <tr>
+                <td>2.0</td>
+                <td>Jan 28, 2026</td>
+                <td>Added: Requisition PDF printing, Order deletion</td>
+            </tr>
+            <tr>
+                <td>1.0</td>
+                <td>Jan 16, 2026</td>
+                <td>Initial lab system SOP</td>
+            </tr>
+        </table>
+
+        <p style="text-align: center; margin-top: 3rem; color: #64748b; font-size: 0.9rem;">
+            © 2026 NOW Men's Health | For internal use only
+        </p>
+    </div>
+</body>
+</html>

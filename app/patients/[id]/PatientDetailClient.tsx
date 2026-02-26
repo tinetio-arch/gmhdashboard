@@ -1,4 +1,5 @@
 'use client';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -14,24 +15,9 @@ type PaymentIssue = {
   resolutionNotes?: string | null;
 };
 
-type ClinicSyncMembership = {
-  clinicsyncId: string;
-  plan: string | null;
-  passId: number | null;
-  tier: string | null;
-  status: string | null;
-  balanceOwing: number | null;
-  amountDue: number | null;
-  nextPaymentDue: string | null;
-  contractEnd: string | null;
-  isActive: boolean;
-  updatedAt: string | null;
-};
-
 type Props = {
   paymentIssues: PaymentIssue[];
   patientId: string;
-  clinicsyncMemberships?: ClinicSyncMembership[];
 };
 
 function formatCurrency(value: number | null | undefined): string {
@@ -45,21 +31,13 @@ function formatDate(value: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return date.toLocaleDateString();
+  return formatDateUTC(date);
 }
 
-export default function PatientDetailClient({ paymentIssues, patientId, clinicsyncMemberships = [] }: Props) {
+export default function PatientDetailClient({ paymentIssues, patientId }: Props) {
   const router = useRouter();
   const [resolvingIssue, setResolvingIssue] = useState<string | null>(null);
   const [resolvedIssues, setResolvedIssues] = useState<Set<string>>(new Set());
-
-  // Check which payment issues have corresponding ClinicSync memberships
-  const getMatchingMembership = (issue: PaymentIssue) => {
-    return clinicsyncMemberships.find(membership => {
-      const membershipAmount = membership.balanceOwing || membership.amountDue || 0;
-      return membership.isActive && Math.abs(membershipAmount - issue.amountOwed) < 0.01; // Allow for small floating point differences
-    });
-  };
 
   const handleResolve = async (issueId: string, issueType: string) => {
     // First confirmation - are they sure?
@@ -94,17 +72,17 @@ export default function PatientDetailClient({ paymentIssues, patientId, clinicsy
     }
 
     setResolvingIssue(issueId);
-    
+
     try {
       const response = await fetch(withBasePath('/api/admin/quickbooks/resolve-payment-issue'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           issueId,
           updatePatientStatus: true,
-          resolutionNote: issueType === 'contract_expired' 
+          resolutionNote: issueType === 'contract_expired'
             ? 'Contract expiration issue resolved - new contract active'
             : 'Charge cleared in financial system and confirmed by user'
         }),
@@ -116,10 +94,10 @@ export default function PatientDetailClient({ paymentIssues, patientId, clinicsy
 
       // Mark as resolved locally
       setResolvedIssues(prev => new Set([...prev, issueId]));
-      
+
       // Show success message
       alert('Payment issue resolved successfully! Patient status has been updated to Active.');
-      
+
       // Refresh the page after a short delay to show the updated data
       setTimeout(() => {
         router.refresh();
@@ -166,24 +144,10 @@ export default function PatientDetailClient({ paymentIssues, patientId, clinicsy
         </thead>
         <tbody>
           {activeIssues.map((issue) => {
-            const matchingMembership = getMatchingMembership(issue);
-            
             return (
               <tr key={issue.issueId}>
                 <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)', textTransform: 'capitalize' }}>
-                  <div>
-                    {issue.issueType.replace('_', ' ')}
-                    {matchingMembership && (
-                      <div style={{ 
-                        fontSize: '0.75rem', 
-                        color: '#059669', 
-                        marginTop: '0.25rem',
-                        fontWeight: 500
-                      }}>
-                        🔗 Linked to ClinicSync membership
-                      </div>
-                    )}
-                  </div>
+                  {issue.issueType.replace('_', ' ')}
                 </td>
                 <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>{issue.severity}</td>
                 <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)', color: '#dc2626', fontWeight: 600 }}>
@@ -196,69 +160,33 @@ export default function PatientDetailClient({ paymentIssues, patientId, clinicsy
                   {formatDate(issue.createdAt)}
                 </td>
                 <td style={{ padding: '0.65rem 0.9rem', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-                  {/* For contract_expired issues, always show Mark Resolved button */}
-                  {/* For other issues with matching membership, show Clear Balance message */}
-                  {issue.issueType === 'contract_expired' ? (
-                    <button
-                      onClick={() => handleResolve(issue.issueId, issue.issueType)}
-                      disabled={resolvingIssue === issue.issueId}
-                      style={{
-                        padding: '0.375rem 0.75rem',
-                        fontSize: '0.875rem',
-                        fontWeight: 500,
-                        color: '#ffffff',
-                        backgroundColor: resolvingIssue === issue.issueId ? '#94a3b8' : '#15803d',
-                        border: 'none',
-                        borderRadius: '0.375rem',
-                        cursor: resolvingIssue === issue.issueId ? 'not-allowed' : 'pointer',
-                        transition: 'background-color 0.2s',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (resolvingIssue !== issue.issueId) {
-                          e.currentTarget.style.backgroundColor = '#14532d';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (resolvingIssue !== issue.issueId) {
-                          e.currentTarget.style.backgroundColor = '#15803d';
-                        }
-                      }}
-                    >
-                      {resolvingIssue === issue.issueId ? 'Resolving...' : 'Mark Resolved'}
-                    </button>
-                  ) : matchingMembership ? (
-                    <div style={{ fontSize: '0.875rem', color: '#6b7280', fontStyle: 'italic' }}>
-                      Use "Clear Balance" above
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => handleResolve(issue.issueId, issue.issueType)}
-                      disabled={resolvingIssue === issue.issueId}
-                      style={{
-                        padding: '0.375rem 0.75rem',
-                        fontSize: '0.875rem',
-                        fontWeight: 500,
-                        color: '#ffffff',
-                        backgroundColor: resolvingIssue === issue.issueId ? '#94a3b8' : '#15803d',
-                        border: 'none',
-                        borderRadius: '0.375rem',
-                        cursor: resolvingIssue === issue.issueId ? 'not-allowed' : 'pointer',
-                        transition: 'background-color 0.2s',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (resolvingIssue !== issue.issueId) {
-                          e.currentTarget.style.backgroundColor = '#14532d';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (resolvingIssue !== issue.issueId) {
-                          e.currentTarget.style.backgroundColor = '#15803d';
-                        }
-                      }}
-                    >
-                      {resolvingIssue === issue.issueId ? 'Resolving...' : 'Mark Resolved'}
-                    </button>
-                  )}
+                  <button
+                    onClick={() => handleResolve(issue.issueId, issue.issueType)}
+                    disabled={resolvingIssue === issue.issueId}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.875rem',
+                      fontWeight: 500,
+                      color: '#ffffff',
+                      backgroundColor: resolvingIssue === issue.issueId ? '#94a3b8' : '#15803d',
+                      border: 'none',
+                      borderRadius: '0.375rem',
+                      cursor: resolvingIssue === issue.issueId ? 'not-allowed' : 'pointer',
+                      transition: 'background-color 0.2s',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (resolvingIssue !== issue.issueId) {
+                        e.currentTarget.style.backgroundColor = '#14532d';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (resolvingIssue !== issue.issueId) {
+                        e.currentTarget.style.backgroundColor = '#15803d';
+                      }
+                    }}
+                  >
+                    {resolvingIssue === issue.issueId ? 'Resolving...' : 'Mark Resolved'}
+                  </button>
                 </td>
               </tr>
             );

@@ -1,4 +1,5 @@
 'use client';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 import { useEffect, useState, FormEvent } from 'react';
 import type { PublicUser, UserRole } from '@/lib/auth';
@@ -371,7 +372,7 @@ export default function UsersAdminClient() {
                     </td>
                     <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.8rem', color: '#64748b' }}>
                       {user.created_at
-                        ? new Date(user.created_at).toLocaleDateString()
+                        ? formatDateUTC(user.created_at)
                         : '—'}
                     </td>
                     <td style={{ padding: '0.5rem 0.75rem' }}>

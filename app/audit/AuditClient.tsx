@@ -1,4 +1,5 @@
 'use client';
+import { formatDateUTC, formatDateTimeUTC } from '@/lib/dateUtils';
 
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -79,7 +80,7 @@ export default function AuditClient({ history, summary }: Props) {
           }}
         >
           {summary.last_audit_week
-            ? `Last audit: week of ${new Date(summary.last_audit_week).toLocaleDateString()} · ${overdue ? `${weeksOutstanding} week(s) overdue` : 'On schedule'}`
+            ? `Last audit: week of ${formatDateUTC(summary.last_audit_week)} · ${overdue ? `${weeksOutstanding} week(s) overdue` : 'On schedule'}`
             : 'No audits logged yet. Please complete one now.'}
         </div>
         <form onSubmit={handleSubmit} style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -155,10 +156,10 @@ export default function AuditClient({ history, summary }: Props) {
                 }}
               >
                 <div style={{ fontWeight: 700, color: '#0f172a' }}>
-                  Week of {new Date(audit.audit_week).toLocaleDateString()}
+                  Week of {formatDateUTC(audit.audit_week)}
                 </div>
                 <div style={{ color: '#475569', marginTop: '0.25rem' }}>
-                  Logged {new Date(audit.created_at).toLocaleString()} · {audit.performed_by_name ?? '—'}
+                  Logged {formatDateTimeUTC(audit.created_at)} · {audit.performed_by_name ?? '—'}
                 </div>
                 {audit.audit_notes && (
                   <p style={{ marginTop: '0.6rem', color: '#0f172a', whiteSpace: 'pre-wrap' }}>{audit.audit_notes}</p>

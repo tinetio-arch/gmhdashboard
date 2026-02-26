@@ -1,0 +1,401 @@
+# NowMensHealth.Care - Lead Nurture Sequences
+# Ready-to-use SMS and Email templates for GHL workflows
+# 
+# USAGE: Import these into GHL Workflows or use with the AI marketing system
+#
+# Variables supported by GHL:
+#   {{contact.first_name}} - First name
+#   {{contact.phone}} - Phone number
+#   {{contact.email}} - Email
+#   {{appointment.date}} - Appointment date
+#   {{appointment.time}} - Appointment time
+
+sequences:
+  # ==========================================
+  # INSTANT LEAD RESPONSE (Critical - send within 1 minute)
+  # ==========================================
+  instant_response:
+    name: "Instant Lead Response"
+    description: "Immediately engage new leads - speed is critical"
+    trigger: "New lead from any source"
+    
+    sms_instant:
+      delay: "0 minutes"
+      message: |
+        Hi {{contact.first_name}}! Thanks for reaching out to NOW Men's Health. 
+        
+        One of our team members will call you shortly to answer your questions.
+        
+        Reply to this text anytime or call us: 928-212-2772
+        
+        - The NOW Men's Health Team
+
+    email_instant:
+      delay: "0 minutes"
+      subject: "Welcome to NOW Men's Health - We Got Your Request!"
+      body: |
+        Hi {{contact.first_name}},
+
+        Thank you for your interest in NOW Men's Health! We received your information and a member of our team will be reaching out shortly.
+
+        **What happens next:**
+        1. One of our team members will call you within the next few hours
+        2. We'll answer your questions and discuss your health goals
+        3. If you're ready, we'll schedule your FREE consultation
+
+        **Have questions now?**
+        - Call us: 928-212-2772
+        - Reply to this email
+        - Visit: nowmenshealth.care
+
+        We're here to help you optimize your health and reclaim your life.
+
+        Best,
+        The NOW Men's Health Team
+
+        ---
+        NOW Men's Health
+        215 N McCormick St, Prescott, AZ 86301
+        928-212-2772 | nowmenshealth.care
+
+  # ==========================================
+  # TRT LEAD NURTURE SEQUENCE (7-day follow-up)
+  # ==========================================
+  trt_nurture:
+    name: "TRT Lead Nurture"
+    description: "Educate and convert TRT-interested leads"
+    trigger: "Tag 'trt_interest' added"
+    
+    day_0_sms:
+      delay: "0 days"
+      message: |
+        Hi {{contact.first_name}}, thanks for your interest in Testosterone Replacement Therapy! 
+        
+        Quick question: What's the #1 symptom you're hoping to address - fatigue, low energy, or something else?
+        
+        Reply and let us know. - NOW Men's Health
+
+    day_1_email:
+      delay: "1 day"
+      subject: "5 Signs Your Testosterone Might Be Low"
+      body: |
+        Hi {{contact.first_name}},
+
+        Many men over 35 experience symptoms of low testosterone without realizing it. Here are the top 5 signs:
+
+        **1. Constant Fatigue**
+        Feeling tired even after a full night's sleep? Low T affects energy at the cellular level.
+
+        **2. Mood Changes**
+        Irritability, depression, or brain fog can all be linked to hormone imbalances.
+
+        **3. Decreased Muscle Mass**
+        Losing strength despite working out? Testosterone is essential for muscle maintenance.
+
+        **4. Low Libido**
+        A decrease in sex drive is one of the most common symptoms men notice first.
+
+        **5. Weight Gain**
+        Especially around the midsection - low T affects metabolism.
+
+        **Sound familiar?**
+
+        The good news: These symptoms are treatable. Testosterone Replacement Therapy has helped millions of men reclaim their energy, focus, and quality of life.
+
+        Ready to learn more? Reply to this email or call us at 928-212-2772.
+
+        To your health,
+        Dr. Aaron Whitten & The NOW Men's Health Team
+
+    day_2_sms:
+      delay: "2 days"
+      message: |
+        {{contact.first_name}}, still thinking about TRT? 
+        
+        Most of our patients say they wish they'd started sooner. 
+        
+        We offer FREE consultations - no obligation, just answers.
+        
+        Call 928-212-2772 or reply "BOOK" and we'll reach out.
+
+    day_3_email:
+      delay: "3 days"
+      subject: "Real Results: How TRT Changed Mike's Life"
+      body: |
+        Hi {{contact.first_name}},
+
+        I wanted to share a quick story with you.
+
+        Mike came to us feeling exhausted, frustrated, and honestly, hopeless. At 47, he thought feeling tired all the time was just "getting older."
+
+        After his initial consultation and labs, we discovered his testosterone was significantly below optimal levels. 
+
+        **Within 4-6 weeks of starting TRT, Mike reported:**
+        - Energy levels he hadn't felt in years
+        - Better sleep quality
+        - Improved mood and mental clarity
+        - Lost 12 pounds without changing his diet
+
+        Mike isn't unique. This is what's possible when you optimize your hormones.
+
+        **Your next step:**
+        Schedule a FREE consultation. We'll review your symptoms, discuss your goals, and determine if TRT is right for you.
+
+        📞 Call: 928-212-2772
+        🌐 Visit: nowmenshealth.care
+
+        Here to help,
+        The NOW Men's Health Team
+
+        *Results may vary. Individual outcomes depend on various factors.*
+
+    day_5_sms:
+      delay: "5 days"
+      message: |
+        {{contact.first_name}}, we have a few consultation spots opening up this week. 
+        
+        Want me to save one for you? Reply YES or call 928-212-2772.
+
+    day_7_email:
+      delay: "7 days"
+      subject: "Your Questions About TRT, Answered"
+      body: |
+        Hi {{contact.first_name}},
+
+        We know you might have questions about TRT. Here are the ones we hear most often:
+
+        **Q: Is TRT safe?**
+        A: When properly monitored by medical professionals, TRT is considered safe and effective. We run comprehensive labs and monitor your levels throughout treatment.
+
+        **Q: Will I have to do injections?**
+        A: We offer multiple delivery methods including injections, pellets, and topical options. We'll find what works best for you.
+
+        **Q: How quickly will I see results?**
+        A: Many patients report improved energy within 2-4 weeks. Full benefits typically develop over 3-6 months.
+
+        **Q: Is it covered by insurance?**
+        A: While coverage varies, our team can help you understand costs and payment options.
+
+        **Q: What's the first step?**
+        A: A simple consultation and blood test. We'll review your results and create a personalized plan.
+
+        Ready to take that first step?
+
+        📞 928-212-2772
+        🌐 nowmenshealth.care
+
+        - Dr. Aaron Whitten & Team
+
+    day_14_sms:
+      delay: "14 days"
+      message: |
+        Hi {{contact.first_name}}, it's been a couple weeks. 
+        
+        Just checking in - are you still interested in learning about TRT options? 
+        
+        No pressure, just here if you need us. 
+        
+        - NOW Men's Health | 928-212-2772
+
+  # ==========================================
+  # WEIGHT LOSS LEAD NURTURE
+  # ==========================================
+  weight_loss_nurture:
+    name: "Weight Loss Lead Nurture"
+    description: "Educate leads about GLP-1 weight loss program"
+    trigger: "Tag 'weight_loss_interest' added"
+    
+    day_0_sms:
+      delay: "0 days"
+      message: |
+        Hi {{contact.first_name}}! Thanks for your interest in our Medical Weight Loss program. 
+        
+        Quick Q: What's your #1 weight loss goal? Reply and let us know!
+        
+        - NOW Men's Health
+
+    day_1_email:
+      delay: "1 day"
+      subject: "Medical Weight Loss: Why GLP-1 Medications Work"
+      body: |
+        Hi {{contact.first_name}},
+
+        If you've tried dieting and exercise without lasting results, you're not alone. 
+
+        The truth is, for many people, willpower alone isn't enough - and that's not a personal failure. It's biology.
+
+        **Enter GLP-1 Medications (like Semaglutide)**
+
+        These FDA-approved medications work by:
+        - Reducing appetite naturally (no more constant hunger)
+        - Slowing digestion (you feel full longer)
+        - Helping regulate blood sugar
+        - Targeting stubborn fat, especially around the midsection
+
+        **What results are possible?**
+        Patients typically lose 15-20% of their body weight over 12-16 months when combined with lifestyle changes.
+
+        **Is it right for you?**
+        We offer personalized consultations to discuss your goals, health history, and whether GLP-1 therapy could help.
+
+        📞 Call: 928-212-2772
+        🌐 Book online: nowmenshealth.care
+
+        To your health,
+        The NOW Men's Health Team
+
+    day_3_sms:
+      delay: "3 days"
+      message: |
+        {{contact.first_name}}, many of our patients lose 10-15 lbs in the first month of our weight loss program.
+        
+        Ready to start? Call 928-212-2772 or reply BOOK.
+
+    day_5_email:
+      delay: "5 days"
+      subject: "What to Expect: Your Weight Loss Journey"
+      body: |
+        Hi {{contact.first_name}},
+
+        Wondering what working with NOW Men's Health looks like? Here's a quick overview:
+
+        **Week 1: Consultation & Start**
+        - Meet with our provider
+        - Discuss your goals and health history
+        - Get your first prescription
+        - Learn about nutrition strategies
+
+        **Weeks 2-4: Adjustment Period**
+        - Body adjusts to medication
+        - Appetite naturally decreases
+        - Many patients see 5-10 lbs lost
+
+        **Months 1-3: Steady Progress**
+        - Consistent weekly weight loss
+        - Regular check-ins with our team
+        - Dosage adjustments as needed
+
+        **Months 3+: Transformation**
+        - Significant weight reduction
+        - More energy, better sleep
+        - Improved health markers
+
+        **The best part?** You don't have to do it alone. Our team supports you every step of the way.
+
+        Ready to start your journey?
+
+        📞 928-212-2772
+
+        - NOW Men's Health Team
+
+  # ==========================================
+  # REACTIVATION SEQUENCE (For cold leads)
+  # ==========================================
+  reactivation:
+    name: "Lead Reactivation"
+    description: "Re-engage leads who went cold"
+    trigger: "No activity for 30+ days"
+    
+    day_0_sms:
+      delay: "0 days"
+      message: |
+        Hi {{contact.first_name}}, it's been a while since we connected. 
+        
+        Are you still interested in optimizing your health? 
+        
+        Reply YES and I'll have someone reach out. 
+        
+        - NOW Men's Health
+
+    day_3_email:
+      delay: "3 days"
+      subject: "We noticed you've been quiet..."
+      body: |
+        Hi {{contact.first_name}},
+
+        We haven't heard from you in a while, and we wanted to check in.
+
+        Life gets busy - we get it. But your health goals don't have to wait.
+
+        **If you're still thinking about:**
+        - Testosterone Replacement Therapy
+        - Medical Weight Loss
+        - IV Therapy
+        - Any of our men's health services
+
+        ...we're here when you're ready. No pressure, no judgment.
+
+        Just reply to this email or call 928-212-2772.
+
+        To your health,
+        The NOW Men's Health Team
+
+        P.S. - We're currently offering FREE consultations for new patients. Just mention this email.
+
+  # ==========================================
+  # APPOINTMENT REMINDERS & FOLLOW-UP
+  # ==========================================
+  appointment_sequence:
+    name: "Appointment Sequence"
+    description: "Pre and post appointment communication"
+    trigger: "Appointment booked"
+    
+    confirmation_sms:
+      delay: "0 minutes"
+      message: |
+        ✅ Confirmed! Your appointment at NOW Men's Health:
+        
+        📅 {{appointment.date}} at {{appointment.time}}
+        📍 215 N McCormick St, Prescott, AZ
+        
+        Reply CONFIRM to verify or call 928-212-2772 to reschedule.
+
+    reminder_24h:
+      delay: "-24 hours before appointment"
+      message: |
+        Reminder: Your NOW Men's Health appointment is tomorrow at {{appointment.time}}.
+        
+        📍 215 N McCormick St, Prescott
+        
+        See you then! Call 928-212-2772 if you need to reschedule.
+
+    reminder_2h:
+      delay: "-2 hours before appointment"
+      message: |
+        Hi {{contact.first_name}}, just a friendly reminder - your appointment is in 2 hours at {{appointment.time}}.
+        
+        See you soon! 🏥
+
+    post_visit_sms:
+      delay: "+1 day after appointment"
+      message: |
+        Hi {{contact.first_name}}, thanks for visiting NOW Men's Health yesterday!
+        
+        How are you feeling about your visit? Reply with any questions.
+        
+        Also - know someone who could benefit? Referrals mean a lot to us!
+
+# ==========================================
+# SMS QUICK TEMPLATES (For manual use)
+# ==========================================
+quick_templates:
+  missed_call:
+    message: |
+      Hi {{contact.first_name}}, sorry we missed your call! 
+      Reply here or we'll try you again shortly. 
+      - NOW Men's Health | 928-212-2772
+
+  lab_results_ready:
+    message: |
+      {{contact.first_name}}, your lab results are in! 
+      Call us at 928-212-2772 to schedule your review appointment.
+
+  payment_reminder:
+    message: |
+      Hi {{contact.first_name}}, this is a friendly reminder about your NOW Men's Health balance. 
+      Call 928-212-2772 or visit the patient portal to make a payment. Thanks!
+
+  referral_thank_you:
+    message: |
+      {{contact.first_name}}, thank you for referring a friend to NOW Men's Health! 
+      We appreciate you spreading the word. You'll receive your referral credit soon!

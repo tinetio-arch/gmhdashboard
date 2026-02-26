@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getCurrentUser, userHasRole } from '@/lib/auth';
 import LogoutButton from '@/components/LogoutButton';
+import NavDropdown from '@/app/components/NavDropdown';
 
 export const metadata: Metadata = {
   title: 'Granite Mountain Health Dashboard',
@@ -16,6 +17,39 @@ export default async function RootLayout({
 }) {
   const user = await getCurrentUser();
   const showNav = Boolean(user);
+
+  const clinicalItems = [
+    { label: 'Patients', href: '/patients' },
+    { label: 'Labs', href: '/labs' },
+    { label: 'Faxes', href: '/faxes' },
+    { label: 'Supplies', href: '/supplies' },
+    { label: 'Peptides', href: '/peptides' },
+  ];
+
+  const dispensingItems = user ? [
+    userHasRole(user, 'write') ? { label: 'Transactions', href: '/transactions' } : null,
+    { label: 'Vial Inventory', href: '/inventory' },
+    { label: 'DEA Log', href: '/dea' },
+    (user.can_sign || userHasRole(user, 'admin')) ? { label: 'Provider Signatures', href: '/provider/signatures' } : null,
+  ].filter((item): item is { label: string; href: string } => item !== null) : [];
+
+  const pharmacyItems = [
+    { label: 'Strive (Tirzepatide)', href: '/pharmacy/strive' },
+    { label: 'Farmakaio', href: '/pharmacy/farmakaio' },
+    { label: 'Olympia', href: '/pharmacy/olympia' },
+    { label: 'TopRX', href: '/pharmacy/toprx' },
+    { label: 'Carrie Boyd', href: '/pharmacy/carrieboyd' },
+  ];
+
+  const adminItems = user ? [
+    { label: 'User Admin', href: '/admin/users' },
+    { label: 'App Control', href: '/admin/app-control' },
+    (user.can_sign || userHasRole(user, 'admin')) ? { label: 'Provider Signatures', href: '/provider/signatures' } : null,
+  ].filter((item): item is { label: string; href: string } => item !== null) : [];
+
+  const helpItems = [
+    { label: 'SOPs', href: '/menshealth' },
+  ];
 
   return (
     <html lang="en">
@@ -32,18 +66,31 @@ export default async function RootLayout({
             <nav style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
                 <h1 style={{ fontSize: '1.5rem', margin: 0 }}>GMH Control Center</h1>
-                <Link href="/">Dashboard</Link>
-                <Link href="/patients">Patients</Link>
-                <Link href="/professional">GHL</Link>
-                <Link href="/dea">DEA Log</Link>
-                <Link href="/inventory">Inventory</Link>
-                {user && userHasRole(user, 'write') && <Link href="/transactions">Transactions</Link>}
-                {user && userHasRole(user, 'write') && <Link href="/audit">Audit</Link>}
-                {user && (user.can_sign || userHasRole(user, 'admin')) && <Link href="/provider/signatures">Provider Signatures</Link>}
+
+                {/* Dashboard (Admin Only) */}
+                {user && userHasRole(user, 'admin') && (
+                  <Link href="/analytics">Dashboard</Link>
+                )}
+
+                {/* Clinical Dropdown */}
+                <NavDropdown label="Clinical" items={clinicalItems} />
+
+                {/* DEA Controls Dropdown (Controlled Substances) */}
+                <NavDropdown label="DEA Controls" items={dispensingItems} />
+
+                {/* Pharmacy Tracking Dropdown */}
+                <NavDropdown label="Pharmacy" items={pharmacyItems} />
+
+                {/* Account Link */}
                 <Link href="/account">Account</Link>
-                {user && userHasRole(user, 'admin') && <Link href="/admin/users">User Admin</Link>}
-                {user && userHasRole(user, 'admin') && <Link href="/admin/quickbooks">QuickBooks</Link>}
-                {user && userHasRole(user, 'admin') && <Link href="/admin/membership-audit">Membership Audit</Link>}
+
+                {/* Help Dropdown */}
+                <NavDropdown label="Help" items={helpItems} />
+
+                {/* Admin Dropdown (Admin Only) */}
+                {user && userHasRole(user, 'admin') && (
+                  <NavDropdown label="Admin" items={adminItems} />
+                )}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', color: '#475569' }}>
                 <span style={{ fontWeight: 600 }}>{user?.display_name ?? user?.email}</span>

@@ -6,14 +6,19 @@
  * Usage: npx tsx scripts/sync-healthie-invoices.ts
  */
 
+import dotenv from 'dotenv';
+dotenv.config({ path: '/home/ec2-user/.env' });
+dotenv.config({ path: '.env.local' });
+
 import fetch from 'node-fetch';
 import snowflake from 'snowflake-sdk';
+import * as fs from 'fs';
 
 // Configure logging
 (snowflake as any).configure({ logLevel: 'OFF' });
 
 const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY!;
-const SNOWFLAKE_PASSWORD = process.env.SNOWFLAKE_PASSWORD!;
+const PRIVATE_KEY_PATH = '/home/ec2-user/.snowflake/rsa_key_new.p8';
 
 interface RequestedPayment {
   id: string;
@@ -58,7 +63,7 @@ async function fetchAllInvoices(): Promise<RequestedPayment[]> {
   }`;
 
   console.log('📥 Fetching invoices from Healthie...');
-  
+
   while (true) {
     const res = await fetch('https://api.gethealthie.com/graphql', {
       method: 'POST',
@@ -69,17 +74,17 @@ async function fetchAllInvoices(): Promise<RequestedPayment[]> {
       },
       body: JSON.stringify({ query, variables: { offset, page_size: pageSize } })
     });
-    
+
     const data = await res.json() as any;
-    
+
     if (data.errors) {
       console.error('GraphQL Errors:', JSON.stringify(data.errors, null, 2));
       break;
     }
-    
+
     const invoices = data.data?.requestedPayments || [];
     if (invoices.length === 0) break;
-    
+
     for (const inv of invoices) {
       allInvoices.push({
         id: inv.id,
@@ -99,22 +104,25 @@ async function fetchAllInvoices(): Promise<RequestedPayment[]> {
         currency: inv.currency || 'USD'
       });
     }
-    
+
     console.log(`  Fetched ${allInvoices.length} invoices so far...`);
     offset += pageSize;
-    
+
     if (invoices.length < pageSize) break;
   }
-  
+
   console.log(`✅ Total invoices fetched: ${allInvoices.length}`);
   return allInvoices;
 }
 
 async function upsertToSnowflake(invoices: RequestedPayment[]): Promise<void> {
+  const privateKey = fs.readFileSync(PRIVATE_KEY_PATH, 'utf8');
+
   const conn = snowflake.createConnection({
     account: 'KXWWLYZ-DZ83651',
-    username: 'tinetio123',
-    password: SNOWFLAKE_PASSWORD,
+    username: 'JARVIS_SERVICE_ACCOUNT',
+    authenticator: 'SNOWFLAKE_JWT',
+    privateKey: privateKey,
     warehouse: 'GMH_WAREHOUSE',
     database: 'GMH_CLINIC'
   });
@@ -133,7 +141,7 @@ async function upsertToSnowflake(invoices: RequestedPayment[]): Promise<void> {
     SELECT HEALTHIE_CLIENT_ID, PATIENT_ID 
     FROM GMH_CLINIC.PATIENT_DATA.PATIENTS 
     WHERE HEALTHIE_CLIENT_ID IS NOT NULL`;
-  
+
   const patientMap = new Map<string, string>();
   const rows: any[] = await new Promise((resolve, reject) => {
     conn.execute({
@@ -144,7 +152,7 @@ async function upsertToSnowflake(invoices: RequestedPayment[]): Promise<void> {
       }
     });
   });
-  
+
   for (const row of rows) {
     patientMap.set(row.HEALTHIE_CLIENT_ID, row.PATIENT_ID);
   }
@@ -236,14 +244,14 @@ async function main() {
     console.error('Missing HEALTHIE_API_KEY');
     process.exit(1);
   }
-  if (!SNOWFLAKE_PASSWORD) {
-    console.error('Missing SNOWFLAKE_PASSWORD');
+  if (!fs.existsSync(PRIVATE_KEY_PATH)) {
+    console.error(`Missing Snowflake private key at ${PRIVATE_KEY_PATH}`);
     process.exit(1);
   }
 
   const invoices = await fetchAllInvoices();
   await upsertToSnowflake(invoices);
-  
+
   console.log('\n🎉 Invoice sync complete!');
 }
 

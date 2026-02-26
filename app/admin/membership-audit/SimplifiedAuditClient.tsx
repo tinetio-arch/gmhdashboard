@@ -26,12 +26,12 @@ function formatCurrency(value: string | null | undefined): string {
 export default function SimplifiedAuditClient({ data, quickbooksData, lookups }: Props) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'outstanding' | 'needs-intake' | 'duplicates' | 'quickbooks'>('outstanding');
-  
+
   // Modal state
   const [mapModalOpen, setMapModalOpen] = useState(false);
   const [selectedQBRecurring, setSelectedQBRecurring] = useState<QuickBooksRecurringRow | null>(null);
   const [selectedQBPatient, setSelectedQBPatient] = useState<QuickBooksPatientRow | null>(null);
-  
+
   const [duplicateModalOpen, setDuplicateModalOpen] = useState(false);
   const [selectedDuplicateGroup, setSelectedDuplicateGroup] = useState<DuplicateMembershipGroup | null>(null);
 
@@ -57,13 +57,13 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
       throw new Error(error.error || 'Failed to map patient');
     }
 
-    // Refresh the page to show updated data
-    router.refresh();
+    // Force full page reload to ensure all data is refreshed
+    window.location.reload();
   };
 
   const handleResolveDuplicate = async (
-    primaryPatientId: string, 
-    duplicatePatientIds: string[], 
+    primaryPatientId: string,
+    duplicatePatientIds: string[],
     action: 'merge' | 'remove',
     disableMembershipPackages: boolean
   ) => {
@@ -86,8 +86,8 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
       throw new Error(error.error || 'Failed to resolve duplicates');
     }
 
-    // Refresh the page to show updated data
-    router.refresh();
+    // Force full page reload to ensure all data is refreshed
+    window.location.reload();
   };
 
   const openMapModalForRecurring = (row: QuickBooksRecurringRow) => {
@@ -119,7 +119,7 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
   const janeOutstanding = data.readyToMap
     .filter(row => parseFloat(row.outstanding_balance || '0') > 0)
     .reduce((sum, row) => sum + parseFloat(row.outstanding_balance || '0'), 0);
-  
+
   const qbOutstanding = quickbooksData.overdueInvoices
     .reduce((sum, row) => sum + parseFloat((row as any).amount_due || (row as any).balance || '0'), 0);
 
@@ -143,8 +143,8 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
         </div>
 
         {/* Summary Cards */}
-        <div style={{ 
-          display: 'grid', 
+        <div style={{
+          display: 'grid',
           gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
           gap: '1rem',
           marginBottom: '2rem'
@@ -223,9 +223,9 @@ export default function SimplifiedAuditClient({ data, quickbooksData, lookups }:
         </div>
 
         {/* Tabs */}
-        <div style={{ 
-          display: 'flex', 
-          gap: '0.5rem', 
+        <div style={{
+          display: 'flex',
+          gap: '0.5rem',
           marginBottom: '1.5rem',
           borderBottom: '2px solid #e2e8f0'
         }}>

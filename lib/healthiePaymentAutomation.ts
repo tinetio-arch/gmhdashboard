@@ -10,6 +10,7 @@ const NOW_MENS_CLIENT_KEY = 'nowmenshealth_care';
 const NOW_MENS_CLIENT_LABEL = 'NowMensHealth.Care';
 
 const PAID_STATUSES = new Set(['paid', 'complete', 'completed', 'succeeded', 'success', 'processed']);
+const FAILED_STATUSES = new Set(['declined', 'failed', 'card_declined', 'error', 'voided']);
 
 type PaymentWebhookResult = {
   handled: boolean;
@@ -303,6 +304,19 @@ async function activatePatientBilling(patientId: string, clientType: ClientTypeT
   );
 }
 
+async function deactivatePatientBilling(patientId: string, status: string): Promise<void> {
+  await query(
+    `
+      UPDATE patients
+         SET status_key = 'hold_payment_research',
+             alert_status = 'Payment Failed',
+             updated_at = NOW()
+       WHERE patient_id = $1
+    `,
+    [patientId]
+  );
+}
+
 export async function handleHealthiePaymentWebhook(payload: any): Promise<PaymentWebhookResult> {
   const payment = extractPaymentPayload(payload);
   if (!payment) {
@@ -318,10 +332,10 @@ export async function handleHealthiePaymentWebhook(payload: any): Promise<Paymen
 
   const status = normalizeStatus(
     payment.status ??
-      payment.state ??
-      payload.status ??
-      payload.state ??
-      payload.event_status
+    payment.state ??
+    payload.status ??
+    payload.state ??
+    payload.event_status
   );
 
   const amount = extractAmountFromPayment(payment);
@@ -357,6 +371,17 @@ export async function handleHealthiePaymentWebhook(payload: any): Promise<Paymen
       patientId,
       invoiceId,
       healthieClientId,
+    });
+    return { handled: true, patientId, invoiceId: normalizedInvoiceId, status: normalizedStatus };
+  }
+
+  if (status && FAILED_STATUSES.has(status)) {
+    await deactivatePatientBilling(patientId, status);
+    console.warn('[healthie-webhook] Deactivated billing for FAILED invoice', {
+      patientId,
+      invoiceId,
+      healthieClientId,
+      status
     });
     return { handled: true, patientId, invoiceId: normalizedInvoiceId, status: normalizedStatus };
   }

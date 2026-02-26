@@ -1,632 +1,211 @@
-# Healthie API Complete Reference
+# Healthie API - Complete Automation Guide
 
-Based on official Healthie API documentation: https://docs.gethealthie.com/
-
-## Overview
-
-Healthie is an **API-first platform** with a comprehensive **GraphQL API** that provides full access to all Healthie features.
+**Last Updated**: December 28, 2025, 21:44 UTC  
+**Location**: This document provides complete reference for Healthie API automation capabilities
 
 ---
 
-## Authentication
+## ✅ What CAN Be Automated
 
-### Method: Basic Authentication with API Key
+### Forms (`createCustomModuleForm`, `createCustomModule`)
+- **Create form templates** via API
+- **Add questions/fields** to forms via API  
+- **All question types supported**: text, textarea, number, checkbox, radio, signature, date, file, phone
+- **Script**: `/home/ec2-user/gmhdashboard/scripts/create-healthie-forms.ts`
 
+### Appointment Types (`createAppointmentType`)
+- **Create appointment types** with name, duration, price, contact type
+- **Set booking permissions** (clients_can_book)
+- **Script**: `/home/ec2-user/scripts/healthie/create-appointment-types.ts`
+
+### Client Management  
+- **Create clients** (`createClient`)
+- **Update clients** (`updateClient`)
+- **Assign to groups** (via `user_group_id` in updateClient)
+- **Add tags** (via API)
+
+---
+
+## ❌ What CANNOT Be Automated
+
+### Intake Flows
+- **No `createIntakeFlow` mutation** exists in schema
+- **Must be created manually** in Healthie UI (Settings > Forms > Intake Flows)
+- **Workaround**: Create forms via API, then manually add to flows
+
+### Client Groups
+- **No `createClientGroup` mutation** found
+- **Must be created manually** in Healthie UI (Settings > Clients > Groups)
+
+### Smart Fields
+- **No API for configuring Smart Field mappings**
+- **Must be configured manually** per form in Healthie UI
+
+### Workflows/Automations
+- No mutation found for creating automated task workflows
+- Must be configured manually in Healthie UI
+
+---
+
+## 🚨 CRITICAL: Rate Limiting
+
+### Standard Rate Limits
+- **General API**: 250 requests per second
+- **Sign-in requests**: 100 per minute
+- **Reset window**: Typically 1 second for general, 1 minute for sign-in
+
+### Burst Violation Penalties
+- **Rapid burst requests** (39+ in quick succession) trigger **extended rate limits**
+- **Duration**: 30-60+ minutes (observed)
+- **Tied to API key**, NOT IP address
+
+
+- **Cannot bypass with VPN** - rate limit follows the API credentials
+
+### Lessons Learned (Dec 28, 2025)
+1. ❌ **NEVER** send 39+ requests without testing first
+2. ✅ **ALWAYS** test with 1 request before bulk operations
+3. ✅ **ADD delays** between requests (200-500ms minimum)
+4. ✅ **Implement exponential backoff** if errors occur
+5. ⚠️ **VPN does NOT help** - rate limits are credential-based, not IP-based
+
+### Rate Limit Recovery
+```bash
+# Test if rate limit cleared
+cd /home/ec2-user/scripts/healthie
+export HEALTHIE_API_KEY="your-key"
+node test-rate-limit.js
+```
+
+---
+
+## 📋 Automation Scripts
+
+### Form Creation (READY TO USE)
+**Location**: `/home/ec2-user/gmhdashboard/scripts/create-healthie-forms.ts`
+
+**Creates 5 forms**:
+1. Weight Loss Program Agreement (12 questions)
+2. EvexiPel Pelleting Consent (10 questions)
+3. Primary Care Membership Agreement (14 questions)
+4. Urgent Care Chief Complaint (6 questions)
+5. ABX Tactical Services Agreement (9 questions)
+
+**Usage**:
+```bash
+cd /home/ec2-user/gmhdashboard
+export HEALTHIE_API_KEY="gh_live_..."
+npx tsx scripts/create-healthie-forms.ts
+```
+
+**Time**: ~2-3 minutes to create all 5 forms
+
+### Appointment Types Creation (USE WITH CAUTION)
+**Location**: `/home/ec2-user/scripts/healthie/create-appointment-types.ts`
+
+**Creates**: All 56 Granite Mountain Health appointment types
+
+**⚠️ IMPORTANT**: This script triggered the rate limit. Use with caution:
+1. Test with ONE type first
+2. Add longer delays (500ms-1s between requests)
+3. Consider batching (create 10, wait 5 min, create next 10)
+
+---
+
+## 🔧 API Authentication
+
+### Headers Required
 ```typescript
-headers: {
-  'Authorization': 'Basic YOUR_API_KEY_HERE',
+{
+  'Content-Type': 'application/json',
+  'Authorization': `Basic ${HEALTHIE_API_KEY}`,  // Raw key, NO Base64
   'AuthorizationSource': 'API',
-  'Content-Type': 'application/json'
 }
 ```
 
-### Getting API Access
+### Common Mistake
+❌ **DON'T**: Base64 encode the API key  
+✅ **DO**: Use raw API key with "Basic" prefix
 
-1. Log into your Healthie account
-2. Complete "Activate a Partner" form
-3. Healthie support will email you an API key
-4. Use the API key in the `Authorization` header
-
-### API Endpoint
-
-```
-https://api.gethealthie.com/graphql
-```
+### API Key Location
+- **Production**: Stored in `/home/ec2-user/gmhdashboard/.env.local` as `HEALTHIE_API_KEY`
+- **Value**: `gh_live_SHmVYEL4hDX2o7grAgDDVvDkpvYgzRHzlZlgQOZ7WTp9KZgmAeEgJpOtB8HLMCVp`
 
 ---
 
-## Core Concepts
+## 📖 GraphQL Schema Introspection
 
-### GraphQL Schema
+### List All Mutations
+```bash
+cd /home/ec2-user/gmhdashboard
+export HEALTHIE_API_KEY="your-key"
+npx tsx scripts/list-all-mutations.ts
+```
 
-Healthie uses GraphQL, which means:
-- ✅ Query exactly what you need
-- ✅ Get related data in one request
-- ✅ Type-safe with introspection
-- ✅ Real-time operations
+### Inspect Specific Type
+```bash
+npx tsx scripts/introspect-healthie.ts AppointmentType
+```
 
-### Key Types
-
-- **Client** - Patient/client records
-- **Package** - Recurring payment plans
-- **Subscription** - Active package assignments
-- **Invoice** - Billing invoices
-- **Payment** - Payment transactions (via Stripe)
-- **Appointment** - Scheduled sessions
-- **Form** - Client intake forms
-- **Document** - Client documents
+### Schema Location
+- **Full schema**: `/home/ec2-user/healthie-schema.json`
 
 ---
 
-## Common Queries
+## 🎯 Recommended Workflow
 
-### Get Current User (Test Connection)
+### For New Automation Projects
 
-`currentUser` is the canonical “who am I?” query. Use it immediately after configuring the API key.
+1. **Research First**
+   - Search schema for relevant mutations
+   - Check Healthie documentation
+   - Look for existing examples in codebase
 
-```graphql
-query TestConnection {
-  currentUser {
-    id
-    email
-    first_name
-    last_name
-  }
-}
-```
+2. **Test Minimally**
+   - Create 1 test object first
+   - Verify response structure
+   - Confirm no rate limit issues
 
-Example response:
+3. **Scale Gradually**
+   - Add delays between requests (500ms)
+   - Batch operations (10 at a time)
+   - Monitor for errors
 
-```json
-{
-  "data": {
-    "currentUser": {
-      "id": "12088269",
-      "email": "admin@granitemountainhealth.com",
-      "first_name": "Phil",
-      "last_name": "Schafer"
-    }
-  }
-}
-```
-
-If you call `me` you will receive `Field 'me' doesn't exist on type 'Query'`, so always use `currentUser`.
-
-### Schema Discovery
-
-Healthie allows full GraphQL introspection. Run queries like the following to see every field that exists, then pin the ones relevant to your workflows:
-
-```graphql
-{
-  __schema {
-    queryType {
-      fields {
-        name
-        type {
-          kind
-          name
-          ofType {
-            kind
-            name
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-From introspection we confirmed fields such as `appointments`, `labOrders`, `labResult`, `medications`, `medication`, `pharmacies`, `prescriptions`, `subscription`, and many others.
-
-### Get Client / User Records
-
-Use the `user`/`users` queries to fetch patient demographics (clients are specialized users):
-
-```graphql
-query GetUser($id: ID!) {
-  user(id: $id) {
-    id
-    email
-    first_name
-    last_name
-    phone_number
-    dob
-    address
-    city
-    state
-    zip
-    created_at
-    updated_at
-  }
-}
-```
-
-Search by contact info:
-
-```graphql
-query FindUsers($email: String, $phone: String) {
-  users(email: $email, phone_number: $phone) {
-    id
-    email
-    phone_number
-    first_name
-    last_name
-  }
-}
-```
-
-Maintain a local `patient_id ↔ Healthie user_id` map to avoid fuzzy matching downstream.
-
-### Appointments
-
-`appointment(id: ID!)` and `appointments(...)` expose scheduling data.
-
-```graphql
-query UpcomingAppointments($userId: ID!, $start: ISO8601DateTime!, $end: ISO8601DateTime!) {
-  appointments(user_id: $userId, start_at: $start, end_at: $end) {
-    id
-    start_at
-    end_at
-    status
-    appointment_type { id name }
-    location { id name }
-  }
-}
-```
-
-### Labs & Results
-
-Use `labOrders` to list IDs by patient, then detail each via `labResult`.
-
-```graphql
-query LabResultDetail($resultId: ID!) {
-  labResult(id: $resultId) {
-    id
-    lab_order_id
-    interpretation
-    status_flag
-    lab_observation_requests {
-      lab_analyte
-      lab_observation_results {
-        quantitative_result
-        qualitative_result
-        units
-        reference_range
-        is_abnormal
-        interpretation
-      }
-    }
-    document { id download_url }
-  }
-}
-```
-
-Useful fields (per introspection):
-
-- `LabResult`: `patient`, `ordering_physician`, `interpretation`, `status_flag`, `result_type`, `document`.
-- `LabObservationResult`: `quantitative_result`, `qualitative_result`, `units`, `reference_range`, `is_abnormal`, `abnormal_flag`, `notes`.
-
-### Medications
-
-`medications(user_id: ID!, active: Boolean, search: String, ...) : [MedicationType!]`
-
-```graphql
-query ActiveMedications($patientId: ID!) {
-  medications(user_id: $patientId, active: true) {
-    id
-    name
-    dosage
-    frequency
-    route
-    directions
-    normalized_status
-    start_date
-    end_date
-  }
-}
-```
-
-`MedicationType` exposes `active`, `normalized_status`, `dosage`, `frequency`, `route`, `directions`, `start_date`, `end_date`, `code`, `comment`, and audit timestamps.
-
-### Prescriptions & Pharmacies (E-RX)
-
-- `prescriptions(user_id: ID!, status: String, limit: Int)`
-- `prescription(id: ID!)`
-- `pharmacies(search: String!, limit: Int)`
-
-`Prescription` fields: `product_name`, `dosage`, `directions`, `quantity`, `refills`, `unit`, `route`, `days_supply`, `date_written`, `status`, `normalized_status`, `pharmacy`, `prescriber_name`, `rx_reference_number`, `ndc`, `schedule`, `first_prescription_diagnosis`, `second_prescription_diagnosis`.
-
-`Pharmacy` fields: `name`, `line1`, `line2`, `city`, `state`, `zip`, `phone_number`, `latitude`, `longitude`.
-
-> Healthie routes transmissions through DoseSpot; confirm with support whether API-based submission is enabled or limited to read/draft access.
-
-### Subscriptions & Recurring Payments
-
-`subscription(id: ID!) : SubscriptionInstance`
-
-Notable fields: `plan_name`, `interval`, `monthly_cost_of_base_plan`, `annual_total`, `credit_balance`, `is_trialing`, `set_to_cancel`, `has_scheduled_change`, `trial_end_at`, `access_will_stop_at`, `card_type`, `last_four`, `card_expiration`, `stripe_subscription_id`, `stripe_plan`, `last_invoice`, `upcoming_invoice`.
-
-Manage lifecycle with `assignPackage`, `cancelPackageAssignment`, `pauseSubscription`, etc.
-
-### Requested Payments / Invoices
-
-`requestedPayments(client_id: ID!, status: String) : [RequestedPayment!]`
-
-```graphql
-query RequestedPayments($clientId: ID!, $status: String) {
-  requestedPayments(client_id: $clientId, status: $status) {
-    id
-    amount
-    description
-    status
-    due_date
-    invoice_number
-    client { id first_name last_name }
-  }
-}
-```
-
-Pair with `createInvoice` (mutation) to issue new invoices and capture payment methods.
-
-### Get All Packages
-
-```graphql
-query GetPackages {
-  packages {
-    id
-    name
-    description
-    price
-    billing_frequency
-    number_of_sessions
-    created_at
-  }
-}
-```
+4. **Fallback to Manual**
+   - If no API mutation exists → use UI
+   - Document manual steps clearly
+   - Automate what you can, manual for the rest
 
 ---
 
-## Common Mutations
+## 📊 Current Automation Status
 
-### Create Client
+### ✅ Fully Automated
+- ✅ Form creation (5 forms ready to deploy)
+- ✅ Client creation/updates
+- ✅ Appointment type creation (with caution on rate limits)
 
-```graphql
-mutation CreateClient($input: createClientInput!) {
-  createClient(input: $input) {
-    client {
-      id
-      user_id
-      first_name
-      last_name
-      email
-      phone_number
-      created_at
-    }
-  }
-}
-```
+### ⚠️ Hybrid (API + Manual)
+- ⚠️ Intake flows (forms via API, flow config manual)
+- ⚠️ Smart Fields (forms via API, mappings manual)
 
-**Input:**
-```typescript
-{
-  first_name: string
-  last_name: string
-  email?: string
-  phone_number?: string
-  dob?: string
-  address?: string
-  city?: string
-  state?: string
-  zip?: string
-}
-```
-
-### Update Client
-
-```graphql
-mutation UpdateClient($id: ID!, $input: updateClientInput!) {
-  updateClient(id: $id, input: $input) {
-    client {
-      id
-      first_name
-      last_name
-      email
-      phone_number
-    }
-  }
-}
-```
-
-### Create Package
-
-```graphql
-mutation CreatePackage($input: createPackageInput!) {
-  createPackage(input: $input) {
-    package {
-      id
-      name
-      description
-      price
-      billing_frequency
-      number_of_sessions
-    }
-  }
-}
-```
-
-**Input:**
-```typescript
-{
-  name: string
-  description?: string
-  price: number
-  billing_frequency: 'one_time' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'
-  number_of_sessions?: number
-}
-```
-
-### Assign Package to Client (Create Subscription)
-
-```graphql
-mutation AssignPackage($input: assignPackageInput!) {
-  assignPackage(input: $input) {
-    subscription {
-      id
-      client_id
-      package_id
-      status
-      start_date
-      next_charge_date
-      amount
-    }
-  }
-}
-```
-
-**Input:**
-```typescript
-{
-  client_id: string
-  package_id: string
-  start_date?: string  // ISO date string
-}
-```
-
-### Create Invoice
-
-```graphql
-mutation CreateInvoice($input: createInvoiceInput!) {
-  createInvoice(input: $input) {
-    invoice {
-      id
-      client_id
-      invoice_number
-      amount
-      status
-      due_date
-      created_at
-    }
-  }
-}
-```
-
-**Input:**
-```typescript
-{
-  client_id: string
-  amount: number
-  description?: string
-  due_date?: string  // ISO date string
-  send_email?: boolean
-}
-```
+### ❌ Manual Only
+- ❌ Client group creation
+- ❌ Workflow automation configuration  
+- ❌ Advanced availability settings
 
 ---
 
-## Payment Methods
+## 📝 Additional Resources
 
-### Check if Client Has Payment Method
+- **Migration Plans**: `/home/ec2-user/.gemini/antigravity/brain/.../`
+  - `workflow_migration_plan.md` - Strategic overview
+  - `workflow_execution_guide.md` - Step-by-step manual steps
+  - `healthie_api_automation_plan.md` - API automation details
 
-```graphql
-query GetClientPaymentMethods($clientId: ID!) {
-  client(id: $clientId) {
-    payment_methods {
-      id
-      type
-      last_four
-      is_default
-      expires_at
-    }
-  }
-}
-```
-
-**Note:** Payment methods are stored securely via Stripe integration. When clients pay invoices, their payment method is automatically saved.
+- **Healthie Docs**: https://developers.gethealthie.com
+- **Schema Explorer**: Available in Healthie Settings > Developers
 
 ---
 
-## Billing Frequencies
-
-Healthie supports these billing frequencies:
-- `one_time` - Single payment
-- `weekly` - Weekly recurring
-- `biweekly` - Every 2 weeks
-- `monthly` - Monthly recurring
-- `quarterly` - Every 3 months
-- `yearly` - Annual
-
----
-
-## Subscription Statuses
-
-- `active` - Subscription is active and charging
-- `cancelled` - Subscription has been cancelled
-- `paused` - Subscription is temporarily paused
-
----
-
-## Invoice Statuses
-
-- `draft` - Invoice created but not sent
-- `sent` - Invoice sent to client
-- `paid` - Invoice has been paid
-- `cancelled` - Invoice was cancelled
-
----
-
-## Error Handling
-
-Healthie API returns errors in GraphQL format:
-
-```json
-{
-  "errors": [
-    {
-      "message": "Error message here",
-      "extensions": {
-        "code": "ERROR_CODE"
-      }
-    }
-  ]
-}
-```
-
-Common error codes:
-- `UNAUTHENTICATED` - Invalid or missing API key
-- `NOT_FOUND` - Resource doesn't exist
-- `VALIDATION_ERROR` - Invalid input data
-- `PERMISSION_DENIED` - Insufficient permissions
-
----
-
-## Rate Limits
-
-Healthie API has rate limits (check documentation for current limits). Best practices:
-- Implement retry logic with exponential backoff
-- Cache frequently accessed data
-- Batch operations when possible
-
----
-
-## Integration Best Practices
-
-### 1. Error Handling
-
-```typescript
-try {
-  const result = await healthie.createClient(input);
-} catch (error) {
-  if (error.message.includes('UNAUTHENTICATED')) {
-    // Handle auth error
-  } else if (error.message.includes('NOT_FOUND')) {
-    // Handle not found
-  } else {
-    // Handle other errors
-  }
-}
-```
-
-### 2. Retry Logic
-
-```typescript
-async function createClientWithRetry(input, maxRetries = 3) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await healthie.createClient(input);
-    } catch (error) {
-      if (i === maxRetries - 1) throw error;
-      await sleep(1000 * (i + 1)); // Exponential backoff
-    }
-  }
-}
-```
-
-### 3. Batch Operations
-
-When migrating many patients:
-- Process in batches (e.g., 10 at a time)
-- Add delays between batches
-- Track progress in database
-- Handle failures gracefully
-
----
-
-## Developer Tools
-
-### Healthie Dev Assist
-
-Healthie provides "Dev Assist" tool that:
-- Integrates with AI development tools
-- Helps write and test GraphQL queries
-- Provides real-time API exploration
-- Can be used without API key (sandbox mode)
-
-Access: https://help.gethealthie.com/article/1290-healthie-dev-assist
-
----
-
-## Stripe Integration
-
-Healthie has built-in Stripe integration:
-- ✅ Payment processing handled by Healthie/Stripe
-- ✅ Payment methods stored securely
-- ✅ Recurring charges automated
-- ✅ Invoice payments automatically processed
-
-You don't need to integrate Stripe separately - Healthie handles it!
-
----
-
-## Migration Strategy
-
-### Phase 1: Setup
-1. Get API credentials
-2. Test connection
-3. Create packages (migrate from QuickBooks plans)
-
-### Phase 2: Client Migration
-1. For each patient:
-   - Check if exists in Healthie (by email/phone)
-   - Create if doesn't exist
-   - Update if exists
-   - Store Healthie client ID in your database
-
-### Phase 3: Subscription Setup
-1. For each patient with recurring payment:
-   - Find/create matching package
-   - Assign package to client
-   - Set start date
-   - Track subscription ID
-
-### Phase 4: Invoice Setup
-1. Send invoices to all migrated clients
-2. Track payment status
-3. Verify payment methods saved
-
----
-
-## Resources
-
-- **API Documentation**: https://docs.gethealthie.com/
-- **GraphQL Schema Explorer**: Available in Healthie dashboard
-- **Support**: Contact Healthie support for API access
-- **Dev Assist**: https://help.gethealthie.com/article/1290-healthie-dev-assist
-
----
-
-## Summary
-
-✅ **Use Healthie GraphQL API** for:
-- Real-time operations
-- Creating/updating clients
-- Managing subscriptions
-- Processing payments
-- Full CRUD access
-
-❌ **Don't use Bridge** for:
-- Operations (it's read-only)
-- Real-time needs (15 min delay)
-- Creating data (can't create)
-
-Your current implementation is on the right track - just needs authentication fix!
-
+**Remember**: Automation is powerful, but knowing when to do things manually is equally important. Healthie's UI is well-designed for tasks like creating intake flows - sometimes manual is faster and safer.

@@ -1,0 +1,339 @@
+# NowMensHealth.Care Content Prompts Configuration
+# AI-powered marketing content templates for Vertex AI / Gemini
+
+brand_voice:
+  clinic_name: "NOW Men's Health"
+  tagline: "Optimize Your Health. Reclaim Your Life."
+  tone: "professional, confident, caring, discrete, empowering"
+  phone: "928-212-2772"
+  website: "nowmenshealth.care"
+  location: "Prescott, Arizona"
+  address: "215 N McCormick St, Prescott, AZ 86301"
+  provider: "Dr. Aaron Whitten"
+  
+  # Brand personality traits
+  personality:
+    - Solution-focused (not problem-dwelling)
+    - Confidential and discrete
+    - Evidence-based medical approach
+    - Empowering men to take control
+    - No judgment, just results
+
+  # Words to USE
+  preferred_terms:
+    - "optimize"
+    - "reclaim"
+    - "revitalize"
+    - "restore"
+    - "peak performance"
+    - "vitality"
+    - "energy"
+    - "confidence"
+    - "wellness"
+    - "personalized care"
+
+  # Words to AVOID
+  avoid_terms:
+    - "anti-aging - use age optimization instead"
+    - "fix - use optimize or restore instead"
+    - "problem - use opportunity instead"
+    - "cheap - use value or affordable instead"
+    - "quick fix - use effective solution instead"
+
+services:
+  trt:
+    name: "Testosterone Replacement Therapy"
+    short_name: "TRT"
+    description: "Restore optimal testosterone levels for energy, focus, and vitality"
+    target_symptoms:
+      - Fatigue and low energy
+      - Decreased mental clarity
+      - Mood changes and irritability
+      - Reduced muscle mass
+      - Low libido
+      - Weight gain
+    benefits:
+      - Increased energy and stamina
+      - Improved mental clarity and focus
+      - Better mood and well-being
+      - Enhanced muscle tone
+      - Restored libido
+      - Better sleep quality
+    cta: "Schedule your FREE initial consultation"
+    
+  weight_loss:
+    name: "Medical Weight Loss"
+    short_name: "GLP-1 Program"
+    description: "FDA-approved medications for sustainable weight loss results"
+    medications:
+      - Semaglutide (Ozempic/Wegovy class)
+      - Tirzepatide (Mounjaro class)
+    benefits:
+      - Significant weight reduction
+      - Reduced appetite naturally
+      - Improved metabolic health
+      - Better blood sugar control
+      - Increased energy
+    cta: "Start your weight loss journey today"
+    
+  iv_therapy:
+    name: "IV Hydration & Vitamin Therapy"
+    short_name: "IV Therapy"
+    description: "Direct nutrient delivery for optimal absorption and rapid results"
+    use_cases:
+      - Athletic recovery
+      - Hangover relief
+      - Immune support
+      - Energy boost
+      - Jet lag recovery
+      - General wellness
+    benefits:
+      - Immediate hydration
+      - 100% nutrient absorption
+      - Fast energy boost
+      - Enhanced recovery
+    cta: "Book your IV session"
+    
+  sexual_health:
+    name: "Sexual Health & ED Treatment"
+    short_name: "Sexual Wellness"
+    description: "Discrete, effective solutions for intimate wellness"
+    note: "ALWAYS be discrete and professional when discussing this topic"
+    benefits:
+      - Restored confidence
+      - Improved intimacy
+      - Personalized treatment plans
+      - Discrete consultations
+    cta: "Schedule a confidential consultation"
+
+content_types:
+  educational:
+    purpose: "Inform and educate potential patients about symptoms and treatments"
+    ratio: 0.60  # 60% of content mix
+    examples:
+      - Symptom awareness posts
+      - Treatment explanation
+      - Myth-busting content
+      - FAQ answers
+      - Health tips
+    guidelines:
+      - Lead with value, not sales
+      - Reference credible information
+      - Be relatable and approachable
+      - End with soft CTA when appropriate
+      
+  promotional:
+    purpose: "Drive appointments and conversions"
+    ratio: 0.25  # 25% of content mix
+    examples:
+      - New patient specials
+      - Limited-time offers
+      - Seasonal campaigns
+      - Service bundles
+    guidelines:
+      - Clear value proposition
+      - Urgency when appropriate
+      - Strong call-to-action
+      - Always include contact info
+      
+  engagement:
+    purpose: "Build community and brand loyalty"
+    ratio: 0.15  # 15% of content mix
+    examples:
+      - Success stories (with consent)
+      - Behind-the-scenes
+      - Provider spotlights
+      - Community involvement
+      - Polls and questions
+    guidelines:
+      - Authentic and personal
+      - Encourage interaction
+      - Celebrate patient wins
+      - Never share PHI
+
+platform_guidelines:
+  sms:
+    max_chars: 160
+    style: "Direct, actionable, personal"
+    best_for:
+      - Appointment reminders with upsells
+      - Quick health tips
+      - Limited-time offers
+      - Re-engagement messages
+    example: "Hi {first_name}! Just a reminder about your TRT consultation tomorrow at 10am. Questions? Call 928-212-2772 💪"
+    
+  email:
+    max_chars: 5000
+    style: "Comprehensive, educational, professional"
+    best_for:
+      - Educational content series
+      - Newsletter updates
+      - Promotional campaigns
+      - Patient onboarding
+    structure:
+      - Compelling subject line
+      - Personal greeting
+      - Value-first content
+      - Clear CTA
+      - Professional signature
+      
+  facebook:
+    max_chars: 2200
+    style: "Conversational, engaging, community-focused"
+    best_for:
+      - Educational posts
+      - Community building
+      - Event promotion
+      - Success stories
+    guidelines:
+      - Use emojis sparingly but effectively
+      - Include relevant hashtags (3-5)
+      - Ask questions to boost engagement
+      - Use eye-catching images/videos
+      
+  instagram:
+    max_chars: 2200
+    style: "Visual-first, inspiring, lifestyle"
+    best_for:
+      - Transformation content
+      - Behind-the-scenes
+      - Quick tips (carousels)
+      - Reels for education
+    guidelines:
+      - Hashtags are crucial (8-15)
+      - Story-tell through captions
+      - Strong visual hooks
+      - Use Stories for engagement
+      
+  google_business:
+    max_chars: 1500
+    style: "Local, professional, action-oriented"
+    best_for:
+      - Service updates
+      - Special offers
+      - Events
+      - Hours updates
+    guidelines:
+      - Focus on local audience
+      - Include location references
+      - Update regularly for SEO
+      - Respond to reviews
+      
+  linkedin:
+    max_chars: 3000
+    style: "Professional, thought-leadership"
+    best_for:
+      - Industry insights
+      - Provider expertise
+      - Business partnerships
+      - Career content
+    guidelines:
+      - More formal tone
+      - Focus on expertise
+      - Industry statistics welcome
+      - Network building
+
+weekly_themes:
+  monday:
+    theme: "Motivation Monday"
+    focus: "New week energy, goal setting, fresh starts"
+    content_type: "engagement"
+    
+  tuesday:
+    theme: "TRT Tuesday"
+    focus: "Testosterone education, Low T awareness"
+    content_type: "educational"
+    
+  wednesday:
+    theme: "Wellness Wednesday"
+    focus: "General health tips, IV therapy, overall wellness"
+    content_type: "educational"
+    
+  thursday:
+    theme: "Transformation Thursday"
+    focus: "Success stories, before/after (with consent), patient wins"
+    content_type: "engagement"
+    
+  friday:
+    theme: "FAQ Friday"
+    focus: "Common questions, myth-busting, educational"
+    content_type: "educational"
+    
+  saturday:
+    theme: "Service Saturday"
+    focus: "Promotional content, specials, new patient offers"
+    content_type: "promotional"
+    
+  sunday:
+    theme: "Self-Care Sunday"
+    focus: "Rest, recovery, lifestyle tips, mental wellness"
+    content_type: "engagement"
+
+hashtags:
+  always_use:
+    - "#NOWMensHealth"
+    - "#PrescottAZ"
+  
+  trt:
+    - "#TRT"
+    - "#TestosteroneTherapy"
+    - "#LowT"
+    - "#HormoneOptimization"
+    - "#MensHealth"
+    - "#Testosterone"
+    
+  weight_loss:
+    - "#MedicalWeightLoss"
+    - "#GLP1"
+    - "#Semaglutide"
+    - "#WeightLossJourney"
+    - "#HealthyLifestyle"
+    
+  iv_therapy:
+    - "#IVTherapy"
+    - "#Hydration"
+    - "#VitaminInfusion"
+    - "#Recovery"
+    - "#Wellness"
+    
+  general:
+    - "#MensHealth"
+    - "#Vitality"
+    - "#HealthOptimization"
+    - "#PeakPerformance"
+    - "#WellnessForMen"
+
+campaign_templates:
+  new_patient_special:
+    headline: "New Year, New You Special"
+    offer: "FREE Initial TRT Consultation ($150 value)"
+    urgency: "Limited spots available"
+    cta: "Call 928-212-2772 or visit nowmenshealth.care"
+    
+  reactivation:
+    headline: "We Miss You!"
+    message: "It's been a while since your last visit. Ready to get back on track?"
+    offer: "Schedule your follow-up today"
+    cta: "Call 928-212-2772"
+    
+  referral:
+    headline: "Know Someone Who Could Benefit?"
+    message: "Refer a friend and both receive $50 off your next visit"
+    cta: "Ask us about our referral program"
+
+compliance:
+  hipaa:
+    - Never mention specific patient names or conditions
+    - No before/after photos without explicit written consent
+    - Keep health claims general and educational
+    - Include appropriate disclaimers
+    
+  medical_claims:
+    - Always recommend consulting with a provider
+    - Don't promise specific results
+    - Use "may help" or "some patients experience" language
+    - Include "results may vary" when appropriate
+    
+  disclaimers:
+    general: "Individual results may vary. Consult with our providers to see if treatment is right for you."
+    weight_loss: "Results vary. FDA-approved medications used under medical supervision."

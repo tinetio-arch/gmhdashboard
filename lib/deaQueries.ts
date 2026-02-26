@@ -19,12 +19,34 @@ export type DeaLogRow = {
   notes: string | null;
 };
 
-export async function fetchRecentDeaLog(limit = 200): Promise<DeaLogRow[]> {
+export async function fetchRecentDeaLog(options?: {
+  limit?: number;
+  startDate?: string;
+  endDate?: string;
+}): Promise<DeaLogRow[]> {
+  const limit = options?.limit ?? 500;
+  const startDate = options?.startDate;
+  const endDate = options?.endDate;
+
   // NOTE: DEA log shows ALL historical dispenses, regardless of patient status.
   // This is critical for audit compliance - we must maintain complete records.
+  let whereClause = '';
+  const params: unknown[] = [limit];
+
+  if (startDate && endDate) {
+    whereClause = `WHERE transaction_time >= $2 AND transaction_time < ($3::date + 1)`;
+    params.push(startDate, endDate);
+  } else if (startDate) {
+    whereClause = `WHERE transaction_time >= $2`;
+    params.push(startDate);
+  } else if (endDate) {
+    whereClause = `WHERE transaction_time < ($2::date + 1)`;
+    params.push(endDate);
+  }
+
   const rows = await query<Record<string, unknown>>(
-    `SELECT * FROM dea_dispense_log_v ORDER BY transaction_time DESC NULLS LAST LIMIT $1`,
-    [limit]
+    `SELECT * FROM dea_dispense_log_v ${whereClause} ORDER BY transaction_time DESC NULLS LAST LIMIT $1`,
+    params
   );
   return rows.map((row) => ({
     transaction_time: row.transaction_time as string | null,

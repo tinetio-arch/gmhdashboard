@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { NextResponse } from 'next/server';
 import { recordHealthieWebhook, type HealthieWebhookPayload } from '@/lib/healthie/webhooks';
+import { handleBillingItemCreated } from '@/lib/healthie/peptideWebhook';
 
 const CONTENT_TYPE = 'application/json';
 
@@ -48,22 +49,31 @@ export async function POST(req: Request) {
   const signatureInputHeader = req.headers.get('signature-input');
   const signatureHeader = req.headers.get('signature');
 
-  const contentDigest = contentDigestHeader?.split('=')[1] ?? '';
+  // Extract digest value - handle base64 padding which contains '=' characters
+  // Format is "sha-256=<base64hash>" - we need everything after "sha-256="
+  const digestParts = contentDigestHeader?.split('=') ?? [];
+  const contentDigest = digestParts.slice(1).join('='); // Rejoin in case base64 has '=' padding
   const signature = extractSignature(signatureHeader);
 
   if (!contentDigestHeader || !signatureInputHeader || !signature) {
     return NextResponse.json({ error: 'Missing signature headers' }, { status: 401 });
   }
 
+  // Healthie computes signature with the external URL path (including /ops prefix)
+  // but Next.js strips the basePath internally, so we need to add it back
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '/ops';
+  const externalPath = basePath + url.pathname;
+
   const dataToSign = buildDataToSign({
     method: req.method,
-    path: url.pathname,
+    path: externalPath,
     query: url.search.replace(/^\?/, ''),
     contentDigest,
     contentLength,
   });
 
   const computed = sign(dataToSign, secret);
+
   if (!timingSafeEqual(computed, signature)) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   }
@@ -100,5 +110,22 @@ export async function POST(req: Request) {
     changed_fields: changedFields,
   });
 
+  // Handle billing_item.created for peptide purchases
+  if (eventType.toLowerCase() === 'billing_item.created' || eventType.toLowerCase() === 'billingitem.created') {
+    try {
+      const result = await handleBillingItemCreated(body.resource_id);
+      console.log('Peptide webhook result:', result);
+      return NextResponse.json({
+        received: true,
+        eventType,
+        peptide: result,
+      });
+    } catch (err) {
+      console.error('Peptide webhook handler error:', err);
+      // Don't fail the webhook, just log and continue
+    }
+  }
+
   return NextResponse.json({ received: true, eventType, changed_fields: changedFields });
 }
+

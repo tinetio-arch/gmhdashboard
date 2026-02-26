@@ -196,9 +196,14 @@ type NotesEditorProps = {
 
 function NotesEditor({ rowId, initialValue, onCommit, onBlur }: NotesEditorProps) {
   const [value, setValue] = useState(initialValue ?? '');
+  const rowIdRef = useRef(rowId);
 
+  // Only update when switching to a DIFFERENT row, not when initialValue changes
   useEffect(() => {
-    setValue(initialValue ?? '');
+    if (rowIdRef.current !== rowId) {
+      setValue(initialValue ?? '');
+      rowIdRef.current = rowId;
+    }
   }, [rowId, initialValue]);
 
   return (
@@ -221,6 +226,7 @@ function NotesEditor({ rowId, initialValue, onCommit, onBlur }: NotesEditorProps
     />
   );
 }
+
 
 type DateEditorProps = {
   value: string;
@@ -252,6 +258,46 @@ function DateEditor({ value, placeholder, onCommit, onBlur, autoFocus }: DateEdi
       }}
       autoFocus={autoFocus}
       style={inputStyle}
+    />
+  );
+}
+
+type AddressEditorProps = {
+  rowId: string;
+  initialValue: string;
+  onCommit: (value: string) => void;
+  onBlur: () => void;
+};
+
+function AddressEditor({ rowId, initialValue, onCommit, onBlur }: AddressEditorProps) {
+  const [value, setValue] = useState(initialValue ?? '');
+  const rowIdRef = useRef(rowId);
+
+  // Only update when switching to a DIFFERENT row, not when initialValue changes
+  useEffect(() => {
+    if (rowIdRef.current !== rowId) {
+      setValue(initialValue ?? '');
+      rowIdRef.current = rowId;
+    }
+  }, [rowId, initialValue]);
+
+  return (
+    <textarea
+      value={value}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={() => {
+        onCommit(value);
+        onBlur();
+      }}
+      autoFocus
+      rows={3}
+      style={{
+        ...inputStyle,
+        minHeight: '48px',
+        resize: 'vertical',
+        direction: 'ltr',
+        textAlign: 'left'
+      }}
     />
   );
 }
@@ -500,6 +546,11 @@ export default function PatientTable({
   initialLabsDueFilter
 }: Props) {
   const router = useRouter();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   const professionalMap = useMemo(() => {
     const map = new Map<string, ProfessionalPatient>();
     professionalPatients.forEach((record) => {
@@ -610,10 +661,10 @@ export default function PatientTable({
     'Method of Payment',
     'Client Type',
     'Regimen',
-    'Lab Status',
-    'Patient Notes',
     'Last Lab',
     'Next Lab',
+    'Lab Status',
+    'Patient Notes',
     'Service Start',
     'Contract End',
     'DOB',
@@ -705,7 +756,9 @@ export default function PatientTable({
       const labInfo = computeLabStatus(isoValue ?? null, nextLabIso);
       const currentKey = (current.statusKey ?? '').toLowerCase();
       let nextStatusKey = current.statusKey;
-      if (currentKey === 'active' && (labInfo.state === 'overdue' || labInfo.state === 'due-soon')) {
+      // Only set to active_pending if labs are due-soon (within 30 days)
+      // Overdue labs require manual attention, not auto-status change
+      if (currentKey === 'active' && labInfo.state === 'due-soon') {
         nextStatusKey = 'active_pending';
       } else if (currentKey === 'active_pending' && labInfo.state === 'current') {
         nextStatusKey = 'active';
@@ -739,7 +792,9 @@ export default function PatientTable({
       const labInfo = computeLabStatus(lastLabIso, isoValue ?? null);
       const currentKey = (current.statusKey ?? '').toLowerCase();
       let nextStatusKey = current.statusKey;
-      if (currentKey === 'active' && (labInfo.state === 'overdue' || labInfo.state === 'due-soon')) {
+      // Only set to active_pending if labs are due-soon (within 30 days)
+      // Overdue labs require manual attention, not auto-status change
+      if (currentKey === 'active' && labInfo.state === 'due-soon') {
         nextStatusKey = 'active_pending';
       } else if (currentKey === 'active_pending' && labInfo.state === 'current') {
         nextStatusKey = 'active';
@@ -864,6 +919,17 @@ export default function PatientTable({
     } finally {
       setSavingId(null);
     }
+  }
+
+  // Prevent hydration mismatch by not rendering until client is ready
+  if (!mounted) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b' }}>
+          Loading patients...
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -1081,43 +1147,6 @@ export default function PatientTable({
                     />
                     <EditableCell
                       rowId={row.id}
-                      field="labStatus"
-                      cellStyle={baseCell}
-                      display={renderText(row.labStatus)}
-                      renderEditor={({ onBlur }) => (
-                        <input
-                          type="text"
-                          value={row.labStatus}
-                          onChange={(event) => updateRow(row.id, (current) => ({ ...current, labStatus: event.target.value }))}
-                          onBlur={onBlur}
-                          autoFocus
-                          style={inputStyle}
-                        />
-                      )}
-                    />
-                    <EditableCell
-                      rowId={row.id}
-                      field="patientNotes"
-                      cellStyle={{ ...wrapCell, minWidth: '220px' }}
-                      display={
-                        <span style={{ whiteSpace: 'normal' }}>{row.patientNotes?.trim() ? row.patientNotes : '—'}</span>
-                      }
-                      renderEditor={({ onBlur }) => (
-                        <NotesEditor
-                          rowId={row.id}
-                          initialValue={row.patientNotes ?? ''}
-                          onCommit={(nextValue) =>
-                            updateRow(row.id, (current) => ({
-                              ...current,
-                              patientNotes: nextValue
-                            }))
-                          }
-                          onBlur={onBlur}
-                        />
-                      )}
-                    />
-                    <EditableCell
-                      rowId={row.id}
                       field="lastLab"
                       cellStyle={narrowCellStyle}
                       display={formatDisplayDate(row.lastLab)}
@@ -1142,6 +1171,45 @@ export default function PatientTable({
                           placeholder={DATE_INPUT_PLACEHOLDER}
                           autoFocus
                           onCommit={(value) => handleNextLabCommit(row.id, value)}
+                          onBlur={onBlur}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="labStatus"
+                      cellStyle={baseCell}
+                      display={renderText(row.labStatus)}
+                      renderEditor={({ onBlur }) => (
+                        <input
+                          type="text"
+                          value={row.labStatus}
+                          onChange={(event) => updateRow(row.id, (current) => ({ ...current, labStatus: event.target.value }))}
+                          onBlur={onBlur}
+                          autoFocus
+                          style={inputStyle}
+                        />
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="patientNotes"
+                      cellStyle={{ ...wrapCell, minWidth: '140px', maxWidth: '200px', maxHeight: '60px', overflow: 'hidden', position: 'relative' as const }}
+                      display={
+                        <span style={{ whiteSpace: 'normal', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' as const, overflow: 'hidden', textOverflow: 'ellipsis', wordBreak: 'break-word' as const, fontSize: '0.8rem' }}>
+                          {row.patientNotes?.trim() ? row.patientNotes : '—'}
+                        </span>
+                      }
+                      renderEditor={({ onBlur }) => (
+                        <NotesEditor
+                          rowId={row.id}
+                          initialValue={row.patientNotes ?? ''}
+                          onCommit={(nextValue) =>
+                            updateRow(row.id, (current) => ({
+                              ...current,
+                              patientNotes: nextValue
+                            }))
+                          }
                           onBlur={onBlur}
                         />
                       )}
@@ -1197,19 +1265,11 @@ export default function PatientTable({
                       cellStyle={{ ...wrapCell, minWidth: '240px' }}
                       display={<span style={{ whiteSpace: 'normal' }}>{row.address?.trim() ? row.address : '—'}</span>}
                       renderEditor={({ onBlur }) => (
-                        <textarea
-                          value={row.address}
-                          onChange={(event) => updateRow(row.id, (current) => ({ ...current, address: event.target.value }))}
+                        <AddressEditor
+                          rowId={row.id}
+                          initialValue={row.address}
+                          onCommit={(value) => updateRow(row.id, (current) => ({ ...current, address: value }))}
                           onBlur={onBlur}
-                          autoFocus
-                          rows={3}
-                          style={{
-                            ...inputStyle,
-                            minHeight: '48px',
-                            resize: 'vertical',
-                            direction: 'ltr',
-                            textAlign: 'left'
-                          }}
                         />
                       )}
                     />
