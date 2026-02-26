@@ -348,6 +348,14 @@ pm2 save
 
 ## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - FEB 25, 2026)
 
+### February 26, 2026: SQL Injection Fix in DEA MCP Server
+
+**Vulnerability**: `lib/mcp/dea-server.ts` `get_recent_dispenses` tool used string interpolation for `INTERVAL '${days} days'` — a SQL injection vector in the DEA compliance module.
+
+**Fix**: Replaced with parameterized `($1 || ' days')::INTERVAL` + params array. All other 4 tools in the file already used parameterized queries.
+
+**Verified**: PostgreSQL correctly blocks injection attempts with `invalid input syntax for type interval` error at the type cast level.
+
 ### February 26, 2026: Apple AI Privacy Fix, Journal/Metrics Bug Fixes
 
 **Apple App Store Rejection Fix (Guidelines 5.1.1(i) & 5.1.2(i))**:

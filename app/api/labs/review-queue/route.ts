@@ -11,7 +11,6 @@ import { computeLabStatus } from '@/lib/patientFormatting';
  * POST /api/labs/review-queue - Approve or reject a lab result
  */
 
-const LABS_QUEUE_FILE = '/home/ec2-user/gmhdashboard/data/labs-review-queue.json';
 const HEALTHIE_API_URL = 'https://api.gethealthie.com/graphql';
 const S3_BUCKET = 'gmh-clinical-data-lake';
 
@@ -46,23 +45,35 @@ interface LabQueueItem {
     approved_by?: string;
 }
 
-async function loadQueue(): Promise<LabQueueItem[]> {
-    const fs = await import('fs');
-    try {
-        const data = await fs.promises.readFile(LABS_QUEUE_FILE, 'utf-8');
-        return JSON.parse(data);
-    } catch (err: any) {
-        if (err?.code === 'ENOENT') return []; // File doesn't exist yet — normal
-        console.error('[LabReviewQueue] Failed to load queue file:', err);
-        return [];
-    }
+/** Load a single queue item by ID from the database */
+async function loadQueueItem(id: string): Promise<LabQueueItem | null> {
+    const rows = await query<LabQueueItem>(
+        `SELECT * FROM lab_review_queue WHERE id = $1 LIMIT 1`,
+        [id]
+    );
+    return rows[0] || null;
 }
 
-async function saveQueue(queue: LabQueueItem[]): Promise<void> {
-    const fs = await import('fs');
-    const path = await import('path');
-    await fs.promises.mkdir(path.dirname(LABS_QUEUE_FILE), { recursive: true });
-    await fs.promises.writeFile(LABS_QUEUE_FILE, JSON.stringify(queue, null, 2));
+/** Update specific fields on a queue item in the database */
+async function updateQueueItem(id: string, updates: Partial<LabQueueItem>): Promise<void> {
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+    let paramIdx = 1;
+
+    for (const [key, value] of Object.entries(updates)) {
+        if (key === 'id') continue; // never update the PK
+        setClauses.push(`${key} = $${paramIdx}`);
+        values.push(value);
+        paramIdx++;
+    }
+
+    if (setClauses.length === 0) return;
+
+    values.push(id);
+    await query(
+        `UPDATE lab_review_queue SET ${setClauses.join(', ')} WHERE id = $${paramIdx}`,
+        values
+    );
 }
 
 /**
@@ -405,28 +416,37 @@ export async function GET(request: NextRequest): Promise<Response> {
     const status = url.searchParams.get('status') || 'pending_review';
     const limit = parseInt(url.searchParams.get('limit') || '50', 10);
 
-    const queue = await loadQueue();
-
-    let filtered = queue;
-    if (status !== 'all') {
-        filtered = queue.filter(item => item.status === status);
+    // Query items from database
+    let filtered: LabQueueItem[];
+    if (status === 'all') {
+        filtered = await query<LabQueueItem>(
+            `SELECT * FROM lab_review_queue ORDER BY created_at DESC LIMIT $1`,
+            [limit]
+        );
+    } else {
+        filtered = await query<LabQueueItem>(
+            `SELECT * FROM lab_review_queue WHERE status = $1 ORDER BY created_at DESC LIMIT $2`,
+            [status, limit]
+        );
     }
 
-    // Sort by created_at descending
-    filtered.sort((a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    // Get counts from database
+    const countRows = await query<{ status: string; count: string }>(
+        `SELECT status, COUNT(*)::text as count FROM lab_review_queue GROUP BY status`
+    );
+    const totalRow = await query<{ count: string }>(
+        `SELECT COUNT(*)::text as count FROM lab_review_queue`
     );
 
-    // Limit results
-    filtered = filtered.slice(0, limit);
-
-    // Add counts
-    const counts = {
-        pending_review: queue.filter(i => i.status === 'pending_review').length,
-        approved: queue.filter(i => i.status === 'approved').length,
-        rejected: queue.filter(i => i.status === 'rejected').length,
-        total: queue.length,
+    const counts: Record<string, number> = {
+        pending_review: 0,
+        approved: 0,
+        rejected: 0,
+        total: parseInt(totalRow[0]?.count || '0', 10),
     };
+    for (const row of countRows) {
+        counts[row.status] = parseInt(row.count, 10);
+    }
 
     return NextResponse.json({
         success: true,
@@ -470,17 +490,14 @@ export async function POST(request: NextRequest): Promise<Response> {
         );
     }
 
-    const queue = await loadQueue();
-    const itemIndex = queue.findIndex(item => item.id === id);
+    const item = await loadQueueItem(id);
 
-    if (itemIndex === -1) {
+    if (!item) {
         return NextResponse.json(
             { success: false, error: 'Item not found' },
             { status: 404 }
         );
     }
-
-    const item = queue[itemIndex];
 
     if (action === 'approve') {
         // Determine patient ID (use corrected if provided)
@@ -536,16 +553,13 @@ export async function POST(request: NextRequest): Promise<Response> {
                 );
             }
 
-            // Update queue item
-            queue[itemIndex] = {
-                ...item,
+            // Update queue item in database
+            await updateQueueItem(id, {
                 status: 'approved',
                 upload_status: 'visible',
                 approved_at: new Date().toISOString(),
                 approved_by: currentUser?.name,
-            };
-
-            await saveQueue(queue);
+            });
 
             // Auto-update patient lab dates
             await updatePatientLabDates(item, patientId);
@@ -590,18 +604,15 @@ export async function POST(request: NextRequest): Promise<Response> {
                 await makeDocumentVisible(uploadResult.documentId);
             }
 
-            // Update queue item
-            queue[itemIndex] = {
-                ...item,
+            // Update queue item in database
+            await updateQueueItem(id, {
                 status: 'approved',
                 healthie_id: patientId,
                 healthie_document_id: uploadResult.documentId,
                 upload_status: 'visible',
                 approved_at: new Date().toISOString(),
                 approved_by: currentUser?.name,
-            };
-
-            await saveQueue(queue);
+            });
 
             // Auto-update patient lab dates
             await updatePatientLabDates(item, patientId);
@@ -638,17 +649,14 @@ export async function POST(request: NextRequest): Promise<Response> {
             );
         }
 
-        // Update queue item
-        queue[itemIndex] = {
-            ...item,
+        // Update queue item in database
+        await updateQueueItem(id, {
             status: 'approved',
             healthie_id: patientId,
             healthie_document_id: uploadResult.documentId,
             uploaded_at: new Date().toISOString(),
             approved_by: currentUser?.name,
-        };
-
-        await saveQueue(queue);
+        });
 
         // Auto-update patient lab dates
         await updatePatientLabDates(item, patientId);
@@ -668,13 +676,10 @@ export async function POST(request: NextRequest): Promise<Response> {
         });
 
     } else if (action === 'reject') {
-        queue[itemIndex] = {
-            ...item,
+        await updateQueueItem(id, {
             status: 'rejected',
             rejection_reason: rejection_reason || 'Rejected by provider',
-        };
-
-        await saveQueue(queue);
+        });
 
         return NextResponse.json({
             success: true,
