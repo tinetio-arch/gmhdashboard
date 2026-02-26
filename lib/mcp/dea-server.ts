@@ -291,11 +291,11 @@ export function createDEAMCPServer(config?: DEAMCPServerConfig) {
                 d.signature_status
               FROM dispenses d
               LEFT JOIN patients p ON d.patient_id = p.patient_id
-              WHERE d.dispensed_at >= NOW() - INTERVAL '${days} days'
+              WHERE d.dispensed_at >= NOW() - ($1 || ' days')::INTERVAL
               ORDER BY d.dispensed_at DESC
-              LIMIT $1
+              LIMIT $2
             `,
-            [limit]
+            [days, limit]
           );
 
           return {

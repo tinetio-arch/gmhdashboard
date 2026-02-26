@@ -1,8 +1,8 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: February 25, 2026  
+**Last Updated**: February 26, 2026  
 **Primary AI Assistant**: AntiGravity (Google Deepmind Agentic Coding)  
-**Sprint Period**: December 25, 2025 - February 25, 2026
+**Sprint Period**: December 25, 2025 - February 26, 2026
 
 
 > **Purpose**: This is the MASTER reference document for all AI assistants working on the GMH Dashboard system. When in doubt, refer to this file first. All critical system information, recent changes, and operational procedures are documented here.
@@ -347,6 +347,24 @@ pm2 save
 ---
 
 ## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - FEB 25, 2026)
+
+### February 26, 2026: Apple AI Privacy Fix, Journal/Metrics Bug Fixes
+
+**Apple App Store Rejection Fix (Guidelines 5.1.1(i) & 5.1.2(i))**:
+- Added first-time AI consent dialog to `JarvisScreen.tsx` — discloses what data is sent to Google Gemini AI, requires explicit "I Agree" before Jarvis is usable
+- Consent stored in `expo-secure-store` (one-time prompt)
+- Updated `nowoptimal-website/app/privacy/page.tsx` Section 3: removed contradictory "not shared with external AI providers" wording, replaced with accurate Gemini disclosure
+- Added Google (Gemini AI) to BAA list in Section 4
+- Website rebuilt and redeployed via PM2
+
+**Journal & Metrics Display Bug Fixes** (`JournalScreen.tsx`, `MetricsScreen.tsx`):
+- Fixed "Invalid Date" — `safeParseDate()` handles Healthie date-only strings (`"2025-12-26"`) that iOS chokes on
+- Fixed Blood Pressure: `13686` → `136/86 mmHg` (smart split based on digit count)
+- Fixed Weight: `56` → `56 lbs (25.4 kg)` (dual units)
+- Fixed Height: `5` → `5'0" (152.4 cm)` (detects feet vs inches, shows both)
+- Fixed Sleep: `8.5` → `8.5 hours` (unit label added)
+- Added smart `formatMetricValue()` dispatcher for all metric categories
+- MetricsScreen cards now show secondary unit line (e.g., `86.2 kg` under Weight card)
 
 ### February 25, 2026: Peptide System Overhaul, Revenue Fix, Transaction Delete Fix
 
@@ -2794,6 +2812,25 @@ for (const item of items) {
 
 ## 🔍 TROUBLESHOOTING
 
+### ⚠️ Node.js / npx Does NOT Work on This Server
+
+**Symptom**: Running `node -e "..."` or `npx tsx ...` hangs indefinitely or produces no output.
+
+**Cause**: The EC2 instance's Node.js installation is unreliable for ad-hoc CLI scripting. `npx` commands frequently hang.
+
+**Solution**: **Use Python instead** for all ad-hoc scripts, database queries, and one-off tasks:
+```bash
+# ❌ DON'T — hangs or crashes
+node -e "const fs = require('fs'); console.log(fs.readFileSync('file.txt','utf8'))"
+npx tsx script.ts
+
+# ✅ DO — works reliably
+python3 -c "print(open('file.txt').read())"
+python3 script.py
+```
+
+> **Note**: Node.js works fine inside PM2-managed services (gmh-dashboard, telegram-ai-bot, etc.) and for `npm run build`. It's only the ad-hoc CLI usage that hangs.
+
 ### Dashboard Not Accessible
 
 **Symptom**: `https://nowoptimal.com/ops/` returns error
@@ -3413,6 +3450,23 @@ Frontend (React Native / Expo):
 1. **Healthie sync can fail silently** — `healthie_synced` may be `false` while `access_status` shows `revoked`. Verify via Healthie API directly.
 2. **Multiple Healthie IDs per patient** — 2 patients have duplicate active Healthie client mappings. Revoking one doesn't block the others.
 3. **CDK stack out of sync** with live Lambda configuration (see table above).
+
+### Journal & Metrics Formatting (Feb 26, 2026)
+
+Healthie `entries` API returns raw `metric_stat` as a single number with no units or formatting. The app now applies smart formatting based on `category`:
+
+| Category | Raw Value | Formatted Display |
+|----------|-----------|------------------|
+| Blood Pressure | `13686` | `136/86 mmHg` (split by digit count) |
+| Weight | `190` | `190 lbs (86.2 kg)` |
+| Height (in.) | `70` | `5'10" (177.8 cm)` |
+| Sleep | `8.5` | `8.5 hours` |
+| Steps | `10432` | `10,432 steps` |
+| Heart Rate | `72` | `72 bpm` |
+
+Formatting functions: `formatBloodPressure()`, `formatWeight()`, `formatHeight()`, `formatMetricValue()`, `safeParseDate()`
+
+> **Height gotcha**: If Healthie returns a value ≤ 7, the formatter assumes it's in feet (not inches) and multiplies by 12. Values > 12 are treated as inches.
 
 ---
 

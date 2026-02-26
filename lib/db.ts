@@ -1,5 +1,7 @@
 import { Pool } from 'pg';
 import type { QueryResultRow } from 'pg';
+import * as fs from 'fs';
+import * as path from 'path';
 
 let pool: Pool | null = null;
 
@@ -18,13 +20,22 @@ export function getPool(): Pool {
       throw new Error('Database environment variables are not configured.');
     }
 
+    // Load AWS RDS CA certificate bundle for verified SSL connections
+    const caCertPath = path.join(process.cwd(), 'certs', 'rds-combined-ca-bundle.pem');
+    const sslConfig = DATABASE_SSLMODE === 'disable'
+      ? false
+      : {
+        rejectUnauthorized: true,
+        ca: fs.readFileSync(caCertPath, 'utf8'),
+      };
+
     pool = new Pool({
       host: DATABASE_HOST,
       port: Number(DATABASE_PORT ?? 5432),
       database: DATABASE_NAME,
       user: DATABASE_USER,
       password: DATABASE_PASSWORD,
-      ssl: DATABASE_SSLMODE === 'disable' ? false : { rejectUnauthorized: false },
+      ssl: sslConfig,
       max: 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 10000

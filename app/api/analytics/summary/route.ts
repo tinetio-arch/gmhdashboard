@@ -2,8 +2,9 @@
  * Unified Analytics Summary API
  * Aggregates patient, financial, and system data into one real-time endpoint
  */
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { requireApiUser } from '@/lib/auth';
 import { fetchPeptideFinancials } from '@/lib/peptideQueries';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -327,8 +328,9 @@ async function getSyncFreshness(): Promise<Array<{
     return syncs;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
+        await requireApiUser(request, 'read');
         const [
             patientStats,
             ghlStats,
