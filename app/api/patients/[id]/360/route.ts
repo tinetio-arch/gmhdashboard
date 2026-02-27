@@ -41,7 +41,17 @@ export async function GET(
             );
         }
 
-        // Run all data source queries in parallel
+        // Run all data source queries individually with fault tolerance
+        // Each query can fail independently without breaking the whole 360 view
+        const safeQuery = async (label: string, sql: string, params: any[]): Promise<any[]> => {
+            try {
+                return await query<any>(sql, params);
+            } catch (err) {
+                console.warn(`[Patient360] ${label} query failed:`, err instanceof Error ? err.message : err);
+                return [];
+            }
+        };
+
         const [
             peptides,
             trt,
@@ -52,7 +62,7 @@ export async function GET(
             deaTransactions,
         ] = await Promise.all([
             // 2. Current medications — peptides
-            query<any>(`
+            safeQuery('peptides', `
         SELECT pd.*, pp.name as product_name
         FROM peptide_dispenses pd
         JOIN peptide_products pp ON pd.product_id = pp.product_id
@@ -61,7 +71,7 @@ export async function GET(
       `, [`%${patient.full_name}%`]),
 
             // 3. Current medications — TRT
-            query<any>(`
+            safeQuery('trt', `
         SELECT d.*, v.dea_drug_name, v.external_id as vial_label
         FROM dispenses d
         JOIN vials v ON d.vial_id = v.vial_id
@@ -70,39 +80,38 @@ export async function GET(
       `, [patientId]),
 
             // 4. Lab status from lab_review_queue
-            query<any>(`
+            safeQuery('labs', `
         SELECT * FROM lab_review_queue
-        WHERE patient->>'healthie_id' = $1
+        WHERE healthie_id = $1
         ORDER BY created_at DESC LIMIT 10
       `, [patient.healthie_client_id || '']),
 
             // 5. Payment issues (unresolved)
-            query<any>(`
+            safeQuery('payments', `
         SELECT * FROM payment_issues
         WHERE patient_id = $1 AND resolved_at IS NULL
         ORDER BY created_at DESC
       `, [patientId]),
 
             // 5b. Payment total outstanding
-            query<any>(`
+            safeQuery('paymentTotal', `
         SELECT COALESCE(SUM(amount_owed), 0) as total_outstanding
         FROM payment_issues
         WHERE patient_id = $1 AND resolved_at IS NULL
       `, [patientId]),
 
             // 9a. Staged doses pending
-            query<any>(`
-        SELECT sd.*, v.dea_drug_name, v.external_id as vial_label
+            safeQuery('stagedDoses', `
+        SELECT sd.*
         FROM staged_doses sd
-        LEFT JOIN vials v ON sd.vial_id = v.vial_id
         WHERE sd.patient_id = $1
-          AND sd.status = 'pending'
+          AND sd.status IN ('staged', 'pending')
         ORDER BY sd.staged_for_date ASC
       `, [patientId]),
 
-            // 10. Controlled substance history
-            query<any>(`
-        SELECT * FROM dea_transactions
+            // 10. Controlled substance history (may not exist yet)
+            safeQuery('dea', `
+        SELECT * FROM dispenses
         WHERE patient_id = $1
         ORDER BY dispense_date DESC LIMIT 20
       `, [patientId]),

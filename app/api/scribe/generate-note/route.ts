@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
         throw error;
     }
 
-    const { session_id, patient_id, visit_type } = await request.json();
+    const { session_id, patient_id, visit_type, patient_name } = await request.json();
 
     if (!session_id) {
         return NextResponse.json({ success: false, error: 'session_id is required' }, { status: 400 });
@@ -87,39 +87,46 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // 2. Fetch patient context
-        const [patient] = await query<any>(
-            'SELECT * FROM patients WHERE patient_id = $1',
-            [patient_id]
-        );
+        // 2. Fetch patient context — try patient_id first, then healthie_client_id
+        let patient = (await query<any>(
+            'SELECT * FROM patients WHERE patient_id = $1', [patient_id]
+        ))[0];
+
         if (!patient) {
-            return NextResponse.json(
-                { success: false, error: 'Patient not found' }, { status: 404 }
-            );
+            // Try by healthie_client_id
+            patient = (await query<any>(
+                'SELECT * FROM patients WHERE healthie_client_id = $1', [patient_id]
+            ))[0];
         }
 
-        // Fetch recent medications in parallel
+        // If still no patient, create a minimal patient object from session/request data
+        const patientName = patient?.full_name || patient_name || session.patient_name || 'Unknown Patient';
+        const patientDob = patient?.date_of_birth || null;
+        const healthieId = patient?.healthie_client_id || patient_id;
+        const resolvedPatientId = patient?.patient_id || patient_id;
+
+        // Fetch recent medications in parallel (safe — returns empty arrays if patient not in DB)
         const [recentMeds, recentTrt, recentLabs] = await Promise.all([
-            query<any>(`
+            patient ? query<any>(`
         SELECT pp.name, pd.sale_date FROM peptide_dispenses pd
         JOIN peptide_products pp ON pd.product_id = pp.product_id
         WHERE pd.patient_name ILIKE $1
         ORDER BY pd.sale_date DESC LIMIT 10
-      `, [`%${patient.full_name}%`]),
+      `, [`%${patientName}%`]) : Promise.resolve([]),
 
-            query<any>(`
+            patient ? query<any>(`
         SELECT v.dea_drug_name, d.dose_per_syringe_ml as dose_ml, d.dispense_date
         FROM dispenses d JOIN vials v ON d.vial_id = v.vial_id
         WHERE d.patient_id = $1
         ORDER BY d.dispense_date DESC LIMIT 5
-      `, [patient_id]),
+      `, [resolvedPatientId]) : Promise.resolve([]),
 
-            query<any>(`
-        SELECT status, created_at, patient->>'lab_company' as lab_company
+            healthieId ? query<any>(`
+        SELECT status, created_at, source as lab_company
         FROM lab_review_queue
-        WHERE patient->>'healthie_id' = $1
+        WHERE healthie_id = $1
         ORDER BY created_at DESC LIMIT 5
-      `, [patient.healthie_client_id || '']),
+      `, [healthieId]) : Promise.resolve([]),
         ]);
 
         // 3. Build prompt
@@ -133,8 +140,8 @@ export async function POST(request: NextRequest) {
             : 'No recent labs on file';
 
         const prompt = buildSoapPrompt({
-            patient_name: patient.full_name,
-            dob: patient.date_of_birth,
+            patient_name: patientName,
+            dob: patientDob,
             medications,
             recent_labs: labSummary,
             last_visit_summary: 'See visit history',

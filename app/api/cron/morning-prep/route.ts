@@ -196,7 +196,7 @@ interface InventoryStatus {
 
 async function checkInventory(): Promise<InventoryStatus> {
     const [peptides, vials] = await Promise.all([
-        // Peptide stock below reorder point
+        // Peptide stock below reorder point (orders minus paid dispenses)
         query<{
             name: string;
             stock: string;
@@ -204,17 +204,27 @@ async function checkInventory(): Promise<InventoryStatus> {
         }>(`
       SELECT
         p.name,
-        COALESCE(
-          (SELECT SUM(pi.quantity_on_hand) FROM peptide_inventory pi WHERE pi.product_id = p.product_id),
+        (COALESCE(SUM(o.quantity), 0) - COALESCE(
+          (SELECT SUM(d.quantity)
+           FROM peptide_dispenses d
+           WHERE d.product_id = p.product_id
+             AND d.status = 'Paid'
+             AND d.education_complete = true),
           0
-        )::text as stock,
+        ))::text as stock,
         p.reorder_point::text
       FROM peptide_products p
-      WHERE (
-        SELECT COALESCE(SUM(pi.quantity_on_hand), 0)
-        FROM peptide_inventory pi
-        WHERE pi.product_id = p.product_id
-      ) <= p.reorder_point
+      LEFT JOIN peptide_orders o ON o.product_id = p.product_id
+      WHERE p.active = true
+      GROUP BY p.product_id, p.name, p.reorder_point
+      HAVING (COALESCE(SUM(o.quantity), 0) - COALESCE(
+        (SELECT SUM(d.quantity)
+         FROM peptide_dispenses d
+         WHERE d.product_id = p.product_id
+           AND d.status = 'Paid'
+           AND d.education_complete = true),
+        0
+      )) <= p.reorder_point
     `),
 
         // Active vials with low remaining volume (< 5ml)

@@ -55,7 +55,7 @@ export async function GET(
             // Recent peptide dispenses (last 5)
             query<any>(`
         SELECT
-          pd.dispense_id,
+          ROW_NUMBER() OVER (ORDER BY pd.sale_date DESC) as row_num,
           pd.sale_date,
           pd.quantity,
           pd.unit_price,

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -8,13 +9,17 @@
     <meta name="apple-mobile-web-app-title" content="GMH Ops">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0C141D">
-    <link rel="apple-touch-icon" sizes="180x180" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect fill='%230C141D' width='180' height='180' rx='40'/><text x='90' y='115' text-anchor='middle' fill='%2300D4FF' font-size='72' font-family='sans-serif' font-weight='bold'>G</text></svg>">
+    <link rel="apple-touch-icon" sizes="180x180"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect fill='%230C141D' width='180' height='180' rx='40'/><text x='90' y='115' text-anchor='middle' fill='%2300D4FF' font-size='72' font-family='sans-serif' font-weight='bold'>G</text></svg>">
     <title>GMH Ops — Live</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="./style.css">
+    <link
+        href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="./style.css?v=20260227d">
 </head>
+
 <body>
     <!-- Status Bar -->
     <header class="status-bar">
@@ -56,7 +61,8 @@
     <!-- Bottom Tab Bar -->
     <nav class="tab-bar" id="tabBar">
         <button class="tab-item active" data-tab="today">
-            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
                 <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
                 <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
@@ -65,26 +71,31 @@
             <span class="tab-label">Today</span>
         </button>
         <button class="tab-item" data-tab="labs">
-            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
                 <path d="M9 3h6v7l4 9H5l4-9V3z"></path>
                 <path d="M9 3h6"></path>
             </svg>
             <span class="tab-label">Labs</span>
             <span class="tab-badge hidden" id="labsBadge">0</span>
         </button>
-        <button class="tab-item" data-tab="faxes">
-            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4 7V4h16v3"></path>
-                <path d="M4 7h16v13H4V7z"></path>
-                <rect x="8" y="11" width="8" height="5" rx="1"></rect>
-                <circle cx="7" cy="9" r="0.5" fill="currentColor"></circle>
+        <button class="tab-item" data-tab="scribe">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="23"></line>
+                <line x1="8" y1="23" x2="16" y2="23"></line>
             </svg>
-            <span class="tab-label">Faxes</span>
-            <span class="tab-badge hidden" id="faxesBadge">0</span>
+            <span class="tab-label">Scribe</span>
+            <span class="tab-badge hidden" id="scribeBadge">0</span>
         </button>
         <button class="tab-item" data-tab="inventory">
-            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path
+                    d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z">
+                </path>
                 <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
                 <line x1="12" y1="22.08" x2="12" y2="12"></line>
             </svg>
@@ -92,7 +103,8 @@
             <span class="tab-badge alert hidden" id="inventoryBadge">0</span>
         </button>
         <button class="tab-item" data-tab="patients">
-            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
                 <circle cx="9" cy="7" r="4"></circle>
                 <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
@@ -102,9 +114,24 @@
         </button>
     </nav>
 
+    <!-- PDF Viewer Modal -->
+    <div id="pdfViewerModal" class="pdf-viewer-modal">
+        <div class="pdf-viewer-header">
+            <button class="pdf-viewer-close" onclick="closeLabPdf()">✕ Close</button>
+            <span id="pdfViewerTitle" class="pdf-viewer-title"></span>
+            <div id="pdfViewerActions" class="pdf-viewer-header-actions"></div>
+        </div>
+        <div id="pdfViewerLoading" class="pdf-viewer-loading">
+            <div class="loading-spinner"></div>
+            <span>Loading PDF…</span>
+        </div>
+        <iframe id="pdfViewerFrame" class="pdf-viewer-frame" frameborder="0"></iframe>
+    </div>
+
     <!-- Footer -->
     <div class="footer-note">Powered by GMH Ops — Live Data</div>
 
-    <script src="./app.js"></script>
+    <script src="./app.js?v=20260227d"></script>
 </body>
+
 </html>

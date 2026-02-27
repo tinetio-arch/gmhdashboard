@@ -5,17 +5,17 @@ import { query } from '@/lib/db';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
-    try { await requireApiUser(request, 'read'); }
-    catch (error) {
-        if (error instanceof UnauthorizedError)
-            return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-        throw error;
-    }
+  try { await requireApiUser(request, 'read'); }
+  catch (error) {
+    if (error instanceof UnauthorizedError)
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    throw error;
+  }
 
-    try {
-        const [stagedDoses, paymentIssues, todayPatients] = await Promise.all([
-            // Today's staged doses
-            query<any>(`
+  try {
+    const [stagedDoses, paymentIssues, todayPatients] = await Promise.all([
+      // Today's staged doses
+      query<any>(`
         SELECT
           sd.staged_dose_id,
           sd.patient_id,
@@ -36,8 +36,8 @@ export async function GET(request: NextRequest) {
         ORDER BY sd.patient_name ASC
       `),
 
-            // Unresolved payment issues with patient info
-            query<any>(`
+      // Unresolved payment issues with patient info
+      query<any>(`
         SELECT
           pi.issue_id,
           pi.patient_id,
@@ -50,12 +50,13 @@ export async function GET(request: NextRequest) {
         FROM payment_issues pi
         JOIN patients p ON pi.patient_id = p.patient_id
         WHERE pi.resolved_at IS NULL
+          AND p.status_key = 'Active'
         ORDER BY pi.issue_severity DESC, pi.amount_owed DESC
         LIMIT 50
       `),
 
-            // Patients with today's staged doses (unique list for patient cards)
-            query<any>(`
+      // Patients with today's staged doses (unique list for patient cards)
+      query<any>(`
         SELECT DISTINCT ON (p.patient_id)
           p.patient_id,
           p.full_name,
@@ -81,27 +82,27 @@ export async function GET(request: NextRequest) {
           AND sd.status = 'staged'
         ORDER BY p.patient_id, p.full_name
       `),
-        ]);
+    ]);
 
-        return NextResponse.json({
-            success: true,
-            data: {
-                date: new Date().toISOString().split('T')[0],
-                patients: todayPatients,
-                staged_doses: stagedDoses,
-                payment_alerts: paymentIssues,
-                summary: {
-                    total_patients: todayPatients.length,
-                    total_staged_doses: stagedDoses.length,
-                    total_payment_alerts: paymentIssues.length,
-                },
-            },
-        });
-    } catch (error) {
-        console.error('[iPad Dashboard] Error:', error);
-        return NextResponse.json(
-            { success: false, error: error instanceof Error ? error.message : 'Internal server error' },
-            { status: 500 }
-        );
-    }
+    return NextResponse.json({
+      success: true,
+      data: {
+        date: new Date().toISOString().split('T')[0],
+        patients: todayPatients,
+        staged_doses: stagedDoses,
+        payment_alerts: paymentIssues,
+        summary: {
+          total_patients: todayPatients.length,
+          total_staged_doses: stagedDoses.length,
+          total_payment_alerts: paymentIssues.length,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[iPad Dashboard] Error:', error);
+    return NextResponse.json(
+      { success: false, error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    );
+  }
 }

@@ -8,8 +8,23 @@ let dashboardData = null;       // from /ops/api/ipad/dashboard
 let healthieAppointments = [];  // from /ops/api/cron/morning-prep
 let inventorySummary = null;    // from /ops/api/inventory/intelligence/summary
 let inventoryAlerts = [];       // from /ops/api/inventory/intelligence/alerts
-let labsQueue = [];             // from /ops/api/labs/review-queue or dashboard
+let vialList = [];              // individual vials from /ops/api/inventory/vials
+let labsQueue = [];             // from /ops/api/labs/review-queue
 let patient360Cache = {};       // patient_id -> 360 data
+let allPatients = [];            // from /ops/api/patients
+let scribeSessions = [];         // from /ops/api/scribe/sessions
+let activeScribeSession = null;  // currently selected session
+let isRecording = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingStartTime = null;
+let recordingTimer = null;
+let scribeView = 'list';        // 'list' | 'new' | 'recording' | 'transcript' | 'note' | 'review'
+let scribePatientId = null;
+let scribePatientName = '';
+let scribeVisitType = 'follow_up';
+let currentTranscript = '';
+let currentNote = null;
 
 let currentTab = 'today';
 let selectedPatient = null;
@@ -18,6 +33,9 @@ let activeInventoryTab = 'dea';
 let activeSupplyFilter = 'All';
 let isConnected = false;
 let isLoading = false;
+let scribeLoaded = false;       // prevent infinite reload
+let labsLoaded = false;         // prevent infinite reload
+let patientsLoaded = false;     // prevent infinite reload
 
 // Cron secret for Healthie appointments
 const CRON_SECRET = '59c7ba5958b3c753f607a1bdeeb53ae36aabac6ebcf8729f6d411f43fc704122';
@@ -61,7 +79,7 @@ function handleHash() {
 }
 
 function switchTab(tab) {
-    if (!['today', 'labs', 'faxes', 'inventory', 'patients'].includes(tab)) tab = 'today';
+    if (!['today', 'labs', 'scribe', 'inventory', 'patients'].includes(tab)) tab = 'today';
     currentTab = tab;
 
     document.querySelectorAll('.tab-item').forEach(btn => {
@@ -117,7 +135,7 @@ function renderCurrentTab() {
     switch (currentTab) {
         case 'today': renderTodayView(view); break;
         case 'labs': renderLabsView(view); break;
-        case 'faxes': renderFaxesView(view); break;
+        case 'scribe': renderScribeView(view); break;
         case 'inventory': renderInventoryView(view); break;
         case 'patients': renderPatientsView(view); break;
     }
@@ -178,15 +196,20 @@ function setConnectionStatus(connected) {
 // ─── DATA LOADING ───────────────────────────────────────────
 async function loadAllData() {
     isLoading = true;
+    scribeLoaded = false; // reset on full refresh
+    labsLoaded = false;
+    patientsLoaded = false;
     renderCurrentTab(); // Show loading states
 
     let anySuccess = false;
 
-    // Parallel fetch: dashboard + inventory alerts + Healthie appointments
+    // Parallel fetch: dashboard + inventory alerts + Healthie appointments + patients + labs
     const results = await Promise.allSettled([
         loadDashboard(),
         loadInventoryAlerts(),
-        loadHealthieAppointments()
+        loadHealthieAppointments(),
+        loadAllPatients(),
+        loadLabsQueue()
     ]);
 
     anySuccess = results.some(r => r.status === 'fulfilled' && r.value === true);
@@ -208,12 +231,23 @@ async function loadAllData() {
 
 async function loadDashboard() {
     try {
-        const data = await apiFetch('/ops/api/ipad/dashboard');
+        const data = await apiFetch('/ops/api/ipad/dashboard/');
         if (data.success && data.data) {
-            dashboardData = data.data;
+            // Normalize snake_case API fields to camelCase used by frontend
+            const d = data.data;
+            dashboardData = {
+                stagedDoses: d.staged_doses || d.stagedDoses || [],
+                paymentIssues: d.payment_alerts || d.payment_issues || d.paymentIssues || [],
+                patients: (d.patients || []).map(p => ({
+                    ...p,
+                    id: p.patient_id || p.id,
+                    name: p.full_name || p.name || p.patient_name || '',
+                    status: p.status_key || p.status || 'Active',
+                })),
+                summary: d.summary || {},
+            };
             return true;
         }
-        // If endpoint returns but no data structure
         dashboardData = data.data || data;
         return true;
     } catch (e) {
@@ -225,10 +259,22 @@ async function loadDashboard() {
 
 async function loadHealthieAppointments() {
     try {
-        const data = await apiFetch('/ops/api/cron/morning-prep', {
+        const data = await apiFetch('/ops/api/cron/morning-prep/', {
             headers: { 'x-cron-secret': CRON_SECRET }
         });
-        if (data && data.appointments) {
+        // Morning-prep returns { success, data: { summary: { patients: [...] } } }
+        if (data?.success && data?.data?.summary?.patients) {
+            healthieAppointments = data.data.summary.patients.map(p => ({
+                id: p.healthie_id || p.patient_id || '',
+                patient_name: p.full_name || p.name || '',
+                appointment_type: p.appointment_type || '',
+                status: p.appointment_status || 'scheduled',
+                time: '',
+                has_staged_dose: p.has_staged_dose || false,
+                has_payment_issue: p.has_payment_issue || false,
+                has_pending_lab: p.has_pending_lab || false,
+            }));
+        } else if (data && data.appointments) {
             healthieAppointments = data.appointments;
         } else if (Array.isArray(data)) {
             healthieAppointments = data;
@@ -243,8 +289,15 @@ async function loadHealthieAppointments() {
 
 async function loadInventorySummary() {
     try {
-        const data = await apiFetch('/ops/api/inventory/intelligence/summary');
-        inventorySummary = data;
+        const data = await apiFetch('/ops/api/inventory/intelligence/summary/');
+        // API returns { success, data: { vials: {aggregate}, peptides: [...], supplies: [...] } }
+        if (data?.success && data?.data) {
+            inventorySummary = data.data;
+        } else {
+            inventorySummary = data;
+        }
+        // Also load individual vial list for DEA section
+        await loadVialList();
         return true;
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
@@ -253,15 +306,35 @@ async function loadInventorySummary() {
     }
 }
 
+async function loadVialList() {
+    try {
+        // Fetch individual active vials for the DEA inventory view
+        const data = await apiFetch('/ops/api/inventory/vials/');
+        if (data?.success && Array.isArray(data.data)) {
+            vialList = data.data;
+        } else if (Array.isArray(data)) {
+            vialList = data;
+        } else if (data?.vials) {
+            vialList = data.vials;
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Vial list load failed:', e);
+    }
+}
+
 async function loadInventoryAlerts() {
     try {
-        const data = await apiFetch('/ops/api/inventory/intelligence/alerts');
-        if (Array.isArray(data)) {
-            inventoryAlerts = data;
-        } else if (data.alerts) {
+        const data = await apiFetch('/ops/api/inventory/intelligence/alerts/');
+        // API returns { success, data: { alerts: [...], summary: {...} } }
+        if (data?.success && data?.data?.alerts) {
+            inventoryAlerts = data.data.alerts;
+        } else if (data?.alerts) {
             inventoryAlerts = data.alerts;
-        } else if (data.data) {
-            inventoryAlerts = Array.isArray(data.data) ? data.data : [];
+        } else if (Array.isArray(data)) {
+            inventoryAlerts = data;
+        } else if (data?.data && Array.isArray(data.data)) {
+            inventoryAlerts = data.data;
         }
         return true;
     } catch (e) {
@@ -273,18 +346,48 @@ async function loadInventoryAlerts() {
 
 async function loadLabsQueue() {
     try {
-        const data = await apiFetch('/ops/api/labs/review-queue');
-        if (Array.isArray(data)) {
+        // First load pending, then also load all for history
+        const data = await apiFetch('/ops/api/labs/review-queue/?status=all&limit=100');
+        // API returns { success, items: [...], counts: {...} }
+        if (data?.success && Array.isArray(data.items)) {
+            labsQueue = data.items;
+        } else if (Array.isArray(data)) {
             labsQueue = data;
-        } else if (data.data) {
-            labsQueue = Array.isArray(data.data) ? data.data : [];
-        } else if (data.labs) {
+        } else if (data?.data && Array.isArray(data.data)) {
+            labsQueue = data.data;
+        } else if (data?.labs) {
             labsQueue = data.labs;
         }
+        labsLoaded = true;
         return true;
     } catch (e) {
+        labsLoaded = true; // mark as attempted even on failure
         if (e.message === 'AUTH_EXPIRED') throw e;
-        console.warn('Labs queue load failed (endpoint may not exist yet):', e);
+        console.warn('Labs queue load failed:', e);
+        return false;
+    }
+}
+
+async function loadAllPatients() {
+    try {
+        const data = await apiFetch('/ops/api/patients/');
+        // API returns { data: [...] }
+        if (data?.data && Array.isArray(data.data)) {
+            allPatients = data.data.map(p => ({
+                ...p,
+                id: p.patient_id || p.id,
+                name: p.full_name || p.name || p.patient_name || '',
+                status: p.status_key || p.status || 'Active',
+            }));
+        } else if (Array.isArray(data)) {
+            allPatients = data;
+        }
+        patientsLoaded = true;
+        return true;
+    } catch (e) {
+        patientsLoaded = true; // mark as attempted even on failure
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Patient list load failed:', e);
         return false;
     }
 }
@@ -292,9 +395,11 @@ async function loadLabsQueue() {
 async function loadPatient360(patientId) {
     if (patient360Cache[patientId]) return patient360Cache[patientId];
     try {
-        const data = await apiFetch(`/ops/api/patients/${patientId}/360`);
-        patient360Cache[patientId] = data;
-        return data;
+        const data = await apiFetch(`/ops/api/ipad/patient/${patientId}/`);
+        // API returns { success, data: { demographics, recent_dispenses, recent_peptides, payment_issues, staged_doses, summary } }
+        const result = (data?.success && data?.data) ? data.data : data;
+        patient360Cache[patientId] = result;
+        return result;
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         console.warn(`Patient 360 load failed for ${patientId}:`, e);
@@ -328,9 +433,17 @@ function updateBadges() {
         }
     }
 
-    // Faxes badge — hidden since no endpoint yet
-    const faxBadge = document.getElementById('faxesBadge');
-    if (faxBadge) faxBadge.classList.add('hidden');
+    // Scribe badge — show active sessions count
+    const scribeBadge = document.getElementById('scribeBadge');
+    const activeSessions = scribeSessions.filter(s => s.status === 'transcribed' || s.status === 'note_generated').length;
+    if (scribeBadge) {
+        if (activeSessions > 0) {
+            scribeBadge.textContent = activeSessions;
+            scribeBadge.classList.remove('hidden');
+        } else {
+            scribeBadge.classList.add('hidden');
+        }
+    }
 }
 
 // ─── HELPERS ────────────────────────────────────────────────
@@ -361,12 +474,14 @@ function getPaymentIssues() {
 }
 
 function getPatients() {
+    // Prefer full patient list, fall back to dashboard-only patients
+    if (allPatients.length > 0) return allPatients;
     return (dashboardData && dashboardData.patients) ? dashboardData.patients : [];
 }
 
 function getLabsPending() {
     // Prefer dedicated labs queue, fall back to dashboard labs
-    if (labsQueue.length > 0) return labsQueue.filter(l => l.status === 'pending' || l.status === 'needs_review');
+    if (labsQueue.length > 0) return labsQueue.filter(l => l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review');
     return [];
 }
 
@@ -417,8 +532,8 @@ function renderTodayView(container) {
     const paymentIssues = getPaymentIssues();
     const patients = getPatients();
 
-    // Compute stats
-    const activePatientCount = patients.length || 0;
+    // Compute stats — use allPatients count for active count, not today's dashboard patients
+    const activePatientCount = allPatients.length || patients.length || 0;
     const labsPendingCount = getLabsPending().length || 0;
     const stagedCount = stagedDoses.length || 0;
     const paymentIssueCount = paymentIssues.length || 0;
@@ -677,9 +792,10 @@ function clearAllActions() {
 // LABS VIEW
 // ============================================================
 function renderLabsView(container) {
-    // Try loading labs if not loaded
-    if (labsQueue.length === 0 && !isLoading) {
+    // Try loading labs if not loaded (with guard to prevent infinite loop)
+    if (labsQueue.length === 0 && !labsLoaded && !isLoading) {
         container.innerHTML = renderLoadingState();
+        labsLoaded = true; // prevent re-entry
         loadLabsQueue().then(success => {
             if (currentTab === 'labs') {
                 renderCurrentTab();
@@ -690,13 +806,13 @@ function renderLabsView(container) {
     }
 
     const allLabs = labsQueue;
-    const pending = allLabs.filter(l => l.status === 'pending' || l.status === 'needs_review');
+    const pending = allLabs.filter(l => l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review');
     const approved = allLabs.filter(l => l.status === 'approved' || l.status === 'reviewed');
     const normalPending = pending.filter(l => !l.critical && !l.is_critical);
 
     const filteredLabs = activeLabFilter === 'pending' ? pending
         : activeLabFilter === 'approved' ? approved
-        : allLabs;
+            : allLabs;
 
     container.innerHTML = `
         <h1 style="font-size:28px; margin-bottom:20px;">Lab Results</h1>
@@ -715,9 +831,9 @@ function renderLabsView(container) {
         </div>
         <div class="stagger-in" id="labsList">
             ${filteredLabs.map(l => renderLabCard(l)).join('')}
-            ${filteredLabs.length === 0 ? renderEmptyState('🧪', 
-                activeLabFilter === 'pending' ? 'No labs pending review' : 'No lab results',
-                activeLabFilter === 'pending' ? 'All caught up!' : '') : ''}
+            ${filteredLabs.length === 0 ? renderEmptyState('🧪',
+        activeLabFilter === 'pending' ? 'No labs pending review' : 'No lab results',
+        activeLabFilter === 'pending' ? 'All caught up!' : '') : ''}
         </div>
     `;
 }
@@ -743,7 +859,7 @@ function renderLabCard(lab) {
     // Parse results
     let results = {};
     if (lab.results_json) {
-        try { results = typeof lab.results_json === 'string' ? JSON.parse(lab.results_json) : lab.results_json; } catch(e) {}
+        try { results = typeof lab.results_json === 'string' ? JSON.parse(lab.results_json) : lab.results_json; } catch (e) { }
     } else if (lab.results) {
         results = typeof lab.results === 'string' ? JSON.parse(lab.results) : lab.results;
     }
@@ -768,14 +884,14 @@ function renderLabCard(lab) {
                     ${Object.keys(results).length > 0 ? `
                         <div class="lab-results-grid">
                             ${Object.entries(results).map(([k, v]) => {
-                                const val = String(v);
-                                return `
+        const val = String(v);
+        return `
                                     <div class="lab-result-item">
                                         <span class="result-key">${k}</span>
                                         <span class="result-val ${val.includes('⚠') || val.includes('HIGH') || val.includes('LOW') ? 'flagged' : ''}">${val.replace('⚠️', '').trim()}</span>
                                     </div>
                                 `;
-                            }).join('')}
+    }).join('')}
                         </div>
                     ` : ''}
                 </div>
@@ -786,11 +902,17 @@ function renderLabCard(lab) {
             ` : ''}
             ${!isApproved ? `
                 <div class="lab-actions">
+                    <button class="btn-view-pdf" onclick="event.stopPropagation(); viewLabPdf('${labId}', '${patientName.replace(/'/g, "\\'")}')">
+                        📄 View PDF
+                    </button>
                     <button class="btn-approve" onclick="event.stopPropagation(); approveLab('${labId}')">✓ APPROVE</button>
                     <button class="btn-reject" onclick="event.stopPropagation(); rejectLab('${labId}')">Reject</button>
                 </div>
             ` : `
                 <div class="lab-actions">
+                    <button class="btn-view-pdf" onclick="event.stopPropagation(); viewLabPdf('${labId}', '${patientName.replace(/'/g, "\\'")}')">
+                        📄 View PDF
+                    </button>
                     <button class="btn-approve" disabled>✓ APPROVED</button>
                 </div>
             `}
@@ -808,124 +930,795 @@ function toggleLabSummary(id) {
 }
 
 async function approveLab(id) {
-    // Try to call approve endpoint
+    // Call the review-queue POST endpoint with approve action
     try {
-        await apiFetch(`/ops/api/labs/review-queue/${id}/approve`, { method: 'POST' });
+        const result = await apiFetch('/ops/api/labs/review-queue/', {
+            method: 'POST',
+            body: JSON.stringify({ id: id, action: 'approve' })
+        });
+        if (result?.success) {
+            showToast('Lab result approved & uploaded to Healthie', 'success');
+        } else {
+            showToast(result?.error || 'Approve failed', 'error');
+        }
     } catch (e) {
-        // If endpoint doesn't exist, just update locally
-        console.warn('Lab approve endpoint not available, updating locally');
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Lab approve failed:', e);
     }
     const lab = labsQueue.find(l => (l.id || l.lab_id) == id);
     if (lab) lab.status = 'approved';
     updateBadges();
-    showToast('Lab result approved', 'success');
     renderCurrentTab();
 }
 
 async function rejectLab(id) {
     try {
-        await apiFetch(`/ops/api/labs/review-queue/${id}/reject`, { method: 'POST' });
+        const result = await apiFetch('/ops/api/labs/review-queue/', {
+            method: 'POST',
+            body: JSON.stringify({ id: id, action: 'reject', rejection_reason: 'Rejected from iPad' })
+        });
+        if (result?.success) {
+            showToast('Lab result rejected', 'info');
+        }
     } catch (e) {
-        console.warn('Lab reject endpoint not available, updating locally');
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Lab reject failed:', e);
     }
     const lab = labsQueue.find(l => (l.id || l.lab_id) == id);
     if (lab) lab.status = 'rejected';
     updateBadges();
-    showToast('Lab result rejected', 'info');
     renderCurrentTab();
 }
 
 async function batchApproveNormal() {
-    try {
-        await apiFetch('/ops/api/labs/review-queue/batch-approve', { method: 'POST' });
-    } catch (e) {
-        console.warn('Batch approve endpoint not available, updating locally');
-    }
-    labsQueue.forEach(l => {
-        if (!l.critical && !l.is_critical && (l.status === 'pending' || l.status === 'needs_review')) {
-            l.status = 'approved';
+    const normalPending = labsQueue.filter(l =>
+        !l.critical && !l.is_critical &&
+        (l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review')
+    );
+    let approved = 0;
+    for (const lab of normalPending) {
+        try {
+            await apiFetch('/ops/api/labs/review-queue', {
+                method: 'POST',
+                body: JSON.stringify({ id: lab.id || lab.lab_id, action: 'approve' })
+            });
+            lab.status = 'approved';
+            approved++;
+        } catch (e) {
+            if (e.message === 'AUTH_EXPIRED') throw e;
+            console.warn(`Batch approve failed for ${lab.id}:`, e);
         }
-    });
+    }
     updateBadges();
-    showToast('All normal labs approved', 'success');
+    showToast(`${approved} normal labs approved`, 'success');
     renderCurrentTab();
 }
 
-// ============================================================
-// FAXES VIEW — Coming Soon
-// ============================================================
-function renderFaxesView(container) {
-    container.innerHTML = `
-        <h1 style="font-size:28px; margin-bottom:20px;">Fax Triage</h1>
-        <div class="coming-soon">
-            <div class="coming-soon-icon">📠</div>
-            <h2>Coming Soon</h2>
-            <p>AI-powered fax triage is being built. Incoming faxes will be automatically analyzed, 
-               matched to patients, and queued for your review.</p>
-            
-            <div class="example-fax-cards">
-                <div class="example-label">Preview — What this will look like</div>
-                
-                <div class="fax-card" style="opacity:0.6; pointer-events:none;">
-                    <div class="fax-header">
-                        <div>
-                            <div class="fax-sender">Sonora Quest Laboratories</div>
-                            <div class="fax-meta">
-                                <span>Feb 26, 2026</span>
-                                <span>3 pages</span>
-                            </div>
-                        </div>
-                        <span class="fax-type-badge">Lab Results</span>
-                    </div>
-                    <div class="fax-ai-summary">
-                        <div class="fax-ai-header">
-                            ✨ AI Summary 
-                            <span class="confidence-badge green">high confidence</span>
-                        </div>
-                        <p>Lab results for patient — CMP panel with flagged glucose (248 mg/dL). Urgent review recommended.</p>
-                    </div>
-                    <div class="fax-match">
-                        <span>🔗</span>
-                        <span>Suggested Patient: <strong>David Kowalski</strong></span>
-                        <span class="fax-match-pct">95% match</span>
-                    </div>
-                    <div class="fax-actions">
-                        <button class="btn-fax-approve" disabled>✓ APPROVE & UPLOAD</button>
-                        <button class="btn-fax-reject" disabled>Reject</button>
-                    </div>
-                </div>
+async function viewLabPdf(labId, patientName) {
+    const modal = document.getElementById('pdfViewerModal');
+    const iframe = document.getElementById('pdfViewerFrame');
+    const title = document.getElementById('pdfViewerTitle');
+    const actions = document.getElementById('pdfViewerActions');
 
-                <div class="fax-card" style="opacity:0.4; pointer-events:none;">
-                    <div class="fax-header">
-                        <div>
-                            <div class="fax-sender">Desert Ridge Orthopedics</div>
-                            <div class="fax-meta">
-                                <span>Feb 25, 2026</span>
-                                <span>5 pages</span>
-                            </div>
-                        </div>
-                        <span class="fax-type-badge">Referral Letter</span>
-                    </div>
-                    <div class="fax-ai-summary">
-                        <div class="fax-ai-header">
-                            ✨ AI Summary
-                            <span class="confidence-badge yellow">medium confidence</span>
-                        </div>
-                        <p>Referral letter for new patient. Includes MRI report, PT notes, medication list.</p>
-                    </div>
-                    <div class="fax-match">
-                        <span>🔗</span>
-                        <span>Suggested Patient: <strong>New Patient</strong></span>
-                        <span class="fax-match-pct">72% match</span>
-                    </div>
-                    <div class="fax-actions">
-                        <button class="btn-fax-approve" disabled>✓ APPROVE & UPLOAD</button>
-                        <button class="btn-fax-reject" disabled>Reject</button>
-                    </div>
+    if (!modal || !iframe) {
+        showToast('PDF viewer not available', 'error');
+        return;
+    }
+
+    title.textContent = `${patientName} — Lab Results`;
+    iframe.src = '';
+    modal.classList.add('visible');
+    iframe.style.display = 'none';
+    document.getElementById('pdfViewerLoading').style.display = 'flex';
+
+    // Show approve/reject buttons for pending labs
+    const lab = labsQueue.find(l => (l.id || l.lab_id) == labId);
+    const isPending = lab && (lab.status === 'pending_review' || lab.status === 'pending' || lab.status === 'needs_review');
+    actions.innerHTML = isPending ? `
+        <button class="btn-approve" onclick="approveLab('${labId}'); closeLabPdf();">✓ APPROVE</button>
+        <button class="btn-reject" onclick="rejectLab('${labId}'); closeLabPdf();">Reject</button>
+    ` : '';
+
+    try {
+        const data = await apiFetch(`/ops/api/labs/review-queue/${labId}/pdf/`);
+        if (data?.success && data.url) {
+            iframe.src = data.url;
+            iframe.style.display = 'block';
+            document.getElementById('pdfViewerLoading').style.display = 'none';
+        } else {
+            document.getElementById('pdfViewerLoading').innerHTML = `
+                <div class="empty-icon">📄</div>
+                <h3>No PDF Available</h3>
+                <p>${data?.error || 'This lab does not have a PDF attached.'}</p>
+            `;
+        }
+    } catch (e) {
+        document.getElementById('pdfViewerLoading').innerHTML = `
+            <div class="empty-icon">⚠️</div>
+            <h3>Error Loading PDF</h3>
+            <p>${e.message}</p>
+        `;
+    }
+}
+
+function closeLabPdf() {
+    const modal = document.getElementById('pdfViewerModal');
+    const iframe = document.getElementById('pdfViewerFrame');
+    if (modal) modal.classList.remove('visible');
+    if (iframe) iframe.src = '';
+}
+// ============================================================
+// SCRIBE VIEW — AI Medical Scribe
+// ============================================================
+async function loadScribeSessions() {
+    try {
+        const data = await apiFetch('/ops/api/scribe/sessions/?limit=30');
+        if (data?.success && Array.isArray(data.data)) {
+            scribeSessions = data.data;
+        }
+        scribeLoaded = true;
+    } catch (e) {
+        scribeLoaded = true; // mark as attempted even on failure
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Scribe sessions load failed:', e);
+    }
+}
+
+function renderScribeView(container) {
+    // Load sessions on first visit (with guard to prevent infinite loop)
+    if (!scribeLoaded && !isLoading) {
+        container.innerHTML = renderLoadingState();
+        scribeLoaded = true; // prevent re-entry
+        loadScribeSessions().then(() => {
+            if (currentTab === 'scribe') renderCurrentTab();
+            updateBadges();
+        });
+        return;
+    }
+
+    switch (scribeView) {
+        case 'list': renderScribeList(container); break;
+        case 'new': renderScribeNewSession(container); break;
+        case 'recording': renderScribeRecording(container); break;
+        case 'transcript': renderScribeTranscript(container); break;
+        case 'note': renderScribeNote(container); break;
+        case 'review': renderScribeReview(container); break;
+        default: renderScribeList(container);
+    }
+}
+
+function renderScribeList(container) {
+    const sessions = scribeSessions;
+    const inProgress = sessions.filter(s => s.status === 'transcribed' || s.status === 'note_generated');
+    const completed = sessions.filter(s => s.status === 'submitted' || s.status === 'signed');
+    const recent = sessions.filter(s => s.status === 'recording');
+
+    container.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
+            <h1 style="font-size:28px;">AI Scribe</h1>
+            <button class="btn-primary scribe-new-btn" onclick="startNewScribeSession()">
+                <span style="font-size:18px;">🎙</span> New Session
+            </button>
+        </div>
+
+        ${inProgress.length > 0 ? `
+            <div class="section-header" style="margin-top:0">
+                <h2>In Progress</h2>
+                <span class="section-action">${inProgress.length} active</span>
+            </div>
+            <div class="stagger-in">
+                ${inProgress.map(s => renderScribeSessionCard(s)).join('')}
+            </div>
+        ` : ''}
+
+        ${recent.length > 0 ? `
+            <div class="section-header">
+                <h2>Recording</h2>
+            </div>
+            <div class="stagger-in">
+                ${recent.map(s => renderScribeSessionCard(s)).join('')}
+            </div>
+        ` : ''}
+
+        ${completed.length > 0 ? `
+            <div class="section-header">
+                <h2>Completed</h2>
+                <span class="section-action">${completed.length} done</span>
+            </div>
+            <div class="stagger-in">
+                ${completed.map(s => renderScribeSessionCard(s)).join('')}
+            </div>
+        ` : ''}
+
+        ${sessions.length === 0 ? `
+            <div class="empty-state">
+                <div class="empty-icon">🎙</div>
+                <h3>No Scribe Sessions</h3>
+                <p>Tap <strong>New Session</strong> to start your first AI-powered visit note.</p>
+            </div>
+        ` : ''}
+    `;
+}
+
+function renderScribeSessionCard(session) {
+    const name = session.patient_name || 'Unknown Patient';
+    const visitType = (session.visit_type || 'follow_up').replace(/_/g, ' ');
+    const time = session.created_at ? new Date(session.created_at).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+    }) : '';
+    const status = session.status || 'recording';
+    const statusColors = {
+        recording: 'var(--red)', transcribed: 'var(--yellow)',
+        note_generated: 'var(--cyan)', submitted: 'var(--green)', signed: 'var(--green)',
+    };
+    const statusLabels = {
+        recording: 'Recording', transcribed: 'Needs Note',
+        note_generated: 'Review Note', submitted: 'Submitted', signed: 'Signed',
+    };
+    const nextAction = {
+        transcribed: () => `onclick="openScribeSession('${session.session_id}', 'note')"`,
+        note_generated: () => `onclick="openScribeSession('${session.session_id}', 'review')"`,
+        submitted: () => `onclick="openScribeSession('${session.session_id}', 'review')"`,
+        signed: () => `onclick="openScribeSession('${session.session_id}', 'review')"`,
+    };
+    const clickAttr = nextAction[status] ? nextAction[status]() : '';
+
+    return `
+        <div class="scribe-session-card" ${clickAttr}>
+            <div class="scribe-session-header">
+                <div class="scribe-session-info">
+                    <div class="scribe-session-patient">${name}</div>
+                    <div class="scribe-session-meta">${visitType} · ${time}</div>
                 </div>
+                <div class="scribe-status-badge" style="background:${statusColors[status] || 'var(--text-tertiary)'}20; color:${statusColors[status] || 'var(--text-tertiary)'}">
+                    ${statusLabels[status] || status}
+                </div>
+            </div>
+            ${session.transcript_length > 0 ? `
+                <div class="scribe-session-detail">
+                    <span>📝 ${session.transcript_length.toLocaleString()} chars transcribed</span>
+                    ${session.has_note ? '<span>📋 SOAP note generated</span>' : ''}
+                    ${session.healthie_note_id ? '<span>✅ In Healthie</span>' : ''}
+                </div>
+            ` : ''}
+        </div>
+    `;
+}
+
+function startNewScribeSession() {
+    scribeView = 'new';
+    renderCurrentTab();
+}
+
+function renderScribeNewSession(container) {
+    container.innerHTML = `
+        <div class="scribe-header-row">
+            <button class="scribe-back-btn" onclick="scribeView='list'; renderCurrentTab();">← Back</button>
+            <h1 style="font-size:24px;">New Scribe Session</h1>
+        </div>
+
+        <div class="scribe-form">
+            <div class="scribe-field">
+                <label>Patient (Healthie)</label>
+                <div class="patient-search-wrapper">
+                    <input type="text" id="scribePatientSearch" class="patient-search-input"
+                           placeholder="Type 3+ letters to search Healthie…"
+                           autocomplete="off" />
+                    <div id="scribePatientResults" class="patient-search-results"></div>
+                    <div id="scribePatientSelected" class="patient-selected-badge" style="display:none;"></div>
+                </div>
+            </div>
+            <div class="scribe-field">
+                <label>Visit Type</label>
+                <div class="scribe-visit-types">
+                    ${['follow_up', 'initial', 'urgent', 'telehealth', 'procedure'].map(vt => `
+                        <button class="visit-type-btn ${scribeVisitType === vt ? 'active' : ''}" 
+                                onclick="scribeVisitType='${vt}'; document.querySelectorAll('.visit-type-btn').forEach(b=>b.classList.remove('active')); this.classList.add('active');">
+                            ${vt.replace(/_/g, ' ')}
+                        </button>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="scribe-field">
+                <label>Input Method</label>
+                <div class="scribe-method-toggle">
+                    <button class="method-btn active" id="methodRecord" onclick="selectScribeMethod('record')">
+                        🎙 Record Audio
+                    </button>
+                    <button class="method-btn" id="methodType" onclick="selectScribeMethod('type')">
+                        ⌨️ Type Transcript
+                    </button>
+                </div>
+            </div>
+            <div id="scribeMethodContent">
+                <div class="scribe-record-prompt">
+                    <div class="record-icon-large">🎙</div>
+                    <p>Tap <strong>Start Recording</strong> to capture the visit conversation.</p>
+                    <p style="font-size:12px; color:var(--text-tertiary);">Audio is transcribed by Deepgram Nova-2 Medical</p>
+                </div>
+            </div>
+            <button class="btn-primary scribe-start-btn" id="scribeStartBtn" onclick="beginScribeCapture()" disabled>
+                Start Recording
+            </button>
+        </div>
+    `;
+
+    // Wire up typeahead patient search
+    let searchTimeout = null;
+    const input = document.getElementById('scribePatientSearch');
+    const results = document.getElementById('scribePatientResults');
+    const badge = document.getElementById('scribePatientSelected');
+
+    if (input) {
+        input.addEventListener('input', () => {
+            const q = input.value.trim();
+            if (searchTimeout) clearTimeout(searchTimeout);
+            if (q.length < 3) {
+                results.innerHTML = '';
+                results.style.display = 'none';
+                return;
+            }
+            results.innerHTML = '<div class="patient-search-loading">Searching Healthie…</div>';
+            results.style.display = 'block';
+            searchTimeout = setTimeout(async () => {
+                try {
+                    const data = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
+                    if (!data?.patients?.length) {
+                        results.innerHTML = '<div class="patient-search-empty">No active patients found</div>';
+                        return;
+                    }
+                    results.innerHTML = data.patients.map(p => {
+                        const name = `${p.first_name || ''} ${p.last_name || ''}`.trim() || p.name || 'Unknown';
+                        const dob = p.dob ? ` · DOB: ${p.dob}` : '';
+                        return `<div class="patient-search-item" onclick="selectScribePatient('${p.healthie_id || p.id}', '${name.replace(/'/g, "\\'")}')">
+                            <span class="patient-search-name">${name}</span>
+                            <span class="patient-search-detail">${p.email || ''}${dob}</span>
+                        </div>`;
+                    }).join('');
+                } catch (e) {
+                    results.innerHTML = `<div class="patient-search-empty">Search error: ${e.message}</div>`;
+                }
+            }, 300);
+        });
+    }
+}
+
+function selectScribePatient(healthieId, name) {
+    scribePatientId = healthieId;
+    scribePatientName = name;
+    const input = document.getElementById('scribePatientSearch');
+    const results = document.getElementById('scribePatientResults');
+    const badge = document.getElementById('scribePatientSelected');
+    const btn = document.getElementById('scribeStartBtn');
+
+    if (input) input.value = '';
+    if (results) { results.innerHTML = ''; results.style.display = 'none'; }
+    if (badge) {
+        badge.style.display = 'flex';
+        badge.innerHTML = `
+            <span>👤 ${name}</span>
+            <button onclick="clearScribePatient()" class="patient-clear-btn">✕</button>
+        `;
+    }
+    if (btn) btn.disabled = false;
+}
+
+function clearScribePatient() {
+    scribePatientId = null;
+    scribePatientName = '';
+    const badge = document.getElementById('scribePatientSelected');
+    const btn = document.getElementById('scribeStartBtn');
+    if (badge) { badge.style.display = 'none'; badge.innerHTML = ''; }
+    if (btn) btn.disabled = true;
+}
+
+function selectScribeMethod(method) {
+    document.getElementById('methodRecord').classList.toggle('active', method === 'record');
+    document.getElementById('methodType').classList.toggle('active', method === 'type');
+    const content = document.getElementById('scribeMethodContent');
+    const btn = document.getElementById('scribeStartBtn');
+
+    if (method === 'type') {
+        content.innerHTML = `
+            <div class="scribe-field">
+                <label>Paste or type the visit transcript</label>
+                <textarea id="scribeManualTranscript" class="scribe-textarea" rows="10" 
+                          placeholder="Enter the visit notes or transcript here…"></textarea>
+            </div>
+        `;
+        btn.textContent = 'Submit Transcript';
+        btn.onclick = submitManualTranscript;
+    } else {
+        content.innerHTML = `
+            <div class="scribe-record-prompt">
+                <div class="record-icon-large">🎙</div>
+                <p>Tap <strong>Start Recording</strong> to capture the visit conversation.</p>
+                <p style="font-size:12px; color:var(--text-tertiary);">Audio is transcribed by Deepgram Nova-2 Medical</p>
+            </div>
+        `;
+        btn.textContent = 'Start Recording';
+        btn.onclick = beginScribeCapture;
+    }
+}
+
+async function beginScribeCapture() {
+    if (!scribePatientId) {
+        showToast('Please select a patient first', 'error');
+        return;
+    }
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+        mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+        mediaRecorder.onstop = handleRecordingComplete;
+        mediaRecorder.start(1000); // collect in 1-sec chunks
+        isRecording = true;
+        recordingStartTime = Date.now();
+        scribeView = 'recording';
+        renderCurrentTab();
+        // Start timer
+        recordingTimer = setInterval(updateRecordingTimer, 1000);
+    } catch (err) {
+        showToast('Microphone access denied', 'error');
+        console.error('Mic error:', err);
+    }
+}
+
+function renderScribeRecording(container) {
+    container.innerHTML = `
+        <div class="scribe-recording-view">
+            <div class="scribe-header-row">
+                <h1 style="font-size:24px;">Recording Visit</h1>
+            </div>
+            <div class="scribe-recording-center">
+                <div class="recording-pulse-ring">
+                    <div class="recording-pulse-dot"></div>
+                </div>
+                <div class="recording-timer" id="recordingTimer">00:00</div>
+                <div class="recording-patient">${getPatientNameById(scribePatientId)}</div>
+                <div class="recording-visit-type">${scribeVisitType.replace(/_/g, ' ')}</div>
+            </div>
+            <div class="recording-waveform" id="waveform">
+                ${Array.from({ length: 40 }, () => '<div class="wave-bar"></div>').join('')}
+            </div>
+            <div class="recording-controls">
+                <button class="btn-stop-recording" onclick="stopScribeRecording()">
+                    <span class="stop-icon">◼</span> Stop Recording
+                </button>
             </div>
         </div>
     `;
+    animateWaveform();
+}
+
+function updateRecordingTimer() {
+    const el = document.getElementById('recordingTimer');
+    if (!el || !recordingStartTime) return;
+    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+    const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+    const s = (elapsed % 60).toString().padStart(2, '0');
+    el.textContent = `${m}:${s}`;
+}
+
+function animateWaveform() {
+    const bars = document.querySelectorAll('.wave-bar');
+    if (bars.length === 0 || !isRecording) return;
+    bars.forEach(bar => {
+        const h = Math.random() * 60 + 10;
+        bar.style.height = h + '%';
+    });
+    if (isRecording) requestAnimationFrame(() => setTimeout(animateWaveform, 100));
+}
+
+function getPatientNameById(id) {
+    // Use scribePatientName if it matches the current scribe patient
+    if (scribePatientName && id === scribePatientId) return scribePatientName;
+    if (stageDosePatientName && id === stageDosePatientId) return stageDosePatientName;
+    const patients = getPatients();
+    const p = patients.find(p => String(p.id || p.patient_id) === String(id) || String(p.healthie_client_id) === String(id));
+    return p ? (p.name || p.patient_name || p.full_name || 'Unknown') : (scribePatientName || 'Unknown Patient');
+}
+
+function stopScribeRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        mediaRecorder.stream.getTracks().forEach(t => t.stop());
+    }
+    isRecording = false;
+    if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
+}
+
+async function handleRecordingComplete() {
+    showToast('Transcribing audio…', 'info');
+    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+    const formData = new FormData();
+    formData.append('audio', blob, 'visit-recording.webm');
+    formData.append('patient_id', scribePatientId);
+    formData.append('visit_type', scribeVisitType);
+    formData.append('patient_name', scribePatientName || '');
+
+    try {
+        const resp = await fetch('/ops/api/scribe/transcribe/', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+        });
+        const data = await resp.json();
+        if (data.success) {
+            activeScribeSession = data.data;
+            showToast(`Transcribed! ${data.data.transcript_length} characters`, 'success');
+            // Reload sessions and go to transcript view
+            await loadScribeSessions();
+            scribeView = 'note';
+            renderCurrentTab();
+            updateBadges();
+        } else {
+            showToast(data.error || 'Transcription failed', 'error');
+            scribeView = 'list';
+            renderCurrentTab();
+        }
+    } catch (e) {
+        showToast('Transcription failed — check connection', 'error');
+        scribeView = 'list';
+        renderCurrentTab();
+    }
+}
+
+async function submitManualTranscript() {
+    const textarea = document.getElementById('scribeManualTranscript');
+    if (!textarea || !textarea.value.trim()) {
+        showToast('Please enter a transcript', 'error');
+        return;
+    }
+    if (!scribePatientId) {
+        showToast('Please select a patient', 'error');
+        return;
+    }
+
+    showToast('Submitting transcript…', 'info');
+    const formData = new FormData();
+    formData.append('patient_id', scribePatientId);
+    formData.append('visit_type', scribeVisitType);
+    formData.append('patient_name', scribePatientName || '');
+    formData.append('transcript', textarea.value.trim());
+
+    try {
+        const resp = await fetch('/ops/api/scribe/transcribe/', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+        });
+        const data = await resp.json();
+        if (data.success) {
+            activeScribeSession = data.data;
+            showToast('Transcript saved!', 'success');
+            await loadScribeSessions();
+            scribeView = 'note';
+            renderCurrentTab();
+            updateBadges();
+        } else {
+            showToast(data.error || 'Submission failed', 'error');
+        }
+    } catch (e) {
+        showToast('Submission failed', 'error');
+    }
+}
+
+function openScribeSession(sessionId, view) {
+    const session = scribeSessions.find(s => s.session_id === sessionId);
+    if (session) {
+        activeScribeSession = session;
+        scribeView = view || 'note';
+        scribePatientId = session.patient_id;
+        renderCurrentTab();
+    }
+}
+
+function renderScribeNote(container) {
+    if (!activeScribeSession) { scribeView = 'list'; renderCurrentTab(); return; }
+
+    container.innerHTML = `
+        <div class="scribe-header-row">
+            <button class="scribe-back-btn" onclick="scribeView='list'; renderCurrentTab();">← Back</button>
+            <h1 style="font-size:24px;">Generate SOAP Note</h1>
+        </div>
+
+        <div class="scribe-session-summary">
+            <div class="scribe-session-patient">${activeScribeSession.patient_name || getPatientNameById(scribePatientId)}</div>
+            <div class="scribe-session-meta">${(activeScribeSession.visit_type || scribeVisitType).replace(/_/g, ' ')} · Session ${activeScribeSession.session_id?.slice(0, 8)}…</div>
+        </div>
+
+        <div class="scribe-action-card" onclick="generateSOAPNote()">
+            <div class="scribe-action-icon">🧠</div>
+            <div class="scribe-action-text">
+                <div class="scribe-action-title">Generate SOAP Note with Claude</div>
+                <div class="scribe-action-desc">AI will analyze the transcript and patient context to generate a structured SOAP note with ICD-10 and CPT codes.</div>
+            </div>
+            <div class="action-arrow">›</div>
+        </div>
+
+        ${activeScribeSession.has_note ? `
+            <div class="scribe-action-card" onclick="openScribeSession('${activeScribeSession.session_id}', 'review')">
+                <div class="scribe-action-icon">📋</div>
+                <div class="scribe-action-text">
+                    <div class="scribe-action-title">View Existing Note</div>
+                    <div class="scribe-action-desc">Review the previously generated SOAP note.</div>
+                </div>
+                <div class="action-arrow">›</div>
+            </div>
+        ` : ''}
+
+        <div class="scribe-transcript-preview">
+            <h3>Transcript Preview</h3>
+            <div class="transcript-text-preview">
+                ${activeScribeSession.transcript_length > 0 ?
+            `<p style="color:var(--text-secondary); font-size:13px;">${activeScribeSession.transcript_length.toLocaleString()} characters transcribed</p>` :
+            '<p style="color:var(--text-tertiary);">No transcript available</p>'
+        }
+            </div>
+        </div>
+    `;
+}
+
+async function generateSOAPNote() {
+    if (!activeScribeSession) return;
+    showToast('Generating SOAP note with Claude… this may take 30-60 seconds', 'info');
+
+    try {
+        const result = await apiFetch('/ops/api/scribe/generate-note/', {
+            method: 'POST',
+            body: JSON.stringify({
+                session_id: activeScribeSession.session_id,
+                patient_id: scribePatientId || activeScribeSession.patient_id,
+                visit_type: scribeVisitType || activeScribeSession.visit_type,
+                patient_name: scribePatientName || activeScribeSession.patient_name || '',
+            })
+        });
+
+        if (result?.success) {
+            // Flatten nested soap structure for consistent access
+            const noteData = result.data || {};
+            if (noteData.soap) {
+                noteData.soap_subjective = noteData.soap.subjective || '';
+                noteData.soap_objective = noteData.soap.objective || '';
+                noteData.soap_assessment = noteData.soap.assessment || '';
+                noteData.soap_plan = noteData.soap.plan || '';
+            }
+            currentNote = noteData;
+            showToast('SOAP note generated!', 'success');
+            await loadScribeSessions();
+            // Update activeScribeSession
+            activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
+            scribeView = 'review';
+            renderCurrentTab();
+            updateBadges();
+        } else {
+            showToast(result?.error || 'Note generation failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Note generation failed — check connection', 'error');
+    }
+}
+
+function renderScribeReview(container) {
+    if (!activeScribeSession) { scribeView = 'list'; renderCurrentTab(); return; }
+
+    const note = currentNote || activeScribeSession;
+    const noteData = note?.note || note;
+    const isSubmitted = noteData?.healthie_status === 'submitted' || noteData?.healthie_status === 'locked';
+
+    container.innerHTML = `
+        <div class="scribe-header-row">
+            <button class="scribe-back-btn" onclick="scribeView='list'; renderCurrentTab();">← Back</button>
+            <h1 style="font-size:24px;">SOAP Note Review</h1>
+        </div>
+
+        <div class="scribe-session-summary">
+            <div class="scribe-session-patient">${activeScribeSession.patient_name || getPatientNameById(scribePatientId)}</div>
+            <div class="scribe-session-meta">${(activeScribeSession.visit_type || '').replace(/_/g, ' ')} · ${isSubmitted ? '✅ Submitted to Healthie' : '📝 Draft'}</div>
+        </div>
+
+        <div class="soap-sections">
+            ${renderSOAPSection('S', 'Subjective', noteData?.soap_subjective || noteData?.subjective || 'Not yet generated')}
+            ${renderSOAPSection('O', 'Objective', noteData?.soap_objective || noteData?.objective || 'Not yet generated')}
+            ${renderSOAPSection('A', 'Assessment', noteData?.soap_assessment || noteData?.assessment || 'Not yet generated')}
+            ${renderSOAPSection('P', 'Plan', noteData?.soap_plan || noteData?.plan || 'Not yet generated')}
+        </div>
+
+        ${noteData?.icd10_codes?.length > 0 ? `
+            <div class="soap-codes-section">
+                <h3>ICD-10 Codes</h3>
+                <div class="code-chips">
+                    ${noteData.icd10_codes.map(c => `<span class="code-chip">[${c.code}] ${c.description || ''}</span>`).join('')}
+                </div>
+            </div>
+        ` : ''}
+
+        ${noteData?.cpt_codes?.length > 0 ? `
+            <div class="soap-codes-section">
+                <h3>CPT Codes</h3>
+                <div class="code-chips">
+                    ${noteData.cpt_codes.map(c => `<span class="code-chip cpt">${c.code}: ${c.description || ''}</span>`).join('')}
+                </div>
+            </div>
+        ` : ''}
+
+        ${!isSubmitted ? `
+            <div class="scribe-review-actions">
+                <button class="btn-primary scribe-submit-btn" onclick="submitNoteToHealthie()">
+                    📤 Submit to Healthie
+                </button>
+                <button class="btn-secondary" onclick="generateSOAPNote()">
+                    🔄 Regenerate Note
+                </button>
+            </div>
+        ` : `
+            <div class="scribe-submitted-banner">
+                <span>✅</span> Note submitted to Healthie${noteData?.healthie_note_id ? ` (ID: ${noteData.healthie_note_id})` : ''}
+            </div>
+        `}
+    `;
+}
+
+function renderSOAPSection(letter, title, content) {
+    const colorMap = { S: 'var(--cyan)', O: 'var(--purple)', A: 'var(--yellow)', P: 'var(--green)' };
+    return `
+        <div class="soap-section">
+            <div class="soap-section-header">
+                <span class="soap-letter" style="background:${colorMap[letter]}20; color:${colorMap[letter]}">${letter}</span>
+                <span class="soap-title">${title}</span>
+            </div>
+            <div class="soap-content">${formatSOAPContent(content)}</div>
+        </div>
+    `;
+}
+
+function formatSOAPContent(text) {
+    if (!text || text === 'Not yet generated') return `<span style="color:var(--text-tertiary); font-style:italic;">${text}</span>`;
+    // Convert markdown-like formatting
+    return text
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n- /g, '<br>• ')
+        .replace(/\n/g, '<br>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\[([A-Z]\d{2}\.?\d*)\]/g, '<code class="icd-inline">$1</code>');
+}
+
+async function submitNoteToHealthie() {
+    if (!activeScribeSession?.note_id && !currentNote?.note_id) {
+        showToast('No note to submit — generate one first', 'error');
+        return;
+    }
+    const noteId = activeScribeSession?.note_id || currentNote?.note_id;
+
+    showToast('Submitting to Healthie…', 'info');
+    try {
+        const result = await apiFetch('/ops/api/scribe/submit-to-healthie/', {
+            method: 'POST',
+            body: JSON.stringify({ note_id: noteId })
+        });
+
+        if (result?.success) {
+            showToast('Note submitted to Healthie! ✅', 'success');
+            await loadScribeSessions();
+            activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
+            renderCurrentTab();
+            updateBadges();
+        } else {
+            showToast(result?.error || 'Submit failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Submit failed — check connection', 'error');
+    }
+}
+
+function renderScribeTranscript(container) {
+    // Fallback — redirect to note view
+    scribeView = 'note';
+    renderCurrentTab();
 }
 
 // ============================================================
@@ -978,41 +1771,23 @@ function renderInventoryContent() {
 
 // ─── DEA SECTION ────────────────────────────────────────────
 function renderDEASection() {
-    // Extract vials from inventory summary
     const vials = extractVials();
-    const patients = getPatients();
 
     return `
+        <!-- Daily DEA Verification -->
         <div class="dea-check-section">
             <div class="dea-check-title">Daily DEA Verification</div>
             <div class="dea-check-row">
-                <div class="dea-check-label">
-                    ☀️ Morning Count
-                </div>
-                <button class="toggle-btn" onclick="completeDEACheck('morning', this)"></button>
+                <div class="dea-check-label">☀️ Morning Count</div>
+                <button class="toggle-btn" onclick="openDEACheckModal('morning')">Complete</button>
             </div>
             <div class="dea-check-row">
-                <div class="dea-check-label">
-                    🌙 End of Day Count
-                </div>
-                <button class="toggle-btn" onclick="completeDEACheck('eod', this)"></button>
+                <div class="dea-check-label">🌙 End of Day Count</div>
+                <button class="toggle-btn" onclick="openDEACheckModal('evening')">Complete</button>
             </div>
         </div>
 
-        ${inventoryAlerts.length > 0 ? `
-            <div class="section-header" style="margin-top:20px">
-                <h2>⚠️ Alerts</h2>
-            </div>
-            <div class="stagger-in">
-                ${inventoryAlerts.map(a => `
-                    <div class="alert-card">
-                        <div class="alert-emoji">⚠️</div>
-                        <div class="alert-text">${a.message || a.alert || a.description || JSON.stringify(a)}</div>
-                    </div>
-                `).join('')}
-            </div>
-        ` : ''}
-
+        <!-- Vial Inventory -->
         <div class="section-header" style="margin-top:20px">
             <h2>Vial Inventory</h2>
             <span style="color:var(--text-tertiary); font-size:13px;">${vials.length} vials tracked</span>
@@ -1023,50 +1798,241 @@ function renderDEASection() {
             </div>
         ` : renderEmptyState('💉', 'No vial data', 'Inventory data not yet available')}
 
-        <button class="btn-dispense" onclick="openDispenseModal()">
-            💉 Quick Dispense
+        <!-- Stage Dose Button -->
+        <button class="btn-dispense" onclick="openStageDoseModal()">
+            💉 Stage Dose (Controlled)
         </button>
 
-        <!-- Dispense Modal -->
-        <div class="modal-overlay" id="dispenseModal">
-            <div class="modal">
-                <h3>Quick Dispense</h3>
-                <div class="modal-field">
-                    <label>Vial</label>
-                    <select id="dispenseVial">
-                        ${vials.map(v => `<option value="${v.id || v.vial_id}">${v.vial_id || v.id} — ${v.substance || v.name} (${v.remaining_ml || v.remaining || '?'}mL)</option>`).join('')}
-                    </select>
-                </div>
+        <!-- Stage Dose Modal -->
+        <div class="modal-overlay" id="stageDoseModal">
+            <div class="modal modal-large">
+                <h3>Stage Controlled Dose</h3>
+                <p style="font-size:12px; color:var(--text-tertiary); margin-bottom:16px;">
+                    System auto-selects vial (FEFO) and creates DEA transaction
+                </p>
                 <div class="modal-field">
                     <label>Patient</label>
-                    <select id="dispensePatient">
-                        ${patients.map(p => `<option value="${p.id}">${p.name || p.patient_name || p.first_name + ' ' + p.last_name}</option>`).join('')}
-                    </select>
+                    <div class="patient-search-wrapper">
+                        <input type="text" id="stageDosePatientSearch" class="patient-search-input"
+                               placeholder="Type 3+ letters to search Healthie…" autocomplete="off" />
+                        <div id="stageDosePatientResults" class="patient-search-results"></div>
+                        <div id="stageDosePatientBadge" class="patient-selected-badge" style="display:none;"></div>
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field half">
+                        <label>Dose (mL)</label>
+                        <input type="number" id="stageDoseMl" step="0.05" value="0.35" min="0.05" max="5">
+                    </div>
+                    <div class="modal-field half">
+                        <label>Waste (mL)</label>
+                        <input type="number" id="stageDoseWaste" step="0.05" value="0.10" min="0">
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field half">
+                        <label>Syringe Count</label>
+                        <input type="number" id="stageDoseSyringes" value="1" min="1" max="10">
+                    </div>
+                    <div class="modal-field half">
+                        <label>Staged For Date</label>
+                        <input type="date" id="stageDoseDate" value="${new Date().toISOString().split('T')[0]}">
+                    </div>
                 </div>
                 <div class="modal-field">
-                    <label>Amount (mL)</label>
-                    <input type="number" id="dispenseAmount" step="0.1" value="0.5" min="0.1" max="10">
+                    <label>Notes (optional)</label>
+                    <input type="text" id="stageDoseNotes" placeholder="e.g., Patient prefers glute injection" class="patient-search-input">
                 </div>
                 <div class="modal-actions">
-                    <button class="btn-cancel" onclick="closeDispenseModal()">Cancel</button>
-                    <button class="btn-primary" onclick="submitDispense()">Dispense</button>
+                    <button class="btn-cancel" onclick="closeStageDoseModal()">Cancel</button>
+                    <button class="btn-primary" id="stageDoseSubmitBtn" onclick="submitStageDose()">Stage Dose</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- DEA Check Modal -->
+        <div class="modal-overlay" id="deaCheckModal">
+            <div class="modal modal-large">
+                <h3 id="deaCheckTitle">Morning DEA Count</h3>
+                <p style="font-size:12px; color:var(--text-tertiary); margin-bottom:16px;">
+                    Enter physical counts. System will compare with expected inventory.
+                </p>
+                <div id="deaCheckSystemCounts" class="dea-system-counts">
+                    <div class="loading-spinner"></div>
+                    <span style="color:var(--text-tertiary)">Loading system counts…</span>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field half">
+                        <label>Carrie Boyd Full Vials (30mL)</label>
+                        <input type="number" id="deaCheckCbVials" min="0" value="0">
+                    </div>
+                    <div class="modal-field half">
+                        <label>CB Partial Vial (mL)</label>
+                        <input type="number" id="deaCheckCbPartial" step="0.5" min="0" value="0">
+                    </div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-field half">
+                        <label>TopRx Vials (10mL)</label>
+                        <input type="number" id="deaCheckTopRxVials" min="0" value="0">
+                    </div>
+                    <div class="modal-field half">
+                        <label>TopRx Partial (mL)</label>
+                        <input type="number" id="deaCheckTopRxPartial" step="0.5" min="0" value="0">
+                    </div>
+                </div>
+                <div class="modal-field">
+                    <label>Notes</label>
+                    <input type="text" id="deaCheckNotes" placeholder="Notes (required if discrepancy)" class="patient-search-input">
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-cancel" onclick="closeModal('deaCheckModal')">Cancel</button>
+                    <button class="btn-primary" onclick="submitDEACheck()">Submit Count</button>
                 </div>
             </div>
         </div>
     `;
 }
 
-function extractVials() {
-    if (!inventorySummary) return [];
-    // Try common response shapes
-    if (inventorySummary.vials && Array.isArray(inventorySummary.vials)) return inventorySummary.vials;
-    if (inventorySummary.data && inventorySummary.data.vials) return inventorySummary.data.vials;
-    if (inventorySummary.dea && Array.isArray(inventorySummary.dea)) return inventorySummary.dea;
-    if (inventorySummary.controlled && Array.isArray(inventorySummary.controlled)) return inventorySummary.controlled;
-    // If top-level is an array
-    if (Array.isArray(inventorySummary)) {
-        return inventorySummary.filter(item => item.vial_id || item.substance || item.is_controlled);
+let stageDosePatientId = null;
+let stageDosePatientName = '';
+let deaCheckType = 'morning';
+
+function openStageDoseModal() {
+    stageDosePatientId = null;
+    stageDosePatientName = '';
+    document.getElementById('stageDoseModal').classList.add('visible');
+    let timeout = null;
+    const input = document.getElementById('stageDosePatientSearch');
+    const results = document.getElementById('stageDosePatientResults');
+    if (input) {
+        input.value = '';
+        document.getElementById('stageDosePatientBadge').style.display = 'none';
+        input.addEventListener('input', () => {
+            const q = input.value.trim();
+            if (timeout) clearTimeout(timeout);
+            if (q.length < 3) { results.innerHTML = ''; results.style.display = 'none'; return; }
+            results.innerHTML = '<div class="patient-search-loading">Searching…</div>';
+            results.style.display = 'block';
+            timeout = setTimeout(async () => {
+                try {
+                    const data = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
+                    if (!data?.patients?.length) { results.innerHTML = '<div class="patient-search-empty">No patients found</div>'; return; }
+                    results.innerHTML = data.patients.map(p => {
+                        const n = `${p.first_name || ''} ${p.last_name || ''}`.trim();
+                        return `<div class="patient-search-item" onclick="selectStageDosePatient('${p.healthie_id || p.id}', '${n.replace(/'/g, "\\'")}')">
+                            <span class="patient-search-name">${n}</span>
+                            <span class="patient-search-detail">${p.dob ? 'DOB: ' + p.dob : ''}</span>
+                        </div>`;
+                    }).join('');
+                } catch (e) { results.innerHTML = '<div class="patient-search-empty">Search error</div>'; }
+            }, 300);
+        });
     }
+}
+
+function selectStageDosePatient(id, name) {
+    stageDosePatientId = id;
+    stageDosePatientName = name;
+    const badge = document.getElementById('stageDosePatientBadge');
+    const results = document.getElementById('stageDosePatientResults');
+    const input = document.getElementById('stageDosePatientSearch');
+    if (input) input.value = '';
+    if (results) { results.innerHTML = ''; results.style.display = 'none'; }
+    if (badge) { badge.style.display = 'flex'; badge.innerHTML = `<span>👤 ${name}</span><button onclick="clearStageDosePatient()" class="patient-clear-btn">✕</button>`; }
+}
+
+function clearStageDosePatient() {
+    stageDosePatientId = null; stageDosePatientName = '';
+    const badge = document.getElementById('stageDosePatientBadge');
+    if (badge) { badge.style.display = 'none'; badge.innerHTML = ''; }
+}
+
+function closeStageDoseModal() { document.getElementById('stageDoseModal').classList.remove('visible'); }
+
+async function submitStageDose() {
+    if (!stageDosePatientId) { showToast('Select a patient first', 'error'); return; }
+    const doseMl = parseFloat(document.getElementById('stageDoseMl').value);
+    const wasteMl = parseFloat(document.getElementById('stageDoseWaste').value);
+    const syringeCount = parseInt(document.getElementById('stageDoseSyringes').value);
+    const stagedForDate = document.getElementById('stageDoseDate').value;
+    const notes = document.getElementById('stageDoseNotes').value;
+    if (!doseMl || doseMl <= 0) { showToast('Enter a valid dose', 'error'); return; }
+    if (!stagedForDate) { showToast('Enter the staged-for date', 'error'); return; }
+
+    const btn = document.getElementById('stageDoseSubmitBtn');
+    btn.disabled = true; btn.textContent = 'Staging…';
+    try {
+        const result = await apiFetch('/ops/api/ipad/stage-dose/', {
+            method: 'POST',
+            body: JSON.stringify({ patientId: stageDosePatientId, patientName: stageDosePatientName, doseMl, wasteMl, syringeCount, stagedForDate, notes })
+        });
+        if (result?.success) {
+            closeStageDoseModal();
+            const totalMl = (doseMl + wasteMl) * syringeCount;
+            showToast(`Staged ${totalMl.toFixed(2)}mL from vial ${result.data?.vial_used || '?'} — ${result.data?.remaining_in_vial}mL remaining`, 'success');
+            loadVialList();
+        } else {
+            showToast(result?.error || 'Stage failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Stage failed — check connection', 'error');
+    } finally { btn.disabled = false; btn.textContent = 'Stage Dose'; }
+}
+
+// ─── DEA CHECK ──────────────────────────────────────────────
+async function openDEACheckModal(type) {
+    deaCheckType = type;
+    document.getElementById('deaCheckTitle').textContent = type === 'morning' ? '☀️ Morning DEA Count' : '🌙 Evening DEA Count';
+    document.getElementById('deaCheckModal').classList.add('visible');
+    try {
+        const counts = await apiFetch('/ops/api/inventory/controlled-check/?action=counts');
+        document.getElementById('deaCheckSystemCounts').innerHTML = `
+            <div class="dea-expected-row"><span>Carrie Boyd (30mL):</span> <strong>${counts?.carrieboyd_full_vials || 0} full + ${(counts?.carrieboyd_partial_ml || 0).toFixed(1)}mL partial = ${(counts?.carrieboyd_total_ml || 0).toFixed(1)}mL</strong></div>
+            <div class="dea-expected-row"><span>TopRx (10mL):</span> <strong>${counts?.toprx_full_vials || 0} full + ${(counts?.toprx_partial_ml || 0).toFixed(1)}mL partial = ${(counts?.toprx_total_ml || 0).toFixed(1)}mL</strong></div>
+        `;
+    } catch (e) {
+        document.getElementById('deaCheckSystemCounts').innerHTML = '<div class="patient-search-empty">Could not load system counts</div>';
+    }
+}
+
+async function submitDEACheck() {
+    const data = {
+        carrieboyd_full_vials: parseInt(document.getElementById('deaCheckCbVials').value) || 0,
+        carrieboyd_partial_ml: parseFloat(document.getElementById('deaCheckCbPartial').value) || 0,
+        toprx_vials: parseInt(document.getElementById('deaCheckTopRxVials').value) || 0,
+        check_type: deaCheckType,
+        notes: document.getElementById('deaCheckNotes').value || null,
+        discrepancyNotes: document.getElementById('deaCheckNotes').value || null,
+    };
+    try {
+        const result = await apiFetch('/ops/api/inventory/controlled-check/', { method: 'POST', body: JSON.stringify(data) });
+        closeModal('deaCheckModal');
+        if (result?.success) {
+            if (result.hasDiscrepancy) showToast(`⚠️ Discrepancy: ${result.discrepancyDetails}. Inventory adjusted.`, 'info');
+            else showToast(`${deaCheckType === 'morning' ? 'Morning' : 'Evening'} count verified ✅`, 'success');
+        } else showToast(result?.error || 'Check failed', 'error');
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('DEA check failed', 'error');
+    }
+}
+
+function closeModal(id) { document.getElementById(id)?.classList?.remove('visible'); }
+
+function extractVials() {
+    if (vialList.length > 0) return vialList.map(v => ({
+        ...v, id: v.vial_id || v.id, vial_id: v.external_id || v.vial_id || v.id,
+        substance: v.dea_drug_name || v.substance || v.name || '',
+        remaining_ml: parseFloat(v.remaining_volume_ml || v.remaining_ml || '0'),
+        total_ml: parseFloat(v.initial_volume_ml || v.total_ml || '10'),
+        expiration: v.expiration_date || v.expiry_date || '',
+    }));
+    if (!inventorySummary) return [];
+    if (inventorySummary.vials && Array.isArray(inventorySummary.vials)) return inventorySummary.vials;
+    if (inventorySummary.dea && Array.isArray(inventorySummary.dea)) return inventorySummary.dea;
+    if (Array.isArray(inventorySummary)) return inventorySummary.filter(item => item.vial_id || item.substance || item.is_controlled);
     return [];
 }
 
@@ -1079,53 +2045,15 @@ function renderVialCard(vial) {
     const shortSubstance = substance.split(' ').slice(0, 2).join(' ');
     const vialId = vial.vial_id || vial.id || '';
     const expiry = vial.expiration || vial.expiry_date || vial.expires_at || '';
-
     return `
         <div class="vial-card">
             <div class="vial-id">${vialId}</div>
             <div class="vial-substance">${shortSubstance}</div>
-            <div class="vial-gauge">
-                <div class="vial-gauge-fill ${level}" style="width:${pct}%"></div>
-            </div>
-            <div class="vial-remaining">${remaining}<span> / ${total} mL</span></div>
+            <div class="vial-gauge"><div class="vial-gauge-fill ${level}" style="width:${pct}%"></div></div>
+            <div class="vial-remaining">${typeof remaining === 'number' ? remaining.toFixed(1) : remaining}<span> / ${total} mL</span></div>
             ${expiry ? `<div class="vial-expiry">Exp: ${expiry}</div>` : ''}
         </div>
     `;
-}
-
-function completeDEACheck(type, btn) {
-    btn.classList.toggle('on');
-    if (btn.classList.contains('on')) {
-        showToast(`${type === 'morning' ? 'Morning' : 'End of Day'} DEA check completed`, 'success');
-    }
-}
-
-function openDispenseModal() {
-    document.getElementById('dispenseModal').classList.add('visible');
-}
-
-function closeDispenseModal() {
-    document.getElementById('dispenseModal').classList.remove('visible');
-}
-
-async function submitDispense() {
-    const vialId = document.getElementById('dispenseVial')?.value;
-    const patientId = document.getElementById('dispensePatient')?.value;
-    const amount = document.getElementById('dispenseAmount')?.value;
-
-    if (vialId && patientId && amount) {
-        try {
-            await apiFetch('/ops/api/inventory/dispense', {
-                method: 'POST',
-                body: JSON.stringify({ vial_id: vialId, patient_id: patientId, amount: parseFloat(amount) })
-            });
-        } catch (e) {
-            console.warn('Dispense endpoint not available');
-        }
-    }
-
-    closeDispenseModal();
-    showToast('Dispense recorded successfully', 'success');
 }
 
 // ─── PEPTIDES SECTION ───────────────────────────────────────
@@ -1137,34 +2065,36 @@ function renderPeptidesSection() {
     }
 
     return `
-        <div class="peptide-grid stagger-in">
-            ${peptides.map(p => {
-                const stock = p.stock || p.current_stock || p.quantity || 0;
-                const par = p.par_level || p.par || p.reorder_point || 10;
-                const unit = p.unit || p.units || 'vials';
-                const name = p.name || p.medication || p.peptide_name || '';
-                const ratio = par > 0 ? stock / par : 1;
-                const level = ratio > 1.5 ? 'over' : ratio >= 0.8 ? 'at' : 'under';
-                const barPct = Math.min((stock / (par * 3)) * 100, 100);
-                return `
+    <div class="peptide-grid stagger-in">
+        ${peptides.map(p => {
+        const stock = p.current_stock ?? p.stock ?? p.quantity ?? 0;
+        const par = p.reorder_point ?? p.par_level ?? p.par ?? 10;
+        const name = p.name || p.medication || p.peptide_name || '';
+        const ratio = par > 0 ? stock / par : 1;
+        const level = ratio > 1.5 ? 'over' : ratio >= 0.8 ? 'at' : 'under';
+        const barPct = Math.min((stock / Math.max(par * 3, 1)) * 100, 100);
+        return `
                     <div class="peptide-card">
                         <div class="peptide-name">${name}</div>
-                        <div class="peptide-stock">${stock}<span> ${unit}</span></div>
-                        <div class="peptide-par">PAR Level: ${par} ${unit}</div>
+                        <div class="peptide-stock">${stock}<span> vials</span></div>
+                        <div class="peptide-par">Reorder at: ${par} vials</div>
                         <div class="stock-bar">
                             <div class="stock-bar-fill ${level}" style="width:${barPct}%"></div>
                         </div>
+                        ${stock < 0 ? '<div style="color:var(--red);font-size:11px;margin-top:4px;">⚠ Negative stock — check data</div>' : ''}
+                        ${p.status === 'low' ? '<div style="color:var(--red);font-size:11px;margin-top:4px;">⚠ Below reorder point</div>' : ''}
                     </div>
                 `;
-            }).join('')}
-        </div>
+    }).join('')
+        }
+    </div>
     `;
 }
 
 function extractPeptides() {
     if (!inventorySummary) return [];
+    // API returns { peptides: [{ product_id, name, current_stock, reorder_point, status }] }
     if (inventorySummary.peptides && Array.isArray(inventorySummary.peptides)) return inventorySummary.peptides;
-    if (inventorySummary.data && inventorySummary.data.peptides) return inventorySummary.data.peptides;
     if (Array.isArray(inventorySummary)) {
         return inventorySummary.filter(item => item.peptide_name || item.is_peptide || (item.category && item.category.toLowerCase().includes('peptide')));
     }
@@ -1183,38 +2113,50 @@ function renderSuppliesSection() {
     const filtered = activeSupplyFilter === 'All' ? supplies : supplies.filter(s => (s.category || 'Other') === activeSupplyFilter);
 
     return `
-        <div class="supply-filters">
-            ${categories.map(c => `
+    <div class="supply-filters">
+        ${categories.map(c => `
                 <button class="filter-pill ${activeSupplyFilter === c ? 'active' : ''}" 
                         onclick="setSupplyFilter('${c}')">${c}</button>
-            `).join('')}
-        </div>
-        <div class="stagger-in">
-            ${filtered.map(s => {
-                const count = s.current_count || s.quantity || s.stock || 0;
-                const par = s.par_level || s.par || s.reorder_point || 10;
-                const name = s.name || s.supply_name || '';
-                const ratio = par > 0 ? count / par : 1;
-                const level = ratio > 1.2 ? 'ok' : ratio >= 0.8 ? 'warning' : 'low';
-                const label = level === 'ok' ? 'In Stock' : level === 'warning' ? 'Re-order Soon' : 'LOW STOCK';
-                return `
+            `).join('')
+        }
+    </div>
+    <div class="stagger-in">
+        ${filtered.map(s => {
+            const count = s.current_count || s.qty_on_hand || s.quantity || s.stock || 0;
+            const par = s.par_level || s.par || s.reorder_point || null;
+            const name = s.name || s.supply_name || '';
+            const cat = s.category || '';
+            const ratio = par ? count / par : 1;
+            const level = !par ? 'ok' : ratio > 1.2 ? 'ok' : ratio >= 0.8 ? 'warning' : 'low';
+            const label = level === 'ok' ? 'In Stock' : level === 'warning' ? 'Re-order Soon' : 'LOW STOCK';
+            return `
                     <div class="supply-item">
-                        <div class="supply-name">${name}</div>
+                        <div class="supply-info">
+                            <div class="supply-name">${name}</div>
+                            ${cat ? `<div class="supply-category">${cat}</div>` : ''}
+                        </div>
                         <div class="supply-count">
                             <span class="supply-count-value">${count}</span>
+                            ${par ? `<span class="supply-par-value">/ ${par} par</span>` : ''}
                             <span class="supply-par-indicator ${level}">${label}</span>
                         </div>
                     </div>
                 `;
-            }).join('')}
-        </div>
-    `;
+        }).join('')}
+    </div>
+`;
 }
 
 function extractSupplies() {
     if (!inventorySummary) return [];
-    if (inventorySummary.supplies && Array.isArray(inventorySummary.supplies)) return inventorySummary.supplies;
-    if (inventorySummary.data && inventorySummary.data.supplies) return inventorySummary.data.supplies;
+    // API returns { supplies: [{ id, name, category, par_level, qty_on_hand, status }] }
+    if (inventorySummary.supplies && Array.isArray(inventorySummary.supplies)) {
+        return inventorySummary.supplies.map(s => ({
+            ...s,
+            current_count: s.qty_on_hand ?? s.current_count ?? s.stock ?? 0,
+            par_level: s.par_level ?? s.par ?? 10,
+        }));
+    }
     if (Array.isArray(inventorySummary)) {
         return inventorySummary.filter(item => item.supply_name || item.is_supply || (item.category && !item.category.toLowerCase().includes('peptide') && !item.is_controlled));
     }
@@ -1230,15 +2172,25 @@ function setSupplyFilter(category) {
 // PATIENTS VIEW
 // ============================================================
 function renderPatientsView(container) {
+    // Load all patients if not loaded (with guard to prevent infinite loop)
+    if (!patientsLoaded && allPatients.length === 0 && !isLoading) {
+        container.innerHTML = renderLoadingState();
+        patientsLoaded = true; // prevent re-entry
+        loadAllPatients().then(() => {
+            if (currentTab === 'patients') renderCurrentTab();
+        });
+        return;
+    }
+
     const patients = getPatients();
     const recent = patients.slice(0, 6);
 
     container.innerHTML = `
-        <h1 style="font-size:28px; margin-bottom:20px;">Patients</h1>
+    < h1 style = "font-size:28px; margin-bottom:20px;" > Patients</h1 >
         <div class="patient-search">
             <span class="patient-search-icon">🔍</span>
             <input type="text" placeholder="Search patients..." id="patientSearchInput"
-                   oninput="handlePatientSearch(this.value)">
+                oninput="handlePatientSearch(this.value)">
         </div>
 
         ${recent.length > 0 ? `
@@ -1247,17 +2199,18 @@ function renderPatientsView(container) {
             </div>
             <div class="recent-patients" id="recentPatients">
                 ${recent.map(p => {
-                    const name = p.name || p.patient_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
-                    const color = p.avatar_color || getAvatarColor(name);
-                    return `
-                        <div class="recent-patient-card" onclick="selectPatient('${p.id}')">
+        const name = p.name || p.patient_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
+        const color = p.avatar_color || getAvatarColor(name);
+        return `
+                        <div class="recent-patient-card" onclick="selectPatient('${p.id || p.patient_id}')">
                             <div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>
                             <div class="recent-patient-name">${name}</div>
                         </div>
                     `;
-                }).join('')}
+    }).join('')}
             </div>
-        ` : ''}
+        ` : ''
+        }
 
         <div id="patientDetail"></div>
 
@@ -1266,11 +2219,11 @@ function renderPatientsView(container) {
             <span style="color:var(--text-tertiary); font-size:13px;">${patients.length} total</span>
         </div>
         <div class="patient-list" id="patientList">
-            ${patients.length > 0 
-                ? patients.map(p => renderPatientListItem(p)).join('')
-                : renderEmptyState('👥', 'No patient data', 'Patient data will appear once the dashboard loads')}
+            ${patients.length > 0
+            ? patients.map(p => renderPatientListItem(p)).join('')
+            : renderEmptyState('👥', 'No patient data', 'Patient data will appear once the dashboard loads')}
         </div>
-    `;
+`;
 }
 
 function getAvatarColor(name) {
@@ -1280,19 +2233,44 @@ function getAvatarColor(name) {
     return colors[Math.abs(hash) % colors.length];
 }
 
+function formatStatusLabel(raw) {
+    if (!raw) return 'Active';
+    const map = {
+        'Active': 'Active', 'active': 'Active',
+        'active_pending': 'Pending', 'Inactive': 'Inactive',
+        'hold_service_change': 'Hold', 'hold_payment_research': 'Hold',
+        'hold_patient_research': 'Hold', 'hold_other': 'Hold',
+        'lead': 'Lead', 'cancelled': 'Cancelled',
+        'churned': 'Churned', 'paused': 'Paused',
+    };
+    return map[raw] || raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getStatusColor(raw) {
+    if (!raw) return 'var(--green)';
+    if (raw === 'Active' || raw === 'active') return 'var(--green)';
+    if (raw.startsWith('hold_')) return 'var(--yellow)';
+    if (raw === 'active_pending') return 'var(--cyan)';
+    if (raw === 'Inactive' || raw === 'cancelled' || raw === 'churned') return 'var(--text-tertiary)';
+    return 'var(--text-secondary)';
+}
+
 function renderPatientListItem(p) {
     const name = p.name || p.patient_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
     const color = p.avatar_color || getAvatarColor(name);
-    const status = p.status || 'Active';
-    const statusClass = status.toLowerCase().replace(/\s+/g, '_');
+    const rawStatus = p.status_key || p.status || 'Active';
+    const label = formatStatusLabel(rawStatus);
+    const statusColor = getStatusColor(rawStatus);
     const clinic = p.clinic || p.location || '';
 
     return `
-        <div class="patient-list-item" onclick="selectPatient('${p.id}')">
+        <div class="patient-list-item" onclick="selectPatient('${p.id || p.patient_id}')">
             <div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>
-            <div class="patient-list-name">${name}</div>
-            <div class="patient-list-clinic">${clinic}</div>
-            <span class="patient-list-status patient-status-badge ${statusClass}">${status}</span>
+            <div class="patient-list-info">
+                <div class="patient-list-name">${name}</div>
+                ${clinic ? `<div class="patient-list-clinic">${clinic}</div>` : ''}
+            </div>
+            <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${label}</span>
         </div>
     `;
 }
@@ -1317,78 +2295,36 @@ function handlePatientSearch(query) {
 
 async function selectPatient(id) {
     const patients = getPatients();
-    const patient = patients.find(p => String(p.id) === String(id));
+    const patient = patients.find(p => String(p.id || p.patient_id) === String(id));
     if (!patient) return;
     selectedPatient = patient;
 
     const detail = document.getElementById('patientDetail');
     if (!detail) return;
 
-    const name = patient.name || patient.patient_name || ((patient.first_name || '') + ' ' + (patient.last_name || '')).trim();
+    const name = patient.name || patient.patient_name || patient.full_name || ((patient.first_name || '') + ' ' + (patient.last_name || '')).trim();
     const color = patient.avatar_color || getAvatarColor(name);
-    const status = patient.status || 'Active';
-    const statusClass = status.toLowerCase().replace(/\s+/g, '_');
+    const rawStatus = patient.status_key || patient.status || 'Active';
+    const statusLabel = formatStatusLabel(rawStatus);
+    const statusColor = getStatusColor(rawStatus);
 
-    // Show basic info immediately, then load 360
+    // Show basic info + loading spinner
     detail.innerHTML = `
         <div class="patient-detail">
             <div class="patient-detail-header">
                 <div class="patient-detail-avatar" style="background:${color}">${getInitials(name)}</div>
-                <div>
+                <div style="flex:1">
                     <div class="patient-detail-name">${name}</div>
-                    ${patient.dob ? `<div class="patient-detail-dob">DOB: ${patient.dob}</div>` : ''}
-                    <span class="patient-status-badge ${statusClass}">${status}</span>
+                    ${patient.dob ? `<div class="patient-detail-dob">DOB: ${formatDateDisplay(patient.dob)}</div>` : ''}
+                    <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${statusLabel}</span>
                 </div>
-            </div>
-            <div class="patient-info-grid">
-                ${patient.clinic ? `
-                    <div class="patient-info-item">
-                        <div class="patient-info-label">Clinic</div>
-                        <div class="patient-info-value">${patient.clinic || patient.location || ''}</div>
-                    </div>
-                ` : ''}
-                ${patient.last_visit ? `
-                    <div class="patient-info-item">
-                        <div class="patient-info-label">Last Visit</div>
-                        <div class="patient-info-value">${patient.last_visit}</div>
-                    </div>
-                ` : ''}
-                ${patient.next_lab ? `
-                    <div class="patient-info-item">
-                        <div class="patient-info-label">Next Lab Due</div>
-                        <div class="patient-info-value">${patient.next_lab}</div>
-                    </div>
-                ` : ''}
-                ${patient.payment_status ? `
-                    <div class="patient-info-item">
-                        <div class="patient-info-label">Payment Status</div>
-                        <div class="patient-info-value ${patient.payment_status === 'Past Due' ? 'overdue' : ''}">${patient.payment_status}</div>
-                    </div>
-                ` : ''}
+                <button class="quick-action-btn-sm" onclick="openStatusChangeModal('${id}', '${rawStatus}')" title="Change Status">✏️</button>
             </div>
             <div id="patient360Data">
                 <div class="patient-360-loading">
                     <div class="loading-spinner"></div>
                     <span>Loading patient details…</span>
                 </div>
-            </div>
-            <div class="patient-quick-actions">
-                <button class="quick-action-btn" onclick="window.open('https://app.gethealthie.com/users/${id}', '_blank')">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                    <span>View in Healthie</span>
-                </button>
-                <button class="quick-action-btn" onclick="showToast('Opening dispense log…', 'info')">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3h6v7l4 9H5l4-9V3z"/></svg>
-                    <span>Log Dispense</span>
-                </button>
-                <button class="quick-action-btn" onclick="showToast('Opening lab orders…', 'info')">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                    <span>Order Labs</span>
-                </button>
-                <button class="quick-action-btn" onclick="showToast('Opening messaging…', 'info')">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    <span>Send Message</span>
-                </button>
             </div>
         </div>
     `;
@@ -1397,124 +2333,599 @@ async function selectPatient(id) {
 
     // Load 360 data
     const data360 = await loadPatient360(id);
-    renderPatient360(data360);
+    renderPatient360(data360, patient, id);
 }
 
-function renderPatient360(data) {
+function formatDateDisplay(dateStr) {
+    if (!dateStr) return '';
+    try {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return dateStr;
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const yyyy = d.getFullYear();
+        return `${mm}-${dd}-${yyyy}`;
+    } catch { return dateStr; }
+}
+
+function renderPatient360(data, patient, patientId) {
     const container = document.getElementById('patient360Data');
     if (!container) return;
 
     if (!data) {
-        container.innerHTML = `
-            <div style="padding:20px; text-align:center; color:var(--text-tertiary); font-size:13px;">
-                Extended patient data not available
-            </div>
-        `;
+        container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--text-tertiary); font-size:13px;">Extended patient data not available</div>`;
         return;
     }
 
-    // Normalize the 360 data — it could come in different shapes
-    const medications = data.medications || data.meds || data.prescriptions || [];
-    const labHistory = data.lab_history || data.labs || data.recent_labs || [];
-    const visits = data.visits || data.appointments || data.recent_visits || [];
-    const alerts = data.alerts || data.flags || [];
-    const demographics = data.demographics || data.patient || data;
+    const demo = data.demographics || patient || {};
+    // Map from API structure (medications.trt, payments.issues) to flat names
+    const dispenses = data.controlled_substances || data.medications?.trt || data.recent_dispenses || [];
+    const peptides = data.medications?.peptides || data.recent_peptides || [];
+    const payIssues = data.payments?.issues || data.payment_issues || [];
+    const staged = data.staged_doses || [];
+    const labs = data.labs?.queue_items || [];
+    const visits = data.visits || [];
+    const alerts = data.alerts || [];
+    const summary = data.summary || {};
 
     let html = '';
 
-    // Medications
-    if (medications.length > 0) {
+    // ─── Demographics & Info Grid ───
+    html += `
+        <div class="patient-360-section">
+            <h3>Patient Information</h3>
+            <div class="patient-info-grid">
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Status</div>
+                    <div class="patient-info-value">${formatStatusLabel(demo.status_key)}</div>
+                </div>
+                ${demo.regimen ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Regimen</div>
+                    <div class="patient-info-value">${demo.regimen}</div>
+                </div>` : ''}
+                ${demo.client_type_key ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Client Type</div>
+                    <div class="patient-info-value">${demo.client_type_key.replace(/_/g, ' ')}</div>
+                </div>` : ''}
+                ${demo.phone_primary ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Phone</div>
+                    <div class="patient-info-value">${demo.phone_primary}</div>
+                </div>` : ''}
+                ${demo.email ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Email</div>
+                    <div class="patient-info-value" style="font-size:12px">${demo.email}</div>
+                </div>` : ''}
+                ${demo.dob ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">DOB</div>
+                    <div class="patient-info-value">${formatDateDisplay(demo.dob)}</div>
+                </div>` : ''}
+            </div>
+        </div>
+    `;
+
+    // ─── Lab Dates ───
+    const lastLab = patient?.last_lab || demo.last_lab;
+    const nextLab = patient?.next_lab || demo.next_lab;
+    const labStatus = patient?.lab_status || demo.lab_status;
+    html += `
+        <div class="patient-360-section">
+            <h3>Lab Schedule</h3>
+            <div class="patient-info-grid">
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Last Lab</div>
+                    <div class="patient-info-value">${lastLab ? formatDateDisplay(lastLab) : 'Not set'}</div>
+                </div>
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Next Lab</div>
+                    <div class="patient-info-value">${nextLab ? formatDateDisplay(nextLab) : 'Not set'}</div>
+                </div>
+                ${labStatus ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Lab Status</div>
+                    <div class="patient-info-value">${labStatus}</div>
+                </div>` : ''}
+            </div>
+            <div style="display:flex; gap:8px; margin-top:10px;">
+                <button class="btn-secondary btn-sm" onclick="openEditLabDatesModal('${patientId}', '${lastLab || ''}', '${nextLab || ''}')">📅 Edit Lab Dates</button>
+                <button class="btn-primary btn-sm" onclick="openOrderLabModal('${patientId}', '${demo.full_name || patient?.name || ''}')">🧪 Order Lab</button>
+            </div>
+        </div>
+    `;
+
+    // ─── Last Controlled Dispense ───
+    if (demo.last_controlled_dispense_at || demo.last_dea_drug) {
         html += `
             <div class="patient-360-section">
-                <h3>Medications</h3>
-                ${medications.map(m => {
-                    const medName = m.name || m.medication || m.drug_name || '';
-                    const dose = m.dose || m.dosage || m.instructions || '';
-                    const medStatus = m.status || 'active';
-                    return `
-                        <div class="med-card">
-                            <div>
-                                <div class="med-name">${medName}</div>
-                                ${dose ? `<div class="med-dose">${dose}</div>` : ''}
-                            </div>
-                            <span class="med-status ${medStatus.toLowerCase()}">${medStatus}</span>
-                        </div>
-                    `;
-                }).join('')}
+                <h3>Last Controlled Dispense</h3>
+                <div class="patient-info-grid">
+                    ${demo.last_dea_drug ? `<div class="patient-info-item"><div class="patient-info-label">Drug</div><div class="patient-info-value">${demo.last_dea_drug}</div></div>` : ''}
+                    ${demo.last_controlled_dispense_at ? `<div class="patient-info-item"><div class="patient-info-label">Date</div><div class="patient-info-value">${formatDateDisplay(demo.last_controlled_dispense_at)}</div></div>` : ''}
+                </div>
             </div>
         `;
     }
 
-    // Recent Labs
-    if (labHistory.length > 0) {
+    // ─── Recent Dispenses ───
+    if (dispenses.length > 0) {
         html += `
             <div class="patient-360-section">
-                <h3>Recent Labs</h3>
-                ${labHistory.slice(0, 5).map(l => {
-                    const labName = l.test_type || l.panel_name || l.name || 'Lab';
-                    const labDate = l.date || l.received_date || l.created_at || '';
-                    const labStatus = l.status || '';
-                    return `
-                        <div class="med-card">
-                            <div>
-                                <div class="med-name">${labName}</div>
-                                ${labDate ? `<div class="med-dose">${labDate}</div>` : ''}
-                            </div>
-                            ${labStatus ? `<span class="med-status ${labStatus.toLowerCase()}">${labStatus}</span>` : ''}
+                <h3>Recent Controlled Dispenses</h3>
+                ${dispenses.map(d => `
+                    <div class="med-card">
+                        <div>
+                            <div class="med-name">${d.dea_drug_name || d.vial_label || 'Testosterone'}</div>
+                            <div class="med-dose">${formatDateDisplay(d.dispense_date)} · ${d.total_dispensed_ml || '?'}mL · ${d.syringe_count || 1} syringe${(d.syringe_count || 1) > 1 ? 's' : ''}</div>
                         </div>
-                    `;
-                }).join('')}
+                        <span class="med-status ${d.signature_status || 'pending'}">${d.signature_status || 'pending'}</span>
+                    </div>
+                `).join('')}
             </div>
         `;
     }
 
-    // Alerts
-    if (alerts.length > 0) {
+    // ─── Recent Peptide Dispenses ───
+    if (peptides.length > 0) {
         html += `
             <div class="patient-360-section">
-                <h3>Alerts</h3>
-                ${alerts.map(a => {
-                    const alertText = typeof a === 'string' ? a : (a.message || a.text || a.description || JSON.stringify(a));
-                    return `
-                        <div class="alert-card">
-                            <div class="alert-emoji">⚠️</div>
-                            <div class="alert-text">${alertText}</div>
+                <h3>Recent Peptide Dispenses</h3>
+                ${peptides.map(p => `
+                    <div class="med-card">
+                        <div>
+                            <div class="med-name">${p.product_name || 'Peptide'}</div>
+                            <div class="med-dose">${formatDateDisplay(p.sale_date)} · Qty: ${p.quantity} · $${parseFloat(p.total_price || 0).toFixed(2)}</div>
                         </div>
-                    `;
-                }).join('')}
+                    </div>
+                `).join('')}
             </div>
         `;
     }
 
-    // Recent Visits
-    if (visits.length > 0) {
+    // ─── Staged Doses ───
+    if (staged.length > 0) {
         html += `
             <div class="patient-360-section">
-                <h3>Recent Visits</h3>
-                ${visits.slice(0, 5).map(v => {
-                    const visitDate = v.date || v.visit_date || v.created_at || '';
-                    const visitType = v.type || v.visit_type || v.reason || '';
-                    const provider = v.provider || v.provider_name || '';
-                    return `
-                        <div class="med-card">
-                            <div>
-                                <div class="med-name">${visitType || 'Visit'}</div>
-                                <div class="med-dose">${visitDate}${provider ? ' · ' + provider : ''}</div>
-                            </div>
+                <h3>⏳ Pending Staged Doses</h3>
+                ${staged.map(s => `
+                    <div class="med-card" style="border-left:3px solid var(--yellow);">
+                        <div>
+                            <div class="med-name">${s.vial_external_id || 'Staged Dose'}</div>
+                            <div class="med-dose">${formatDateDisplay(s.staged_for_date)} · ${s.dose_ml}mL + ${s.waste_ml}mL waste · ${s.syringe_count} syringe(s)</div>
+                            ${s.staged_by_name ? `<div class="med-dose">Staged by ${s.staged_by_name}</div>` : ''}
                         </div>
-                    `;
-                }).join('')}
+                    </div>
+                `).join('')}
             </div>
         `;
     }
 
-    if (!html) {
-        html = `
-            <div style="padding:20px; text-align:center; color:var(--text-tertiary); font-size:13px;">
-                No extended data available for this patient
+    // ─── Payment Issues ───
+    if (payIssues.length > 0) {
+        html += `
+            <div class="patient-360-section" style="border-left:3px solid var(--red);">
+                <h3 style="color:var(--red);">⚠️ Payment Issues</h3>
+                ${payIssues.map(pi => `
+                    <div class="med-card">
+                        <div>
+                            <div class="med-name">${(pi.issue_type || 'Payment Issue').replace(/_/g, ' ')}</div>
+                            <div class="med-dose">${pi.days_overdue || '?'} days overdue · $${parseFloat(pi.amount_owed || 0).toFixed(2)}</div>
+                        </div>
+                        <span class="med-status" style="color:var(--red)">${pi.issue_severity || 'medium'}</span>
+                    </div>
+                `).join('')}
             </div>
         `;
     }
+
+    // ─── Quick Actions ───
+    html += `
+        <div class="patient-quick-actions">
+            <button class="quick-action-btn" onclick="openStatusChangeModal('${patientId}', '${demo.status_key || 'Active'}')">
+                🔄 <span>Change Status</span>
+            </button>
+            <button class="quick-action-btn" onclick="window.open('https://app.gethealthie.com/users/${demo.healthie_client_id || patientId}', '_blank')">
+                🔗 <span>View in Healthie</span>
+            </button>
+            <button class="quick-action-btn" onclick="openOrderLabModal('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
+                🧪 <span>Order Lab</span>
+            </button>
+            <button class="quick-action-btn" onclick="openPeptideDispenseModal('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
+                💊 <span>Dispense Peptide</span>
+            </button>
+            <button class="quick-action-btn" onclick="printLabel('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
+                🏷️ <span>Print Label</span>
+            </button>
+        </div>
+    `;
 
     container.innerHTML = html;
 }
+
+// ─── STATUS CHANGE MODAL ────────────────────────────────────
+function openStatusChangeModal(patientId, currentStatus) {
+    const statuses = [
+        { key: 'Active', label: 'Active' },
+        { key: 'active_pending', label: 'Pending' },
+        { key: 'hold_service_change', label: 'Hold - Service Change' },
+        { key: 'hold_payment_research', label: 'Hold - Payment Research' },
+        { key: 'hold_patient_research', label: 'Hold - Patient Research' },
+        { key: 'Inactive', label: 'Inactive' },
+        { key: 'paused', label: 'Paused' },
+        { key: 'lead', label: 'Lead' },
+        { key: 'cancelled', label: 'Cancelled' },
+        { key: 'churned', label: 'Churned' },
+    ];
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay visible';
+    modal.id = 'statusChangeModal';
+    modal.innerHTML = `
+        <div class="modal modal-large">
+            <h3>Change Patient Status</h3>
+            <div class="modal-field">
+                <label>New Status</label>
+                <select id="newStatusSelect">
+                    ${statuses.map(s => `<option value="${s.key}" ${s.key === currentStatus ? 'selected' : ''}>${s.label}</option>`).join('')}
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="document.getElementById('statusChangeModal').remove()">Cancel</button>
+                <button class="btn-primary" onclick="submitStatusChange('${patientId}')">Save</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function submitStatusChange(patientId) {
+    const newStatus = document.getElementById('newStatusSelect')?.value;
+    if (!newStatus) return;
+
+    try {
+        showToast('Updating status…', 'info');
+        const result = await apiFetch(`/ops/api/patients/${patientId}/`, {
+            method: 'PATCH',
+            body: JSON.stringify({ statusKey: newStatus })
+        });
+        if (result?.data || result?.success !== false) {
+            showToast('Status updated!', 'success');
+            // Update local patient data
+            const p = allPatients.find(p => String(p.id || p.patient_id) === String(patientId));
+            if (p) { p.status_key = newStatus; p.status = newStatus; }
+            document.getElementById('statusChangeModal')?.remove();
+            // Refresh patient detail
+            selectPatient(patientId);
+        } else {
+            showToast(result?.error || 'Status update failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Status update failed', 'error');
+    }
+}
+
+// ─── EDIT LAB DATES MODAL ───────────────────────────────────
+function openEditLabDatesModal(patientId, lastLab, nextLab) {
+    // Convert mm-dd-yyyy or any format to YYYY-MM-DD for date input
+    const toInputDate = (d) => {
+        if (!d) return '';
+        try { const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toISOString().split('T')[0]; }
+        catch { return ''; }
+    };
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay visible';
+    modal.id = 'labDatesModal';
+    modal.innerHTML = `
+        <div class="modal modal-large">
+            <h3>Edit Lab Dates</h3>
+            <div class="modal-row">
+                <div class="modal-field half">
+                    <label>Last Lab</label>
+                    <input type="date" id="labLastDate" value="${toInputDate(lastLab)}">
+                </div>
+                <div class="modal-field half">
+                    <label>Next Lab</label>
+                    <input type="date" id="labNextDate" value="${toInputDate(nextLab)}">
+                </div>
+            </div>
+            <div class="modal-field">
+                <label>Lab Status</label>
+                <select id="labStatusSelect">
+                    <option value="">Not Set</option>
+                    <option value="current">Current</option>
+                    <option value="due_soon">Due Soon</option>
+                    <option value="overdue">Overdue</option>
+                    <option value="ordered">Ordered</option>
+                    <option value="pending_review">Pending Review</option>
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="document.getElementById('labDatesModal').remove()">Cancel</button>
+                <button class="btn-primary" onclick="submitLabDates('${patientId}')">Save</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function submitLabDates(patientId) {
+    const lastLab = document.getElementById('labLastDate')?.value || null;
+    const nextLab = document.getElementById('labNextDate')?.value || null;
+    const labStatus = document.getElementById('labStatusSelect')?.value || null;
+
+    try {
+        showToast('Updating lab dates…', 'info');
+        const result = await apiFetch(`/ops/api/patients/${patientId}/`, {
+            method: 'PATCH',
+            body: JSON.stringify({ lastLab, nextLab, labStatus })
+        });
+        if (result?.data || result?.success !== false) {
+            showToast('Lab dates updated!', 'success');
+            document.getElementById('labDatesModal')?.remove();
+            selectPatient(patientId);
+        } else {
+            showToast(result?.error || 'Update failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Update failed', 'error');
+    }
+}
+
+// ─── ORDER LAB MODAL ────────────────────────────────────────
+function openOrderLabModal(patientId, patientName) {
+    const panels = [
+        { code: 'CMP', label: 'Comprehensive Metabolic Panel (CMP)' },
+        { code: 'CBC', label: 'Complete Blood Count (CBC)' },
+        { code: 'LIPID', label: 'Lipid Panel' },
+        { code: 'TTST', label: 'Testosterone (Total)' },
+        { code: 'FTST', label: 'Testosterone (Free)' },
+        { code: 'E2', label: 'Estradiol Sensitive' },
+        { code: 'PSA', label: 'PSA' },
+        { code: 'HCT', label: 'Hematocrit / Hemoglobin' },
+        { code: 'THYROID', label: 'Thyroid Panel (TSH, T3, T4)' },
+        { code: 'VITD', label: 'Vitamin D, 25-Hydroxy' },
+        { code: 'IGF1', label: 'IGF-1' },
+        { code: 'DHEA', label: 'DHEA-S' },
+        { code: 'L509', label: '⚠️ L509 Panel (Requires Approval)' },
+        { code: '202', label: '⚠️ Panel 202 (Requires Approval)' },
+    ];
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay visible';
+    modal.id = 'orderLabModal';
+    modal.innerHTML = `
+        <div class="modal modal-large" style="max-height:85vh; overflow-y:auto;">
+            <h3>🧪 Order Labs — ${patientName}</h3>
+            <p style="color:var(--text-secondary); font-size:13px; margin-bottom:16px;">Select panels and/or enter custom test codes for Access Medical Labs</p>
+            <div class="modal-field">
+                <label>Select Panels</label>
+                <div class="lab-panel-list">
+                    ${panels.map(p => `
+                        <label class="lab-panel-checkbox">
+                            <input type="checkbox" value="${p.code}"> ${p.label}
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="modal-field">
+                <label>Custom Test Codes (comma-separated)</label>
+                <input type="text" id="labCustomCodes" placeholder="e.g. HBA1C, IRON, FERR"
+                    style="width:100%; padding:10px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-family:inherit; font-size:14px;">
+            </div>
+            <div class="modal-field">
+                <label>Notes / Instructions</label>
+                <textarea id="labOrderNotes" rows="3" placeholder="Optional notes…" style="width:100%; padding:10px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-family:inherit; font-size:14px;"></textarea>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="document.getElementById('orderLabModal').remove()">Cancel</button>
+                <button class="btn-primary" onclick="submitLabOrder('${patientId}')">🧪 Submit Order</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function submitLabOrder(patientId) {
+    const checkboxes = document.querySelectorAll('#orderLabModal .lab-panel-checkbox input:checked');
+    const tests = Array.from(checkboxes).map(cb => cb.value);
+    const notes = document.getElementById('labOrderNotes')?.value || '';
+    const customCodes = document.getElementById('labCustomCodes')?.value?.trim() || '';
+
+    if (tests.length === 0 && !customCodes) {
+        showToast('Please select at least one panel or enter custom codes', 'error');
+        return;
+    }
+
+    // Get patient demographics from the current patient detail data
+    const p360 = patient360Cache[patientId];
+    const demo = p360?.demographics || {};
+    const patientData = allPatients.find(p => String(p.id || p.patient_id) === String(patientId)) || {};
+    const fullName = demo.full_name || patientData.name || patientData.full_name || '';
+    const nameParts = fullName.split(' ');
+    const firstName = demo.first_name || nameParts[0] || '';
+    const lastName = demo.last_name || nameParts.slice(1).join(' ') || '';
+
+    try {
+        showToast('Submitting lab order…', 'info');
+        const result = await apiFetch('/ops/api/labs/orders/', {
+            method: 'POST',
+            body: JSON.stringify({
+                clinic_id: '16535',
+                patient_id: patientId,
+                patient: {
+                    first_name: firstName,
+                    last_name: lastName,
+                    dob: demo.dob || demo.date_of_birth || patientData.dob || patientData.date_of_birth || '',
+                    gender: demo.gender || '',
+                    address: demo.address || '',
+                    city: demo.city || '',
+                    state: demo.state || '',
+                    zip: demo.zip || '',
+                    phone: demo.phone || demo.phone_primary || patientData.phone_primary || '',
+                    email: demo.email || patientData.email || '',
+                },
+                tests: tests,
+                custom_codes: customCodes,
+                diagnosis_codes: [],
+                notes: notes,
+                provider_name: 'Phil Schafer NP',
+                provider_npi: '1174019877',
+            })
+        });
+
+        if (result?.success) {
+            const orderId = result.order_id || result?.data?.order_id;
+            showToast('Lab order submitted!', 'success');
+            document.getElementById('orderLabModal')?.remove();
+
+            // Open requisition PDF if available
+            if (orderId && result.requisition_pdf_available) {
+                window.open(`/ops/api/labs/orders/${orderId}/requisition/`, '_blank');
+            } else if (orderId && result.status === 'pending_approval') {
+                showToast('Order pending admin approval — requisition will be available after approval', 'info');
+            }
+        } else {
+            showToast(result?.error || 'Order failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Lab order failed — ' + (e.message || 'check connection'), 'error');
+    }
+}
+
+// ─── PEPTIDE DISPENSE MODAL ─────────────────────────────────
+async function openPeptideDispenseModal(patientId, patientName) {
+    // Load peptide products
+    let products = [];
+    try {
+        const data = await apiFetch('/ops/api/peptides/?action=options');
+        products = data?.products || data?.data || data || [];
+    } catch { products = []; }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay visible';
+    modal.id = 'peptideDispenseModal';
+    modal.innerHTML = `
+        <div class="modal modal-large">
+            <h3>Dispense Peptide — ${patientName}</h3>
+            <div class="modal-field">
+                <label>Product</label>
+                <select id="peptideProduct">
+                    <option value="">Select a product…</option>
+                    ${(Array.isArray(products) ? products : []).map(p => `<option value="${p.product_id || p.id}" data-name="${p.name}" data-price="${p.unit_price || p.price || 0}">${p.name} — $${parseFloat(p.unit_price || p.price || 0).toFixed(2)}</option>`).join('')}
+                </select>
+            </div>
+            <div class="modal-row">
+                <div class="modal-field half">
+                    <label>Quantity (vials)</label>
+                    <input type="number" id="peptideQty" value="1" min="1" max="10">
+                </div>
+                <div class="modal-field half">
+                    <label>Total Price</label>
+                    <input type="text" id="peptideTotal" readonly value="$0.00" style="background:var(--bg-tertiary);">
+                </div>
+            </div>
+            <div class="modal-field">
+                <label>Notes</label>
+                <input type="text" id="peptideNotes" placeholder="Optional notes…">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="document.getElementById('peptideDispenseModal').remove()">Cancel</button>
+                <button class="btn-primary" onclick="submitPeptideDispense('${patientId}', '${patientName.replace(/'/g, "\\'")}')">💊 Dispense & Print Label</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Wire up price calc
+    const prodSelect = document.getElementById('peptideProduct');
+    const qtyInput = document.getElementById('peptideQty');
+    const totalInput = document.getElementById('peptideTotal');
+    const updateTotal = () => {
+        const opt = prodSelect?.selectedOptions[0];
+        const price = parseFloat(opt?.dataset?.price || '0');
+        const qty = parseInt(qtyInput?.value || '1');
+        totalInput.value = `$${(price * qty).toFixed(2)}`;
+    };
+    prodSelect?.addEventListener('change', updateTotal);
+    qtyInput?.addEventListener('input', updateTotal);
+}
+
+async function submitPeptideDispense(patientId, patientName) {
+    const prodSelect = document.getElementById('peptideProduct');
+    const productId = prodSelect?.value;
+    const productName = prodSelect?.selectedOptions[0]?.dataset?.name || '';
+    const qty = parseInt(document.getElementById('peptideQty')?.value || '1');
+    const notes = document.getElementById('peptideNotes')?.value || '';
+    const unitPrice = parseFloat(prodSelect?.selectedOptions[0]?.dataset?.price || '0');
+
+    if (!productId) {
+        showToast('Please select a product', 'error');
+        return;
+    }
+
+    try {
+        showToast('Recording dispense…', 'info');
+        const result = await apiFetch('/ops/api/peptides/dispenses/', {
+            method: 'POST',
+            body: JSON.stringify({
+                patient_name: patientName,
+                patient_id: patientId,
+                product_id: productId,
+                quantity: qty,
+                unit_price: unitPrice,
+                total_price: unitPrice * qty,
+                notes
+            })
+        });
+        if (result?.success || result?.data) {
+            showToast('Peptide dispensed! Label generated.', 'success');
+            document.getElementById('peptideDispenseModal')?.remove();
+            // Print label
+            printLabel(patientId, patientName, productName);
+            // Refresh patient detail
+            selectPatient(patientId);
+        } else {
+            showToast(result?.error || 'Dispense failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Dispense failed', 'error');
+    }
+}
+
+// ─── PRINT LABEL ────────────────────────────────────────────
+function printLabel(patientId, patientName, medication, options = {}) {
+    const med = medication || 'Testosterone Cypionate';
+    const type = options.type || (med.toLowerCase().includes('testosterone') ? 'testosterone' : 'peptide');
+
+    // Look up patient DOB from cached data
+    const p360 = patient360Cache[patientId];
+    const demo = p360?.demographics || {};
+    const patientData = allPatients.find(p => String(p.id || p.patient_id) === String(patientId)) || {};
+    const dob = options.dob || demo.dob || demo.date_of_birth || patientData.dob || patientData.date_of_birth || '';
+    const formattedDob = dob ? formatDateDisplay(dob) : '';
+
+    const params = new URLSearchParams({
+        type,
+        patientName: patientName || '',
+        patientDob: formattedDob,
+        medication: med,
+        dosage: options.dosage || '',
+        provider: 'Phil Schafer, NP',
+        dateDispensed: new Date().toLocaleDateString('en-US'),
+        lotNumber: options.lotNumber || '',
+        volume: options.volume || '',
+        vialNumber: options.vialNumber || '',
+        amountDispensed: options.amountDispensed || '',
+        expDate: options.expDate || '',
+    });
+    window.open(`/ops/api/labels/generate/?${params.toString()}`, '_blank');
+}
+

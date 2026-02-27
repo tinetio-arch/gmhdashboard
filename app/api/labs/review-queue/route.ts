@@ -504,10 +504,19 @@ export async function POST(request: NextRequest): Promise<Response> {
         const patientId = corrected_patient_id || item.healthie_id;
 
         if (!patientId) {
-            return NextResponse.json(
-                { success: false, error: 'No patient ID available. Please select a patient.' },
-                { status: 400 }
-            );
+            // No Healthie ID — approve locally without uploading to Healthie
+            console.log(`[LabReviewQueue] No Healthie ID for item ${id}, approving locally only.`);
+            await updateQueueItem(id, {
+                status: 'approved',
+                approved_at: new Date().toISOString(),
+                approved_by: currentUser?.name || 'Unknown',
+            });
+            return NextResponse.json({
+                success: true,
+                message: 'Lab approved locally (no Healthie patient linked)',
+                item_id: id,
+                healthie_uploaded: false,
+            });
         }
 
         // SAFETY CHECK: Verify the target patient is active in Healthie before uploading

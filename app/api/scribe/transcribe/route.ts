@@ -23,18 +23,31 @@ export async function POST(request: NextRequest) {
         const visitType = (formData.get('visit_type') as string) || 'follow_up';
         const preTranscribed = formData.get('transcript') as string | null;
 
+        const patientName = formData.get('patient_name') as string | null;
+
         if (!patientId) {
             return NextResponse.json({ success: false, error: 'patient_id is required' }, { status: 400 });
         }
 
-        // Verify patient exists
-        const [patient] = await query<any>(
+        // Try to find patient by patient_id first, then by healthie_client_id
+        let patient: any = null;
+        const [byId] = await query<any>(
             'SELECT patient_id, full_name FROM patients WHERE patient_id = $1',
             [patientId]
         );
-        if (!patient) {
-            return NextResponse.json({ success: false, error: 'Patient not found' }, { status: 404 });
+        if (byId) {
+            patient = byId;
+        } else {
+            // Try Healthie ID lookup
+            const [byHealthie] = await query<any>(
+                'SELECT patient_id, full_name FROM patients WHERE healthie_client_id = $1',
+                [patientId]
+            );
+            patient = byHealthie;
         }
+        // For Healthie-only patients not in ops system, allow proceeding with name
+        const resolvedPatientId = patient?.patient_id || patientId;
+        const resolvedPatientName = patient?.full_name || patientName || 'Unknown Patient';
 
         let transcript = preTranscribed;
         let audioS3Key: string | null = null;
@@ -108,7 +121,7 @@ export async function POST(request: NextRequest) {
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `, [
-            patientId,
+            resolvedPatientId,
             appointmentId,
             visitType,
             audioS3Key,

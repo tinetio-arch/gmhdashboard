@@ -5,17 +5,17 @@ import { query } from '@/lib/db';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
-    try { await requireApiUser(request, 'read'); }
-    catch (error) {
-        if (error instanceof UnauthorizedError)
-            return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-        throw error;
-    }
+  try { await requireApiUser(request, 'read'); }
+  catch (error) {
+    if (error instanceof UnauthorizedError)
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    throw error;
+  }
 
-    try {
-        const [stagedDoses, overdueLabs, paymentHolds] = await Promise.all([
-            // Staged doses pending dispensing
-            query<any>(`
+  try {
+    const [stagedDoses, overdueLabs, paymentHolds] = await Promise.all([
+      // Staged doses pending dispensing
+      query<any>(`
         SELECT
           sd.staged_dose_id,
           sd.patient_id,
@@ -38,11 +38,11 @@ export async function GET(request: NextRequest) {
         ORDER BY sd.staged_for_date ASC, sd.created_at ASC
       `),
 
-            // Labs pending review
-            query<any>(`
+      // Labs pending review
+      query<any>(`
         SELECT
           id,
-          patient->>'healthie_id' as healthie_id,
+          healthie_id,
           patient->>'name' as patient_name,
           status,
           created_at,
@@ -52,8 +52,8 @@ export async function GET(request: NextRequest) {
         ORDER BY created_at ASC
       `),
 
-            // Unresolved payment issues
-            query<any>(`
+      // Unresolved payment issues
+      query<any>(`
         SELECT
           pi.issue_id,
           pi.patient_id,
@@ -68,30 +68,30 @@ export async function GET(request: NextRequest) {
         WHERE pi.resolved_at IS NULL
         ORDER BY pi.issue_severity DESC, pi.amount_owed DESC
       `),
-        ]);
+    ]);
 
-        return NextResponse.json({
-            success: true,
-            data: {
-                staged_doses: stagedDoses,
-                overdue_labs: overdueLabs,
-                payment_holds: paymentHolds,
-                summary: {
-                    total_staged_doses: stagedDoses.length,
-                    stale_staged_doses: stagedDoses.filter((sd: any) => sd.is_stale).length,
-                    total_overdue_labs: overdueLabs.length,
-                    total_payment_holds: paymentHolds.length,
-                    total_outstanding: paymentHolds.reduce(
-                        (sum: number, ph: any) => sum + parseFloat(ph.amount_owed || '0'), 0
-                    ),
-                },
-            },
-        });
-    } catch (error) {
-        console.error('[iPad Tasks] Error:', error);
-        return NextResponse.json(
-            { success: false, error: error instanceof Error ? error.message : 'Internal server error' },
-            { status: 500 }
-        );
-    }
+    return NextResponse.json({
+      success: true,
+      data: {
+        staged_doses: stagedDoses,
+        overdue_labs: overdueLabs,
+        payment_holds: paymentHolds,
+        summary: {
+          total_staged_doses: stagedDoses.length,
+          stale_staged_doses: stagedDoses.filter((sd: any) => sd.is_stale).length,
+          total_overdue_labs: overdueLabs.length,
+          total_payment_holds: paymentHolds.length,
+          total_outstanding: paymentHolds.reduce(
+            (sum: number, ph: any) => sum + parseFloat(ph.amount_owed || '0'), 0
+          ),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[iPad Tasks] Error:', error);
+    return NextResponse.json(
+      { success: false, error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    );
+  }
 }
