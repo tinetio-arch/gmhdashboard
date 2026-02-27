@@ -29,10 +29,19 @@ export async function GET(
             );
         }
 
-        // Run remaining queries in parallel
+        // Run remaining queries in parallel — each query fault-tolerant
+        const safeQuery = async (label: string, sql: string, params: any[]): Promise<any[]> => {
+            try {
+                return await query<any>(sql, params);
+            } catch (err) {
+                console.warn(`[iPad Patient] ${label} query failed:`, err instanceof Error ? err.message : err);
+                return [];
+            }
+        };
+
         const [recentDispenses, recentPeptides, paymentIssues, stagedDoses] = await Promise.all([
             // Recent TRT dispenses (last 5)
-            query<any>(`
+            safeQuery('dispenses', `
         SELECT
           d.dispense_id,
           d.dispense_date,
@@ -46,31 +55,27 @@ export async function GET(
           v.external_id as vial_label,
           v.dea_drug_name
         FROM dispenses d
-        JOIN vials v ON d.vial_id = v.vial_id
+        LEFT JOIN vials v ON d.vial_id = v.vial_id
         WHERE d.patient_id = $1
         ORDER BY d.dispense_date DESC
         LIMIT 5
       `, [patientId]),
 
             // Recent peptide dispenses (last 5)
-            query<any>(`
+            safeQuery('peptides', `
         SELECT
-          ROW_NUMBER() OVER (ORDER BY pd.sale_date DESC) as row_num,
           pd.sale_date,
           pd.quantity,
-          pd.unit_price,
-          pd.total_price,
-          pp.name as product_name,
-          pd.notes
+          pp.name as product_name
         FROM peptide_dispenses pd
-        JOIN peptide_products pp ON pd.product_id = pp.product_id
+        LEFT JOIN peptide_products pp ON pd.product_id = pp.product_id
         WHERE pd.patient_name ILIKE $1
         ORDER BY pd.sale_date DESC
         LIMIT 5
       `, [`%${patient.full_name}%`]),
 
             // Unresolved payment issues
-            query<any>(`
+            safeQuery('payments', `
         SELECT
           issue_id,
           issue_type,
@@ -84,7 +89,7 @@ export async function GET(
       `, [patientId]),
 
             // Pending staged doses
-            query<any>(`
+            safeQuery('staged_doses', `
         SELECT
           staged_dose_id,
           dose_ml,
@@ -97,7 +102,7 @@ export async function GET(
           staged_by_name,
           notes
         FROM staged_doses
-        WHERE patient_id = $1 AND status = 'staged'
+        WHERE patient_id = $1 AND status IN ('staged', 'pending')
         ORDER BY staged_for_date ASC
       `, [patientId]),
         ]);

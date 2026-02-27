@@ -36,19 +36,217 @@ let isLoading = false;
 let scribeLoaded = false;       // prevent infinite reload
 let labsLoaded = false;         // prevent infinite reload
 let patientsLoaded = false;     // prevent infinite reload
+let currentUser = null;          // from /api/ipad/me — role, permissions
 
 // Cron secret for Healthie appointments
 const CRON_SECRET = '59c7ba5958b3c753f607a1bdeeb53ae36aabac6ebcf8729f6d411f43fc704122';
 
 // ─── INIT ───────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     updateClock();
     setInterval(updateClock, 30000);
     setupTabBar();
-    setupHashRouting();
     setupPullToRefresh();
+
+    // Phase 1: RBAC — load current user before anything else
+    const authenticated = await loadCurrentUser();
+    if (!authenticated) {
+        showLoginOverlay();
+        return;
+    }
+
+    applyRolePermissions();
+    setupHashRouting();
     loadAllData();
 });
+
+// ─── AUTH & RBAC ────────────────────────────────────────────
+async function loadCurrentUser() {
+    try {
+        const resp = await fetch('/ops/api/ipad/me/', { credentials: 'include' });
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        if (data.error) return false;
+        currentUser = data;
+        return true;
+    } catch (e) {
+        console.warn('Auth check failed:', e);
+        return false;
+    }
+}
+
+function showLoginOverlay() {
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="loginOverlay" style="
+            position:fixed; inset:0; z-index:9999;
+            background: linear-gradient(135deg, #0a0f1a 0%, #111827 50%, #0f172a 100%);
+            display:flex; align-items:center; justify-content:center;
+            font-family:'DM Sans', sans-serif;
+        ">
+            <div style="
+                width:380px; padding:40px; border-radius:16px;
+                background:rgba(30,41,59,0.7); border:1px solid rgba(100,200,255,0.15);
+                backdrop-filter:blur(20px); box-shadow:0 25px 50px rgba(0,0,0,0.5);
+            ">
+                <div style="text-align:center; margin-bottom:28px;">
+                    <span style="font-size:28px; font-weight:700; color:#fff;">GMH</span>
+                    <span style="font-size:28px; font-weight:300; color:#22d3ee;">Ops</span>
+                    <div style="font-size:12px; color:#94a3b8; margin-top:4px; letter-spacing:0.1em; text-transform:uppercase;">iPad Staff Dashboard</div>
+                </div>
+                <div id="loginError" style="display:none; padding:10px 14px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:16px;"></div>
+                <div style="margin-bottom:16px;">
+                    <label style="display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; font-weight:600;">Email</label>
+                    <input id="loginEmail" type="email" placeholder="you@nowoptimal.com" autocomplete="email" autofocus style="
+                        width:100%; padding:12px 16px; border-radius:8px; border:1px solid rgba(100,200,255,0.15);
+                        background:rgba(15,23,42,0.8); color:#fff; font-size:15px; font-family:inherit; outline:none;
+                        transition:border-color 0.2s;
+                    " onfocus="this.style.borderColor='#22d3ee'" onblur="this.style.borderColor='rgba(100,200,255,0.15)'">
+                </div>
+                <div style="margin-bottom:24px;">
+                    <label style="display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; font-weight:600;">Password</label>
+                    <input id="loginPassword" type="password" placeholder="••••••••" autocomplete="current-password" style="
+                        width:100%; padding:12px 16px; border-radius:8px; border:1px solid rgba(100,200,255,0.15);
+                        background:rgba(15,23,42,0.8); color:#fff; font-size:15px; font-family:inherit; outline:none;
+                        transition:border-color 0.2s;
+                    " onfocus="this.style.borderColor='#22d3ee'" onblur="this.style.borderColor='rgba(100,200,255,0.15)'"
+                    onkeydown="if(event.key==='Enter') handleLogin()">
+                </div>
+                <button onclick="handleLogin()" id="loginBtn" style="
+                    width:100%; padding:14px; border:none; border-radius:8px;
+                    background:linear-gradient(135deg, #22d3ee, #06b6d4); color:#0a0f1a;
+                    font-size:15px; font-weight:700; cursor:pointer; font-family:inherit;
+                    transition:all 0.2s; letter-spacing:0.02em;
+                ">Sign In</button>
+            </div>
+        </div>
+    `);
+}
+
+async function handleLogin() {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const errorEl = document.getElementById('loginError');
+    const btn = document.getElementById('loginBtn');
+
+    if (!email || !password) {
+        errorEl.textContent = 'Please enter email and password';
+        errorEl.style.display = 'block';
+        return;
+    }
+
+    btn.textContent = 'Signing in…';
+    btn.disabled = true;
+    errorEl.style.display = 'none';
+
+    try {
+        const resp = await fetch('/ops/api/auth/login', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+        const data = await resp.json();
+
+        if (resp.ok && data.success) {
+            // Reload user and boot app
+            const authed = await loadCurrentUser();
+            if (authed) {
+                document.getElementById('loginOverlay')?.remove();
+                applyRolePermissions();
+                setupHashRouting();
+                loadAllData();
+                return;
+            }
+        }
+        errorEl.textContent = data.error || 'Invalid credentials';
+        errorEl.style.display = 'block';
+    } catch (e) {
+        errorEl.textContent = 'Connection error — try again';
+        errorEl.style.display = 'block';
+    } finally {
+        btn.textContent = 'Sign In';
+        btn.disabled = false;
+    }
+}
+
+function applyRolePermissions() {
+    if (!currentUser) return;
+    const perms = currentUser.permissions || {};
+    const nav = document.querySelector('.tab-bar');
+
+    // Hide Scribe tab for non-provider/non-admin
+    const scribeTab = nav?.querySelector('[data-tab="scribe"]');
+    if (scribeTab && !perms.can_use_scribe) {
+        scribeTab.style.display = 'none';
+    }
+
+    // Add Schedule tab for providers/admins
+    if ((perms.can_use_scribe || perms.can_view_ceo_dashboard) && nav) {
+        const scheduleTab = document.createElement('button');
+        scheduleTab.className = 'tab-item';
+        scheduleTab.dataset.tab = 'schedule';
+        scheduleTab.innerHTML = `
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+            <span class="tab-label">Schedule</span>
+        `;
+        scheduleTab.addEventListener('click', () => { window.location.hash = '#schedule'; });
+        // Insert after Labs tab
+        const labsTab = nav.querySelector('[data-tab="labs"]');
+        if (labsTab && labsTab.nextSibling) {
+            nav.insertBefore(scheduleTab, labsTab.nextSibling);
+        } else {
+            nav.appendChild(scheduleTab);
+        }
+    }
+
+    // Add CEO tab for admins
+    if (perms.can_view_ceo_dashboard && nav) {
+        const ceoTab = document.createElement('button');
+        ceoTab.className = 'tab-item';
+        ceoTab.dataset.tab = 'ceo';
+        ceoTab.innerHTML = `
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>
+            </svg>
+            <span class="tab-label">CEO</span>
+        `;
+        ceoTab.addEventListener('click', () => { window.location.hash = '#ceo'; });
+        // Insert CEO tab before Patients (last tab)
+        const patientsTab = nav.querySelector('[data-tab="patients"]');
+        if (patientsTab) {
+            nav.insertBefore(ceoTab, patientsTab);
+        } else {
+            nav.appendChild(ceoTab);
+        }
+    }
+
+    // Render user badge in status bar
+    renderUserBadge();
+}
+
+function renderUserBadge() {
+    const statusRight = document.querySelector('.status-bar-right');
+    if (!statusRight || !currentUser) return;
+    const roleBadges = { admin: '👑', write: '🩺', read: '💉' };
+    const roleLabels = { admin: 'Admin', write: 'Provider', read: 'Staff' };
+    const badge = roleBadges[currentUser.role] || '👤';
+    const label = currentUser.display_name || currentUser.email?.split('@')[0] || 'User';
+    const roleLabel = roleLabels[currentUser.role] || currentUser.role;
+
+    // Insert before the clock
+    const clockEl = document.getElementById('statusTime');
+    const userBadge = document.createElement('span');
+    userBadge.className = 'user-badge';
+    userBadge.style.cssText = 'font-size:12px; color:var(--text-secondary); margin-right:12px; display:flex; align-items:center; gap:4px;';
+    userBadge.innerHTML = `${badge} <span style="color:var(--text-primary); font-weight:500;">${label}</span> <span style="font-size:10px; color:var(--text-tertiary);">${roleLabel}</span>`;
+    if (clockEl) {
+        statusRight.insertBefore(userBadge, clockEl);
+    } else {
+        statusRight.appendChild(userBadge);
+    }
+}
 
 function updateClock() {
     const el = document.getElementById('statusTime');
@@ -79,7 +277,14 @@ function handleHash() {
 }
 
 function switchTab(tab) {
-    if (!['today', 'labs', 'scribe', 'inventory', 'patients'].includes(tab)) tab = 'today';
+    const validTabs = ['today', 'labs', 'scribe', 'inventory', 'patients', 'ceo', 'schedule'];
+    if (!validTabs.includes(tab)) tab = 'today';
+    // RBAC: prevent access to tabs user doesn't have permission for
+    if (currentUser?.permissions) {
+        if (tab === 'ceo' && !currentUser.permissions.can_view_ceo_dashboard) tab = 'today';
+        if (tab === 'scribe' && !currentUser.permissions.can_use_scribe) tab = 'today';
+        if (tab === 'schedule' && !currentUser.permissions.can_use_scribe) tab = 'today';
+    }
     currentTab = tab;
 
     document.querySelectorAll('.tab-item').forEach(btn => {
@@ -138,6 +343,8 @@ function renderCurrentTab() {
         case 'scribe': renderScribeView(view); break;
         case 'inventory': renderInventoryView(view); break;
         case 'patients': renderPatientsView(view); break;
+        case 'ceo': renderCEODashboard(view); break;
+        case 'schedule': renderScheduleView(view); break;
     }
 
     main.appendChild(view);
@@ -612,10 +819,78 @@ function renderTodayView(container) {
                 ${paymentIssues.map(p => renderPaymentIssueCard(p)).join('')}
             </div>
         ` : ''}
+
+        ${renderTodayInventoryAlerts()}
     `;
 
     // Setup swipe gestures on action cards
     setTimeout(() => setupSwipeGestures(), 100);
+}
+
+function renderTodayInventoryAlerts() {
+    // Build inventory overview from available data
+    const vialData = inventorySummary?.vials || {};
+    const peptides = inventorySummary?.peptides || [];
+    const supplies = supplyItems || inventorySummary?.supplies || [];
+
+    const activeVials = parseInt(vialData.active_count || '0');
+    const peptideCount = peptides.length;
+    const lowSupplies = supplies.filter(s => {
+        const qty = s.qty_on_hand ?? s.current_count ?? 0;
+        const par = s.par_level ?? null;
+        return par && qty <= par;
+    });
+
+    let html = '';
+
+    // Inventory Overview — compact stat cards
+    if (activeVials > 0 || peptideCount > 0 || supplies.length > 0) {
+        html += `
+            <div class="section-header" id="inventoryOverview">
+                <h2>Inventory Overview</h2>
+                <button class="section-action" onclick="window.location.hash='#inventory'">View All →</button>
+            </div>
+            <div class="stats-row stagger-in" style="margin-bottom:12px;">
+                <div class="stat-card" onclick="window.location.hash='#inventory'" style="flex:1;">
+                    <div class="stat-icon green">💉</div>
+                    <div class="stat-value">${activeVials}</div>
+                    <div class="stat-label">Active Vials</div>
+                </div>
+                <div class="stat-card" onclick="window.location.hash='#inventory'" style="flex:1;">
+                    <div class="stat-icon purple">💊</div>
+                    <div class="stat-value">${peptideCount}</div>
+                    <div class="stat-label">Peptide Products</div>
+                </div>
+                <div class="stat-card ${lowSupplies.length > 0 ? 'alert' : ''}" onclick="window.location.hash='#inventory'" style="flex:1;">
+                    <div class="stat-icon ${lowSupplies.length > 0 ? 'red' : 'cyan'}">📦</div>
+                    <div class="stat-value">${lowSupplies.length}</div>
+                    <div class="stat-label">${lowSupplies.length > 0 ? 'Low Supplies' : 'All Stocked'}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    // Low stock items list
+    if (lowSupplies.length > 0) {
+        html += `
+            <div class="stagger-in" style="margin-bottom:16px;">
+                ${lowSupplies.slice(0, 5).map(s => {
+            const qty = s.qty_on_hand ?? s.current_count ?? 0;
+            const par = s.par_level ?? 0;
+            const name = s.name || s.supply_name || '';
+            return `
+                        <div style="display:flex; align-items:center; padding:8px 14px; background:linear-gradient(135deg, rgba(239,68,68,0.08), rgba(239,68,68,0.03)); border-radius:8px; margin-bottom:4px; border-left:3px solid var(--red);">
+                            <span style="font-size:13px; flex:1; font-weight:500;">${name}</span>
+                            <span style="font-size:13px; color:var(--red); font-weight:600;">${qty}/${par}</span>
+                        </div>
+                    `;
+        }).join('')}
+                ${lowSupplies.length > 5 ? `<div style="text-align:center; padding:6px; color:var(--text-tertiary); font-size:12px;">+ ${lowSupplies.length - 5} more items below par</div>` : ''}
+            </div>
+        `;
+    }
+
+    return html;
 }
 
 function buildActionItems(labsCount, paymentsCount, stagedCount) {
@@ -1258,16 +1533,36 @@ function renderScribeNewSession(container) {
                 results.style.display = 'none';
                 return;
             }
-            results.innerHTML = '<div class="patient-search-loading">Searching Healthie…</div>';
+            results.innerHTML = '<div class="patient-search-loading">Searching…</div>';
             results.style.display = 'block';
             searchTimeout = setTimeout(async () => {
                 try {
-                    const data = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
-                    if (!data?.patients?.length) {
-                        results.innerHTML = '<div class="patient-search-empty">No active patients found</div>';
+                    // Search locally first
+                    const localMatches = allPatients.filter(p => {
+                        const nm = (p.name || p.full_name || '').toLowerCase();
+                        return nm.includes(q.toLowerCase());
+                    }).slice(0, 10).map(p => ({
+                        id: p.healthie_client_id || p.id || p.patient_id,
+                        healthie_id: p.healthie_client_id || '',
+                        first_name: (p.name || p.full_name || '').split(' ')[0] || '',
+                        last_name: (p.name || p.full_name || '').split(' ').slice(1).join(' ') || '',
+                        dob: p.dob || '', email: p.email || '',
+                    }));
+                    // Also try Healthie
+                    let hResults = [];
+                    try {
+                        const hData = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
+                        hResults = hData?.patients || [];
+                    } catch (he) { console.warn('Healthie search failed:', he.message); }
+                    // Merge
+                    const seen = new Set(hResults.map(p => String(p.healthie_id || p.id)));
+                    const uniqLocal = localMatches.filter(p => !seen.has(String(p.healthie_id || p.id)));
+                    const combined = [...hResults, ...uniqLocal].slice(0, 15);
+                    if (combined.length === 0) {
+                        results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
                         return;
                     }
-                    results.innerHTML = data.patients.map(p => {
+                    results.innerHTML = combined.map(p => {
                         const name = `${p.first_name || ''} ${p.last_name || ''}`.trim() || p.name || 'Unknown';
                         const dob = p.dob ? ` · DOB: ${p.dob}` : '';
                         return `<div class="patient-search-item" onclick="selectScribePatient('${p.healthie_id || p.id}', '${name.replace(/'/g, "\\'")}')">
@@ -2103,48 +2398,210 @@ function extractPeptides() {
 
 // ─── SUPPLIES SECTION ───────────────────────────────────────
 function renderSuppliesSection() {
-    const supplies = extractSupplies();
+    const supplies = supplyItems || extractSupplies();
+
+    if (supplies.length === 0 && !supplyItems) {
+        // Try loading from the dedicated supplies API
+        loadSuppliesData();
+        return renderLoadingState();
+    }
 
     if (supplies.length === 0) {
-        return renderEmptyState('📦', 'No supply data', 'Inventory data not yet available');
+        return renderEmptyState('📦', 'No supply data', 'No supplies found for this location');
     }
 
     const categories = ['All', ...new Set(supplies.map(s => s.category || 'Other').filter(Boolean))];
-    const filtered = activeSupplyFilter === 'All' ? supplies : supplies.filter(s => (s.category || 'Other') === activeSupplyFilter);
+    let filtered = activeSupplyFilter === 'All' ? supplies : supplies.filter(s => (s.category || 'Other') === activeSupplyFilter);
+
+    // Low stock filter
+    if (showLowStockOnly) {
+        filtered = filtered.filter(s => {
+            const count = s.qty_on_hand ?? s.current_count ?? 0;
+            const par = s.par_level ?? null;
+            return par && count <= par;
+        });
+    }
+
+    const lowCount = supplies.filter(s => {
+        const count = s.qty_on_hand ?? s.current_count ?? 0;
+        const par = s.par_level ?? null;
+        return par && count <= par;
+    }).length;
+
+    const locations = [
+        { id: 'mens_health', label: "Men's Health" },
+        { id: 'primary', label: 'Primary' },
+        { id: 'optimal', label: 'Optimal' },
+    ];
 
     return `
-    <div class="supply-filters">
-        ${categories.map(c => `
-                <button class="filter-pill ${activeSupplyFilter === c ? 'active' : ''}" 
-                        onclick="setSupplyFilter('${c}')">${c}</button>
-            `).join('')
-        }
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <div class="supply-filters">
+            ${locations.map(l => `
+                <button class="filter-pill ${activeSupplyLocation === l.id ? 'active' : ''}" 
+                        onclick="setSupplyLocation('${l.id}')">${l.label}</button>
+            `).join('')}
+        </div>
+        <button class="btn-primary btn-sm" onclick="openSupplyCountModal()" style="font-size:12px; padding:6px 14px;">
+            📝 Update Counts
+        </button>
     </div>
+
+    ${lowCount > 0 ? `
+        <div onclick="toggleLowStock()" style="cursor:pointer; margin-bottom:12px; padding:12px 16px; background:${showLowStockOnly ? 'var(--red-dim)' : 'linear-gradient(135deg, rgba(239,68,68,0.15), rgba(239,68,68,0.05))'}; border:1px solid ${showLowStockOnly ? 'var(--red)' : 'rgba(239,68,68,0.3)'}; border-radius:var(--radius-sm); display:flex; align-items:center; gap:10px;">
+            <span style="font-size:20px;">⚠️</span>
+            <div>
+                <div style="font-weight:600; color:var(--red); font-size:14px;">${lowCount} Item${lowCount > 1 ? 's' : ''} Below Par</div>
+                <div style="font-size:11px; color:var(--text-tertiary);">${showLowStockOnly ? 'Showing low stock only — tap to show all' : 'Tap to filter low stock items'}</div>
+            </div>
+        </div>
+    ` : ''}
+
+    <div class="supply-filters" style="margin-bottom:8px;">
+        ${categories.map(c => `
+            <button class="filter-pill ${activeSupplyFilter === c ? 'active' : ''}" 
+                    onclick="setSupplyFilter('${c}')">${c}</button>
+        `).join('')}
+    </div>
+
     <div class="stagger-in">
         ${filtered.map(s => {
-            const count = s.current_count || s.qty_on_hand || s.quantity || s.stock || 0;
-            const par = s.par_level || s.par || s.reorder_point || null;
-            const name = s.name || s.supply_name || '';
-            const cat = s.category || '';
-            const ratio = par ? count / par : 1;
-            const level = !par ? 'ok' : ratio > 1.2 ? 'ok' : ratio >= 0.8 ? 'warning' : 'low';
-            const label = level === 'ok' ? 'In Stock' : level === 'warning' ? 'Re-order Soon' : 'LOW STOCK';
-            return `
-                    <div class="supply-item">
-                        <div class="supply-info">
-                            <div class="supply-name">${name}</div>
-                            ${cat ? `<div class="supply-category">${cat}</div>` : ''}
-                        </div>
-                        <div class="supply-count">
-                            <span class="supply-count-value">${count}</span>
-                            ${par ? `<span class="supply-par-value">/ ${par} par</span>` : ''}
-                            <span class="supply-par-indicator ${level}">${label}</span>
-                        </div>
+        const count = s.qty_on_hand ?? s.current_count ?? s.quantity ?? s.stock ?? 0;
+        const par = s.par_level ?? s.par ?? null;
+        const name = s.name || s.supply_name || '';
+        const cat = s.category || '';
+        const ratio = par ? count / par : 1;
+        const level = !par ? 'ok' : ratio > 1.2 ? 'ok' : ratio >= 0.8 ? 'warning' : 'low';
+        const label = level === 'ok' ? 'In Stock' : level === 'warning' ? 'Re-order Soon' : 'LOW STOCK';
+        const countedInfo = s.counted_at ? `Counted ${formatDateDisplay(s.counted_at)}${s.counted_by ? ' by ' + s.counted_by : ''}` : '';
+        return `
+                <div class="supply-item">
+                    <div class="supply-info">
+                        <div class="supply-name">${name}</div>
+                        ${cat ? `<div class="supply-category">${cat}</div>` : ''}
+                        ${countedInfo ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${countedInfo}</div>` : ''}
                     </div>
-                `;
-        }).join('')}
+                    <div class="supply-count">
+                        <div style="text-align:right;">
+                            <span class="supply-count-value">${count}</span>
+                            ${par != null ? `<span class="supply-par-value">/ ${par} par</span>` : `<span class="supply-par-value" style="color:var(--yellow);">no par set</span>`}
+                        </div>
+                        <span class="supply-par-indicator ${level}">${label}</span>
+                        <button onclick="event.stopPropagation(); editSupplyPar(${s.id}, '${name.replace(/'/g, "\\'")}', ${par || 0})" 
+                                style="background:none; border:1px solid var(--border-light); border-radius:6px; padding:4px 8px; color:var(--text-tertiary); font-size:10px; cursor:pointer;">✏️</button>
+                    </div>
+                </div>
+            `;
+    }).join('')}
     </div>
 `;
+}
+
+let supplyItems = null;
+let activeSupplyLocation = 'mens_health';
+let showLowStockOnly = false;
+
+async function loadSuppliesData() {
+    try {
+        const data = await apiFetch(`/ops/api/supplies/?location=${activeSupplyLocation}`);
+        if (data?.items && Array.isArray(data.items)) {
+            supplyItems = data.items;
+        }
+        renderCurrentTab();
+    } catch (e) {
+        console.warn('Supplies load failed:', e);
+    }
+}
+
+function setSupplyLocation(loc) {
+    activeSupplyLocation = loc;
+    supplyItems = null; // force reload
+    renderCurrentTab();
+    loadSuppliesData();
+}
+
+function toggleLowStock() {
+    showLowStockOnly = !showLowStockOnly;
+    renderCurrentTab();
+}
+
+function editSupplyPar(itemId, itemName, currentPar) {
+    const newPar = prompt(`Set PAR level for "${itemName}":`, currentPar || '');
+    if (newPar === null) return;
+    const parVal = parseInt(newPar, 10);
+    if (isNaN(parVal) || parVal < 0) { alert('Invalid PAR level'); return; }
+
+    apiFetch(`/ops/api/supplies/${itemId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ par_level: parVal }),
+    }).then(() => {
+        showToast(`PAR updated to ${parVal}`);
+        supplyItems = null;
+        loadSuppliesData();
+    }).catch(e => showToast('Failed to update PAR: ' + e.message));
+}
+
+function openSupplyCountModal() {
+    const supplies = supplyItems || extractSupplies();
+    if (supplies.length === 0) { showToast('No supplies loaded'); return; }
+
+    const html = `
+        <div class="modal-overlay" id="supplyCountModal" onclick="if(event.target===this)this.remove()">
+            <div class="modal-content" style="max-height:85vh; overflow-y:auto;">
+                <h2 style="margin-bottom:4px;">📝 Update Supply Counts</h2>
+                <p style="color:var(--text-tertiary); font-size:12px; margin-bottom:16px;">Location: ${activeSupplyLocation.replace(/_/g, ' ')}</p>
+                <div id="supplyCountEntries">
+                    ${supplies.map(s => {
+        const currentQty = s.qty_on_hand ?? s.current_count ?? 0;
+        return `
+                            <div style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--border);">
+                                <div style="flex:1;">
+                                    <div style="font-weight:500; font-size:13px;">${s.name}</div>
+                                    <div style="font-size:11px; color:var(--text-tertiary);">${s.category || ''} · Current: ${currentQty}</div>
+                                </div>
+                                <input type="number" min="0" value="${currentQty}" data-item-id="${s.id}" 
+                                       style="width:80px; padding:8px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); text-align:center; font-size:16px; font-weight:600;">
+                            </div>
+                        `;
+    }).join('')}
+                </div>
+                <div style="display:flex; gap:8px; margin-top:16px;">
+                    <button class="btn-secondary" onclick="document.getElementById('supplyCountModal').remove()" style="flex:1;">Cancel</button>
+                    <button class="btn-primary" onclick="submitSupplyCounts()" style="flex:1;">💾 Save Counts</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function submitSupplyCounts() {
+    const inputs = document.querySelectorAll('#supplyCountEntries input[data-item-id]');
+    const entries = [];
+    inputs.forEach(input => {
+        const qty = parseInt(input.value, 10);
+        const itemId = parseInt(input.dataset.itemId, 10);
+        if (!isNaN(qty) && !isNaN(itemId)) {
+            entries.push({ item_id: itemId, qty: qty, location: activeSupplyLocation });
+        }
+    });
+
+    if (entries.length === 0) { showToast('No entries to save'); return; }
+
+    try {
+        await apiFetch('/ops/api/supplies/count', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entries, recorded_by: 'iPad User' }),
+        });
+        showToast(`✅ ${entries.length} counts saved`);
+        document.getElementById('supplyCountModal')?.remove();
+        supplyItems = null;
+        loadSuppliesData();
+    } catch (e) {
+        showToast('Failed to save: ' + e.message);
+    }
 }
 
 function extractSupplies() {
@@ -2186,7 +2643,7 @@ function renderPatientsView(container) {
     const recent = patients.slice(0, 6);
 
     container.innerHTML = `
-    < h1 style = "font-size:28px; margin-bottom:20px;" > Patients</h1 >
+    <h1 style="font-size:28px; margin-bottom:20px;">Patients</h1>
         <div class="patient-search">
             <span class="patient-search-icon">🔍</span>
             <input type="text" placeholder="Search patients..." id="patientSearchInput"
@@ -2201,10 +2658,12 @@ function renderPatientsView(container) {
                 ${recent.map(p => {
         const name = p.name || p.patient_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
         const color = p.avatar_color || getAvatarColor(name);
+        const pType = formatClientType(p.client_type_key || p.client_type || '');
         return `
                         <div class="recent-patient-card" onclick="selectPatient('${p.id || p.patient_id}')">
                             <div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>
                             <div class="recent-patient-name">${name}</div>
+                            ${pType ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${pType}</div>` : ''}
                         </div>
                     `;
     }).join('')}
@@ -2255,20 +2714,34 @@ function getStatusColor(raw) {
     return 'var(--text-secondary)';
 }
 
+function formatClientType(raw) {
+    if (!raw) return '';
+    const map = {
+        'NowMensHealth.Care': 'Men\'s Health',
+        'nowmenshealth': 'Men\'s Health',
+        'QBO TCMH $180/Month': 'TCMH $180',
+        'QBO F&F/FR/Veteran $140/Month': 'F&F $140',
+        'Ins. Supp. $60/Month': 'Ins. Supp.',
+        'weight_loss': 'Weight Loss',
+        'primary_care': 'Primary Care',
+    };
+    return map[raw] || raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 function renderPatientListItem(p) {
     const name = p.name || p.patient_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
     const color = p.avatar_color || getAvatarColor(name);
     const rawStatus = p.status_key || p.status || 'Active';
     const label = formatStatusLabel(rawStatus);
     const statusColor = getStatusColor(rawStatus);
-    const clinic = p.clinic || p.location || '';
+    const clientType = formatClientType(p.client_type_key || p.client_type || '');
 
     return `
         <div class="patient-list-item" onclick="selectPatient('${p.id || p.patient_id}')">
             <div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>
             <div class="patient-list-info">
                 <div class="patient-list-name">${name}</div>
-                ${clinic ? `<div class="patient-list-clinic">${clinic}</div>` : ''}
+                ${clientType ? `<div style="font-size:11px; color:var(--text-tertiary); margin-top:1px;">${clientType}</div>` : ''}
             </div>
             <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${label}</span>
         </div>
@@ -2367,13 +2840,30 @@ function renderPatient360(data, patient, patientId) {
     const visits = data.visits || [];
     const alerts = data.alerts || [];
     const summary = data.summary || {};
+    const labOrders = data.lab_orders || [];
+
+    // Mapping badges
+    const hasGHL = !!(demo.ghl_contact_id || patient?.ghl_contact_id);
+    const hasHealthie = !!(demo.healthie_client_id || patient?.healthie_client_id);
+    const healthiePhoto = demo.healthie_avatar_url || patient?.healthie_avatar_url || '';
 
     let html = '';
 
     // ─── Demographics & Info Grid ───
     html += `
         <div class="patient-360-section">
-            <h3>Patient Information</h3>
+            <div style="display:flex; align-items:flex-start; gap:14px; margin-bottom:14px;">
+                ${healthiePhoto ? `<img src="${healthiePhoto}" style="width:56px; height:56px; border-radius:12px; object-fit:cover; border:2px solid var(--border-light);">` : `<div style="width:56px; height:56px; border-radius:12px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:20px; color:var(--text-primary); border:2px solid var(--border-light);">${getInitials(demo.full_name || patient?.name)}</div>`}
+                <div style="flex:1;">
+                    <h3 style="margin:0 0 6px;">${demo.full_name || patient?.name || 'Unknown Patient'}</h3>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                        <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ GMH</span>
+                        <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${hasGHL ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${hasGHL ? '#22c55e' : '#ef4444'};">${hasGHL ? '✅' : '❌'} GHL</span>
+                        <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${hasHealthie ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${hasHealthie ? '#22c55e' : '#ef4444'};">${hasHealthie ? '✅' : '❌'} Healthie</span>
+                    </div>
+                </div>
+                <button class="btn-secondary btn-sm" onclick="openEditDemographicsModal('${patientId}')" style="font-size:12px;">✏️ Edit</button>
+            </div>
             <div class="patient-info-grid">
                 <div class="patient-info-item">
                     <div class="patient-info-label">Status</div>
@@ -2403,6 +2893,26 @@ function renderPatient360(data, patient, patientId) {
                 <div class="patient-info-item">
                     <div class="patient-info-label">DOB</div>
                     <div class="patient-info-value">${formatDateDisplay(demo.dob)}</div>
+                </div>` : ''}
+                ${demo.gender ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Gender</div>
+                    <div class="patient-info-value">${demo.gender}</div>
+                </div>` : ''}
+                ${demo.location || demo.clinic ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Location</div>
+                    <div class="patient-info-value">${demo.location || demo.clinic || ''}</div>
+                </div>` : ''}
+                ${demo.provider_name ? `
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Provider</div>
+                    <div class="patient-info-value">${demo.provider_name}</div>
+                </div>` : ''}
+                ${demo.address_line_1 ? `
+                <div class="patient-info-item" style="grid-column: span 2;">
+                    <div class="patient-info-label">Address</div>
+                    <div class="patient-info-value" style="font-size:12px;">${demo.address_line_1}${demo.address_line_2 ? ', ' + demo.address_line_2 : ''}${demo.city ? ', ' + demo.city : ''}${demo.state ? ' ' + demo.state : ''} ${demo.zip || ''}</div>
                 </div>` : ''}
             </div>
         </div>
@@ -2455,15 +2965,26 @@ function renderPatient360(data, patient, patientId) {
         html += `
             <div class="patient-360-section">
                 <h3>Recent Controlled Dispenses</h3>
-                ${dispenses.map(d => `
+                ${dispenses.map(d => {
+            const ml = parseFloat(d.total_dispensed_ml || 0);
+            const mlDisplay = ml % 1 === 0 ? ml.toFixed(0) : parseFloat(ml.toFixed(3));
+            const syringes = parseInt(d.syringe_count || 1);
+            // 10mL = full vial from TopRX, typical syringe dose is 0.2-1mL
+            const isFullVial = ml >= 10;
+            const doseInfo = isFullVial
+                ? `${mlDisplay}mL · 1 vial`
+                : `${mlDisplay}mL · ${syringes} syringe${syringes > 1 ? 's' : ''}`;
+            const vialRef = d.vial_label ? ` · ${d.vial_label}` : '';
+            return `
                     <div class="med-card">
                         <div>
                             <div class="med-name">${d.dea_drug_name || d.vial_label || 'Testosterone'}</div>
-                            <div class="med-dose">${formatDateDisplay(d.dispense_date)} · ${d.total_dispensed_ml || '?'}mL · ${d.syringe_count || 1} syringe${(d.syringe_count || 1) > 1 ? 's' : ''}</div>
+                            <div class="med-dose">${formatDateDisplay(d.dispense_date)} · ${doseInfo}${vialRef}</div>
                         </div>
                         <span class="med-status ${d.signature_status || 'pending'}">${d.signature_status || 'pending'}</span>
                     </div>
-                `).join('')}
+                `;
+        }).join('')}
             </div>
         `;
     }
@@ -2477,7 +2998,7 @@ function renderPatient360(data, patient, patientId) {
                     <div class="med-card">
                         <div>
                             <div class="med-name">${p.product_name || 'Peptide'}</div>
-                            <div class="med-dose">${formatDateDisplay(p.sale_date)} · Qty: ${p.quantity} · $${parseFloat(p.total_price || 0).toFixed(2)}</div>
+                            <div class="med-dose">${formatDateDisplay(p.sale_date)} · Qty: ${p.quantity}</div>
                         </div>
                     </div>
                 `).join('')}
@@ -2512,7 +3033,7 @@ function renderPatient360(data, patient, patientId) {
                     <div class="med-card">
                         <div>
                             <div class="med-name">${(pi.issue_type || 'Payment Issue').replace(/_/g, ' ')}</div>
-                            <div class="med-dose">${pi.days_overdue || '?'} days overdue · $${parseFloat(pi.amount_owed || 0).toFixed(2)}</div>
+                            <div class="med-dose">${pi.days_overdue ? pi.days_overdue + ' days overdue' : (pi.created_at ? Math.floor((Date.now() - new Date(pi.created_at).getTime()) / 86400000) + ' days ago' : 'Date unknown')} · $${parseFloat(pi.amount_owed || 0).toFixed(2)}</div>
                         </div>
                         <span class="med-status" style="color:var(--red)">${pi.issue_severity || 'medium'}</span>
                     </div>
@@ -2520,6 +3041,22 @@ function renderPatient360(data, patient, patientId) {
             </div>
         `;
     }
+
+    // ─── Lab Orders & Results (loaded async) ───
+    html += `
+        <div id="patientLabsSection-${patientId}" class="patient-360-section">
+            <h3>🧪 Lab Orders & Results</h3>
+            <div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">Loading lab data…</div>
+        </div>
+    `;
+
+    // ─── Payment Data (loaded async) ───
+    html += `
+        <div id="patientPaymentSection-${patientId}" class="patient-360-section">
+            <h3>💳 Payment History</h3>
+            <div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">Loading payment data…</div>
+        </div>
+    `;
 
     // ─── Quick Actions ───
     html += `
@@ -2533,8 +3070,17 @@ function renderPatient360(data, patient, patientId) {
             <button class="quick-action-btn" onclick="openOrderLabModal('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
                 🧪 <span>Order Lab</span>
             </button>
+            <button class="quick-action-btn" onclick="openControlledDispenseModal('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
+                💉 <span>Dispense Controlled</span>
+            </button>
             <button class="quick-action-btn" onclick="openPeptideDispenseModal('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
                 💊 <span>Dispense Peptide</span>
+            </button>
+            <button class="quick-action-btn" onclick="openVitalsModal('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
+                📋 <span>Record Vitals</span>
+            </button>
+            <button class="quick-action-btn" onclick="startScribeFromProfile('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
+                🎙️ <span>Start Scribe</span>
             </button>
             <button class="quick-action-btn" onclick="printLabel('${patientId}', '${(demo.full_name || '').replace(/'/g, "\\'")}')">
                 🏷️ <span>Print Label</span>
@@ -2543,6 +3089,11 @@ function renderPatient360(data, patient, patientId) {
     `;
 
     container.innerHTML = html;
+
+    // Async: load lab orders & results for this patient
+    loadPatientLabData(patientId);
+    // Async: load payment data from Healthie
+    loadPatientPaymentData(patientId);
 }
 
 // ─── STATUS CHANGE MODAL ────────────────────────────────────
@@ -2679,21 +3230,26 @@ async function submitLabDates(patientId) {
 
 // ─── ORDER LAB MODAL ────────────────────────────────────────
 function openOrderLabModal(patientId, patientName) {
-    const panels = [
-        { code: 'CMP', label: 'Comprehensive Metabolic Panel (CMP)' },
-        { code: 'CBC', label: 'Complete Blood Count (CBC)' },
-        { code: 'LIPID', label: 'Lipid Panel' },
-        { code: 'TTST', label: 'Testosterone (Total)' },
-        { code: 'FTST', label: 'Testosterone (Free)' },
-        { code: 'E2', label: 'Estradiol Sensitive' },
-        { code: 'PSA', label: 'PSA' },
-        { code: 'HCT', label: 'Hematocrit / Hemoglobin' },
-        { code: 'THYROID', label: 'Thyroid Panel (TSH, T3, T4)' },
-        { code: 'VITD', label: 'Vitamin D, 25-Hydroxy' },
-        { code: 'IGF1', label: 'IGF-1' },
-        { code: 'DHEA', label: 'DHEA-S' },
-        { code: 'L509', label: '⚠️ L509 Panel (Requires Approval)' },
-        { code: '202', label: '⚠️ Panel 202 (Requires Approval)' },
+    // ─── Access Medical Labs — Matching Dashboard Modal Exactly ───
+    const CLINICS = [
+        { id: '22937', name: "Tri-City Men's Health" },
+        { id: '72152', name: 'NowPrimary.Care' },
+    ];
+
+    const STANDARD_PANELS = [
+        { code: '9757', name: 'Male - Pre-Required' },
+        { code: '9761', name: 'Male - Post' },
+        { code: '9756', name: 'Female Pre-Required' },
+        { code: '9760', name: 'Female - Post' },
+    ];
+
+    const ADD_ONS = [
+        { code: '146', name: 'PSA (Total)' },
+    ];
+
+    const RESTRICTED_ADD_ONS = [
+        { code: 'L509', name: 'Lipid Panel (Requires Approval)' },
+        { code: '202', name: 'HBA1C (Requires Approval)' },
     ];
 
     const modal = document.createElement('div');
@@ -2701,48 +3257,127 @@ function openOrderLabModal(patientId, patientName) {
     modal.id = 'orderLabModal';
     modal.innerHTML = `
         <div class="modal modal-large" style="max-height:85vh; overflow-y:auto;">
-            <h3>🧪 Order Labs — ${patientName}</h3>
-            <p style="color:var(--text-secondary); font-size:13px; margin-bottom:16px;">Select panels and/or enter custom test codes for Access Medical Labs</p>
+            <h3>🧪 Create Lab Order</h3>
+            <p style="color:var(--text-secondary); font-size:13px; margin-bottom:16px;">Patient: <strong>${patientName}</strong></p>
+
+            <!-- Clinic Selection -->
             <div class="modal-field">
-                <label>Select Panels</label>
-                <div class="lab-panel-list">
-                    ${panels.map(p => `
-                        <label class="lab-panel-checkbox">
-                            <input type="checkbox" value="${p.code}"> ${p.label}
+                <label style="font-weight:600; margin-bottom:6px; display:block;">Select Clinic</label>
+                <div style="display:flex; gap:8px;">
+                    ${CLINICS.map(c => `
+                        <label style="flex:1; padding:10px 14px; border:2px solid var(--border-light); border-radius:8px; cursor:pointer; display:flex; align-items:center; gap:6px; font-size:13px; transition:all 0.2s;" class="clinic-radio-label">
+                            <input type="radio" name="labClinic" value="${c.id}" ${c.id === '22937' ? 'checked' : ''} onchange="document.querySelectorAll('.clinic-radio-label').forEach(l => l.style.borderColor='var(--border-light)'); this.parentElement.style.borderColor='var(--cyan)';">
+                            ${c.name}
                         </label>
                     `).join('')}
                 </div>
             </div>
+
+            <!-- Standard Panels (pick ONE) -->
             <div class="modal-field">
-                <label>Custom Test Codes (comma-separated)</label>
-                <input type="text" id="labCustomCodes" placeholder="e.g. HBA1C, IRON, FERR"
+                <label style="font-weight:600; margin-bottom:6px; display:block;">Select Panel (Pick One)</label>
+                <div style="display:flex; flex-direction:column; gap:6px;">
+                    ${STANDARD_PANELS.map(p => `
+                        <label style="display:flex; align-items:center; gap:8px; padding:10px 14px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:8px; cursor:pointer; font-size:13px;">
+                            <input type="radio" name="labPanel" value="${p.code}">
+                            <span>${p.name}</span>
+                            <span style="margin-left:auto; color:var(--text-tertiary); font-size:11px;">${p.code}</span>
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+
+            <!-- Add-Ons (checkboxes) -->
+            <div class="modal-field">
+                <label style="font-weight:600; margin-bottom:6px; display:block;">Add-Ons</label>
+                <div style="display:flex; flex-direction:column; gap:6px;">
+                    ${ADD_ONS.map(a => `
+                        <label style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:8px; cursor:pointer; font-size:13px;">
+                            <input type="checkbox" class="lab-addon" value="${a.code}">
+                            ${a.name}
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+
+            <!-- Restricted Add-Ons -->
+            <div class="modal-field">
+                <label style="font-weight:600; margin-bottom:6px; display:block; color:var(--red);">⚠️ Restricted Add-Ons (Requires Admin Approval)</label>
+                <div style="display:flex; flex-direction:column; gap:6px; padding:10px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:8px;">
+                    ${RESTRICTED_ADD_ONS.map(a => `
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:var(--text-secondary);">
+                            <input type="checkbox" class="lab-addon-restricted" value="${a.code}">
+                            ${a.name}
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+
+            <!-- Custom Codes -->
+            <div class="modal-field">
+                <label style="font-weight:600; margin-bottom:6px; display:block;">Custom Codes (Requires Approval)</label>
+                <input type="text" id="labCustomCodes" placeholder="Enter codes separated by commas (e.g. TSH, VITD)"
                     style="width:100%; padding:10px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-family:inherit; font-size:14px;">
             </div>
+
+            <!-- Notes -->
             <div class="modal-field">
-                <label>Notes / Instructions</label>
-                <textarea id="labOrderNotes" rows="3" placeholder="Optional notes…" style="width:100%; padding:10px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-family:inherit; font-size:14px;"></textarea>
+                <label style="font-weight:600; margin-bottom:6px; display:block;">Notes / Instructions</label>
+                <textarea id="labOrderNotes" rows="2" placeholder="Optional notes…" style="width:100%; padding:10px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-family:inherit; font-size:14px;"></textarea>
             </div>
+
             <div class="modal-actions">
                 <button class="btn-cancel" onclick="document.getElementById('orderLabModal').remove()">Cancel</button>
-                <button class="btn-primary" onclick="submitLabOrder('${patientId}')">🧪 Submit Order</button>
+                <button class="btn-primary" id="labSubmitBtn" onclick="submitLabOrder('${patientId}')">🧪 Submit Lab Order</button>
             </div>
         </div>
     `;
     document.body.appendChild(modal);
+
+    // Set initial border highlight on the default checked clinic
+    setTimeout(() => {
+        const checked = modal.querySelector('input[name="labClinic"]:checked');
+        if (checked) checked.parentElement.style.borderColor = 'var(--cyan)';
+    }, 50);
 }
 
 async function submitLabOrder(patientId) {
-    const checkboxes = document.querySelectorAll('#orderLabModal .lab-panel-checkbox input:checked');
-    const tests = Array.from(checkboxes).map(cb => cb.value);
+    // Get selected panel (radio — pick one)
+    const panelRadio = document.querySelector('#orderLabModal input[name="labPanel"]:checked');
+    const selectedPanel = panelRadio ? panelRadio.value : '';
+
+    // Get add-ons (checkboxes)
+    const addOnChecks = document.querySelectorAll('#orderLabModal .lab-addon:checked');
+    const addOns = Array.from(addOnChecks).map(cb => cb.value);
+
+    // Get restricted add-ons
+    const restrictedChecks = document.querySelectorAll('#orderLabModal .lab-addon-restricted:checked');
+    const restrictedAddOns = Array.from(restrictedChecks).map(cb => cb.value);
+
     const notes = document.getElementById('labOrderNotes')?.value || '';
     const customCodes = document.getElementById('labCustomCodes')?.value?.trim() || '';
+
+    // Build tests array
+    const tests = [];
+    if (selectedPanel) tests.push(selectedPanel);
+    tests.push(...addOns);
+    tests.push(...restrictedAddOns);
 
     if (tests.length === 0 && !customCodes) {
         showToast('Please select at least one panel or enter custom codes', 'error');
         return;
     }
 
-    // Get patient demographics from the current patient detail data
+    // Get selected clinic
+    const clinicRadio = document.querySelector('#orderLabModal input[name="labClinic"]:checked');
+    const clinicId = clinicRadio ? clinicRadio.value : '22937';
+
+    // Provider based on clinic — matches dashboard exactly
+    const provider = clinicId === '22937'
+        ? { name: 'Dr. Whitten', npi: '1366037806' }       // Tri-City Men's Health
+        : { name: 'Phil Schafer NP', npi: '1790276608' };  // NowPrimary.Care
+
+    // Get patient demographics
     const p360 = patient360Cache[patientId];
     const demo = p360?.demographics || {};
     const patientData = allPatients.find(p => String(p.id || p.patient_id) === String(patientId)) || {};
@@ -2756,7 +3391,7 @@ async function submitLabOrder(patientId) {
         const result = await apiFetch('/ops/api/labs/orders/', {
             method: 'POST',
             body: JSON.stringify({
-                clinic_id: '16535',
+                clinic_id: clinicId,
                 patient_id: patientId,
                 patient: {
                     first_name: firstName,
@@ -2774,8 +3409,8 @@ async function submitLabOrder(patientId) {
                 custom_codes: customCodes,
                 diagnosis_codes: [],
                 notes: notes,
-                provider_name: 'Phil Schafer NP',
-                provider_npi: '1174019877',
+                provider_name: provider.name,
+                provider_npi: provider.npi,
             })
         });
 
@@ -2929,3 +3564,846 @@ function printLabel(patientId, patientName, medication, options = {}) {
     window.open(`/ops/api/labels/generate/?${params.toString()}`, '_blank');
 }
 
+// ─── CEO DASHBOARD ──────────────────────────────────────────
+function renderCEODashboard(container) {
+    const dd = dashboardData || {};
+    const stagedDoses = getStagedDoses();
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+    // Pull revenue figures from dashboard data
+    const revenue = dd.revenue || {};
+    const todayRev = revenue.today || 0;
+    const weekRev = revenue.week || 0;
+    const monthRev = revenue.month || 0;
+
+    // Patient type breakdown
+    const patientsByType = dd.patientsByType || {};
+    const totalActive = dd.totalActivePatients || allPatients.length || 0;
+
+    // Payment issues
+    const paymentIssues = dd.paymentIssues || [];
+
+    container.innerHTML = `
+        <div style="padding: 0 4px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+                <div>
+                    <h1 style="font-size:24px; margin:0; color:var(--text-primary);">CEO Dashboard</h1>
+                    <p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;">${today}</p>
+                </div>
+                <button onclick="loadAllData()" style="padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>
+            </div>
+
+            <!-- Revenue Cards -->
+            <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-bottom:20px;">
+                <div style="background:linear-gradient(135deg, rgba(34,211,238,0.15), rgba(6,182,212,0.05)); border:1px solid rgba(34,211,238,0.2); border-radius:12px; padding:20px;">
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">Today's Revenue</div>
+                    <div style="font-size:28px; font-weight:700; color:#22d3ee;">$${Number(todayRev).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                </div>
+                <div style="background:linear-gradient(135deg, rgba(168,85,247,0.15), rgba(139,92,246,0.05)); border:1px solid rgba(168,85,247,0.2); border-radius:12px; padding:20px;">
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">This Week</div>
+                    <div style="font-size:28px; font-weight:700; color:#a855f7;">$${Number(weekRev).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                </div>
+                <div style="background:linear-gradient(135deg, rgba(34,197,94,0.15), rgba(22,163,74,0.05)); border:1px solid rgba(34,197,94,0.2); border-radius:12px; padding:20px;">
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">This Month</div>
+                    <div style="font-size:28px; font-weight:700; color:#22c55e;">$${Number(monthRev).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                </div>
+            </div>
+
+            <!-- Operational KPIs -->
+            <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin-bottom:20px;">
+                <div class="metric-card" style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; text-align:center;">
+                    <div style="font-size:32px; font-weight:700; color:var(--text-primary);">${totalActive}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em;">Active Patients</div>
+                </div>
+                <div class="metric-card" style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; text-align:center;">
+                    <div style="font-size:32px; font-weight:700; color:var(--text-primary);">${healthieAppointments.length}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em;">Today's Appts</div>
+                </div>
+                <div class="metric-card" style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; text-align:center;">
+                    <div style="font-size:32px; font-weight:700; color:${inventoryAlerts.length > 0 ? '#f59e0b' : 'var(--text-primary)'};">${inventoryAlerts.length}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em;">Inventory Alerts</div>
+                </div>
+                <div class="metric-card" style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; text-align:center;">
+                    <div style="font-size:32px; font-weight:700; color:${paymentIssues.length > 0 ? '#ef4444' : 'var(--text-primary)'};">${paymentIssues.length}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em;">Payment Issues</div>
+                </div>
+            </div>
+
+            <!-- Today's Schedule Summary -->
+            <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px;">
+                <h3 style="font-size:16px; margin:0 0 16px; color:var(--text-primary);">📋 Today's Schedule</h3>
+                ${healthieAppointments.length === 0 ? '<p style="color:var(--text-tertiary); font-size:14px;">No appointments scheduled today</p>' :
+            healthieAppointments.slice(0, 8).map(appt => `
+                        <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-light);">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <div style="width:36px; height:36px; border-radius:8px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:13px; color:var(--text-primary);">
+                                    ${getInitials(appt.full_name || appt.patient_name)}
+                                </div>
+                                <div>
+                                    <div style="font-size:14px; font-weight:500; color:var(--text-primary);">${appt.full_name || appt.patient_name || 'Unknown'}</div>
+                                    <div style="font-size:12px; color:var(--text-tertiary);">${appt.appointment_type || appt.type || 'Appointment'} · ${appt.time || ''}</div>
+                                </div>
+                            </div>
+                            <span style="font-size:11px; padding:3px 8px; border-radius:6px; background:${(appt.appointment_status || appt.status) === 'Confirmed' ? 'rgba(34,197,94,0.15)' : 'rgba(251,191,36,0.15)'}; color:${(appt.appointment_status || appt.status) === 'Confirmed' ? '#22c55e' : '#fbbf24'};">${appt.appointment_status || appt.status || 'pending'}</span>
+                        </div>
+                    `).join('')}
+            </div>
+
+            <!-- Staged Doses Overview -->
+            <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px;">
+                <h3 style="font-size:16px; margin:0 0 12px; color:var(--text-primary);">💉 Staged Doses (${stagedDoses.length})</h3>
+                ${stagedDoses.length === 0 ? '<p style="color:var(--text-tertiary); font-size:14px;">No doses staged</p>' :
+            stagedDoses.slice(0, 6).map(s => `
+                        <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">
+                            <div style="font-size:14px; color:var(--text-primary);">${s.patient_name || 'Unknown'}</div>
+                            <div style="font-size:12px; color:var(--text-tertiary);">${s.dose_ml || '?'}mL · ${s.medication || 'Testosterone'}</div>
+                        </div>
+                    `).join('')}
+            </div>
+
+            <!-- Inventory Alerts -->
+            ${inventoryAlerts.length > 0 ? `
+            <div style="background:var(--card); border:1px solid rgba(239,68,68,0.2); border-radius:12px; padding:20px; margin-bottom:20px;">
+                <h3 style="font-size:16px; margin:0 0 12px; color:#ef4444;">⚠️ Inventory Alerts</h3>
+                ${inventoryAlerts.slice(0, 5).map(a => `
+                    <div style="padding:8px 0; border-bottom:1px solid var(--border-light); font-size:14px; color:var(--text-secondary);">
+                        ${a.item_name || a.name || 'Unknown Item'} — <span style="color:#ef4444;">${a.message || 'Low stock'}</span>
+                    </div>
+                `).join('')}
+            </div>` : ''}
+
+            <!-- Payment Issues -->
+            ${paymentIssues.length > 0 ? `
+            <div style="background:var(--card); border:1px solid rgba(251,191,36,0.2); border-radius:12px; padding:20px; margin-bottom:20px;">
+                <h3 style="font-size:16px; margin:0 0 12px; color:#fbbf24;">💳 Payment Issues (${paymentIssues.length})</h3>
+                ${paymentIssues.slice(0, 5).map(pi => `
+                    <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">
+                        <div style="font-size:14px; color:var(--text-primary);">${pi.patient_name || 'Unknown'}</div>
+                        <div style="font-size:13px; color:#f87171;">$${parseFloat(pi.amount || 0).toFixed(2)} · ${pi.reason || 'declined'}</div>
+                    </div>
+                `).join('')}
+            </div>` : ''}
+        </div>
+    `;
+}
+
+// ─── PROVIDER SCHEDULE TAB ──────────────────────────────────
+async function renderScheduleView(container) {
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+    container.innerHTML = `
+        <div style="padding: 0 4px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+                <div>
+                    <h1 style="font-size:24px; margin:0; color:var(--text-primary);">Schedule</h1>
+                    <p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;">${today}</p>
+                </div>
+                <button onclick="loadScheduleData()" style="padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>
+            </div>
+            <div id="scheduleContent"><div class="loading-spinner" style="margin:40px auto;"></div></div>
+        </div>
+    `;
+
+    await loadScheduleData();
+}
+
+async function loadScheduleData() {
+    const contentEl = document.getElementById('scheduleContent');
+    if (!contentEl) return;
+
+    try {
+        // Use morning-prep which already fetches Healthie appointments
+        const data = await apiFetch(`/ops/api/cron/morning-prep?key=${CRON_SECRET}`);
+        const patients = data.patients || [];
+
+        if (patients.length === 0) {
+            contentEl.innerHTML = `
+                <div class="empty-state-card">
+                    <div class="empty-state-icon">📅</div>
+                    <h3>No Appointments Today</h3>
+                    <p>No patients are scheduled for today.</p>
+                </div>
+            `;
+            return;
+        }
+
+        // Sort by time
+        patients.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+
+        contentEl.innerHTML = `
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+                <span style="font-size:14px; color:var(--text-secondary);">${patients.length} patients today</span>
+                <span style="font-size:12px; padding:3px 10px; border-radius:6px; background:rgba(34,211,238,0.1); color:#22d3ee;">
+                    ${patients.filter(p => p.appointment_status === 'Confirmed').length} confirmed
+                </span>
+            </div>
+            ${patients.map(p => {
+            const statusColor = p.appointment_status === 'Confirmed' ? '#22c55e' :
+                p.appointment_status === 'Checked In' ? '#22d3ee' :
+                    p.appointment_status === 'No Show' ? '#ef4444' : '#fbbf24';
+            const statusBg = p.appointment_status === 'Confirmed' ? 'rgba(34,197,94,0.15)' :
+                p.appointment_status === 'Checked In' ? 'rgba(34,211,238,0.15)' :
+                    p.appointment_status === 'No Show' ? 'rgba(239,68,68,0.15)' : 'rgba(251,191,36,0.15)';
+            return `
+                <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:10px; cursor:pointer;" onclick="navigateToPatient('${p.patient_id || ''}', '${(p.full_name || '').replace(/'/g, "\\'")}')">
+                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            <div style="width:42px; height:42px; border-radius:10px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--text-primary);">
+                                ${getInitials(p.full_name)}
+                            </div>
+                            <div>
+                                <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${p.full_name || 'Unknown'}</div>
+                                <div style="font-size:12px; color:var(--text-tertiary);">${p.appointment_type || 'Appointment'} · ${p.time || 'TBD'}</div>
+                                ${p.needs_labs ? '<span style="font-size:11px; color:#f59e0b;">🔬 Labs needed</span>' : ''}
+                                ${p.needs_payment ? '<span style="font-size:11px; color:#ef4444; margin-left:6px;">💳 Payment issue</span>' : ''}
+                            </div>
+                        </div>
+                        <span style="font-size:11px; padding:4px 10px; border-radius:6px; background:${statusBg}; color:${statusColor}; font-weight:500;">
+                            ${p.appointment_status || 'Pending'}
+                        </span>
+                    </div>
+                </div>
+                `;
+        }).join('')}
+        `;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        contentEl.innerHTML = `<div class="empty-state-card"><h3>Could not load schedule</h3><p>${e.message}</p></div>`;
+    }
+}
+
+function navigateToPatient(patientId, patientName) {
+    if (!patientId) return;
+    selectedPatient = patientId;
+    window.location.hash = '#patients';
+    setTimeout(() => {
+        loadPatient360(patientId);
+    }, 200);
+}
+
+// ─── VITALS / METRICS ENTRY ─────────────────────────────────
+const METRIC_UNITS = {
+    weight: 'lbs', blood_pressure: 'mmHg', heart_rate: 'bpm',
+    temperature: '°F', oxygen_saturation: '%', respiration_rate: '/min',
+    testosterone_level: 'ng/dL', hematocrit: '%', psa: 'ng/mL',
+    bmi: '', waist_circumference: 'in', hemoglobin: 'g/dL',
+};
+
+function openVitalsModal(patientId, patientName) {
+    const existingModal = document.getElementById('vitalsModal');
+    if (existingModal) existingModal.remove();
+
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="vitalsModal" class="modal-overlay" style="display:flex;">
+            <div class="modal modal-large" style="max-width:520px;">
+                <div class="modal-header">
+                    <h2 style="font-size:18px; margin:0;">📋 Record Vitals</h2>
+                    <button class="modal-close" onclick="document.getElementById('vitalsModal').remove()">✕</button>
+                </div>
+                <div class="modal-body" style="padding:20px;">
+                    <div style="font-size:13px; color:var(--text-tertiary); margin-bottom:16px;">Patient: <strong style="color:var(--text-primary);">${patientName}</strong></div>
+
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Metric Type</label>
+                        <select id="vitalsType" onchange="updateVitalsUnit()" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                            <option value="weight">Weight (lbs)</option>
+                            <option value="blood_pressure">Blood Pressure (mmHg)</option>
+                            <option value="heart_rate">Heart Rate (bpm)</option>
+                            <option value="temperature">Temperature (°F)</option>
+                            <option value="oxygen_saturation">Oxygen Saturation (%)</option>
+                            <option value="respiration_rate">Respiration Rate (/min)</option>
+                            <option value="testosterone_level">Testosterone Level (ng/dL)</option>
+                            <option value="hematocrit">Hematocrit (%)</option>
+                            <option value="psa">PSA (ng/mL)</option>
+                            <option value="bmi">BMI</option>
+                            <option value="waist_circumference">Waist Circumference (in)</option>
+                            <option value="hemoglobin">Hemoglobin (g/dL)</option>
+                        </select>
+                    </div>
+
+                    <!-- Standard value input -->
+                    <div id="vitalsStandardInput" style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Value <span id="vitalsUnitLabel" style="color:var(--text-tertiary);">(lbs)</span></label>
+                        <input id="vitalsValue" type="number" step="any" placeholder="Enter value" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                    </div>
+
+                    <!-- Blood pressure dual input (hidden by default) -->
+                    <div id="vitalsBPInput" style="display:none; margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Blood Pressure</label>
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <input id="vitalsSystolic" type="number" placeholder="Systolic" style="flex:1; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                            <span style="color:var(--text-tertiary); font-size:18px;">/</span>
+                            <input id="vitalsDiastolic" type="number" placeholder="Diastolic" style="flex:1; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                            <span style="color:var(--text-tertiary); font-size:13px;">mmHg</span>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Notes (optional)</label>
+                        <input id="vitalsNotes" type="text" placeholder="e.g. Before medication, fasting" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                    </div>
+
+                    <div id="vitalsError" style="display:none; padding:8px 12px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.2); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:12px;"></div>
+                    <div id="vitalsSuccess" style="display:none; padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); border-radius:8px; color:#22c55e; font-size:13px; margin-bottom:12px;"></div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-cancel" onclick="document.getElementById('vitalsModal').remove()">Cancel</button>
+                    <button class="btn-primary" id="vitalsSubmitBtn" onclick="submitVitals('${patientId}')">Save Vitals</button>
+                </div>
+            </div>
+        </div>
+    `);
+}
+
+function updateVitalsUnit() {
+    const type = document.getElementById('vitalsType').value;
+    const unit = METRIC_UNITS[type] || '';
+    const unitLabel = document.getElementById('vitalsUnitLabel');
+    if (unitLabel) unitLabel.textContent = unit ? `(${unit})` : '';
+
+    // Toggle BP dual-input vs standard input
+    const stdInput = document.getElementById('vitalsStandardInput');
+    const bpInput = document.getElementById('vitalsBPInput');
+    if (type === 'blood_pressure') {
+        stdInput.style.display = 'none';
+        bpInput.style.display = 'block';
+    } else {
+        stdInput.style.display = 'block';
+        bpInput.style.display = 'none';
+    }
+}
+
+async function submitVitals(patientId) {
+    const btn = document.getElementById('vitalsSubmitBtn');
+    const errorEl = document.getElementById('vitalsError');
+    const successEl = document.getElementById('vitalsSuccess');
+    const type = document.getElementById('vitalsType').value;
+    const notes = document.getElementById('vitalsNotes')?.value || '';
+
+    let value, systolic, diastolic;
+    if (type === 'blood_pressure') {
+        systolic = document.getElementById('vitalsSystolic')?.value;
+        diastolic = document.getElementById('vitalsDiastolic')?.value;
+        if (!systolic || !diastolic) {
+            errorEl.textContent = 'Enter both systolic and diastolic values';
+            errorEl.style.display = 'block';
+            return;
+        }
+        value = `${systolic}/${diastolic}`;
+    } else {
+        value = document.getElementById('vitalsValue')?.value;
+        if (!value) {
+            errorEl.textContent = 'Please enter a value';
+            errorEl.style.display = 'block';
+            return;
+        }
+    }
+
+    btn.textContent = 'Saving…';
+    btn.disabled = true;
+    errorEl.style.display = 'none';
+    successEl.style.display = 'none';
+
+    try {
+        const resp = await apiFetch(`/ops/api/ipad/patient/${patientId}/metrics/`, {
+            method: 'POST',
+            body: JSON.stringify({
+                metric_type: type,
+                value,
+                unit: METRIC_UNITS[type] || '',
+                notes,
+                blood_pressure_systolic: systolic,
+                blood_pressure_diastolic: diastolic,
+            })
+        });
+
+        if (resp.error) throw new Error(resp.error);
+
+        const syncMsg = resp.healthie_synced ? ' (synced to Healthie ✅)' : ' (saved locally)';
+        successEl.textContent = `${type.replace(/_/g, ' ')} recorded: ${value} ${METRIC_UNITS[type] || ''}${syncMsg}`;
+        successEl.style.display = 'block';
+
+        // Reset form for next entry
+        btn.textContent = 'Save Another';
+        btn.disabled = false;
+        document.getElementById('vitalsValue').value = '';
+        document.getElementById('vitalsSystolic').value = '';
+        document.getElementById('vitalsDiastolic').value = '';
+        document.getElementById('vitalsNotes').value = '';
+
+        // Refresh patient data to show new vitals
+        loadPatient360(patientId);
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        errorEl.textContent = e.message || 'Failed to save vitals';
+        errorEl.style.display = 'block';
+        btn.textContent = 'Save Vitals';
+        btn.disabled = false;
+    }
+}
+
+// ─── LAB ORDERS & RESULTS IN PATIENT PROFILE ────────────────
+async function loadPatientLabData(patientId) {
+    const section = document.getElementById(`patientLabsSection-${patientId}`);
+    if (!section) return;
+
+    try {
+        // Fetch lab orders for this patient
+        let orders = [];
+        try {
+            const data = await apiFetch(`/ops/api/labs/orders?patient_id=${patientId}`);
+            orders = data?.orders || data?.data || data || [];
+            if (!Array.isArray(orders)) orders = [];
+        } catch { orders = []; }
+
+        // Also check review queue for lab results
+        let reviewItems = [];
+        try {
+            const qData = await apiFetch('/ops/api/labs/review-queue');
+            const allItems = qData?.queue || qData?.data || qData || [];
+            if (Array.isArray(allItems)) {
+                reviewItems = allItems.filter(item => {
+                    const itemId = String(item.patient_id || '');
+                    return itemId === String(patientId);
+                });
+            }
+        } catch { reviewItems = []; }
+
+        let labHtml = '<h3>🧪 Lab Orders & Results</h3>';
+
+        if (orders.length === 0 && reviewItems.length === 0) {
+            labHtml += '<div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">No lab orders found for this patient</div>';
+        } else {
+            // Lab Orders
+            if (orders.length > 0) {
+                labHtml += orders.map(o => {
+                    const status = o.status || 'pending';
+                    const statusColor = status === 'submitted' ? '#22c55e' : status === 'failed' ? '#ef4444' : '#f59e0b';
+                    const statusLabel = status === 'submitted' ? '✅ Submitted' : status === 'failed' ? '❌ Failed' : '⏳ Pending';
+                    const orderDate = o.created_at ? formatDateDisplay(o.created_at) : 'Unknown date';
+                    const testNames = o.test_names || o.tests?.map(t => t.name || t.test_name)?.join(', ') || 'Lab Panel';
+                    const orderId = o.id || o.order_id;
+
+                    return `
+                        <div class="med-card" style="margin-bottom:8px;">
+                            <div style="flex:1;">
+                                <div class="med-name">${testNames}</div>
+                                <div class="med-dose">${orderDate} · ${o.external_order_id || 'Local Order'}</div>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${statusColor}15; color:${statusColor};">${statusLabel}</span>
+                                ${o.requisition_pdf ? `<button class="btn-sm btn-secondary" onclick="viewLabRequisition('${orderId}')" style="font-size:11px; padding:3px 8px;">📄 Requisition</button>` : ''}
+                                ${status === 'pending' ? `<button class="btn-sm btn-primary" onclick="approveLabFromProfile('${orderId}', '${patientId}')" style="font-size:11px; padding:3px 8px;">✅ Approve</button>` : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // Lab Results from Review Queue
+            if (reviewItems.length > 0) {
+                labHtml += '<div style="margin-top:12px; font-size:12px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px;">Results Pending Review</div>';
+                labHtml += reviewItems.map(r => {
+                    const resultDate = r.received_at || r.created_at ? formatDateDisplay(r.received_at || r.created_at) : '';
+                    return `
+                        <div class="med-card" style="margin-top:6px; border-left:3px solid #3b82f6;">
+                            <div style="flex:1;">
+                                <div class="med-name">${r.test_name || r.panel_name || 'Lab Result'}</div>
+                                <div class="med-dose">${resultDate} · ${r.lab_provider || 'Access Medical'}</div>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                ${r.id ? `<button class="btn-sm btn-secondary" onclick="window.open('/ops/api/labs/review-queue/${r.id}/pdf', '_blank')" style="font-size:11px; padding:3px 8px;">📄 View PDF</button>` : ''}
+                                <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:rgba(59,130,246,0.12); color:#3b82f6;">🔬 Needs Review</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+
+        section.innerHTML = labHtml;
+    } catch (e) {
+        console.warn('[loadPatientLabData]', e);
+        section.innerHTML = '<h3>🧪 Lab Orders & Results</h3><div style="color:var(--text-tertiary); font-size:13px;">Failed to load lab data</div>';
+    }
+}
+
+async function approveLabFromProfile(orderId, patientId) {
+    if (!confirm('Approve this lab order and submit to Access Medical?')) return;
+    try {
+        const resp = await apiFetch(`/ops/api/labs/order/${orderId}/approve`, { method: 'POST' });
+        if (resp.error) throw new Error(resp.error);
+        alert('Lab approved and submitted!');
+        loadPatientLabData(patientId);
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        alert('Failed to approve: ' + (e.message || 'Unknown error'));
+    }
+}
+
+function viewLabRequisition(orderId) {
+    window.open(`/ops/api/labs/orders/${orderId}/requisition`, '_blank');
+}
+
+// ─── PAYMENT DATA IN PATIENT PROFILE ────────────────────────
+async function loadPatientPaymentData(patientId) {
+    const section = document.getElementById(`patientPaymentSection-${patientId}`);
+    if (!section) return;
+
+    try {
+        const data = await apiFetch(`/ops/api/ipad/patient/${patientId}/payments/`);
+        const billingItems = data?.billing_items || [];
+        const requestedPayments = data?.requested_payments || [];
+        const totalPaid = data?.total_paid || 0;
+
+        let html = '<h3>💳 Payment History</h3>';
+
+        if (data?.error === 'Patient not linked to Healthie') {
+            html += '<div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">Patient not linked to Healthie — no payment data available</div>';
+        } else if (billingItems.length === 0 && requestedPayments.length === 0) {
+            html += '<div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">No payment records found</div>';
+        } else {
+            // Total paid summary
+            html += `<div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; padding:10px 14px; background:rgba(34,197,94,0.06); border-radius:10px; border:1px solid rgba(34,197,94,0.15);">
+                <span style="font-size:24px;">💰</span>
+                <div>
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.5px;">Total Paid</div>
+                    <div style="font-size:20px; font-weight:700; color:#22c55e;">$${totalPaid.toFixed(2)}</div>
+                </div>
+                <div style="flex:1; text-align:right;">
+                    <div style="font-size:11px; color:var(--text-tertiary);">${billingItems.length} billing items · ${requestedPayments.length} payments</div>
+                </div>
+            </div>`;
+
+            // Recent billing items
+            if (billingItems.length > 0) {
+                html += '<div style="font-size:12px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Billing Items</div>';
+                html += billingItems.slice(0, 10).map(b => {
+                    const state = b.state || 'unknown';
+                    const stateColor = state === 'paid' || state === 'succeeded' ? '#22c55e' : state === 'failed' ? '#ef4444' : '#f59e0b';
+                    const stateLabel = state === 'paid' || state === 'succeeded' ? '✅ Paid' : state === 'failed' ? '❌ Failed' : '⏳ ' + state;
+                    const date = b.created_at ? formatDateDisplay(b.created_at) : '';
+                    const offeringName = b.offering?.name || 'Service';
+                    const amount = parseFloat(b.amount_paid || 0).toFixed(2);
+
+                    return `
+                        <div class="med-card" style="margin-bottom:4px;">
+                            <div style="flex:1;">
+                                <div class="med-name">${offeringName}</div>
+                                <div class="med-dose">${date} · $${amount}</div>
+                            </div>
+                            <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${stateColor}15; color:${stateColor};">${stateLabel}</span>
+                        </div>
+                    `;
+                }).join('');
+                if (billingItems.length > 10) {
+                    html += `<div style="font-size:12px; color:var(--text-tertiary); text-align:center; padding:4px;">…and ${billingItems.length - 10} more</div>`;
+                }
+            }
+
+            // Requested payments
+            if (requestedPayments.length > 0) {
+                html += '<div style="font-size:12px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px; margin:12px 0 6px;">Requested Payments</div>';
+                html += requestedPayments.slice(0, 10).map(rp => {
+                    const status = rp.status || 'pending';
+                    const statusColor = status === 'completed' || status === 'paid' ? '#22c55e' : status === 'cancelled' ? '#6b7280' : '#f59e0b';
+                    const statusLabel = status === 'completed' || status === 'paid' ? '✅ Paid' : status === 'cancelled' ? '🚫 Cancelled' : '⏳ Pending';
+                    const date = rp.created_at ? formatDateDisplay(rp.created_at) : '';
+                    const price = parseFloat(rp.price || 0).toFixed(2);
+                    const offeringName = rp.offering?.name || 'Payment Request';
+
+                    return `
+                        <div class="med-card" style="margin-bottom:4px;">
+                            <div style="flex:1;">
+                                <div class="med-name">${offeringName}</div>
+                                <div class="med-dose">${date} · $${price}</div>
+                            </div>
+                            <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${statusColor}15; color:${statusColor};">${statusLabel}</span>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+
+        section.innerHTML = html;
+    } catch (e) {
+        console.warn('[loadPatientPaymentData]', e);
+        section.innerHTML = '<h3>💳 Payment History</h3><div style="color:var(--text-tertiary); font-size:13px;">Failed to load payment data</div>';
+    }
+}
+
+// ─── CONTROLLED SUBSTANCE DISPENSE MODAL ────────────────────
+async function openControlledDispenseModal(patientId, patientName) {
+    const existing = document.getElementById('controlledDispenseModal');
+    if (existing) existing.remove();
+
+    // Load available vials from inventory
+    let vials = [];
+    try {
+        const data = await apiFetch('/ops/api/inventory/vials?status=active');
+        vials = data?.data || data?.vials || data || [];
+        if (!Array.isArray(vials)) vials = [];
+    } catch { vials = []; }
+
+    // Filter to only DEA-scheduled vials
+    const deaVials = vials.filter(v => v.dea_schedule || v.dea_drug_name);
+
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="controlledDispenseModal" class="modal-overlay" style="display:flex;">
+            <div class="modal modal-large" style="max-width:540px;">
+                <div class="modal-header">
+                    <h2 style="font-size:18px; margin:0;">💉 Dispense Controlled — ${patientName}</h2>
+                    <button class="modal-close" onclick="document.getElementById('controlledDispenseModal').remove()">✕</button>
+                </div>
+                <div class="modal-body" style="padding:20px;">
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Select Vial</label>
+                        <select id="cdVial" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                            <option value="">Choose a vial…</option>
+                            ${deaVials.map(v => `<option value="${v.vial_id || v.id}" data-drug="${v.dea_drug_name || 'Testosterone Cypionate'}" data-schedule="${v.dea_schedule || 'CIII'}" data-remaining="${v.remaining_ml || v.volume_ml || 10}">${v.external_id || v.vial_id} — ${v.dea_drug_name || 'Testosterone'} (${parseFloat(v.remaining_ml || v.volume_ml || 10).toFixed(1)}mL remain)</option>`).join('')}
+                        </select>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px;">
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Dose (mL)</label>
+                            <input id="cdDoseMl" type="number" step="0.01" value="0.50" min="0.01" max="10" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Waste (mL)</label>
+                            <input id="cdWasteMl" type="number" step="0.01" value="0.00" min="0" max="10" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Syringes</label>
+                            <input id="cdSyringes" type="number" value="1" min="1" max="5" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                        </div>
+                    </div>
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Notes</label>
+                        <input id="cdNotes" type="text" placeholder="Optional notes…" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                    </div>
+                    <div id="cdError" style="display:none; padding:8px 12px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.2); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:12px;"></div>
+                    <div id="cdSuccess" style="display:none; padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); border-radius:8px; color:#22c55e; font-size:13px; margin-bottom:12px;"></div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-cancel" onclick="document.getElementById('controlledDispenseModal').remove()">Cancel</button>
+                    <button class="btn-primary" id="cdSubmitBtn" onclick="submitControlledDispense('${patientId}', '${patientName.replace(/'/g, "\\'")}')">💉 Stage & Dispense</button>
+                </div>
+            </div>
+        </div>
+    `);
+}
+
+async function submitControlledDispense(patientId, patientName) {
+    const btn = document.getElementById('cdSubmitBtn');
+    const errorEl = document.getElementById('cdError');
+    const successEl = document.getElementById('cdSuccess');
+    const vialSelect = document.getElementById('cdVial');
+    const vialId = vialSelect?.value;
+    const drugName = vialSelect?.selectedOptions[0]?.dataset?.drug || 'Testosterone Cypionate';
+    const doseMl = parseFloat(document.getElementById('cdDoseMl')?.value || 0);
+    const wasteMl = parseFloat(document.getElementById('cdWasteMl')?.value || 0);
+    const syringes = parseInt(document.getElementById('cdSyringes')?.value || 1);
+    const notes = document.getElementById('cdNotes')?.value || '';
+
+    if (!vialId) { errorEl.textContent = 'Please select a vial'; errorEl.style.display = 'block'; return; }
+    if (doseMl <= 0) { errorEl.textContent = 'Dose must be greater than 0'; errorEl.style.display = 'block'; return; }
+
+    btn.textContent = 'Dispensing…';
+    btn.disabled = true;
+    errorEl.style.display = 'none';
+
+    try {
+        const resp = await apiFetch('/ops/api/ipad/stage-dose/', {
+            method: 'POST',
+            body: JSON.stringify({
+                patient_id: patientId,
+                vial_id: vialId,
+                dose_ml: doseMl,
+                waste_ml: wasteMl,
+                syringe_count: syringes,
+                notes,
+                dispense_immediately: true,
+            })
+        });
+
+        if (resp.error) throw new Error(resp.error);
+
+        successEl.textContent = `${drugName} dispensed: ${doseMl}mL + ${wasteMl}mL waste from ${vialSelect.selectedOptions[0]?.text?.split(' —')[0] || 'vial'}`;
+        successEl.style.display = 'block';
+
+        // Print label
+        printLabel(patientId, patientName, drugName, {
+            dosage: `${doseMl}mL`,
+            volume: `${doseMl}mL`,
+            vialNumber: vialId,
+        });
+
+        btn.textContent = '✅ Done';
+        setTimeout(() => {
+            document.getElementById('controlledDispenseModal')?.remove();
+            loadPatient360(patientId);
+        }, 1500);
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        errorEl.textContent = e.message || 'Dispense failed';
+        errorEl.style.display = 'block';
+        btn.textContent = '💉 Stage & Dispense';
+        btn.disabled = false;
+    }
+}
+
+// ─── DEMOGRAPHICS EDITING MODAL ─────────────────────────────
+function openEditDemographicsModal(patientId) {
+    const existing = document.getElementById('editDemoModal');
+    if (existing) existing.remove();
+
+    const p360 = patient360Cache[patientId];
+    const demo = p360?.demographics || {};
+    const pat = allPatients.find(p => String(p.id || p.patient_id) === String(patientId)) || {};
+
+    const fullName = demo.full_name || pat.name || '';
+    const firstName = demo.first_name || fullName.split(' ')[0] || '';
+    const lastName = demo.last_name || fullName.split(' ').slice(1).join(' ') || '';
+
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="editDemoModal" class="modal-overlay" style="display:flex;">
+            <div class="modal modal-large" style="max-width:540px;">
+                <div class="modal-header">
+                    <h2 style="font-size:18px; margin:0;">✏️ Edit Patient Profile</h2>
+                    <button class="modal-close" onclick="document.getElementById('editDemoModal').remove()">✕</button>
+                </div>
+                <div class="modal-body" style="padding:20px;">
+                    <div style="font-size:12px; color:var(--text-tertiary); margin-bottom:16px;">Changes sync to Healthie, GHL, and GMH Dashboard</div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;">
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">First Name</label>
+                            <input id="editFirstName" value="${firstName}" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">Last Name</label>
+                            <input id="editLastName" value="${lastName}" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;">
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">DOB</label>
+                            <input id="editDOB" type="date" value="${demo.dob || ''}" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">Gender</label>
+                            <select id="editGender" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                                <option value="Male" ${(demo.gender || '').toLowerCase() === 'male' ? 'selected' : ''}>Male</option>
+                                <option value="Female" ${(demo.gender || '').toLowerCase() === 'female' ? 'selected' : ''}>Female</option>
+                                <option value="Other" ${(demo.gender || '').toLowerCase() === 'other' ? 'selected' : ''}>Other</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;">
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">Phone</label>
+                            <input id="editPhone" value="${demo.phone_primary || ''}" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">Email</label>
+                            <input id="editEmail" type="email" value="${demo.email || ''}" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                        </div>
+                    </div>
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">Address</label>
+                        <input id="editAddress" value="${demo.address_line_1 || ''}" placeholder="Street address" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit; margin-bottom:8px;">
+                        <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:8px;">
+                            <input id="editCity" value="${demo.city || ''}" placeholder="City" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                            <input id="editState" value="${demo.state || ''}" placeholder="State" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                            <input id="editZip" value="${demo.zip || ''}" placeholder="ZIP" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                        </div>
+                    </div>
+                    <div id="editDemoError" style="display:none; padding:8px 12px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.2); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:12px;"></div>
+                    <div id="editDemoSuccess" style="display:none; padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); border-radius:8px; color:#22c55e; font-size:13px; margin-bottom:12px;"></div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-cancel" onclick="document.getElementById('editDemoModal').remove()">Cancel</button>
+                    <button class="btn-primary" id="editDemoSubmitBtn" onclick="submitDemographicsEdit('${patientId}')">💾 Save & Sync</button>
+                </div>
+            </div>
+        </div>
+    `);
+}
+
+async function submitDemographicsEdit(patientId) {
+    const btn = document.getElementById('editDemoSubmitBtn');
+    const errorEl = document.getElementById('editDemoError');
+    const successEl = document.getElementById('editDemoSuccess');
+
+    const payload = {
+        first_name: document.getElementById('editFirstName')?.value?.trim(),
+        last_name: document.getElementById('editLastName')?.value?.trim(),
+        dob: document.getElementById('editDOB')?.value,
+        gender: document.getElementById('editGender')?.value,
+        phone_primary: document.getElementById('editPhone')?.value?.trim(),
+        email: document.getElementById('editEmail')?.value?.trim(),
+        address_line_1: document.getElementById('editAddress')?.value?.trim(),
+        city: document.getElementById('editCity')?.value?.trim(),
+        state: document.getElementById('editState')?.value?.trim(),
+        zip: document.getElementById('editZip')?.value?.trim(),
+    };
+
+    if (!payload.first_name || !payload.last_name) {
+        errorEl.textContent = 'First and last name are required';
+        errorEl.style.display = 'block';
+        return;
+    }
+
+    btn.textContent = 'Saving…';
+    btn.disabled = true;
+    errorEl.style.display = 'none';
+
+    try {
+        const resp = await apiFetch(`/ops/api/ipad/patient/${patientId}/demographics/`, {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+        });
+
+        if (resp.error) throw new Error(resp.error);
+
+        const syncDetails = [];
+        if (resp.healthie_synced) syncDetails.push('Healthie ✅');
+        if (resp.ghl_synced) syncDetails.push('GHL ✅');
+        syncDetails.push('GMH DB ✅');
+
+        successEl.textContent = `Profile updated (${syncDetails.join(', ')})`;
+        successEl.style.display = 'block';
+
+        btn.textContent = '✅ Saved';
+        // Clear cache and reload
+        delete patient360Cache[patientId];
+        setTimeout(() => {
+            document.getElementById('editDemoModal')?.remove();
+            loadPatient360(patientId);
+        }, 1500);
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        errorEl.textContent = e.message || 'Failed to save';
+        errorEl.style.display = 'block';
+        btn.textContent = '💾 Save & Sync';
+        btn.disabled = false;
+    }
+}
+
+// ─── START SCRIBE FROM PATIENT PROFILE ──────────────────────
+function startScribeFromProfile(patientId, patientName) {
+    // Pre-fill the scribe session with the patient info
+    scribePatientId = patientId;
+    scribePatientName = patientName;
+    scribeView = 'new';
+
+    // Switch to scribe tab
+    window.location.hash = '#scribe';
+
+    // After tab switches, auto-fill the patient in the scribe form
+    setTimeout(() => {
+        const patientInput = document.getElementById('scribePatientSearch');
+        if (patientInput) patientInput.value = patientName;
+        const patientIdInput = document.getElementById('scribePatientId');
+        if (patientIdInput) patientIdInput.value = patientId;
+    }, 300);
+}
