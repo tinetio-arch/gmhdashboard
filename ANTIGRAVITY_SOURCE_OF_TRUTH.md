@@ -346,7 +346,31 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - FEB 25, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - FEB 26, 2026)
+
+### February 26, 2026: Lab Review Queue Migration (JSON → PostgreSQL)
+
+**Problem**: The lab review queue was stored in a ~27MB JSON file (`data/labs-review-queue.json`). Every read loaded the entire file and every write rewrote it — slow and not scalable.
+
+**Migration**: Created `lab_review_queue` PostgreSQL table with 31 columns matching the `LabQueueItem` interface, plus indexes on `status` and `created_at`.
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `migrations/20260226_lab_review_queue.sql` | NEW | Table schema + indexes |
+| `scripts/import-lab-review-queue.py` | NEW | One-time Python import (73 records) |
+| `app/api/labs/review-queue/route.ts` | MODIFIED | GET/POST now use `query()` from `lib/db.ts` |
+
+**Key changes in `route.ts`**:
+- Removed `loadQueue()` / `saveQueue()` + `LABS_QUEUE_FILE` constant
+- Added `loadQueueItem(id)` — `SELECT ... WHERE id = $1`
+- Added `updateQueueItem(id, updates)` — dynamic parameterized `UPDATE`
+- GET handler: `SELECT * FROM lab_review_queue WHERE status = $1 ORDER BY created_at DESC LIMIT $2`
+- All Healthie upload, S3 download, visibility, and lab-date-update logic unchanged
+
+**Import Results**: 73/73 records (55 approved, 16 pending_review, 2 rejected), 0 errors.
+
+> [!NOTE]
+> The JSON file `data/labs-review-queue.json` still exists as a backup. The `fetch_results.py` cron job may still write to it — that script should be updated separately to write to the database directly.
 
 ### February 26, 2026: SQL Injection Fix in DEA MCP Server
 
@@ -2347,7 +2371,7 @@ HEALTHIE_WEIGHT_LOSS_GROUP_ID=TBD
 2. **Match Patient**: Fuzzy match (Snowflake cache → Healthie direct search)
 3. **Generate PDF**: `generate_lab_pdf.py` creates professional PDF with critical value highlighting
 4. **Upload to S3**: `gmh-clinical-data-lake/labs/pending/{accession}_{name}.pdf`
-5. **Queue for Review**: Added to `/home/ec2-user/gmhdashboard/data/labs-review-queue.json`
+5. **Queue for Review**: Inserted into `lab_review_queue` PostgreSQL table (migrated from `data/labs-review-queue.json` on Feb 26, 2026)
 6. **Provider Review**: Dashboard at `/ops/labs` shows pending labs
 7. **Approve**: PDF uploaded to Healthie (initially hidden), then made visible on approval
 
