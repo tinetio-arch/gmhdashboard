@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const [stagedDoses, paymentIssues, todayPatients] = await Promise.all([
+    const [stagedDoses, paymentIssues, todayPatients, revenueData, activePatientCount, patientsByType] = await Promise.all([
       // Today's staged doses
       query<any>(`
         SELECT
@@ -82,7 +82,38 @@ export async function GET(request: NextRequest) {
           AND sd.status = 'staged'
         ORDER BY p.patient_id, p.full_name
       `),
+
+      // Revenue: today, this week, this month
+      query<any>(`
+        SELECT
+          COALESCE(SUM(CASE WHEN sale_date >= (NOW() AT TIME ZONE 'America/Denver')::date
+                        THEN total_price::numeric ELSE 0 END), 0)::text as today,
+          COALESCE(SUM(CASE WHEN sale_date >= date_trunc('week', (NOW() AT TIME ZONE 'America/Denver')::date)
+                        THEN total_price::numeric ELSE 0 END), 0)::text as week,
+          COALESCE(SUM(CASE WHEN sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Denver')::date)
+                        THEN total_price::numeric ELSE 0 END), 0)::text as month
+        FROM peptide_sales
+        WHERE sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Denver')::date)
+      `),
+
+      // Total active patients
+      query<any>(`SELECT COUNT(*) as count FROM patients WHERE status_key = 'Active'`),
+
+      // Patients by client type
+      query<any>(`
+        SELECT client_type_key, COUNT(*) as count
+        FROM patients
+        WHERE status_key = 'Active' AND client_type_key IS NOT NULL AND client_type_key != ''
+        GROUP BY client_type_key
+        ORDER BY count DESC
+      `),
     ]);
+
+    const rev = revenueData[0] || {};
+    const ptByType: Record<string, number> = {};
+    for (const row of patientsByType) {
+      ptByType[row.client_type_key] = parseInt(row.count, 10);
+    }
 
     return NextResponse.json({
       success: true,
@@ -91,6 +122,13 @@ export async function GET(request: NextRequest) {
         patients: todayPatients,
         staged_doses: stagedDoses,
         payment_alerts: paymentIssues,
+        revenue: {
+          today: parseFloat(rev.today || '0'),
+          week: parseFloat(rev.week || '0'),
+          month: parseFloat(rev.month || '0'),
+        },
+        total_active_patients: parseInt(activePatientCount[0]?.count || '0', 10),
+        patients_by_type: ptByType,
         summary: {
           total_patients: todayPatients.length,
           total_staged_doses: stagedDoses.length,

@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
-import { createHealthieClient } from '@/lib/healthie';
+import { healthieGraphQL } from '@/lib/healthieApi';
 import { sendMessage } from '@/lib/telegram-client';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+
+// ==================== CONSTANTS (match Telegram bot) ====================
+const SOAP_FORM_ID = '2898601';
+const FIELD_IDS = {
+    subjective: '37256657',
+    objective: '37256658',
+    assessment: '37256659',
+    plan: '37256660',
+};
 
 export async function POST(request: NextRequest) {
     let user;
@@ -34,81 +43,146 @@ export async function POST(request: NextRequest) {
             );
         }
 
+        // Duplicate submission protection (30-second window)
         if (note.healthie_status === 'submitted' || note.healthie_status === 'locked') {
-            return NextResponse.json({
-                success: false,
-                error: `Note already ${note.healthie_status} (Healthie ID: ${note.healthie_note_id})`,
-            }, { status: 400 });
+            const submittedAt = note.reviewed_at ? new Date(note.reviewed_at).getTime() : 0;
+            const elapsed = Date.now() - submittedAt;
+            if (elapsed < 30000) {
+                return NextResponse.json({
+                    success: false,
+                    error: `Note already ${note.healthie_status} ${Math.round(elapsed / 1000)}s ago (Healthie ID: ${note.healthie_note_id})`,
+                }, { status: 409 });
+            }
+            // Allow re-submission if > 30s (user intentionally retrying)
         }
 
-        // Fetch patient's Healthie ID
+        // 2. Fetch patient's Healthie ID
         const [patient] = await query<any>(
             'SELECT patient_id, full_name, healthie_client_id FROM patients WHERE patient_id = $1',
             [note.patient_id]
         );
         if (!patient?.healthie_client_id) {
             return NextResponse.json(
-                { success: false, error: 'Patient has no Healthie client ID' }, { status: 400 }
+                { success: false, error: 'Patient has no Healthie client ID. Link patient to Healthie first.' },
+                { status: 400 }
             );
         }
 
-        const healthie = createHealthieClient();
+        // 3. Format SOAP sections as HTML (matching Telegram bot formatSectionHtml)
+        const formatSectionHtml = (text: string): string => {
+            if (!text || !text.trim()) return ' ';
+            let html = text;
+            // Bullet points
+            html = html.replace(/^\s*[-*]\s+/gm, '<br/>&nbsp;&nbsp;• ');
+            // Bold headers with colons
+            html = html.replace(/\*\*(.*?)\*\*:/g, '<br/><span style="font-size:15px; font-weight:bold; color:#34495e;">$1:</span>');
+            // Label: value patterns
+            html = html.replace(/^\s*([A-Za-z][A-Za-z\s/]+):/gm, '<br/><strong>$1:</strong>');
+            // Newlines to breaks
+            html = html.replace(/\n/g, '<br/>');
+            // Clean up triple breaks
+            html = html.replace(/<br\/><br\/><br\/>/g, '<br/><br/>');
+            return html;
+        };
 
-        // 2. Create chart note in Healthie
-        const chartNote = await healthie.createChartNote({
-            client_id: patient.healthie_client_id,
-            title: `${note.visit_type} Visit Note — ${new Date().toLocaleDateString()}`,
-            body: formatHealthieNoteBody(note),
-            status: 'draft',
-        });
+        const formAnswers = [
+            { custom_module_id: FIELD_IDS.subjective, answer: formatSectionHtml(note.soap_subjective || ''), user_id: patient.healthie_client_id },
+            { custom_module_id: FIELD_IDS.objective, answer: formatSectionHtml(note.soap_objective || ''), user_id: patient.healthie_client_id },
+            { custom_module_id: FIELD_IDS.assessment, answer: formatSectionHtml(note.soap_assessment || ''), user_id: patient.healthie_client_id },
+            { custom_module_id: FIELD_IDS.plan, answer: formatSectionHtml(note.soap_plan || ''), user_id: patient.healthie_client_id },
+        ];
 
-        const healthieNoteId = chartNote.id;
+        // 4. Create or Update FormAnswerGroup in Healthie (matching Telegram bot)
+        let healthieNoteId: string | null = null;
+        const isResubmit = !!note.healthie_note_id;
 
-        // 3. Link note to appointment if provided
-        if (appointment_id) {
-            try {
-                await healthie.graphql(`
-          mutation UpdateAppointment($id: ID!, $input: updateAppointmentInput!) {
-            updateAppointment(id: $id, input: $input) {
-              appointment { id }
-            }
-          }
-        `, {
-                    id: appointment_id,
-                    input: { form_answer_group_id: healthieNoteId },
+        if (isResubmit) {
+            // Update existing form answer group
+            const updateResult = await healthieGraphQL<any>(`
+                mutation UpdateFormAnswerGroup($input: updateFormAnswerGroupInput!) {
+                    updateFormAnswerGroup(input: $input) {
+                        form_answer_group { id }
+                        messages { field message }
+                    }
+                }
+            `, {
+                input: {
+                    id: note.healthie_note_id,
+                    finished: true,
+                    form_answers: formAnswers,
+                },
+            });
+
+            healthieNoteId = updateResult?.updateFormAnswerGroup?.form_answer_group?.id;
+
+            // Fallback: if update fails (e.g. deleted in Healthie), create new
+            if (!healthieNoteId) {
+                console.warn('[Scribe:Submit] Update failed, falling back to create new');
+                const createResult = await healthieGraphQL<any>(`
+                    mutation CreateFormAnswerGroup($input: createFormAnswerGroupInput!) {
+                        createFormAnswerGroup(input: $input) {
+                            form_answer_group { id }
+                        }
+                    }
+                `, {
+                    input: {
+                        custom_module_form_id: SOAP_FORM_ID,
+                        user_id: patient.healthie_client_id,
+                        finished: true,
+                        form_answers: formAnswers,
+                    },
                 });
-            } catch (linkErr) {
-                console.warn('[Scribe:Submit] Appointment linking failed:', linkErr instanceof Error ? linkErr.message : linkErr);
-                // Non-fatal — continue even if linking fails
+                healthieNoteId = createResult?.createFormAnswerGroup?.form_answer_group?.id;
             }
+        } else {
+            // Create new form answer group
+            const createResult = await healthieGraphQL<any>(`
+                mutation CreateFormAnswerGroup($input: createFormAnswerGroupInput!) {
+                    createFormAnswerGroup(input: $input) {
+                        form_answer_group { id }
+                    }
+                }
+            `, {
+                input: {
+                    custom_module_form_id: SOAP_FORM_ID,
+                    user_id: patient.healthie_client_id,
+                    finished: true,
+                    form_answers: formAnswers,
+                },
+            });
+            healthieNoteId = createResult?.createFormAnswerGroup?.form_answer_group?.id;
         }
 
-        // 4. Lock the chart note
+        if (!healthieNoteId) {
+            throw new Error('Failed to create/update SOAP form in Healthie — no ID returned');
+        }
+
+        // 5. Lock the form answer group
         let locked = false;
         try {
-            await healthie.graphql(`
-        mutation LockFormAnswerGroup($id: ID!) {
-          lockFormAnswerGroup(id: $id) {
-            form_answer_group { id locked }
-          }
-        }
-      `, { id: healthieNoteId });
+            await healthieGraphQL(`
+                mutation LockFormAnswerGroup($id: ID!) {
+                    lockFormAnswerGroup(id: $id) {
+                        form_answer_group { id locked }
+                    }
+                }
+            `, { id: healthieNoteId });
             locked = true;
         } catch (lockErr) {
             console.warn('[Scribe:Submit] Note locking failed:', lockErr instanceof Error ? lockErr.message : lockErr);
             // Non-fatal
         }
 
-        // 5. Update local records
+        // 6. Update local records
         await query(`
-      UPDATE scribe_notes
-      SET healthie_note_id = $1,
-          healthie_status = $2,
-          reviewed_by = $3,
-          reviewed_at = NOW(),
-          updated_at = NOW()
-      WHERE note_id = $4
-    `, [
+            UPDATE scribe_notes
+            SET healthie_note_id = $1,
+                healthie_status = $2,
+                reviewed_by = $3,
+                reviewed_at = NOW(),
+                updated_at = NOW()
+            WHERE note_id = $4
+        `, [
             healthieNoteId,
             locked ? 'locked' : 'submitted',
             user.user_id,
@@ -116,37 +190,30 @@ export async function POST(request: NextRequest) {
         ]);
 
         // Update session status
-        const [session] = await query<any>(
-            'SELECT session_id FROM scribe_sessions WHERE session_id = $1',
+        await query(
+            `UPDATE scribe_sessions SET status = 'submitted', updated_at = NOW() WHERE session_id = $1`,
             [note.session_id]
         );
-        if (session) {
-            await query(
-                `UPDATE scribe_sessions SET status = 'submitted', updated_at = NOW() WHERE session_id = $1`,
-                [note.session_id]
-            );
-        }
 
-        // 6. Send Telegram confirmation
+        // 7. Send Telegram confirmation (non-fatal)
         const chatId = process.env.TELEGRAM_CHAT_ID;
         if (chatId) {
             try {
+                const verb = isResubmit ? 'Updated' : 'Submitted';
                 const msg = [
-                    `📋 *AI Scribe Note Submitted*`,
+                    `📋 *AI Scribe Note ${verb} (iPad)*`,
                     ``,
                     `👤 Patient: ${patient.full_name}`,
                     `📝 Visit: ${note.visit_type}`,
-                    `🏥 Healthie Note: ${healthieNoteId}`,
+                    `🏥 Healthie SOAP Form: ${healthieNoteId}`,
                     locked ? `🔒 Status: Locked` : `📤 Status: Submitted (not locked)`,
-                    appointment_id ? `📅 Appointment: ${appointment_id}` : '',
                     ``,
-                    `_Submitted by ${user.display_name || user.email}_`,
+                    `_${verb} by ${user.display_name || user.email} via iPad_`,
                 ].filter(Boolean).join('\n');
 
                 await sendMessage(chatId, msg, { parseMode: 'Markdown' });
             } catch (tgErr) {
                 console.warn('[Scribe:Submit] Telegram notification failed:', tgErr);
-                // Non-fatal
             }
         }
 
@@ -156,7 +223,7 @@ export async function POST(request: NextRequest) {
                 note_id,
                 healthie_note_id: healthieNoteId,
                 healthie_status: locked ? 'locked' : 'submitted',
-                appointment_linked: !!appointment_id,
+                is_resubmit: isResubmit,
             },
         });
     } catch (error) {
@@ -176,42 +243,4 @@ export async function POST(request: NextRequest) {
             { status: 500 }
         );
     }
-}
-
-// ==================== HELPERS ====================
-function formatHealthieNoteBody(note: any): string {
-    const sections: string[] = [];
-
-    if (note.soap_subjective) {
-        sections.push(`## Subjective\n${note.soap_subjective}`);
-    }
-    if (note.soap_objective) {
-        sections.push(`## Objective\n${note.soap_objective}`);
-    }
-    if (note.soap_assessment) {
-        sections.push(`## Assessment\n${note.soap_assessment}`);
-    }
-    if (note.soap_plan) {
-        sections.push(`## Plan\n${note.soap_plan}`);
-    }
-
-    // ICD-10 codes
-    const icd10 = note.icd10_codes || [];
-    if (Array.isArray(icd10) && icd10.length > 0) {
-        sections.push(
-            `## ICD-10 Codes\n${icd10.map((c: any) => `- [${c.code}] ${c.description}`).join('\n')}`
-        );
-    }
-
-    // CPT codes
-    const cpt = note.cpt_codes || [];
-    if (Array.isArray(cpt) && cpt.length > 0) {
-        sections.push(
-            `## CPT Codes\n${cpt.map((c: any) => `- ${c.code}: ${c.description}`).join('\n')}`
-        );
-    }
-
-    sections.push(`\n---\n_Generated by AI Scribe (${note.ai_model || 'claude'}) — ${new Date().toLocaleDateString()}_`);
-
-    return sections.join('\n\n');
 }

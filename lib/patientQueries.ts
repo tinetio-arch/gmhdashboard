@@ -49,6 +49,8 @@ export type PatientDataEntryRow = {
   last_charge_date?: string | null;
   last_controlled_dispense_at?: string | null;
   last_dea_drug?: string | null;
+  healthie_client_id?: string | null;
+  ghl_contact_id?: string | null;
 };
 
 export type ProfessionalPatient = {
@@ -226,18 +228,19 @@ function enforceLabStatusOnPatientStatus(
 
 export async function fetchPatientDataEntries(): Promise<PatientDataEntryRow[]> {
   return query<PatientDataEntryRow>(
-    `SELECT *
-     FROM patient_data_entry_v
+    `SELECT v.*, p.healthie_client_id, p.ghl_contact_id
+     FROM patient_data_entry_v v
+     LEFT JOIN patients p ON v.patient_id = p.patient_id
      ORDER BY
        CASE
-         WHEN COALESCE(status_key, '') LIKE 'hold%' OR LOWER(COALESCE(alert_status, '')) LIKE 'hold%' THEN 0
-         WHEN COALESCE(status_key, '') = 'active_pending' OR LOWER(COALESCE(alert_status, '')) = 'active - pending' THEN 1
-         WHEN COALESCE(status_key, '') = 'active' OR LOWER(COALESCE(alert_status, '')) = 'active' THEN 2
-         WHEN COALESCE(status_key, '') = 'inactive' OR LOWER(COALESCE(alert_status, '')) = 'inactive' THEN 3
+         WHEN COALESCE(v.status_key, '') LIKE 'hold%' OR LOWER(COALESCE(v.alert_status, '')) LIKE 'hold%' THEN 0
+         WHEN COALESCE(v.status_key, '') = 'active_pending' OR LOWER(COALESCE(v.alert_status, '')) = 'active - pending' THEN 1
+         WHEN COALESCE(v.status_key, '') = 'active' OR LOWER(COALESCE(v.alert_status, '')) = 'active' THEN 2
+         WHEN COALESCE(v.status_key, '') = 'inactive' OR LOWER(COALESCE(v.alert_status, '')) = 'inactive' THEN 3
          ELSE 4
        END,
-       LOWER(COALESCE(type_of_client, '')) DESC,
-       patient_name ASC`
+       LOWER(COALESCE(v.type_of_client, '')) DESC,
+       v.patient_name ASC`
   );
 }
 

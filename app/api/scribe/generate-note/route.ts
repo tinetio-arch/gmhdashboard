@@ -9,6 +9,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 120; // Claude generation can take time
 
 // ==================== SOAP PROMPT BUILDER ====================
+// Uses the EXACT same template as the Python scribe (prompts_config.yaml → standard_soap)
 function buildSoapPrompt(ctx: {
     patient_name: string;
     dob: string | null;
@@ -19,41 +20,139 @@ function buildSoapPrompt(ctx: {
     transcript: string;
     visit_type: string;
 }): string {
-    return `You are an AI medical scribe for a naturopathic/integrative medicine clinic.
-Generate a thorough SOAP note from the following visit transcript and patient context.
+    const currentDate = new Date().toLocaleDateString('en-US', {
+        year: 'numeric', month: 'long', day: 'numeric'
+    });
 
-PATIENT CONTEXT:
-- Name: ${ctx.patient_name}
-- DOB: ${ctx.dob || 'Not on file'}
-- Current Medications: ${ctx.medications}
-- Recent Labs: ${ctx.recent_labs}
-- Last Visit: ${ctx.last_visit_summary}
-- Active Diagnoses: ${ctx.diagnoses}
+    // This is the EXACT standard_soap template from prompts_config.yaml
+    const soapPrompt = `**Situation**
+You are Phil Schafer, NP at NowOptimal Network in Prescott, Arizona. You are documenting a patient encounter that has just concluded. The documentation must meet clinical standards for medical records, ensure compliance with healthcare regulations, and serve as a legal record of the patient visit. This SOAP note will be used for continuity of care, billing purposes, and potential legal review.
 
-VISIT TRANSCRIPT:
-${ctx.transcript}
+**Task**
+Generate a comprehensive SOAP (Subjective, Objective, Assessment, and Plan) note from the provided patient visit transcript. The assistant should transform the conversational transcript into a structured clinical document that captures all relevant medical information in standardized medical terminology and format, matching Phil Schafer's established documentation style and level of detail.
 
-VISIT TYPE: ${ctx.visit_type}
+**Objective**
+Create a complete, clinically accurate, and legally defensible medical record that documents the patient encounter thoroughly, supports appropriate billing and coding, provides clear guidance for follow-up care and treatment continuity, and includes complete prescription and pharmacy information for all medications ordered.
 
-Generate a complete SOAP note with:
-S (Subjective): Chief complaint, HPI with onset/duration/severity, pertinent positives/negatives, ROS
-O (Objective): Vitals if mentioned, physical exam findings, relevant lab results discussed
-A (Assessment): Each diagnosis with ICD-10 code, clinical reasoning
-P (Plan): For each diagnosis - medications (dose, route, frequency), labs ordered, imaging, referrals, follow-up timing, patient education provided
+**Knowledge**
 
-Be thorough. Include all clinically relevant details from the transcript.
-Format ICD-10 codes as: [CODE] Description
+Patient Information Required:
+- Patient Name: ${ctx.patient_name}
+- Visit Date: ${currentDate}
+- Clinical Transcript: ${ctx.transcript}
 
-IMPORTANT: Respond ONLY with valid JSON in this exact format:
-{
-  "subjective": "...",
-  "objective": "...",
-  "assessment": "...",
-  "plan": "...",
-  "icd10_codes": [{"code": "Z00.00", "description": "..."}],
-  "cpt_codes": [{"code": "99214", "description": "..."}],
-  "full_note": "..."
-}`;
+Documentation Standards:
+1. The assistant should document ALL physical exam body systems listed in the template, even if not explicitly mentioned in the transcript. When findings are not stated, document normal exam findings using standard medical terminology.
+
+2. The assistant should write the History of Present Illness (HPI) as a detailed narrative, but MUST use paragraph breaks to separate distinct topics (e.g., presenting complaint vs. social history). Use bullet points for lists of symptoms or multiple complaints to improve readability. Avoid long, dense blocks of text.
+
+3. The assistant should include ICD-10 codes for every diagnosis listed in the Assessment and Plan section.
+
+4. The assistant should specify exact medication details including: drug name, dosage, route, frequency, quantity dispensed, number of refills, and specific administration instructions when applicable.
+
+5. The assistant should include complete prescription information for all medications ordered, including pharmacy details when provided in the transcript.
+
+6. The assistant should maintain the exact format structure provided, including bold section headers. Use bullet points or numbered lists freely within sections to break up text and make the note "beautiful" and easy to read.
+
+7. The assistant should capture the conversational, thorough documentation style demonstrated in Phil Schafer's notes, including patient quotes when clinically relevant, detailed symptom descriptions, and comprehensive patient counseling documentation.
+
+Physical Exam Template (use this exact structure and language, modifying only when abnormal findings are documented):
+
+General: Alert and oriented, in no acute distress. Well-developed, hydrated, and nourished. Appears stated age.
+
+Skin: Warm, dry, and intact. No rashes, lesions, or ulcers.
+
+Head: Normocephalic and atraumatic. No tenderness to palpation.
+
+Eyes: Sclerae are non-icteric. Conjunctivae are pink and moist. Pupils are equal, round, and reactive to light and accommodation (PERRLA). Extraocular movements are intact (EOMI). Visual acuity grossly normal.
+
+Ears: External ear canals are clear. Tympanic membranes are intact without erythema, bulging, or effusion.
+
+Nose: Nasal mucosa is pink and moist. No discharge or septal deviation noted.
+
+Throat/Mouth: Oral mucosa is pink and moist. Dentition is intact. Oropharynx is normal in appearance with no erythema, exudates, or swelling.
+
+Neck: Supple with full range of motion. No lymphadenopathy, masses, or thyromegaly. Trachea is midline.
+
+Heart: Regular rate and rhythm. No murmurs, gallops, or rubs. Normal S1 and S2.
+
+Lungs: Clear to auscultation bilaterally. No wheezes, rales, or rhonchi. Normal respiratory effort without accessory muscle use.
+
+Abdomen: Soft, non-tender, and non-distended. No masses, hepatomegaly, or splenomegaly. Bowel sounds are normoactive in all four quadrants.
+
+Extremities: No edema, cyanosis, or clubbing. Peripheral pulses are 2+ and equal bilaterally. Capillary refill is normal.
+
+Musculoskeletal: Normal range of motion in all extremities. 5/5 motor strength bilaterally in upper and lower extremities.
+
+Neurological: Cranial nerves II-XII are intact. Sensation intact to light touch and pinprick. Deep tendon reflexes 2+ bilaterally. Steady gait noted. No tremors or focal deficits.
+
+Psychiatric: Appropriate mood and affect. Good judgment and insight. Normal thought process. No visual or auditory hallucinations. No suicidal or homicidal ideation.
+
+Required Output Structure (Strictly follow this order):
+
+SUBJECTIVE
+**Chief Complaint:**
+[Text]
+
+**History of Present Illness:**
+[Detailed narrative with paragraph breaks]
+
+**Review of Systems:**
+[Bulleted List]
+
+**Current Medications:**
+[Bulleted List]
+
+**Allergies:**
+[List]
+
+OBJECTIVE
+**Vitals:**
+[Text]
+
+**Lab Results:**
+[Text if applicable]
+
+**Physical Exam:**
+[Insert Physical Exam here - MUST BE within OBJECTIVE section]
+
+ASSESSMENT
+[List Diagnoses with ICD-10]
+
+PLAN
+[Format as follows for EACH diagnosis:]
+**Diagnosis Name (ICD-10):**
+- Specific intervention (medication, referral, counseling, or monitoring).
+
+PRESCRIPTIONS
+[List]
+
+PATIENT INSTRUCTIONS
+[Bulleted list]
+
+FOLLOW-UP
+[Text]
+
+---
+Electronically signed by Phil Schafer, NP
+NowOptimal Network
+${currentDate}
+
+**Formatting Rules:**
+- DO NOT use markdown headers (# or ##).
+- Use **Bold** for subsection headers (e.g., **Chief Complaint:**).
+- Start main sections (SUBJECTIVE, OBJECTIVE, etc.) on their own line in ALL CAPS.
+- Use bullet points * for lists to ensure readability.
+- Insert empty lines between sections for clean separation.
+- **CRITICAL:** The Physical Exam MUST be placed inside the OBJECTIVE section, before Assessment.
+
+The assistant should modify the standard physical exam template only when the transcript explicitly documents abnormal findings for specific body systems. When abnormalities are mentioned, replace the normal finding with the specific abnormal finding documented in the transcript, using detailed descriptive language.
+
+The assistant should extract and organize information from the raw audio transcription into appropriate SOAP note sections, translating lay terminology into medical terminology where appropriate while maintaining clinical accuracy. The assistant should preserve clinically relevant patient statements and quotes that provide context for treatment decisions.
+
+The assistant should document patient counseling comprehensively, including specific topics discussed, patient education provided, risks and benefits explained, and patient understanding or concerns expressed during the visit.`;
+
+    return soapPrompt;
 }
 
 // ==================== MAIN HANDLER ====================
@@ -75,6 +174,18 @@ export async function POST(request: NextRequest) {
     }
 
     try {
+        // 0. Check for existing note (prevent duplicates)
+        const [existingNote] = await query<any>(
+            'SELECT note_id FROM scribe_notes WHERE session_id = $1',
+            [session_id]
+        );
+        if (existingNote) {
+            return NextResponse.json({
+                success: false,
+                error: `Note already exists for this session (note_id: ${existingNote.note_id}). Use PATCH to update.`,
+            }, { status: 409 });
+        }
+
         // 1. Fetch session transcript
         const [session] = await query<any>(
             'SELECT * FROM scribe_sessions WHERE session_id = $1',
@@ -101,7 +212,7 @@ export async function POST(request: NextRequest) {
 
         // If still no patient, create a minimal patient object from session/request data
         const patientName = patient?.full_name || patient_name || session.patient_name || 'Unknown Patient';
-        const patientDob = patient?.date_of_birth || null;
+        const patientDob = patient?.dob || null;
         const healthieId = patient?.healthie_client_id || patient_id;
         const resolvedPatientId = patient?.patient_id || patient_id;
 
@@ -152,7 +263,7 @@ export async function POST(request: NextRequest) {
 
         // 4. Call Claude via Bedrock
         const bedrockRegion = process.env.AWS_BEDROCK_REGION ?? process.env.AWS_REGION ?? 'us-east-2';
-        const modelId = process.env.SCRIBE_MODEL_ID ?? 'anthropic.claude-3-sonnet-20240229-v1:0';
+        const modelId = process.env.SCRIBE_MODEL_ID ?? 'anthropic.claude-3-5-sonnet-20241022-v2:0';
 
         const bedrock = new BedrockRuntimeClient({ region: bedrockRegion });
         const response = await bedrock.send(new InvokeModelCommand({
@@ -171,24 +282,38 @@ export async function POST(request: NextRequest) {
         const responseBody = JSON.parse(new TextDecoder().decode(response.body));
         const aiText = responseBody.content?.[0]?.text || '';
 
-        // 5. Parse structured SOAP from Claude response
-        let soapData: any;
-        try {
-            // Try to extract JSON from the response
-            const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-            soapData = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-        } catch (parseErr) {
-            console.warn('[Scribe:GenerateNote] Could not parse structured JSON, using raw text');
-            soapData = null;
+        // 5. Parse SOAP sections from text output (matching Python scribe's parse_soap_sections)
+        // The prompt outputs section headers like SUBJECTIVE, OBJECTIVE, ASSESSMENT, PLAN
+        const parseSoapSections = (text: string) => {
+            const subMatch = text.match(/SUBJECTIVE[\s\S]*?(?=OBJECTIVE|$)/i);
+            const objMatch = text.match(/OBJECTIVE[\s\S]*?(?=ASSESSMENT|$)/i);
+            const assMatch = text.match(/ASSESSMENT[\s\S]*?(?=PLAN(?!\s*:)|$)/i);
+            const planMatch = text.match(/PLAN[\s\S]*?(?=PRESCRIPTIONS|PATIENT INSTRUCTIONS|FOLLOW-UP|---\s*\nElectronically|$)/i);
+
+            return {
+                subjective: subMatch ? subMatch[0].replace(/^SUBJECTIVE\s*/i, '').trim() : '',
+                objective: objMatch ? objMatch[0].replace(/^OBJECTIVE\s*/i, '').trim() : '',
+                assessment: assMatch ? assMatch[0].replace(/^ASSESSMENT\s*/i, '').trim() : '',
+                plan: planMatch ? planMatch[0].replace(/^PLAN\s*/i, '').trim() : '',
+            };
+        };
+
+        const sections = parseSoapSections(aiText);
+
+        // Extract ICD-10 codes from assessment section
+        const icd10Regex = /\(([A-Z]\d{2}(?:\.\d{1,4})?)\)/g;
+        const icd10Codes: Array<{ code: string; description: string }> = [];
+        let match;
+        while ((match = icd10Regex.exec(sections.assessment + '\n' + sections.plan)) !== null) {
+            icd10Codes.push({ code: match[1], description: '' });
         }
 
-        const subjective = soapData?.subjective || '';
-        const objective = soapData?.objective || '';
-        const assessment = soapData?.assessment || '';
-        const plan = soapData?.plan || '';
-        const icd10Codes = soapData?.icd10_codes || [];
-        const cptCodes = soapData?.cpt_codes || [];
-        const fullNote = soapData?.full_note || aiText;
+        const subjective = sections.subjective;
+        const objective = sections.objective;
+        const assessment = sections.assessment;
+        const plan = sections.plan;
+        const cptCodes: any[] = [];
+        const fullNote = aiText;
 
         // 6. Store in scribe_notes
         const [note] = await query<any>(`

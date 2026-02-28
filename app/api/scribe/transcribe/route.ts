@@ -1,10 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import {
+    S3Client,
+    PutObjectCommand,
+    GetObjectCommand,
+} from '@aws-sdk/client-s3';
+import {
+    TranscribeClient,
+    StartMedicalTranscriptionJobCommand,
+    GetMedicalTranscriptionJobCommand,
+} from '@aws-sdk/client-transcribe';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120; // Deepgram transcription can take time
+export const maxDuration = 120;
+
+const AWS_REGION = process.env.AWS_REGION ?? 'us-east-2';
+const S3_BUCKET = process.env.SCRIBE_S3_BUCKET ?? 'gmh-clinical-data-lake';
 
 export async function POST(request: NextRequest) {
     let user;
@@ -22,14 +34,13 @@ export async function POST(request: NextRequest) {
         const appointmentId = formData.get('appointment_id') as string | null;
         const visitType = (formData.get('visit_type') as string) || 'follow_up';
         const preTranscribed = formData.get('transcript') as string | null;
-
         const patientName = formData.get('patient_name') as string | null;
 
         if (!patientId) {
             return NextResponse.json({ success: false, error: 'patient_id is required' }, { status: 400 });
         }
 
-        // Try to find patient by patient_id first, then by healthie_client_id
+        // Resolve patient from local DB
         let patient: any = null;
         const [byId] = await query<any>(
             'SELECT patient_id, full_name FROM patients WHERE patient_id = $1',
@@ -38,71 +49,98 @@ export async function POST(request: NextRequest) {
         if (byId) {
             patient = byId;
         } else {
-            // Try Healthie ID lookup
             const [byHealthie] = await query<any>(
                 'SELECT patient_id, full_name FROM patients WHERE healthie_client_id = $1',
                 [patientId]
             );
             patient = byHealthie;
         }
-        // For Healthie-only patients not in ops system, allow proceeding with name
         const resolvedPatientId = patient?.patient_id || patientId;
         const resolvedPatientName = patient?.full_name || patientName || 'Unknown Patient';
 
         let transcript = preTranscribed;
         let audioS3Key: string | null = null;
+        let transcribeJobName: string | null = null;
 
-        // Upload audio to S3 if provided
+        // ==================== AUDIO → S3 → AWS TRANSCRIBE MEDICAL ====================
         if (audioFile && !preTranscribed) {
             const buffer = Buffer.from(await audioFile.arrayBuffer());
-            const s3Key = `scribe/audio/${patientId}/${Date.now()}.webm`;
 
-            const s3Region = process.env.AWS_SES_REGION ?? process.env.AWS_REGION ?? 'us-east-2';
-            const s3Bucket = process.env.SCRIBE_S3_BUCKET ?? 'gmh-clinical-data-lake';
+            // Validate size (max 2 hours ≈ ~100MB for webm)
+            if (buffer.byteLength > 200 * 1024 * 1024) {
+                return NextResponse.json(
+                    { success: false, error: 'Audio file too large (max 200MB)' },
+                    { status: 400 }
+                );
+            }
 
-            const s3 = new S3Client({ region: s3Region });
+            // Determine file extension from MIME type
+            const mimeType = audioFile.type || 'audio/webm';
+            const extMap: Record<string, string> = {
+                'audio/webm': 'webm',
+                'audio/mp4': 'mp4',
+                'audio/mpeg': 'mp3',
+                'audio/wav': 'wav',
+                'audio/x-wav': 'wav',
+                'audio/ogg': 'ogg',
+                'audio/flac': 'flac',
+                'audio/m4a': 'm4a',
+                'audio/x-m4a': 'm4a',
+            };
+            const ext = extMap[mimeType] || 'webm';
+
+            const timestamp = Date.now();
+            const s3Key = `scribe/audio/${resolvedPatientId}/${timestamp}.${ext}`;
+
+            // Upload to S3
+            const s3 = new S3Client({ region: AWS_REGION });
             await s3.send(new PutObjectCommand({
-                Bucket: s3Bucket,
+                Bucket: S3_BUCKET,
                 Key: s3Key,
                 Body: buffer,
-                ContentType: audioFile.type || 'audio/webm',
+                ContentType: mimeType,
             }));
             audioS3Key = s3Key;
 
-            // Send to Deepgram for transcription
-            const dgApiKey = process.env.DEEPGRAM_API_KEY;
-            if (!dgApiKey) {
-                return NextResponse.json(
-                    { success: false, error: 'DEEPGRAM_API_KEY not configured' }, { status: 500 }
-                );
-            }
+            // Start AWS Transcribe Medical job
+            // Matching Python scribe: Specialty=PRIMARYCARE, Type=CONVERSATION, speaker labels
+            transcribeJobName = `scribe-${resolvedPatientId}-${timestamp}`;
+            const mediaUri = `s3://${S3_BUCKET}/${s3Key}`;
 
-            const dgResponse = await fetch(
-                'https://api.deepgram.com/v1/listen?model=nova-2-medical&smart_format=true&punctuate=true&diarize=true&paragraphs=true',
-                {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Token ${dgApiKey}`,
-                        'Content-Type': audioFile.type || 'audio/webm',
+            // Map our extensions to AWS Transcribe media formats
+            const awsFormatMap: Record<string, string> = {
+                'webm': 'webm',
+                'mp4': 'mp4',
+                'mp3': 'mp3',
+                'wav': 'wav',
+                'ogg': 'ogg',
+                'flac': 'flac',
+                'm4a': 'mp4',
+            };
+            const mediaFormat = awsFormatMap[ext] || 'webm';
+
+            const transcribe = new TranscribeClient({ region: AWS_REGION });
+            try {
+                await transcribe.send(new StartMedicalTranscriptionJobCommand({
+                    MedicalTranscriptionJobName: transcribeJobName,
+                    LanguageCode: 'en-US',
+                    Media: { MediaFileUri: mediaUri },
+                    OutputBucketName: S3_BUCKET,
+                    OutputKey: `scribe/transcripts/${transcribeJobName}.json`,
+                    Specialty: 'PRIMARYCARE',
+                    Type: 'CONVERSATION',
+                    Settings: {
+                        ShowSpeakerLabels: true,
+                        MaxSpeakerLabels: 2,
                     },
-                    body: buffer,
-                }
-            );
-
-            if (!dgResponse.ok) {
-                const errBody = await dgResponse.text();
-                console.error('[Scribe:Transcribe] Deepgram error:', dgResponse.status, errBody);
+                }));
+                console.log(`[Scribe] Started AWS Transcribe Medical job: ${transcribeJobName}`);
+            } catch (txErr: any) {
+                console.error('[Scribe] Failed to start transcription:', txErr);
                 return NextResponse.json(
-                    { success: false, error: `Deepgram transcription failed: ${dgResponse.status}` },
+                    { success: false, error: `Transcription start failed: ${txErr?.message || txErr}` },
                     { status: 502 }
                 );
-            }
-
-            const dgResult = await dgResponse.json();
-            transcript = dgResult.results?.channels?.[0]?.alternatives?.[0]?.transcript || '';
-
-            if (!transcript) {
-                console.warn('[Scribe:Transcribe] Deepgram returned empty transcript');
             }
         }
 
@@ -115,19 +153,19 @@ export async function POST(request: NextRequest) {
 
         // Create scribe session
         const [session] = await query<any>(`
-      INSERT INTO scribe_sessions
-        (patient_id, appointment_id, visit_type, audio_s3_key,
-         transcript, transcript_source, status, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *
-    `, [
+            INSERT INTO scribe_sessions
+                (patient_id, appointment_id, visit_type, audio_s3_key,
+                 transcript, transcript_source, status, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+        `, [
             resolvedPatientId,
             appointmentId,
             visitType,
             audioS3Key,
-            transcript,
-            preTranscribed ? 'manual' : 'deepgram',
-            transcript ? 'transcribed' : 'recording',
+            transcript,                                                    // null if async transcription
+            preTranscribed ? 'manual' : 'aws_transcribe_medical',
+            preTranscribed ? 'transcribed' : 'transcribing',               // new status for async
             user.user_id,
         ]);
 
@@ -139,10 +177,146 @@ export async function POST(request: NextRequest) {
                 transcript_length: transcript?.length ?? 0,
                 transcript_source: session.transcript_source,
                 audio_stored: !!audioS3Key,
+                transcribe_job_name: transcribeJobName,                    // iPad polls with this
             },
         });
     } catch (error) {
         console.error('[Scribe:Transcribe] Error:', error);
+        return NextResponse.json(
+            { success: false, error: error instanceof Error ? error.message : 'Internal server error' },
+            { status: 500 }
+        );
+    }
+}
+
+// ==================== GET: Poll transcription status ====================
+// iPad calls this every few seconds until status is 'transcribed'
+export async function GET(request: NextRequest) {
+    try { await requireApiUser(request, 'read'); }
+    catch (error) {
+        if (error instanceof UnauthorizedError)
+            return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+        throw error;
+    }
+
+    try {
+        const { searchParams } = new URL(request.url);
+        const sessionId = searchParams.get('session_id');
+
+        if (!sessionId) {
+            return NextResponse.json({ success: false, error: 'session_id is required' }, { status: 400 });
+        }
+
+        const [session] = await query<any>(
+            'SELECT * FROM scribe_sessions WHERE session_id = $1',
+            [sessionId]
+        );
+        if (!session) {
+            return NextResponse.json({ success: false, error: 'Session not found' }, { status: 404 });
+        }
+
+        // If already transcribed, return immediately
+        if (session.transcript) {
+            return NextResponse.json({
+                success: true,
+                data: {
+                    session_id: session.session_id,
+                    status: session.status,
+                    transcript: session.transcript,
+                    transcript_length: session.transcript.length,
+                },
+            });
+        }
+
+        // Check AWS Transcribe job status
+        if (session.transcript_source === 'aws_transcribe_medical' && session.status === 'transcribing') {
+            // Derive job name from audio_s3_key timestamp
+            const timestamp = session.audio_s3_key?.match(/\/(\d+)\.\w+$/)?.[1] || '';
+            const jobName = `scribe-${session.patient_id}-${timestamp}`;
+
+            const transcribe = new TranscribeClient({ region: AWS_REGION });
+            try {
+                const jobResp = await transcribe.send(new GetMedicalTranscriptionJobCommand({
+                    MedicalTranscriptionJobName: jobName,
+                }));
+                const jobStatus = jobResp.MedicalTranscriptionJob?.TranscriptionJobStatus;
+
+                if (jobStatus === 'COMPLETED') {
+                    // Fetch transcript from S3
+                    const transcriptKey = `scribe/transcripts/${jobName}.json`;
+                    const s3 = new S3Client({ region: AWS_REGION });
+
+                    const s3Resp = await s3.send(new GetObjectCommand({
+                        Bucket: S3_BUCKET,
+                        Key: transcriptKey,
+                    }));
+                    const bodyStr = await s3Resp.Body?.transformToString();
+                    if (!bodyStr) throw new Error('Empty transcript file from S3');
+
+                    const transcriptData = JSON.parse(bodyStr);
+                    const transcript = transcriptData.results?.transcripts?.[0]?.transcript || '';
+
+                    // Update session with transcript
+                    await query(
+                        `UPDATE scribe_sessions SET transcript = $1, status = 'transcribed', updated_at = NOW() WHERE session_id = $2`,
+                        [transcript, sessionId]
+                    );
+
+                    return NextResponse.json({
+                        success: true,
+                        data: {
+                            session_id: session.session_id,
+                            status: 'transcribed',
+                            transcript,
+                            transcript_length: transcript.length,
+                        },
+                    });
+                } else if (jobStatus === 'FAILED') {
+                    const failReason = jobResp.MedicalTranscriptionJob?.FailureReason || 'Unknown failure';
+                    await query(
+                        `UPDATE scribe_sessions SET status = 'error', updated_at = NOW() WHERE session_id = $1`,
+                        [sessionId]
+                    );
+                    return NextResponse.json({
+                        success: false,
+                        data: { session_id: session.session_id, status: 'error', error: failReason },
+                    }, { status: 502 });
+                } else {
+                    // Still processing (IN_PROGRESS or QUEUED)
+                    return NextResponse.json({
+                        success: true,
+                        data: {
+                            session_id: session.session_id,
+                            status: 'transcribing',
+                            aws_status: jobStatus,
+                            message: 'Transcription in progress...',
+                        },
+                    });
+                }
+            } catch (pollErr: any) {
+                console.error('[Scribe:Poll] Error polling transcription:', pollErr);
+                return NextResponse.json({
+                    success: true,
+                    data: {
+                        session_id: session.session_id,
+                        status: 'transcribing',
+                        message: 'Checking transcription status...',
+                    },
+                });
+            }
+        }
+
+        // Unknown state — return current status
+        return NextResponse.json({
+            success: true,
+            data: {
+                session_id: session.session_id,
+                status: session.status,
+                transcript: session.transcript || null,
+            },
+        });
+    } catch (error) {
+        console.error('[Scribe:Transcribe:Poll] Error:', error);
         return NextResponse.json(
             { success: false, error: error instanceof Error ? error.message : 'Internal server error' },
             { status: 500 }

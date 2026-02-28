@@ -22,16 +22,18 @@ export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
 
-        const {
-            patientId,
-            patientName,
-            doseMl,
-            wasteMl = 0.1,
-            syringeCount,
-            vendor,
-            stagedForDate,
-            notes,
-        } = body;
+        // Accept both snake_case (iPad frontend) and camelCase field names
+        const patientId = body.patient_id || body.patientId;
+        const patientName = body.patient_name || body.patientName;
+        const doseMl = parseFloat(body.dose_ml || body.doseMl || 0);
+        const wasteMl = parseFloat(body.waste_ml || body.wasteMl || 0.1);
+        const syringeCount = parseInt(body.syringe_count || body.syringeCount || 1, 10);
+        const vendor = body.vendor;
+        const notes = body.notes || '';
+        const specifiedVialId = body.vial_id || body.vialId;
+        const dispenseImmediately = body.dispense_immediately || body.dispenseImmediately;
+        const stagedForDate = body.stagedForDate || body.staged_for_date ||
+            (dispenseImmediately ? new Date().toISOString().split('T')[0] : null);
 
         // Validate required fields
         if (!doseMl || doseMl <= 0) {
@@ -53,24 +55,39 @@ export async function POST(request: NextRequest) {
         await client.query('BEGIN');
 
         // Calculate total ml needed
-        const totalMl = (parseFloat(doseMl) + parseFloat(wasteMl)) * parseInt(syringeCount, 10);
+        const totalMl = (doseMl + wasteMl) * syringeCount;
 
-        // Find a vial with enough volume (uses FEFO — first expiring, first out)
+        // Find vial: use specified vial_id if provided, otherwise FEFO auto-select
+        let vialQuery: string;
+        let vialParams: any[];
+        if (specifiedVialId) {
+            vialQuery = `
+              SELECT vial_id, external_id, remaining_volume_ml, dea_drug_name, dea_drug_code
+              FROM vials
+              WHERE vial_id = $1 AND status = 'Active' AND remaining_volume_ml::numeric >= $2
+              LIMIT 1
+            `;
+            vialParams = [specifiedVialId, totalMl];
+        } else {
+            vialQuery = `
+              SELECT vial_id, external_id, remaining_volume_ml, dea_drug_name, dea_drug_code
+              FROM vials
+              WHERE status = 'Active'
+                AND remaining_volume_ml::numeric >= $1
+                AND controlled_substance = true
+              ORDER BY expiration_date ASC NULLS LAST, external_id ASC
+              LIMIT 1
+            `;
+            vialParams = [totalMl];
+        }
+
         const vials = await client.query<{
             vial_id: string;
             external_id: string;
             remaining_volume_ml: string;
             dea_drug_name: string;
             dea_drug_code: string;
-        }>(`
-      SELECT vial_id, external_id, remaining_volume_ml, dea_drug_name, dea_drug_code
-      FROM vials
-      WHERE status = 'Active'
-        AND remaining_volume_ml::numeric >= $1
-        AND controlled_substance = true
-      ORDER BY expiration_date ASC NULLS LAST, external_id ASC
-      LIMIT 1
-    `, [totalMl]);
+        }>(vialQuery, vialParams);
 
         if (vials.rows.length === 0) {
             await client.query('ROLLBACK');

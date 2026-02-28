@@ -452,6 +452,9 @@ async function loadDashboard() {
                     status: p.status_key || p.status || 'Active',
                 })),
                 summary: d.summary || {},
+                revenue: d.revenue || {},
+                totalActivePatients: d.total_active_patients || d.totalActivePatients || 0,
+                patientsByType: d.patients_by_type || d.patientsByType || {},
             };
             return true;
         }
@@ -585,6 +588,8 @@ async function loadAllPatients() {
                 id: p.patient_id || p.id,
                 name: p.full_name || p.name || p.patient_name || '',
                 status: p.status_key || p.status || 'Active',
+                healthie_client_id: p.healthie_client_id || p.healthie_id || '',
+                ghl_contact_id: p.ghl_contact_id || '',
             }));
         } else if (Array.isArray(data)) {
             allPatients = data;
@@ -1477,7 +1482,7 @@ function renderScribeNewSession(container) {
                 <label>Patient (Healthie)</label>
                 <div class="patient-search-wrapper">
                     <input type="text" id="scribePatientSearch" class="patient-search-input"
-                           placeholder="Type 3+ letters to search Healthie…"
+                           placeholder="Type 2+ letters to search patients…"
                            autocomplete="off" />
                     <div id="scribePatientResults" class="patient-search-results"></div>
                     <div id="scribePatientSelected" class="patient-selected-badge" style="display:none;"></div>
@@ -1524,58 +1529,91 @@ function renderScribeNewSession(container) {
     const results = document.getElementById('scribePatientResults');
     const badge = document.getElementById('scribePatientSelected');
 
+    // Ensure allPatients is loaded for local search
+    if (allPatients.length === 0 && !patientsLoaded) {
+        loadAllPatients().catch(e => console.warn('Pre-load patients failed:', e));
+    }
+
     if (input) {
         input.addEventListener('input', () => {
             const q = input.value.trim();
             if (searchTimeout) clearTimeout(searchTimeout);
-            if (q.length < 3) {
+            if (q.length < 2) {
                 results.innerHTML = '';
                 results.style.display = 'none';
                 return;
             }
-            results.innerHTML = '<div class="patient-search-loading">Searching…</div>';
-            results.style.display = 'block';
             searchTimeout = setTimeout(async () => {
-                try {
-                    // Search locally first
-                    const localMatches = allPatients.filter(p => {
-                        const nm = (p.name || p.full_name || '').toLowerCase();
-                        return nm.includes(q.toLowerCase());
-                    }).slice(0, 10).map(p => ({
-                        id: p.healthie_client_id || p.id || p.patient_id,
-                        healthie_id: p.healthie_client_id || '',
-                        first_name: (p.name || p.full_name || '').split(' ')[0] || '',
-                        last_name: (p.name || p.full_name || '').split(' ').slice(1).join(' ') || '',
-                        dob: p.dob || '', email: p.email || '',
-                    }));
-                    // Also try Healthie
-                    let hResults = [];
-                    try {
-                        const hData = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
-                        hResults = hData?.patients || [];
-                    } catch (he) { console.warn('Healthie search failed:', he.message); }
-                    // Merge
-                    const seen = new Set(hResults.map(p => String(p.healthie_id || p.id)));
-                    const uniqLocal = localMatches.filter(p => !seen.has(String(p.healthie_id || p.id)));
-                    const combined = [...hResults, ...uniqLocal].slice(0, 15);
-                    if (combined.length === 0) {
-                        results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
-                        return;
-                    }
-                    results.innerHTML = combined.map(p => {
-                        const name = `${p.first_name || ''} ${p.last_name || ''}`.trim() || p.name || 'Unknown';
-                        const dob = p.dob ? ` · DOB: ${p.dob}` : '';
-                        return `<div class="patient-search-item" onclick="selectScribePatient('${p.healthie_id || p.id}', '${name.replace(/'/g, "\\'")}')">
-                            <span class="patient-search-name">${name}</span>
-                            <span class="patient-search-detail">${p.email || ''}${dob}</span>
-                        </div>`;
-                    }).join('');
-                } catch (e) {
-                    results.innerHTML = `<div class="patient-search-empty">Search error: ${e.message}</div>`;
+                // Instant local search from allPatients
+                const ql = q.toLowerCase();
+                const localMatches = allPatients.filter(p => {
+                    const nm = (p.name || p.full_name || p.patient_name || '').toLowerCase();
+                    return nm.includes(ql);
+                }).slice(0, 15).map(p => ({
+                    patient_id: p.id || p.patient_id || '',
+                    healthie_id: p.healthie_client_id || '',
+                    name: p.name || p.full_name || p.patient_name || 'Unknown',
+                    dob: p.dob || '',
+                    email: p.email || '',
+                    source: 'local',
+                }));
+
+                // Show local results immediately
+                if (localMatches.length > 0) {
+                    renderScribeSearchResults(localMatches, results);
+                } else {
+                    results.innerHTML = '<div class="patient-search-loading">Searching…</div>';
+                    results.style.display = 'block';
                 }
-            }, 300);
+
+                // Also try Healthie search (async, graceful fallback)
+                try {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 5000);
+                    const hData = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
+                    clearTimeout(timeout);
+                    const hResults = (hData?.patients || []).map(p => ({
+                        patient_id: '',
+                        healthie_id: p.healthie_id || p.id || '',
+                        name: `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown',
+                        dob: p.dob || '',
+                        email: p.email || '',
+                        source: 'healthie',
+                    }));
+                    // Merge: keep local matches first, add unique Healthie results
+                    const seenNames = new Set(localMatches.map(p => p.name.toLowerCase()));
+                    const uniqueHealthie = hResults.filter(p => !seenNames.has(p.name.toLowerCase()));
+                    const combined = [...localMatches, ...uniqueHealthie].slice(0, 15);
+                    if (combined.length > 0) {
+                        renderScribeSearchResults(combined, results);
+                    } else {
+                        results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
+                        results.style.display = 'block';
+                    }
+                } catch (he) {
+                    // Healthie search failed — just show local results
+                    console.warn('Healthie search failed (local results shown):', he.message);
+                    if (localMatches.length === 0) {
+                        results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
+                        results.style.display = 'block';
+                    }
+                }
+            }, 200);
         });
     }
+}
+
+function renderScribeSearchResults(patients, resultsEl) {
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = patients.map(p => {
+        const dob = p.dob ? ` · DOB: ${p.dob}` : '';
+        const src = p.source === 'healthie' ? ' <span style="font-size:9px; color:#22d3ee;">Healthie</span>' : '';
+        const pid = p.patient_id || p.healthie_id || '';
+        return `<div class="patient-search-item" onclick="selectScribePatient('${pid}', '${p.name.replace(/'/g, "\\'")}')">
+            <span class="patient-search-name">${p.name}${src}</span>
+            <span class="patient-search-detail">${p.email || ''}${dob}</span>
+        </div>`;
+    }).join('');
 }
 
 function selectScribePatient(healthieId, name) {
@@ -2109,7 +2147,7 @@ function renderDEASection() {
                     <label>Patient</label>
                     <div class="patient-search-wrapper">
                         <input type="text" id="stageDosePatientSearch" class="patient-search-input"
-                               placeholder="Type 3+ letters to search Healthie…" autocomplete="off" />
+                               placeholder="Type 2+ letters to search patients…" autocomplete="off" />
                         <div id="stageDosePatientResults" class="patient-search-results"></div>
                         <div id="stageDosePatientBadge" class="patient-selected-badge" style="display:none;"></div>
                     </div>
@@ -2849,19 +2887,15 @@ function renderPatient360(data, patient, patientId) {
 
     let html = '';
 
-    // ─── Demographics & Info Grid ───
+    // ─── Badges & Info Grid (no duplicate name — name is in the header above) ───
     html += `
         <div class="patient-360-section">
-            <div style="display:flex; align-items:flex-start; gap:14px; margin-bottom:14px;">
-                ${healthiePhoto ? `<img src="${healthiePhoto}" style="width:56px; height:56px; border-radius:12px; object-fit:cover; border:2px solid var(--border-light);">` : `<div style="width:56px; height:56px; border-radius:12px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:20px; color:var(--text-primary); border:2px solid var(--border-light);">${getInitials(demo.full_name || patient?.name)}</div>`}
-                <div style="flex:1;">
-                    <h3 style="margin:0 0 6px;">${demo.full_name || patient?.name || 'Unknown Patient'}</h3>
-                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                        <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ GMH</span>
-                        <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${hasGHL ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${hasGHL ? '#22c55e' : '#ef4444'};">${hasGHL ? '✅' : '❌'} GHL</span>
-                        <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${hasHealthie ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${hasHealthie ? '#22c55e' : '#ef4444'};">${hasHealthie ? '✅' : '❌'} Healthie</span>
-                    </div>
-                </div>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+                ${healthiePhoto ? `<img src="${healthiePhoto}" style="width:40px; height:40px; border-radius:10px; object-fit:cover; border:2px solid var(--border-light);">` : ''}
+                <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ GMH</span>
+                <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${hasGHL ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${hasGHL ? '#22c55e' : '#ef4444'};">${hasGHL ? '✅' : '❌'} GHL</span>
+                <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${hasHealthie ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${hasHealthie ? '#22c55e' : '#ef4444'};">${hasHealthie ? '✅' : '❌'} Healthie</span>
+                <div style="flex:1;"></div>
                 <button class="btn-secondary btn-sm" onclick="openEditDemographicsModal('${patientId}')" style="font-size:12px;">✏️ Edit</button>
             </div>
             <div class="patient-info-grid">
@@ -3712,9 +3746,18 @@ async function loadScheduleData() {
     if (!contentEl) return;
 
     try {
-        // Use morning-prep which already fetches Healthie appointments
-        const data = await apiFetch(`/ops/api/cron/morning-prep?key=${CRON_SECRET}`);
-        const patients = data.patients || [];
+        // Use lightweight schedule endpoint (not heavy morning-prep cron)
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 25000);
+        let data;
+        try {
+            data = await apiFetch('/ops/api/ipad/schedule/');
+        } catch (fetchErr) {
+            clearTimeout(timeout);
+            throw fetchErr;
+        }
+        clearTimeout(timeout);
+        const patients = data?.patients || [];
 
         if (patients.length === 0) {
             contentEl.innerHTML = `
