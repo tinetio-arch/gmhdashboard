@@ -21,6 +21,7 @@ export default async function RootLayout({
   const clinicalItems = [
     { label: 'Patients', href: '/patients' },
     { label: 'Labs', href: '/labs' },
+    { label: 'AI Scribe', href: '/scribe' },
     { label: 'Faxes', href: '/faxes' },
     { label: 'Supplies', href: '/supplies' },
     { label: 'Peptides', href: '/peptides' },

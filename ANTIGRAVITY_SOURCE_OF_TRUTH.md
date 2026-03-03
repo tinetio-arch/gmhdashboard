@@ -346,7 +346,34 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - FEB 26, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 2, 2026)
+
+### March 2, 2026: Three Bug Fixes (Billing, DOB, Lab Approval)
+
+**1. Billing Info Not Saving (iPhone App)**
+- **Root Cause**: Lambda `index.js` had **duplicate billing action handlers** (lines 299-327 and 494-522). The first `add_payment_method` handler returned `{ paymentMethod }` without `success: true`. `AddCardScreen.tsx` checks `response.success`, so the card was actually saved to Healthie but the app always reported failure.
+- **Fix**: Removed duplicate handlers. Added `success: true` to the first `add_payment_method` response.
+- **File**: `backend/lambda-booking/src/index.js`
+- **Status**: Code fixed — requires Lambda redeployment
+
+**2. Date of Birth Incorrect (iPhone App)**
+- **Root Cause**: `safeParseDate` in `dateUtils.ts` parsed date-only strings (`"1990-05-15"`) using `new Date("1990-05-15T12:00:00")`. On iOS this is interpreted as UTC; on Android as local time. This cross-platform inconsistency shifts the displayed DOB by ±1 day.
+- **Fix**: Changed to use `Date` component constructor `new Date(year, month-1, day, 12, 0, 0)` which is consistently local time on all platforms.
+- **File**: `mobile-app/src/utils/dateUtils.ts`
+- **Status**: Code fixed — requires app rebuild
+- **CRITICAL LEARNING**: Never use `new Date(isoString)` without timezone for date-only values in React Native. Always use `new Date(y, m-1, d, 12)`.
+
+**3. Cannot Approve Restricted Lab Orders**
+- **Root Cause**: `app/api/labs/order/[id]/approve/route.ts` called `requireApiUser(req, 'admin')` — only the highest role could approve. Users with `write` role were getting 401 Unauthorized.
+- **Fix**: Changed to `requireApiUser(req, 'write')` so any write-level user can approve restricted labs.
+- **File**: `app/api/labs/order/[id]/approve/route.ts`
+- **Status**: ✅ Deployed (PM2 restart completed)
+
+**4. Node.js v20.20.0 Hang Fix**
+- **Root Cause**: Node v20.20.0 (NodeSource RPM) had a **race condition** causing all Node processes to hang on startup. Proven by running under `strace` which added enough timing delay for Node to work. Even `node -e "console.log('test')"` would hang.
+- **Fix**: Installed `nvm` (v0.40.1) and upgraded to **Node v22.22.0** (latest LTS). Reinstalled PM2 globally under new Node.
+- **CRITICAL LEARNING**: If Node hangs on EC2, check the version. NodeSource v20.20.0 has a known race condition. Use `nvm` to manage Node versions instead of system packages.
+- **Status**: ✅ Deployed (nvm + Node v22.22.0 active)
 
 ### February 26, 2026: Lab Review Queue Migration (JSON → PostgreSQL)
 

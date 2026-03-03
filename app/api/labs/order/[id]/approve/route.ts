@@ -15,7 +15,7 @@ export async function POST(
 ) {
     try {
         try {
-            await requireApiUser(req, 'admin'); // Only admins can approve
+            await requireApiUser(req, 'write'); // Any user with write access can approve restricted labs
         } catch (error) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
@@ -58,7 +58,16 @@ export async function POST(
                     phone: order.patient_phone,
                     email: order.patient_email
                 },
-                tests: JSON.parse(order.test_codes || "[]"),
+                tests: (() => {
+                    try {
+                        const raw = order.test_codes || '[]';
+                        return typeof raw === 'string' ? JSON.parse(raw) : raw;
+                    } catch {
+                        // test_codes is not valid JSON — treat as comma-separated string
+                        console.warn(`[LabApprove] test_codes not valid JSON: ${String(order.test_codes).substring(0, 100)}`);
+                        return (order.test_codes || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+                    }
+                })(),
                 notes: (order.custom_codes ? `Custom Codes: ${order.custom_codes}. ` : "") + (order.notes || ""),
                 provider: {
                     name: order.ordering_provider || 'Phil Schafer NP',
@@ -77,13 +86,16 @@ export async function POST(
             // Cleanup
             await unlink(tempFile);
 
-            console.log("Script output:", stdout);
+            console.log("Script output:", stdout?.substring(0, 500));
             let result;
             try {
-                result = JSON.parse(stdout);
+                // Script may print log lines before JSON — find the JSON object
+                const jsonStart = stdout.indexOf('{');
+                const jsonStr = jsonStart >= 0 ? stdout.substring(jsonStart) : stdout;
+                result = JSON.parse(jsonStr);
             } catch (e) {
-                console.error("Failed to parse script output", stdout);
-                throw new Error("Invalid output from order script");
+                console.error("Failed to parse script output:", stdout?.substring(0, 300));
+                throw new Error(`Invalid output from order script: ${String(e).substring(0, 100)}`);
             }
 
             if (result.success) {

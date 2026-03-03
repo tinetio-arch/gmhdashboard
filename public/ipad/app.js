@@ -1514,7 +1514,7 @@ function renderScribeNewSession(container) {
                 <div class="scribe-record-prompt">
                     <div class="record-icon-large">🎙</div>
                     <p>Tap <strong>Start Recording</strong> to capture the visit conversation.</p>
-                    <p style="font-size:12px; color:var(--text-tertiary);">Audio is transcribed by Deepgram Nova-2 Medical</p>
+                    <p style="font-size:12px; color:var(--text-tertiary);">Audio is transcribed by AWS Transcribe Medical</p>
                 </div>
             </div>
             <button class="btn-primary scribe-start-btn" id="scribeStartBtn" onclick="beginScribeCapture()" disabled>
@@ -1524,25 +1524,39 @@ function renderScribeNewSession(container) {
     `;
 
     // Wire up typeahead patient search
+    // NOTE: container is a detached DOM element at this point (appended to doc AFTER this fn returns)
+    // So we MUST use container.querySelector, NOT document.getElementById
     let searchTimeout = null;
-    const input = document.getElementById('scribePatientSearch');
-    const results = document.getElementById('scribePatientResults');
-    const badge = document.getElementById('scribePatientSelected');
+    const input = container.querySelector('#scribePatientSearch');
+    const results = container.querySelector('#scribePatientResults');
+    const badge = container.querySelector('#scribePatientSelected');
 
-    // Ensure allPatients is loaded for local search
-    if (allPatients.length === 0 && !patientsLoaded) {
-        loadAllPatients().catch(e => console.warn('Pre-load patients failed:', e));
+
+    // Ensure allPatients is loaded for local search — ALWAYS retry if empty
+    if (allPatients.length === 0) {
+        console.log('[Scribe] allPatients is empty, force loading…');
+        patientsLoaded = false; // reset so it retries
+        loadAllPatients().then(ok => {
+            console.log('[Scribe] Patient load result:', ok, 'count:', allPatients.length);
+        }).catch(e => console.warn('[Scribe] Pre-load patients failed:', e));
+    } else {
+        console.log('[Scribe] allPatients already loaded:', allPatients.length);
     }
 
     if (input) {
+        console.log('[Scribe] Patient search input wired up');
         input.addEventListener('input', () => {
             const q = input.value.trim();
+            console.log('[Scribe] Search input:', q, 'allPatients:', allPatients.length);
             if (searchTimeout) clearTimeout(searchTimeout);
             if (q.length < 2) {
                 results.innerHTML = '';
                 results.style.display = 'none';
                 return;
             }
+            // Show searching indicator immediately
+            results.innerHTML = '<div class="patient-search-loading">Searching…</div>';
+            results.style.display = 'block';
             searchTimeout = setTimeout(async () => {
                 // Instant local search from allPatients
                 const ql = q.toLowerCase();
@@ -1558,20 +1572,16 @@ function renderScribeNewSession(container) {
                     source: 'local',
                 }));
 
+                console.log('[Scribe] Local matches:', localMatches.length);
+
                 // Show local results immediately
                 if (localMatches.length > 0) {
                     renderScribeSearchResults(localMatches, results);
-                } else {
-                    results.innerHTML = '<div class="patient-search-loading">Searching…</div>';
-                    results.style.display = 'block';
                 }
 
                 // Also try Healthie search (async, graceful fallback)
                 try {
-                    const controller = new AbortController();
-                    const timeout = setTimeout(() => controller.abort(), 5000);
                     const hData = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
-                    clearTimeout(timeout);
                     const hResults = (hData?.patients || []).map(p => ({
                         patient_id: '',
                         healthie_id: p.healthie_id || p.id || '',
@@ -1584,22 +1594,25 @@ function renderScribeNewSession(container) {
                     const seenNames = new Set(localMatches.map(p => p.name.toLowerCase()));
                     const uniqueHealthie = hResults.filter(p => !seenNames.has(p.name.toLowerCase()));
                     const combined = [...localMatches, ...uniqueHealthie].slice(0, 15);
+                    console.log('[Scribe] Combined results:', combined.length);
                     if (combined.length > 0) {
                         renderScribeSearchResults(combined, results);
-                    } else {
+                    } else if (localMatches.length === 0) {
                         results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
                         results.style.display = 'block';
                     }
                 } catch (he) {
                     // Healthie search failed — just show local results
-                    console.warn('Healthie search failed (local results shown):', he.message);
+                    console.warn('[Scribe] Healthie search failed:', he.message);
                     if (localMatches.length === 0) {
-                        results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
+                        results.innerHTML = '<div class="patient-search-empty">No patients found — check connection</div>';
                         results.style.display = 'block';
                     }
                 }
             }, 200);
         });
+    } else {
+        console.error('[Scribe] Patient search input NOT found in DOM!');
     }
 }
 
@@ -1763,7 +1776,7 @@ function stopScribeRecording() {
 }
 
 async function handleRecordingComplete() {
-    showToast('Transcribing audio…', 'info');
+    showToast('Uploading audio for transcription…', 'info');
     const blob = new Blob(audioChunks, { type: 'audio/webm' });
     const formData = new FormData();
     formData.append('audio', blob, 'visit-recording.webm');
@@ -1780,12 +1793,18 @@ async function handleRecordingComplete() {
         const data = await resp.json();
         if (data.success) {
             activeScribeSession = data.data;
-            showToast(`Transcribed! ${data.data.transcript_length} characters`, 'success');
-            // Reload sessions and go to transcript view
-            await loadScribeSessions();
-            scribeView = 'note';
-            renderCurrentTab();
-            updateBadges();
+            // Check if transcription is async (AWS Transcribe) or already done
+            if (data.data.status === 'transcribing' || data.data.transcription_job_name) {
+                showToast('Audio uploaded! Transcription in progress…', 'info');
+                // Poll for completion
+                await pollTranscription(data.data.session_id);
+            } else {
+                showToast(`Transcribed! ${data.data.transcript_length || 0} characters`, 'success');
+                await loadScribeSessions();
+                scribeView = 'note';
+                renderCurrentTab();
+                updateBadges();
+            }
         } else {
             showToast(data.error || 'Transcription failed', 'error');
             scribeView = 'list';
@@ -1796,6 +1815,55 @@ async function handleRecordingComplete() {
         scribeView = 'list';
         renderCurrentTab();
     }
+}
+
+async function pollTranscription(sessionId) {
+    // Show a polling view
+    const container = document.getElementById('mainContent');
+    if (container) {
+        container.innerHTML = `
+            <div style="text-align:center; padding:60px 20px;">
+                <div class="loading-spinner" style="margin:0 auto 20px;"></div>
+                <h2 style="margin-bottom:8px;">Transcribing Visit Audio</h2>
+                <p style="color:var(--text-tertiary);">AWS Transcribe Medical is processing your recording.<br>This usually takes 30-90 seconds.</p>
+                <div id="pollStatus" style="margin-top:20px; color:var(--cyan); font-weight:600;">Polling…</div>
+            </div>
+        `;
+    }
+
+    let attempts = 0;
+    const maxAttempts = 60; // 5 min max
+    const pollInterval = 5000; // 5 sec
+
+    while (attempts < maxAttempts) {
+        attempts++;
+        await new Promise(r => setTimeout(r, pollInterval));
+        try {
+            const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+            const statusEl = document.getElementById('pollStatus');
+            if (statusEl) statusEl.textContent = `Checking… (attempt ${attempts})`;
+
+            if (data?.success && data.data?.status === 'transcribed') {
+                showToast(`Transcription complete! ${data.data.transcript_length || 0} chars`, 'success');
+                await loadScribeSessions();
+                activeScribeSession = scribeSessions.find(s => s.session_id === sessionId) || activeScribeSession;
+                scribeView = 'note';
+                renderCurrentTab();
+                updateBadges();
+                return;
+            } else if (data?.data?.status === 'error') {
+                showToast('Transcription failed: ' + (data.data.error || 'Unknown'), 'error');
+                scribeView = 'list';
+                renderCurrentTab();
+                return;
+            }
+        } catch (e) {
+            console.warn('Poll error:', e);
+        }
+    }
+    showToast('Transcription timed out — check back later', 'error');
+    scribeView = 'list';
+    renderCurrentTab();
 }
 
 async function submitManualTranscript() {
@@ -1978,8 +2046,29 @@ function renderScribeReview(container) {
             </div>
         ` : ''}
 
+        <!-- AI Edit Bar -->
+        <div class="scribe-ai-edit" style="margin-top:16px; padding:12px; background:var(--surface-2); border-radius:12px; border:1px solid var(--border);">
+            <div style="display:flex; gap:8px;">
+                <input type="text" id="aiEditInput" placeholder="Tell AI what to change (e.g. 'add allergy to penicillin')…"
+                       style="flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-1); color:var(--text-primary); font-size:14px;" />
+                <button class="btn-primary" onclick="aiEditNote()" style="white-space:nowrap;">✨ AI Edit</button>
+            </div>
+        </div>
+
+        <!-- Supplementary Docs -->
+        <div style="margin-top:16px;">
+            <h3 style="font-size:14px; color:var(--text-secondary); margin-bottom:8px;">Generate Documents</h3>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <button class="btn-secondary" onclick="generateScribeDoc('work_note')">🏢 Work Note</button>
+                <button class="btn-secondary" onclick="generateScribeDoc('school_note')">🏫 School Note</button>
+                <button class="btn-secondary" onclick="generateScribeDoc('discharge_instructions')">📄 Discharge</button>
+                <button class="btn-secondary" onclick="generateScribeDoc('care_plan')">💊 Care Plan</button>
+            </div>
+            <div id="scribeDocsOutput" style="margin-top:12px;"></div>
+        </div>
+
         ${!isSubmitted ? `
-            <div class="scribe-review-actions">
+            <div class="scribe-review-actions" style="margin-top:16px;">
                 <button class="btn-primary scribe-submit-btn" onclick="submitNoteToHealthie()">
                     📤 Submit to Healthie
                 </button>
@@ -2052,6 +2141,74 @@ function renderScribeTranscript(container) {
     // Fallback — redirect to note view
     scribeView = 'note';
     renderCurrentTab();
+}
+
+async function aiEditNote() {
+    const input = document.getElementById('aiEditInput');
+    const instruction = input?.value?.trim();
+    if (!instruction) { showToast('Enter an edit instruction', 'error'); return; }
+    const noteId = activeScribeSession?.note_id || currentNote?.note_id;
+    if (!noteId) { showToast('No note to edit', 'error'); return; }
+
+    showToast('Applying AI edit…', 'info');
+    try {
+        const result = await apiFetch(`/ops/api/scribe/notes/${noteId}/edit-ai/`, {
+            method: 'POST',
+            body: JSON.stringify({ edit_instruction: instruction })
+        });
+        if (result?.success) {
+            const n = result.data.updated_note;
+            if (currentNote) {
+                currentNote.soap_subjective = n.soap_subjective;
+                currentNote.soap_objective = n.soap_objective;
+                currentNote.soap_assessment = n.soap_assessment;
+                currentNote.soap_plan = n.soap_plan;
+            }
+            input.value = '';
+            showToast('AI edit applied!', 'success');
+            await loadScribeSessions();
+            activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession?.session_id) || activeScribeSession;
+            renderCurrentTab();
+        } else {
+            showToast(result?.error || 'AI edit failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('AI edit failed', 'error');
+    }
+}
+
+async function generateScribeDoc(docType) {
+    if (!activeScribeSession?.session_id) { showToast('No active session', 'error'); return; }
+    const labels = {
+        work_note: 'Work Note', school_note: 'School Note',
+        discharge_instructions: 'Discharge Instructions', care_plan: 'Care Plan'
+    };
+    showToast(`Generating ${labels[docType] || docType}…`, 'info');
+
+    try {
+        const result = await apiFetch('/ops/api/scribe/generate-doc/', {
+            method: 'POST',
+            body: JSON.stringify({ session_id: activeScribeSession.session_id, doc_type: docType })
+        });
+        if (result?.success) {
+            showToast(`${labels[docType]} generated!`, 'success');
+            const output = document.getElementById('scribeDocsOutput');
+            if (output) {
+                output.innerHTML += `
+                    <div style="background:var(--surface-1); border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:8px;">
+                        <h4 style="margin:0 0 8px; font-size:13px; color:var(--cyan);">${labels[docType] || docType}</h4>
+                        <div style="font-size:13px; color:var(--text-secondary); white-space:pre-wrap; line-height:1.5;">${formatSOAPContent(result.data?.content || '')}</div>
+                    </div>
+                `;
+            }
+        } else {
+            showToast(result?.error || 'Doc generation failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Doc generation failed', 'error');
+    }
 }
 
 // ============================================================
