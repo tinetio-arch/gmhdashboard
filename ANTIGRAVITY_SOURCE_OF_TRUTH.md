@@ -1,8 +1,8 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: February 26, 2026  
+**Last Updated**: March 4, 2026  
 **Primary AI Assistant**: AntiGravity (Google Deepmind Agentic Coding)  
-**Sprint Period**: December 25, 2025 - February 26, 2026
+**Sprint Period**: December 25, 2025 - March 4, 2026
 
 
 > **Purpose**: This is the MASTER reference document for all AI assistants working on the GMH Dashboard system. When in doubt, refer to this file first. All critical system information, recent changes, and operational procedures are documented here.
@@ -346,7 +346,24 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 2, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 4, 2026)
+
+### March 4, 2026: Split-Vial Dispense Bug Fix (+20mL Inflation)
+
+**Problem**: When dispensing across two vials (split-vial handler), the second dispense recorded wildly inflated quantities. Example: Snyder on 03/03 — V0339 recorded 60 mL dispensed from a 30 mL vial (12 syringes × 5.0 mL).
+
+**Root Cause**: `handleSplitAcrossVials()` in `TransactionForm.tsx` had a fallback path (L402) that recalculated `doseNext = nextSyringes × doseValue` from scratch instead of using the remaining removal budget. The `nextSyringes` fallback (`fallbackSyringes`) could produce syringe counts equal to or larger than the original total.
+
+| Fix | File | Change |
+|-----|------|--------|
+| Cap doseNext to budget | `app/inventory/TransactionForm.tsx` L399-408 | Derive doseNext from `remainingRemoval - wasteBase` instead of `nextSyringes * doseValue` |
+| Cap nextSyringes | `app/inventory/TransactionForm.tsx` L401 | `Math.min(fallbackSyringes, totalSyringes - predictedCurrentSyringes)` |
+| Backend guard | `lib/inventoryQueries.ts` L810-820 | If `totalDispensedMl + wasteMl > currentRemaining`, scale both down proportionally |
+
+> [!IMPORTANT]
+> Snyder's two incorrect dispense records from 03/03 need to be deleted and re-entered manually.
+
+---
 
 ### March 2, 2026: Three Bug Fixes (Billing, DOB, Lab Approval)
 

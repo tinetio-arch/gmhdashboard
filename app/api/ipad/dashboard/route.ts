@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
         ORDER BY p.patient_id, p.full_name
       `),
 
-      // Revenue: today, this week, this month
+      // Revenue: today, this week, this month (gracefully handle missing table)
       query<any>(`
         SELECT
           COALESCE(SUM(CASE WHEN sale_date >= (NOW() AT TIME ZONE 'America/Denver')::date
@@ -94,7 +94,7 @@ export async function GET(request: NextRequest) {
                         THEN total_price::numeric ELSE 0 END), 0)::text as month
         FROM peptide_sales
         WHERE sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Denver')::date)
-      `),
+      `).catch(() => [{ today: '0', week: '0', month: '0' }]),
 
       // Total active patients
       query<any>(`SELECT COUNT(*) as count FROM patients WHERE status_key = 'Active'`),

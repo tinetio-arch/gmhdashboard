@@ -48,7 +48,7 @@ export default async function TransactionsPage() {
 
       <TransactionsActions patients={patientOptions} vials={activeVials} currentUserRole={user.role} />
 
-      <TransactionsTableClient transactions={transactions} canDelete={user.role === 'admin'} />
+      <TransactionsTableClient transactions={transactions} canDelete={user.role === 'admin' || user.role === 'write'} />
     </section>
   );
 }

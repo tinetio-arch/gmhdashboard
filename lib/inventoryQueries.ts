@@ -807,6 +807,19 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
       wasteMl = 0;
     }
 
+    // Guard: cap total deduction to vial's actual remaining volume to prevent
+    // impossible records (e.g., 60 mL deducted from a 30 mL vial).
+    const requestedDeduction = totalDispensedMl + wasteMl;
+    if (requestedDeduction > currentRemaining + 0.01) {
+      const ratio = currentRemaining / requestedDeduction;
+      totalDispensedMl = Number((totalDispensedMl * ratio).toFixed(3));
+      wasteMl = Number((wasteMl * ratio).toFixed(3));
+      console.warn(
+        `[createDispense] Capped deduction from ${requestedDeduction.toFixed(3)} to ${currentRemaining.toFixed(3)} mL ` +
+        `for vial "${input.vialExternalId}" (ratio=${ratio.toFixed(4)})`
+      );
+    }
+
     const totalAmount = input.totalAmount ?? Number((totalDispensedMl + wasteMl).toFixed(3));
 
     const dispenseInsert = await client.query<{ dispense_id: string }>(

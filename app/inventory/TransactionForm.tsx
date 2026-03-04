@@ -397,14 +397,15 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
     const remainingWaste = Number((computedWaste - wasteCurrent).toFixed(3));
     const remainingSyringes = Math.max(totalSyringes - predictedCurrentSyringes, 0);
     const fallbackSyringes = perSyringeRemoval > 0 ? Math.max(1, Math.round(remainingRemoval / perSyringeRemoval)) : 0;
-    const nextSyringes = remainingSyringes > 0 ? remainingSyringes : fallbackSyringes;
+    // Never exceed the remaining syringes from the original order
+    const nextSyringes = remainingSyringes > 0
+      ? remainingSyringes
+      : Math.min(fallbackSyringes, Math.max(totalSyringes - predictedCurrentSyringes, 1));
 
-    const doseNext = Number((remainingDispensed > 0 ? remainingDispensed : nextSyringes * doseValue).toFixed(3));
-    let wasteNext = Number((remainingWaste > 0 ? remainingWaste : nextSyringes * WASTE_PER_SYRINGE).toFixed(3));
-    const correction = Number((remainingRemoval - (doseNext + wasteNext)).toFixed(3));
-    if (Math.abs(correction) > 0.005) {
-      wasteNext = Number((wasteNext + correction).toFixed(3));
-    }
+    // Always derive second-vial amounts from the remaining budget — never recalculate from scratch
+    const nextWasteBase = nextSyringes > 0 ? Number((nextSyringes * WASTE_PER_SYRINGE).toFixed(3)) : 0;
+    const doseNext = Number(Math.max(remainingRemoval - nextWasteBase, 0).toFixed(3));
+    let wasteNext = Number(Math.max(remainingRemoval - doseNext, 0).toFixed(3));
 
     const nextVendor = inferVialVendor(nextVial);
 

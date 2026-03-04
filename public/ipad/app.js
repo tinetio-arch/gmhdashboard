@@ -1923,7 +1923,9 @@ function renderScribeNote(container) {
         <div class="scribe-header-row">
             <button class="scribe-back-btn" onclick="scribeView='list'; renderCurrentTab();">← Back</button>
             <h1 style="font-size:24px;">Generate SOAP Note</h1>
+            ${getChartToggleBtn()}
         </div>
+        ${getChartPanelHTML()}
 
         <div class="scribe-session-summary">
             <div class="scribe-session-patient">${activeScribeSession.patient_name || getPatientNameById(scribePatientId)}</div>
@@ -2014,7 +2016,9 @@ function renderScribeReview(container) {
         <div class="scribe-header-row">
             <button class="scribe-back-btn" onclick="scribeView='list'; renderCurrentTab();">← Back</button>
             <h1 style="font-size:24px;">SOAP Note Review</h1>
+            ${getChartToggleBtn()}
         </div>
+        ${getChartPanelHTML()}
 
         <div class="scribe-session-summary">
             <div class="scribe-session-patient">${activeScribeSession.patient_name || getPatientNameById(scribePatientId)}</div>
@@ -2209,6 +2213,211 @@ async function generateScribeDoc(docType) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         showToast('Doc generation failed', 'error');
     }
+}
+
+// ============================================================
+// PATIENT CHART REVIEW PANEL (Slide-out during Scribe)
+// ============================================================
+let chartPanelData = null;
+let chartPanelOpen = false;
+let chartPanelPatientId = null;
+
+function toggleChartPanel() {
+    const panel = document.getElementById('chartPanel');
+    if (!panel) return;
+    chartPanelOpen = !chartPanelOpen;
+    panel.classList.toggle('open', chartPanelOpen);
+
+    // Load data if opening and we have a patient
+    const pid = scribePatientId || activeScribeSession?.patient_id;
+    if (chartPanelOpen && pid && pid !== chartPanelPatientId) {
+        loadChartData(pid);
+    }
+}
+
+async function loadChartData(patientId) {
+    chartPanelPatientId = patientId;
+    const content = document.getElementById('chartPanelContent');
+    if (!content) return;
+    content.innerHTML = '<div class="chart-loading"><div class="spinner"></div> Loading chart…</div>';
+
+    try {
+        const result = await apiFetch(`/ops/api/patients/${patientId}/360/`);
+        if (result?.success) {
+            chartPanelData = result.data;
+            renderChartPanel(content);
+        } else {
+            content.innerHTML = '<div class="chart-loading">Failed to load chart</div>';
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        content.innerHTML = '<div class="chart-loading">Error loading chart</div>';
+    }
+}
+
+function renderChartPanel(content) {
+    const d = chartPanelData;
+    if (!d) return;
+    const demo = d.demographics || {};
+    const meds = d.medications || {};
+    const peptides = meds.peptides || d.peptides || [];
+    const trt = meds.trt || d.trt || [];
+    const labs = d.labs || {};
+    const labItems = labs.queue_items || d.queue_items || [];
+    const healthieLabs = labs.healthie_labs || d.healthie_labs || [];
+    const visits = d.visits || [];
+    const alerts = d.alerts || [];
+    const controlled = d.controlled_substances || [];
+
+    content.innerHTML = `
+        <!-- Demographics -->
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>👤 Demographics</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                <div class="chart-info-grid">
+                    <div class="chart-info-item"><span class="chart-label">Name</span><span class="chart-value">${demo.full_name || 'Unknown'}</span></div>
+                    <div class="chart-info-item"><span class="chart-label">DOB</span><span class="chart-value">${demo.dob ? new Date(demo.dob).toLocaleDateString() : '—'}</span></div>
+                    <div class="chart-info-item"><span class="chart-label">Status</span><span class="chart-value">${demo.status_key || '—'}</span></div>
+                    <div class="chart-info-item"><span class="chart-label">Regimen</span><span class="chart-value">${demo.regimen || '—'}</span></div>
+                    <div class="chart-info-item"><span class="chart-label">Phone</span><span class="chart-value">${demo.phone_primary || '—'}</span></div>
+                    <div class="chart-info-item"><span class="chart-label">Email</span><span class="chart-value">${demo.email || '—'}</span></div>
+                    ${demo.client_type_key ? `<div class="chart-info-item"><span class="chart-label">Type</span><span class="chart-value">${demo.client_type_key}</span></div>` : ''}
+                    ${demo.healthie_client_id ? `<div class="chart-info-item"><span class="chart-label">Healthie ID</span><span class="chart-value">${demo.healthie_client_id}</span></div>` : ''}
+                </div>
+            </div>
+        </div>
+
+        <!-- Medications -->
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>💊 Medications (${peptides.length + trt.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${peptides.length > 0 ? `
+                    <div class="chart-sub-label">Peptides</div>
+                    ${peptides.map(m => `
+                        <div class="chart-med-card">
+                            <div class="chart-med-name">${m.medication_name || m.product_name || 'Unknown'}</div>
+                            <div class="chart-med-detail">${m.dose || m.dose_ml ? `Dose: ${m.dose || m.dose_ml}` : ''} ${m.frequency || ''}</div>
+                            <div class="chart-med-detail">${m.status || ''}</div>
+                        </div>
+                    `).join('')}
+                ` : ''}
+                ${trt.length > 0 ? `
+                    <div class="chart-sub-label">TRT</div>
+                    ${trt.map(m => `
+                        <div class="chart-med-card">
+                            <div class="chart-med-name">${m.medication_name || m.product_name || 'Unknown'}</div>
+                            <div class="chart-med-detail">${m.dose || m.dose_ml ? `Dose: ${m.dose || m.dose_ml}` : ''} ${m.frequency || ''}</div>
+                        </div>
+                    `).join('')}
+                ` : ''}
+                ${peptides.length === 0 && trt.length === 0 ? '<div class="chart-empty">No medications on file</div>' : ''}
+            </div>
+        </div>
+
+        <!-- Labs -->
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>🧪 Labs (${labItems.length + healthieLabs.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${labItems.map(l => `
+                    <div class="chart-lab-card">
+                        <div class="chart-lab-name">${l.panel_names || l.lab_type || 'Lab Panel'}</div>
+                        <div class="chart-lab-detail">${l.ordered_date ? new Date(l.ordered_date).toLocaleDateString() : ''} · ${l.status || 'pending'}</div>
+                    </div>
+                `).join('')}
+                ${healthieLabs.map(l => `
+                    <div class="chart-lab-card">
+                        <div class="chart-lab-name">${l.description || l.name || 'Lab'}</div>
+                        <div class="chart-lab-detail">${l.created_at ? new Date(l.created_at).toLocaleDateString() : ''}</div>
+                    </div>
+                `).join('')}
+                ${labItems.length === 0 && healthieLabs.length === 0 ? '<div class="chart-empty">No labs on file</div>' : ''}
+            </div>
+        </div>
+
+        <!-- Controlled Substances -->
+        ${controlled.length > 0 ? `
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>🔐 Controlled Substances (${controlled.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${controlled.map(c => `
+                    <div class="chart-med-card">
+                        <div class="chart-med-name">${c.medication_name || 'Unknown'}</div>
+                        <div class="chart-med-detail">${c.dose_ml ? `${c.dose_ml}mL` : ''} · Dispensed: ${c.dispensed_date ? new Date(c.dispensed_date).toLocaleDateString() : '—'}</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+        ` : ''}
+
+        <!-- Alerts -->
+        ${alerts.length > 0 ? `
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>⚠️ Alerts (${alerts.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${alerts.map(a => `
+                    <div class="chart-alert-card">
+                        <div class="chart-alert-type">${a.issue_type || a.alert_type || 'Alert'}</div>
+                        <div class="chart-alert-detail">${a.amount_owed ? `$${parseFloat(a.amount_owed).toFixed(2)}` : ''} ${a.days_overdue ? `· ${a.days_overdue}d overdue` : ''}</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+        ` : ''}
+
+        <!-- Recent Visits -->
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>📅 Recent Visits (${visits.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${visits.length > 0 ? visits.slice(0, 10).map(v => `
+                    <div class="chart-visit-card">
+                        <div class="chart-visit-date">${v.visit_date ? new Date(v.visit_date).toLocaleDateString() : v.staged_for_date ? new Date(v.staged_for_date).toLocaleDateString() : '—'}</div>
+                        <div class="chart-visit-detail">${v.vendor || v.visit_type || ''} ${v.patient_name ? `· ${v.patient_name}` : ''}</div>
+                    </div>
+                `).join('') : '<div class="chart-empty">No recent visits</div>'}
+            </div>
+        </div>
+    `;
+}
+
+// HTML for the chart panel (injected into scribe views)
+function getChartPanelHTML() {
+    const patientName = scribePatientName || activeScribeSession?.patient_name || 'Patient';
+    return `
+        <div id="chartPanel" class="chart-panel ${chartPanelOpen ? 'open' : ''}">
+            <div class="chart-panel-header">
+                <div class="chart-panel-title">📋 ${patientName}</div>
+                <button class="chart-panel-close" onclick="toggleChartPanel()">✕</button>
+            </div>
+            <div id="chartPanelContent" class="chart-panel-content">
+                <div class="chart-loading">Tap "📋 Chart" to load patient data</div>
+            </div>
+        </div>
+    `;
+}
+
+// Chart toggle button HTML (used in scribe header rows)
+function getChartToggleBtn() {
+    const pid = scribePatientId || activeScribeSession?.patient_id;
+    if (!pid) return '';
+    return `<button class="chart-toggle-btn" onclick="toggleChartPanel()" title="View patient chart">📋 Chart</button>`;
 }
 
 // ============================================================
