@@ -1,8 +1,8 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: March 4, 2026  
+**Last Updated**: March 5, 2026  
 **Primary AI Assistant**: AntiGravity (Google Deepmind Agentic Coding)  
-**Sprint Period**: December 25, 2025 - March 4, 2026
+**Sprint Period**: December 25, 2025 - March 5, 2026
 
 
 > **Purpose**: This is the MASTER reference document for all AI assistants working on the GMH Dashboard system. When in doubt, refer to this file first. All critical system information, recent changes, and operational procedures are documented here.
@@ -383,7 +383,59 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 4, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 5, 2026)
+
+### March 5, 2026: 🔴 Critical Dispensing Data Integrity Fix
+
+**Problem**: Morning testosterone counts off by 22mL. Transactions page showed "Total Volume" intermittently. Audit revealed **22 active vials with discrepancies** and **89 dispense records with NULL `total_amount`**.
+
+**Root Causes (3 compounding issues):**
+
+| # | Issue | Impact |
+|---|-------|--------|
+| 1 | **Silent scaling guard** (added Mar 4) | `inventoryQueries.ts` silently reduced `totalDispensedMl`/`wasteMl` when they exceeded vial remaining → records stored **less** than actually dispensed → vial showed **more** remaining than reality |
+| 2 | **Split-vial bug** (Snyder incident Mar 3) | Inflated records (60mL from 30mL vial) created cascading discrepancies when deleted and re-entered |
+| 3 | **NULL total_amount** | 89 dispense records had `total_amount = NULL`, causing intermittent display in Transactions table |
+
+**Code Fixes:**
+
+| Fix | File | Change |
+|-----|------|--------|
+| Silent guard → hard error | `lib/inventoryQueries.ts` L810-820 | Throws error instead of silently scaling. Forces split-vial flow. |
+| Dose column display | `app/transactions/TransactionsTable.tsx` L141 | Shows `total_dispensed_ml` (actual dose) instead of `total_amount` |
+| Split-vial budget cap | `app/inventory/TransactionForm.tsx` L399-408 | Already fixed Mar 4 — doseNext from remaining budget, not recalculated |
+
+**Data Corrections (SQL):**
+
+1. Backfilled 89 NULL `total_amount` records: `SET total_amount = dispensed + waste`
+2. Recalculated ALL active vial `remaining_volume_ml` from actual dispense records
+3. Marked depleted vials (remaining ≤ 0) as 'Empty'
+
+> [!CAUTION]
+> **NEVER silently modify dispense values in the backend.** If a dispense exceeds vial remaining, THROW AN ERROR — do not scale down. Silent modifications create inventory discrepancies that compound over time and are extremely hard to debug.
+
+> [!IMPORTANT]  
+> **Vial Integrity Rule**: `remaining_volume_ml` MUST always equal `size_ml - SUM(dispensed + waste)` for all dispenses against that vial. If these diverge, run the audit script: `bash /tmp/audit_vials.sh`
+
+### March 5, 2026: System-Wide Arizona Timezone Fix
+
+**Problem**: Dates displayed in UTC instead of Arizona time. Dispenses done late in the day (Mountain) could appear as the next day. All date formatters across the dashboard used `getUTCMonth()/getUTCDate()`.
+
+**Fix**: Changed all date formatting to use `Intl.DateTimeFormat` with `timeZone: 'America/Phoenix'` (no DST, always UTC-7).
+
+| File | Functions Fixed |
+|------|----------------|
+| `lib/dateUtils.ts` | `formatDateUTC`, `formatDateTimeUTC`, `formatDateLong` (shared utilities) |
+| `app/transactions/TransactionsTable.tsx` | `formatDate` |
+| `app/patients/PatientTable.tsx` | `formatDateInput`, `normalizeDateValue` |
+| `app/components/QuickBooksCard.tsx` | `safeDateFormat` |
+
+> [!CAUTION]
+> **Date Formatting Rule**: ALL dates displayed to users MUST use `America/Phoenix` timezone via `Intl.DateTimeFormat`. NEVER use `getUTCMonth()`/`getUTCDate()`. The clinic is in Arizona — dates must match the wall clock.
+> 
+> For date-only strings (YYYY-MM-DD), parse as noon UTC (`${date}T12:00:00Z`) to avoid day-boundary shift.
+
+---
 
 ### March 4, 2026: RDS Connectivity Fix (psycopg2-binary 2.9.11 → 2.9.10)
 
@@ -480,6 +532,28 @@ pm2 save
 
 > [!NOTE]
 > The JSON file `data/labs-review-queue.json` is kept as a backup. As of March 4, 2026: `fetch_results.py` now syncs new items to PostgreSQL via `_sync_to_db()`. Both `page.tsx` and `app/api/labs/pdf/[id]/route.ts` read from PostgreSQL. The review-queue API (`route.ts` GET/POST) reads from PostgreSQL.
+
+### March 4-5, 2026: Lab Fetch Resilience & Data Source Fix
+
+**Problem 1 — "Item not found" on approval**: After the Feb 26 migration, `page.tsx` and `labs/pdf/[id]/route.ts` still read from the JSON file, while the approval API reads from PostgreSQL. Items created after migration existed only in JSON → API returned 404.
+
+**Fix**: Changed `page.tsx` and `labs/pdf/[id]/route.ts` to read from PostgreSQL. Added `_sync_to_db()` to `fetch_results.py`'s `save_queue()` so new items go to both JSON and DB. Synced 6 missing records.
+
+**Problem 2 — Missing results (Jessica Porter)**: The `fetchInbox` → `flagBatchAsRemoved` cycle is destructive. Once a batch is flagged, late-arriving results in that batch are permanently lost. Porter's results (completed 02/28) were never returned by the API.
+
+**Resilience fix in `fetch_results.py`**:
+
+| Change | Purpose |
+|--------|---------|
+| `_record_processed_accessions()` | Records every accession from the API to `lab_processed_accessions` table for audit trail |
+| `_flag_previous_batch()` | Flags the **previous** run's batch, not the current one (delayed flagging) |
+| `_save_batch_info()` | Saves current batch info to `.last_batch_info.json` for next run |
+| `lab_processed_accessions` table | Audit trail of all accessions ever seen (80 backfilled from existing queue) |
+
+**How delayed flagging works**: Each run flags the batch from the *previous* run (stored in `.last_batch_info.json`), then processes current results and saves batch info for the next run. This gives late-arriving results a 30-minute window to be picked up before their batch is flagged.
+
+> [!IMPORTANT]
+> The existing dedup logic (skip accessions already in queue) prevents double-processing. The delayed flagging is purely additive — no existing flow was changed.
 
 ### February 26, 2026: SQL Injection Fix in DEA MCP Server
 

@@ -45,15 +45,26 @@ function formatDate(value: unknown) {
   } else {
     const str = String(value).trim();
     if (!str) return '—';
+    // If it's a date-only string (YYYY-MM-DD), parse as local to avoid UTC shift
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+      const [y, m, d] = str.split('-').map(Number);
+      return `${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}/${y}`;
+    }
     const candidate = str.replace(' ', 'T');
     const iso = candidate.includes('Z') || candidate.includes('+') ? candidate : `${candidate}Z`;
     date = new Date(iso);
   }
   if (Number.isNaN(date.getTime())) return '—';
-  // Use UTC to avoid server/client timezone hydration mismatch
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  const year = date.getUTCFullYear();
+  // Use Arizona timezone (America/Phoenix — no DST, always UTC-7)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Phoenix',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric'
+  }).formatToParts(date);
+  const month = parts.find(p => p.type === 'month')?.value ?? '01';
+  const day = parts.find(p => p.type === 'day')?.value ?? '01';
+  const year = parts.find(p => p.type === 'year')?.value ?? '2026';
   return `${month}/${day}/${year}`;
 }
 
@@ -138,7 +149,7 @@ export function TransactionsTable({ transactions, canDelete }: Props) {
               <td style={cellStyle}>{tx.transaction_type ?? '—'}</td>
               <td style={cellStyle}>{tx.patient_name ?? '—'}</td>
               <td style={cellStyle}>{formatDate(tx.patient_dob)}</td>
-              <td style={cellStyle}>{formatMlWithUnit(tx.total_amount)}</td>
+              <td style={cellStyle}>{formatMlWithUnit(tx.total_dispensed_ml)}</td>
               <td style={cellStyle}>{tx.syringe_count ?? '—'}</td>
               <td style={cellStyle}>{formatMl(tx.dose_per_syringe_ml)}</td>
               <td style={cellStyle}>{formatMl(tx.waste_ml)}</td>

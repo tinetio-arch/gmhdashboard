@@ -49,11 +49,16 @@ function safeDateFormat(dateInput: string | Date | null | undefined): string {
   if (!dateInput) return '';
   const d = new Date(dateInput);
   if (Number.isNaN(d.getTime())) return '';
-  // Use UTC to prevent hydration mismatch between server (UTC) and client (local)
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  const yyyy = d.getUTCFullYear();
-  // User requested MM-DD-YYYY format
+  // Use Arizona timezone (America/Phoenix — no DST, always UTC-7)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Phoenix',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric'
+  }).formatToParts(d);
+  const mm = parts.find(p => p.type === 'month')?.value ?? '01';
+  const dd = parts.find(p => p.type === 'day')?.value ?? '01';
+  const yyyy = parts.find(p => p.type === 'year')?.value ?? '2026';
   return `${mm}-${dd}-${yyyy}`;
 }
 

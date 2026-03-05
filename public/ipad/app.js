@@ -2343,12 +2343,28 @@ async function loadChartData(patientId) {
     if (!content) return;
     content.innerHTML = '<div class="chart-loading"><div class="spinner"></div> Loading chart…</div>';
 
+    // Hard timeout: if nothing loaded after 12s, render with whatever we got
+    const failsafe = setTimeout(() => {
+        if (content.querySelector('.chart-loading')) {
+            console.warn('Chart load timed out, rendering with empty data');
+            chartPanelData = chartPanelData || {
+                demographics: {}, medications: {}, labs: {}, visits: [], alerts: [],
+                controlled_substances: [], healthie_meds: [], healthie_allergies: [],
+                healthie_chart_notes: [], healthie_documents: [], healthie_vitals: [],
+                healthie_appointments: [], scribe_history: [], avatar_url: null,
+            };
+            renderChartPanel(content);
+        }
+    }, 12000);
+
     try {
         // Fetch both local 360 and Healthie chart data in parallel
         const [localResult, healthieResult] = await Promise.allSettled([
             apiFetch(`/ops/api/patients/${patientId}/360/`),
             apiFetch(`/ops/api/ipad/patient-chart/?patient_id=${patientId}`),
         ]);
+
+        clearTimeout(failsafe);
 
         const local360 = localResult.status === 'fulfilled' && localResult.value?.success ? localResult.value.data : null;
         const healthieChart = healthieResult.status === 'fulfilled' && healthieResult.value?.success ? healthieResult.value.data : null;
@@ -2361,7 +2377,6 @@ async function loadChartData(patientId) {
             visits: local360?.visits || [],
             alerts: local360?.alerts || [],
             controlled_substances: local360?.controlled_substances || [],
-            // Healthie-specific
             healthie_meds: healthieChart?.medications || [],
             healthie_allergies: healthieChart?.allergies || [],
             healthie_chart_notes: healthieChart?.chart_notes || [],
@@ -2373,8 +2388,16 @@ async function loadChartData(patientId) {
         };
         renderChartPanel(content);
     } catch (e) {
+        clearTimeout(failsafe);
         if (e.message === 'AUTH_EXPIRED') throw e;
-        content.innerHTML = '<div class="chart-loading">Error loading chart</div>';
+        // Still render the panel with empty data rather than showing an error
+        chartPanelData = chartPanelData || {
+            demographics: {}, medications: {}, labs: {}, visits: [], alerts: [],
+            controlled_substances: [], healthie_meds: [], healthie_allergies: [],
+            healthie_chart_notes: [], healthie_documents: [], healthie_vitals: [],
+            healthie_appointments: [], scribe_history: [], avatar_url: null,
+        };
+        renderChartPanel(content);
     }
 }
 

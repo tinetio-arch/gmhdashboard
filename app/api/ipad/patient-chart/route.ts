@@ -204,10 +204,17 @@ export async function GET(request: NextRequest) {
     }
 }
 
-// Safe wrapper to avoid one Healthie query failing the whole request
+// Safe wrapper with 10s timeout to avoid one Healthie query blocking the whole chart
 async function safeHealthieQuery<T>(label: string, gql: string, variables: Record<string, unknown>): Promise<T | null> {
     try {
-        return await healthieGraphQL<T>(gql, variables);
+        const result = await Promise.race([
+            healthieGraphQL<T>(gql, variables),
+            new Promise<null>((resolve) => setTimeout(() => {
+                console.warn(`[iPad:PatientChart] ${label} timed out after 10s`);
+                resolve(null);
+            }, 10000)),
+        ]);
+        return result;
     } catch (error) {
         console.warn(`[iPad:PatientChart] ${label} Healthie query failed:`, error instanceof Error ? error.message : error);
         return null;

@@ -417,9 +417,16 @@ function formatDateInput(value: unknown): string {
   if (!source) return '';
   const date = parseDate(source);
   if (!date) return source;
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  const year = date.getUTCFullYear();
+  // Use Arizona timezone (America/Phoenix — no DST, always UTC-7)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Phoenix',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric'
+  }).formatToParts(date);
+  const month = parts.find(p => p.type === 'month')?.value ?? '01';
+  const day = parts.find(p => p.type === 'day')?.value ?? '01';
+  const year = parts.find(p => p.type === 'year')?.value ?? '2026';
   return `${month}-${day}-${year}`;
 }
 
@@ -475,9 +482,16 @@ function parseDate(value: unknown): Date | null {
 function normalizeDateValue(value: unknown): string | null {
   const parsed = parseDate(value);
   if (!parsed) return null;
-  const year = parsed.getUTCFullYear();
-  const month = String(parsed.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(parsed.getUTCDate()).padStart(2, '0');
+  // Use Arizona timezone for normalization to YYYY-MM-DD
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Phoenix',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(parsed);
+  const year = parts.find(p => p.type === 'year')?.value ?? '2026';
+  const month = parts.find(p => p.type === 'month')?.value ?? '01';
+  const day = parts.find(p => p.type === 'day')?.value ?? '01';
   return `${year}-${month}-${day}`;
 }
 

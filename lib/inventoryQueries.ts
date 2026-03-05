@@ -807,16 +807,14 @@ export async function createDispense(input: NewDispenseInput): Promise<CreateDis
       wasteMl = 0;
     }
 
-    // Guard: cap total deduction to vial's actual remaining volume to prevent
-    // impossible records (e.g., 60 mL deducted from a 30 mL vial).
+    // Guard: reject if deduction exceeds vial's remaining volume.
+    // Previously this silently scaled values down, which caused dispense records
+    // to under-report actual amounts — creating inventory count discrepancies.
     const requestedDeduction = totalDispensedMl + wasteMl;
     if (requestedDeduction > currentRemaining + 0.01) {
-      const ratio = currentRemaining / requestedDeduction;
-      totalDispensedMl = Number((totalDispensedMl * ratio).toFixed(3));
-      wasteMl = Number((wasteMl * ratio).toFixed(3));
-      console.warn(
-        `[createDispense] Capped deduction from ${requestedDeduction.toFixed(3)} to ${currentRemaining.toFixed(3)} mL ` +
-        `for vial "${input.vialExternalId}" (ratio=${ratio.toFixed(4)})`
+      throw new Error(
+        `Cannot dispense ${requestedDeduction.toFixed(3)} mL from vial "${input.vialExternalId}" — ` +
+        `only ${currentRemaining.toFixed(3)} mL remaining. Use the split-vial flow to finish this vial and continue with another.`
       );
     }
 
