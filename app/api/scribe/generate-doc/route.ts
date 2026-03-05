@@ -26,9 +26,9 @@ To Whom It May Concern,
 
 This letter confirms that ${ctx.patientName} was evaluated at our clinic today for a medical condition.
 
-Based on my clinical assessment, the patient requires time off from work for medical reasons.
+Based on my clinical assessment, the patient requires ${ctx.numDays ? `${ctx.numDays} days` : 'time'} off from work for medical reasons.
 
-The patient may return to work on [calculate return date based on clinical context].
+The patient may return to work on ${ctx.numDays ? `[calculate exact date: ${ctx.numDays} days from ${ctx.visitDate}]` : '[calculate return date based on clinical context]'}.
 
 If you have questions regarding this medical excuse, please contact our office.
 
@@ -61,9 +61,9 @@ To Whom It May Concern,
 
 This letter confirms that ${ctx.patientName} was evaluated at our medical office today.
 
-Based on my clinical assessment, the student requires time off from school for medical reasons.
+Based on my clinical assessment, the student requires ${ctx.numDays ? `${ctx.numDays} days` : 'time'} off from school for medical reasons.
 
-The student may return to school on [calculate return date] without restrictions.
+The student may return to school on ${ctx.numDays ? `[calculate exact date: ${ctx.numDays} days from ${ctx.visitDate}]` : '[calculate return date]'} without restrictions.
 
 Please contact our office if you require any additional documentation.
 
@@ -160,6 +160,7 @@ interface DocContext {
     visitType: string;
     providerName: string;
     soapContext: string;
+    numDays?: number;
 }
 
 // POST: Generate a supplementary document from a scribe session
@@ -172,7 +173,7 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-        const { session_id, doc_type } = await request.json();
+        const { session_id, doc_type, num_days } = await request.json();
 
         if (!session_id || !doc_type) {
             return NextResponse.json(
@@ -222,6 +223,7 @@ export async function POST(request: NextRequest) {
             visitType: session.visit_type || 'Follow-up',
             providerName: 'Provider',
             soapContext,
+            numDays: num_days ? parseInt(num_days, 10) : undefined,
         };
 
         // Generate via Gemini

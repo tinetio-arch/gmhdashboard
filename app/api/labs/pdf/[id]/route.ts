@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
+import { query } from '@/lib/db';
 
 /**
  * GET /api/labs/pdf/[id] - Serve a lab PDF for viewing
@@ -19,20 +20,13 @@ export async function GET(
 
     const { id } = params;
     const fs = await import('fs');
-    const path = await import('path');
 
-    // Load queue to find the item
-    const QUEUE_FILE = '/home/ec2-user/gmhdashboard/data/labs-review-queue.json';
-
-    let queue: any[] = [];
-    try {
-        const data = await fs.promises.readFile(QUEUE_FILE, 'utf-8');
-        queue = JSON.parse(data);
-    } catch {
-        return NextResponse.json({ error: 'Queue not found' }, { status: 404 });
-    }
-
-    const item = queue.find(i => i.id === id);
+    // Load queue item from database
+    const rows = await query<any>(
+        `SELECT * FROM lab_review_queue WHERE id = $1 LIMIT 1`,
+        [id]
+    );
+    const item = rows[0];
     if (!item) {
         return NextResponse.json({ error: 'Item not found' }, { status: 404 });
     }

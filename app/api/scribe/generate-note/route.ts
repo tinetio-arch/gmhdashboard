@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
-import {
-    BedrockRuntimeClient, InvokeModelCommand,
-} from '@aws-sdk/client-bedrock-runtime';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120; // Claude generation can take time
+export const maxDuration = 120; // Gemini generation can take time
+
+const GEMINI_API_KEY = process.env.GOOGLE_AI_API_KEY || '';
+const GEMINI_MODEL = 'gemini-2.0-flash';
 
 // ==================== SOAP PROMPT BUILDER ====================
 // Uses the EXACT same template as the Python scribe (prompts_config.yaml → standard_soap)
@@ -164,7 +164,7 @@ export async function POST(request: NextRequest) {
         throw error;
     }
 
-    const { session_id, patient_id, visit_type, patient_name } = await request.json();
+    const { session_id, patient_id, visit_type, patient_name, regenerate } = await request.json();
 
     if (!session_id) {
         return NextResponse.json({ success: false, error: 'session_id is required' }, { status: 400 });
@@ -174,16 +174,21 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-        // 0. Check for existing note (prevent duplicates)
+        // 0. Check for existing note (prevent duplicates unless regenerating)
         const [existingNote] = await query<any>(
             'SELECT note_id FROM scribe_notes WHERE session_id = $1',
             [session_id]
         );
-        if (existingNote) {
+        if (existingNote && !regenerate) {
             return NextResponse.json({
                 success: false,
                 error: `Note already exists for this session (note_id: ${existingNote.note_id}). Use PATCH to update.`,
             }, { status: 409 });
+        }
+        if (existingNote && regenerate) {
+            await query('DELETE FROM scribe_notes WHERE note_id = $1', [existingNote.note_id]);
+            await query("UPDATE scribe_sessions SET status = 'transcribed' WHERE session_id = $1", [session_id]);
+            console.log(`[Scribe:GenerateNote] Deleted old note ${existingNote.note_id} for regeneration`);
         }
 
         // 1. Fetch session transcript
@@ -198,10 +203,14 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // 2. Fetch patient context — try patient_id first, then healthie_client_id
-        let patient = (await query<any>(
-            'SELECT * FROM patients WHERE patient_id = $1', [patient_id]
-        ))[0];
+        // 2. Fetch patient context — validate UUID before querying uuid column
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patient_id);
+        let patient: any = null;
+        if (isUuid) {
+            patient = (await query<any>(
+                'SELECT * FROM patients WHERE patient_id = $1::uuid', [patient_id]
+            ))[0];
+        }
 
         if (!patient) {
             // Try by healthie_client_id
@@ -261,26 +270,33 @@ export async function POST(request: NextRequest) {
             visit_type: visit_type || session.visit_type,
         });
 
-        // 4. Call Claude via Bedrock
-        const bedrockRegion = process.env.AWS_BEDROCK_REGION ?? process.env.AWS_REGION ?? 'us-east-2';
-        const modelId = process.env.SCRIBE_MODEL_ID ?? 'anthropic.claude-3-5-sonnet-20241022-v2:0';
+        // 4. Call Gemini Flash
+        const modelId = GEMINI_MODEL;
+        if (!GEMINI_API_KEY) {
+            return NextResponse.json({ success: false, error: 'GOOGLE_AI_API_KEY not configured' }, { status: 500 });
+        }
 
-        const bedrock = new BedrockRuntimeClient({ region: bedrockRegion });
-        const response = await bedrock.send(new InvokeModelCommand({
-            modelId,
-            contentType: 'application/json',
-            accept: 'application/json',
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${GEMINI_API_KEY}`;
+        const geminiResponse = await fetch(geminiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                anthropic_version: 'bedrock-2023-05-31',
-                max_tokens: 4096,
-                messages: [
-                    { role: 'user', content: prompt },
-                ],
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    maxOutputTokens: 8192,
+                    temperature: 0.3,
+                },
             }),
-        }));
+        });
 
-        const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-        const aiText = responseBody.content?.[0]?.text || '';
+        if (!geminiResponse.ok) {
+            const errText = await geminiResponse.text();
+            console.error('[Scribe:GenerateNote] Gemini error:', geminiResponse.status, errText);
+            return NextResponse.json({ success: false, error: `Gemini API error: ${geminiResponse.status}` }, { status: 500 });
+        }
+
+        const geminiResult = await geminiResponse.json();
+        const aiText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
         // 5. Parse SOAP sections from text output (matching Python scribe's parse_soap_sections)
         // The prompt outputs section headers like SUBJECTIVE, OBJECTIVE, ASSESSMENT, PLAN

@@ -286,22 +286,34 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
                                 </div>
 
                                 {fax.pdf_s3_key && (
-                                    <a
-                                        href={`/ops/api/faxes/pdf/${fax.id}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
+                                    <button
+                                        onClick={async (e) => {
+                                            e.preventDefault();
+                                            try {
+                                                const res = await fetch(`/ops/api/faxes/pdf/${fax.id}`);
+                                                const data = await res.json();
+                                                if (data.url) {
+                                                    window.open(data.url, '_blank');
+                                                } else {
+                                                    alert(data.error || 'Failed to load PDF');
+                                                }
+                                            } catch (err) {
+                                                alert('Failed to load PDF');
+                                            }
+                                        }}
                                         style={{
                                             padding: '0.5rem 1rem',
                                             backgroundColor: '#3b82f6',
                                             color: '#fff',
                                             borderRadius: '0.5rem',
-                                            textDecoration: 'none',
+                                            border: 'none',
+                                            cursor: 'pointer',
                                             fontSize: '0.9rem',
                                             fontWeight: 600,
                                         }}
                                     >
                                         📄 View PDF
-                                    </a>
+                                    </button>
                                 )}
                             </div>
 

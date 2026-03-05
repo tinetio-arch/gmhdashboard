@@ -6,6 +6,7 @@ Extracts PDF attachments, summarizes with AI, posts to Google Chat
 
 import os
 import sys
+from urllib.parse import unquote
 import json
 import time
 import email
@@ -460,8 +461,11 @@ Date: {email_data['date']}
         # Insert into database for dashboard review
         pdf_s3_key = None
         if attachment_url:
-            # Extract S3 key from presigned URL
-            pdf_s3_key = attachment_url.split('?')[0].split('.com/')[-1] if attachment_url else None
+            # Extract S3 key from presigned URL and decode URL-encoded characters
+            # Without unquote(), parentheses like (855) get stored as %28855%29,
+            # causing double-encoding when the dashboard generates a new presigned URL
+            raw_key = attachment_url.split('?')[0].split('.com/')[-1]
+            pdf_s3_key = unquote(raw_key) if raw_key else None
         
         self.insert_into_fax_queue(
             s3_key=s3_key,

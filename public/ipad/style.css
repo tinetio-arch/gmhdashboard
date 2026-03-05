@@ -2683,6 +2683,13 @@ h6 {
     align-items: center;
     gap: 12px;
     margin-bottom: 24px;
+    width: 100%;
+    overflow: hidden;
+}
+
+.scribe-header-row h1 {
+    flex: 1;
+    min-width: 0;
 }
 
 .scribe-back-btn {
@@ -3410,8 +3417,8 @@ h6 {
 .chart-panel {
     position: fixed;
     top: 0;
-    right: -400px;
-    width: 380px;
+    right: -500px;
+    width: 480px;
     height: 100vh;
     background: #111827;
     border-left: 1px solid rgba(0, 212, 255, 0.15);
@@ -3467,6 +3474,42 @@ h6 {
     flex: 1;
     overflow-y: auto;
     padding: 12px 0;
+}
+
+/* Chart Tab Navigation */
+.chart-tab-nav {
+    display: flex;
+    gap: 2px;
+    padding: 0 12px;
+    margin-bottom: 8px;
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 8px;
+    margin: 0 8px 8px;
+}
+
+.chart-tab-btn {
+    flex: 1;
+    padding: 8px 4px;
+    border: none;
+    background: transparent;
+    color: #8899aa;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.chart-tab-btn.active {
+    background: var(--cyan, #00d4ff);
+    color: #0a0e14;
+    font-weight: 600;
+}
+
+.chart-tab-btn:not(.active):hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: #aabbcc;
 }
 
 .chart-loading {
@@ -3654,6 +3697,7 @@ h6 {
     font-size: 12px;
     font-style: italic;
 }
+
 .modal-large {
     max-width: 520px;
     width: 90%;

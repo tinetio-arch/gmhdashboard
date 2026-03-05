@@ -41,19 +41,22 @@ export async function POST(request: NextRequest) {
         }
 
         // Resolve patient from local DB
+        // Check if patientId is a UUID before querying the uuid column
         let patient: any = null;
-        const [byId] = await query<any>(
-            'SELECT patient_id, full_name FROM patients WHERE patient_id = $1',
-            [patientId]
-        );
-        if (byId) {
-            patient = byId;
-        } else {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientId);
+        if (isUuid) {
+            const [byId] = await query<any>(
+                'SELECT patient_id, full_name FROM patients WHERE patient_id = $1::uuid',
+                [patientId]
+            );
+            if (byId) patient = byId;
+        }
+        if (!patient) {
             const [byHealthie] = await query<any>(
                 'SELECT patient_id, full_name FROM patients WHERE healthie_client_id = $1',
                 [patientId]
             );
-            patient = byHealthie;
+            if (byHealthie) patient = byHealthie;
         }
         const resolvedPatientId = patient?.patient_id || patientId;
         const resolvedPatientName = patient?.full_name || patientName || 'Unknown Patient';

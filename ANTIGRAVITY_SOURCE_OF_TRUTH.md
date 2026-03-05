@@ -331,7 +331,7 @@ pm2 reset <service>     # Reset restart counter after fixing
 # Start a service (CORRECT way)
 pm2 start /home/ec2-user/ecosystem.config.js --only <service-name>
 
-# Restart after code changes
+# Restart after code changes (SAFE - preserves env vars if started from ecosystem)
 pm2 restart <service-name>
 
 # Check status
@@ -344,9 +344,74 @@ pm2 logs <service-name> --lines 50
 pm2 save
 ```
 
+> [!WARNING]
+> **AFTER PM2 UPDATES / `pm2 update` / SYSTEM REBOOT — USE THIS PROCEDURE:**
+>
+> PM2 updates can lose process env vars (like PORT). If services restart without their PORT env var, Next.js defaults to **port 3000**, causing 502 errors and EADDRINUSE cascading failures.
+>
+> **Correct restart procedure:**
+> ```bash
+> # 1. Stop all services
+> pm2 stop all
+>
+> # 2. Delete all processes (clears stale state)
+> pm2 delete all
+>
+> # 3. Start ALL services from ecosystem config (restores PORT env vars)
+> pm2 start /home/ec2-user/ecosystem.config.js
+>
+> # 4. Wait 10 seconds, verify all online
+> sleep 10 && pm2 list
+>
+> # 5. Save the process list
+> pm2 save
+> ```
+>
+> **If a single service is down:**
+> ```bash
+> pm2 delete <service-name>
+> pm2 start /home/ec2-user/ecosystem.config.js --only <service-name>
+> pm2 save
+> ```
+>
+> **NEVER** use `pm2 start npm -- start` directly — it won't have PORT or NODE_ENV set.
+
+> [!CAUTION]
+> **Port Conflict Incidents:**
+> - **Jan 28, 2026**: `nowprimary-website` and `nowmenshealth-website` reached **34,000+ restarts** — ad-hoc start without restart limits, port conflicts caused infinite CPU meltdown.
+> - **Mar 4, 2026**: After PM2 update, `gmh-dashboard` lost PORT=3011 env var → started on 3000 → **502 Bad Gateway**. `nowoptimal-website` also tried 3000 → EADDRINUSE. `jessica-mcp` failed because `psycopg2` wasn't installed for python3.11. **Fix**: delete ad-hoc processes, restart from ecosystem config.
+
 ---
 
 ## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 4, 2026)
+
+### March 4, 2026: RDS Connectivity Fix (psycopg2-binary 2.9.11 → 2.9.10)
+
+**Problem**: All Python scripts using psycopg2 could not connect to RDS. Connections hung indefinitely during TLS handshake. `psql`, `openssl s_client`, and pg8000 (pure Python) all worked fine.
+
+**Root Cause**: psycopg2-binary **2.9.11** bundles its own `libssl-81ffa89e.so.3` which is **incompatible** with this RDS instance's TLS configuration (PostgreSQL 17.6 on aarch64). The bundled libssl hangs during the TLS handshake after the server agrees to SSL.
+
+**Fix**: Downgraded to psycopg2-binary **2.9.10** which bundles a compatible libssl.
+
+> [!CAUTION]
+> **DO NOT upgrade psycopg2-binary to 2.9.11** — it will break ALL Python DB connections. Pin to `psycopg2-binary==2.9.10`. Also installed `pg8000` as a backup pure-Python driver.
+
+### March 4, 2026: Lab Patient Matching — 3-Tier Pipeline
+
+**Problem**: All 14 pending labs had **0% match confidence** (no Healthie ID linked). Patient matching depended entirely on Snowflake via `ScribeOrchestrator.get_patient_candidate_list()`. When Snowflake is unavailable, matching silently returns 0%.
+
+**Fix**: Replaced single-tier Snowflake matching in `fetch_results.py` with 3-tier strategy:
+
+| Tier | Source | Speed | Reliability |
+|------|--------|-------|-------------|
+| 1 | **Postgres `patients` table** | Fast (local) | Always available |
+| 2 | **Healthie API direct search** | Medium (HTTP) | High |
+| 3 | **Snowflake `PATIENT_360_VIEW`** | Slow | Fragile |
+
+**Also added**:
+- **Name normalization**: `BADILLA` → `Badilla`, `DOE, JOHN` → `John Doe`
+- **DOB normalization**: Handles `MM/DD/YYYY`, `YYYY-MM-DD`, etc.
+- **Zero-results alerting**: Telegram alert if no new labs for 48+ hours (state file: `/home/ec2-user/data/last-lab-results-seen.json`)
 
 ### March 4, 2026: Split-Vial Dispense Bug Fix (+20mL Inflation)
 
@@ -414,7 +479,7 @@ pm2 save
 **Import Results**: 73/73 records (55 approved, 16 pending_review, 2 rejected), 0 errors.
 
 > [!NOTE]
-> The JSON file `data/labs-review-queue.json` still exists as a backup. The `fetch_results.py` cron job may still write to it — that script should be updated separately to write to the database directly.
+> The JSON file `data/labs-review-queue.json` is kept as a backup. As of March 4, 2026: `fetch_results.py` now syncs new items to PostgreSQL via `_sync_to_db()`. Both `page.tsx` and `app/api/labs/pdf/[id]/route.ts` read from PostgreSQL. The review-queue API (`route.ts` GET/POST) reads from PostgreSQL.
 
 ### February 26, 2026: SQL Injection Fix in DEA MCP Server
 
@@ -831,6 +896,17 @@ const s3Client = new S3Client({ region: 'us-east-2' }); // Clinical bucket is in
 ```
 
 ---
+
+### March 4, 2026: Fax PDF Viewing Fix — Double-Encoding Bug
+
+**Problem**: Clicking "View PDF" for faxes with special characters in filenames (e.g., `(855)_916-1953`) produced S3 `NoSuchKey` error. Parentheses were double-encoded: `(` → `%28` → `%2528`.
+
+**Root Cause**: `NextResponse.redirect(presignedUrl)` in `app/api/faxes/pdf/[id]/route.ts` double-encoded special characters in the presigned URL path.
+
+**Fix Applied** (3 files):
+1. **`app/api/faxes/pdf/[id]/route.ts`**: Changed from `NextResponse.redirect(presignedUrl)` to `NextResponse.json({ url: presignedUrl })` — returns JSON instead of redirect
+2. **`app/faxes/FaxesDashboardClient.tsx`**: Changed `<a href>` to `<button onClick>` that fetches the JSON URL and opens it via `window.open()`
+3. **`scripts/email-triage/fax_s3_processor.py`**: Added `urllib.parse.unquote()` when extracting S3 key from presigned URL before storing in DB (preventive fix for future faxes)
 
 ### January 27, 2026: Peptide Inventory System (COMPLETE)
 
@@ -2419,12 +2495,20 @@ HEALTHIE_WEIGHT_LOSS_GROUP_ID=TBD
 6. **Provider Review**: Dashboard at `/ops/labs` shows pending labs
 7. **Approve**: PDF uploaded to Healthie (initially hidden), then made visible on approval
 
-**Patient Matching Logic**:
-1. Parse Access Labs name format (`PAINTER, BRET` → `Bret Painter`)
-2. Query Snowflake `PATIENT_360_VIEW` for fuzzy match (rapidfuzz, token_sort_ratio)
-3. If score ≥80%, accept match
-4. If score <80%, fall back to direct Healthie API search (`users(keywords: "...")`)
-5. Exact match in Healthie required, else flag for manual review
+**Patient Matching Logic** (Updated March 4, 2026 — 3-Tier Pipeline):
+1. **Tier 1 (Postgres)**: Query local `patients` table for all patients with `healthie_client_id`, fuzzy match using `thefuzz` (token_sort_ratio ≥85%)
+2. **Tier 2 (Healthie API)**: Direct search via `users(keywords: "...")` GraphQL query, filter active patients, DOB confirmation
+3. **Tier 3 (Snowflake)**: Query `PATIENT_360_VIEW` as bonus/fallback if both above fail
+- **Name normalization**: `_normalize_name()` converts `BADILLA` → `Badilla`, `DOE, JOHN` → `John Doe`
+- **DOB normalization**: `_normalize_dob()` handles `MM/DD/YYYY`, `YYYY-MM-DD`, etc.
+
+> [!IMPORTANT]
+> **Previously** matching was Snowflake-only. If Snowflake was down, ALL matching silently returned 0%. The new Tier 1 (Postgres) is always available.
+
+**Zero-Results Alerting** (Added March 4, 2026):
+- State file: `/home/ec2-user/data/last-lab-results-seen.json`
+- Sends Telegram alert if no new lab results for **48+ hours**
+- Only fires once per drought period (resets when new results arrive)
 
 **Key Fields from Snowflake** (`GMH_CLINIC.PATIENT_DATA.PATIENT_360_VIEW`):
 - `HEALTHIE_CLIENT_ID` → used as `healthie_id`

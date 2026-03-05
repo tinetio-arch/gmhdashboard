@@ -45,8 +45,10 @@ export async function GET(
 
         const presignedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 
-        // Redirect to presigned URL
-        return NextResponse.redirect(presignedUrl);
+        // Return URL as JSON instead of redirecting
+        // NextResponse.redirect() double-encodes special characters in S3 URLs
+        // (e.g., parentheses become %2528), causing NoSuchKey errors
+        return NextResponse.json({ url: presignedUrl });
     } catch (error) {
         console.error('Failed to generate presigned URL:', error);
         return NextResponse.json({ error: 'Failed to access PDF' }, { status: 500 });

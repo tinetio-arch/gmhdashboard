@@ -3,6 +3,7 @@ import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
 import { sendMessage } from '@/lib/telegram-client';
+import { generateSoapPdf } from '@/lib/pdf/soapPdfGenerator';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -172,6 +173,173 @@ export async function POST(request: NextRequest) {
             console.warn('[Scribe:Submit] Note locking failed:', lockErr instanceof Error ? lockErr.message : lockErr);
             // Non-fatal
         }
+
+        // 5.5. Generate PDF and upload to Healthie as a document
+        let pdfDocumentId: string | null = null;
+        try {
+            const visitDate = new Date(note.created_at || Date.now()).toLocaleDateString('en-US', {
+                year: 'numeric', month: 'long', day: 'numeric'
+            });
+            const pdfBuffer = await generateSoapPdf({
+                patientName: patient.full_name || 'Unknown',
+                patientDob: patient.dob ? new Date(patient.dob).toLocaleDateString() : null,
+                visitDate,
+                visitType: note.visit_type || 'follow_up',
+                provider: 'Phil Schafer, NP',
+                subjective: note.soap_subjective || '',
+                objective: note.soap_objective || '',
+                assessment: note.soap_assessment || '',
+                plan: note.soap_plan || '',
+                icd10Codes: note.icd10_codes ? (typeof note.icd10_codes === 'string' ? JSON.parse(note.icd10_codes) : note.icd10_codes) : [],
+                cptCodes: note.cpt_codes ? (typeof note.cpt_codes === 'string' ? JSON.parse(note.cpt_codes) : note.cpt_codes) : [],
+            });
+
+            const base64Content = pdfBuffer.toString('base64');
+            const dataUrl = `data:application/pdf;base64,${base64Content}`;
+            const pdfFilename = `SOAP_${(patient.full_name || 'patient').replace(/\s+/g, '_')}_${visitDate.replace(/\s+/g, '_')}.pdf`;
+
+            const docResult = await healthieGraphQL(`
+                mutation CreateDocument($input: createDocumentInput!) {
+                    createDocument(input: $input) {
+                        document { id display_name }
+                        messages { field message }
+                    }
+                }
+            `, {
+                input: {
+                    rel_user_id: String(patient.healthie_client_id || healthiePatientId),
+                    display_name: pdfFilename,
+                    file_string: dataUrl,
+                    include_in_charting: true,
+                    description: `SOAP Note - ${note.visit_type || 'Visit'} - ${visitDate}`,
+                }
+            });
+
+            pdfDocumentId = docResult?.createDocument?.document?.id || null;
+            if (pdfDocumentId) {
+                console.log(`[Scribe:Submit] PDF uploaded to Healthie: ${pdfDocumentId}`);
+            }
+        } catch (pdfErr) {
+            console.warn('[Scribe:Submit] PDF upload to Healthie failed (non-fatal):', pdfErr instanceof Error ? pdfErr.message : pdfErr);
+        }
+
+        // 5.6. Write allergies to Healthie (from SOAP data)
+        let allergiesCreated = 0;
+        try {
+            // Parse allergies from subjective text (look for "Allergies:" or "Allerg" patterns)
+            const subjectiveText = note.soap_subjective || '';
+            const allergyMatch = subjectiveText.match(/(?:Allergies|Known Allergies|Drug Allergies|Medication Allergies)[:\s]*([\s\S]*?)(?:\n\n|\n[A-Z]|$)/i);
+            if (allergyMatch) {
+                const allergyText = allergyMatch[1].trim();
+                // Split by bullets, commas, or newlines
+                const allergyItems = allergyText
+                    .split(/[•\n,]/)
+                    .map((a: string) => a.replace(/^[-*]\s*/, '').trim())
+                    .filter((a: string) => a.length > 2 && !a.match(/^(none|no known|nkda|nka|denied|denies)/i));
+
+                for (const allergyName of allergyItems) {
+                    try {
+                        await healthieGraphQL(`
+                            mutation CreateAllergySensitivity($input: createAllergySensitivityInput!) {
+                                createAllergySensitivity(input: $input) {
+                                    allergy_sensitivity { id name }
+                                    messages { field message }
+                                }
+                            }
+                        `, {
+                            input: {
+                                user_id: String(healthiePatientId),
+                                name: allergyName,
+                            }
+                        });
+                        allergiesCreated++;
+                    } catch (allergyErr) {
+                        console.warn(`[Scribe:Submit] Allergy "${allergyName}" creation failed:`, allergyErr instanceof Error ? allergyErr.message : allergyErr);
+                    }
+                }
+            }
+            if (allergiesCreated > 0) {
+                console.log(`[Scribe:Submit] Created ${allergiesCreated} allergies in Healthie`);
+            }
+        } catch (allergiesErr) {
+            console.warn('[Scribe:Submit] Allergy write-back failed (non-fatal):', allergiesErr instanceof Error ? allergiesErr.message : allergiesErr);
+        }
+
+        // 5.7. Write vitals to Healthie (from Objective section)
+        let vitalsCreated = 0;
+        try {
+            const objectiveText = note.soap_objective || '';
+            const vitalPatterns: { type: string; regex: RegExp }[] = [
+                { type: 'Blood Pressure - Systolic', regex: /(?:BP|Blood Pressure)[:\s]*(\d{2,3})\s*\/\s*(\d{2,3})/i },
+                { type: 'Heart Rate', regex: /(?:HR|Heart Rate|Pulse)[:\s]*(\d{2,3})\s*(?:bpm|beats)?/i },
+                { type: 'Temperature', regex: /(?:Temp|Temperature)[:\s]*(\d{2,3}(?:\.\d)?)\s*°?[FC]?/i },
+                { type: 'Oxygen Saturation', regex: /(?:SpO2|O2 Sat|Oxygen Saturation)[:\s]*(\d{2,3})\s*%?/i },
+                { type: 'Respiration Rate', regex: /(?:RR|Resp|Respiration Rate|Respiratory Rate)[:\s]*(\d{1,2})\s*(?:breaths)?/i },
+                { type: 'Weight', regex: /(?:Weight|Wt)[:\s]*(\d{2,4}(?:\.\d)?)\s*(?:lbs?|kg|pounds)?/i },
+            ];
+
+            for (const { type, regex } of vitalPatterns) {
+                const match = objectiveText.match(regex);
+                if (match) {
+                    const value = parseFloat(match[1]);
+                    if (!isNaN(value)) {
+                        try {
+                            await healthieGraphQL(`
+                                mutation CreateEntry($input: createEntryInput!) {
+                                    createEntry(input: $input) {
+                                        entry { id }
+                                        messages { field message }
+                                    }
+                                }
+                            `, {
+                                input: {
+                                    user_id: String(healthiePatientId),
+                                    type: type,
+                                    metric_stat: value,
+                                    category: 'Vital',
+                                    created_at: new Date().toISOString(),
+                                }
+                            });
+                            vitalsCreated++;
+
+                            // Also sync diastolic for BP
+                            if (type === 'Blood Pressure - Systolic' && match[2]) {
+                                const diastolic = parseFloat(match[2]);
+                                if (!isNaN(diastolic)) {
+                                    await healthieGraphQL(`
+                                        mutation CreateEntry($input: createEntryInput!) {
+                                            createEntry(input: $input) {
+                                                entry { id }
+                                                messages { field message }
+                                            }
+                                        }
+                                    `, {
+                                        input: {
+                                            user_id: String(healthiePatientId),
+                                            type: 'Blood Pressure - Diastolic',
+                                            metric_stat: diastolic,
+                                            category: 'Vital',
+                                            created_at: new Date().toISOString(),
+                                        }
+                                    });
+                                    vitalsCreated++;
+                                }
+                            }
+                        } catch (vitalErr) {
+                            console.warn(`[Scribe:Submit] Vital "${type}" creation failed:`, vitalErr instanceof Error ? vitalErr.message : vitalErr);
+                        }
+                    }
+                }
+            }
+            if (vitalsCreated > 0) {
+                console.log(`[Scribe:Submit] Created ${vitalsCreated} vital entries in Healthie`);
+            }
+        } catch (vitalsErr) {
+            console.warn('[Scribe:Submit] Vitals write-back failed (non-fatal):', vitalsErr instanceof Error ? vitalsErr.message : vitalsErr);
+        }
+
+        // Note: ICD-10 codes are already embedded in the Assessment section of the SOAP form answer,
+        // which is how Healthie stores diagnoses in chart notes.
 
         // 6. Update local records
         await query(`

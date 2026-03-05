@@ -14,18 +14,17 @@ import { getPool } from '@/lib/db';
 
 // Load lab queue data
 async function loadLabData() {
-    const fs = await import('fs');
-
-    const reviewQueueFile = '/home/ec2-user/gmhdashboard/data/labs-review-queue.json';
 
     let reviewQueue: any[] = [];
     let ordersQueue: any[] = [];
 
-    // Load Review Queue from File (Legacy/Current implementation)
+    // Load Review Queue from PostgreSQL database
     try {
-        const reviewData = await fs.promises.readFile(reviewQueueFile, 'utf-8');
-        reviewQueue = JSON.parse(reviewData);
-    } catch {
+        const pool = getPool();
+        const reviewRes = await pool.query(`SELECT * FROM lab_review_queue ORDER BY created_at DESC`);
+        reviewQueue = reviewRes.rows;
+    } catch (e) {
+        console.error("Failed to load review queue from DB:", e);
         reviewQueue = [];
     }
 
