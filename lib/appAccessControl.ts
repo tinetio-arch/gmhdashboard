@@ -41,6 +41,8 @@ export interface PatientAccessSummary {
   last_reason: string | null;
   last_reason_category: ReasonCategory | null;
   status_key: string | null;
+  active_tags: string[] | null;
+  first_app_login: string | null;
 }
 
 export interface AccessControlStats {
@@ -311,7 +313,9 @@ export async function getAllPatientAccessSummaries(): Promise<PatientAccessSumma
          WHEN p.status_key = 'inactive' AND latest.reason_category IS NULL THEN 'administrative'
          ELSE latest.reason_category
        END AS last_reason_category,
-       p.status_key
+       p.status_key,
+       tags.active_tags,
+       p.first_app_login
      FROM patients p
      LEFT JOIN LATERAL (
        SELECT hc2.healthie_client_id
@@ -327,12 +331,17 @@ export async function getAllPatientAccessSummaries(): Promise<PatientAccessSumma
        ORDER BY aac.effective_at DESC
        LIMIT 1
      ) latest ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT COALESCE(array_agg(pst.tag) FILTER (WHERE pst.tag IS NOT NULL), ARRAY[]::TEXT[]) AS active_tags
+       FROM patient_service_tags pst
+       WHERE pst.patient_id = p.patient_id
+     ) tags ON TRUE
      LEFT JOIN users u ON u.user_id = latest.changed_by
      ORDER BY 
        CASE 
-         WHEN p.status_key = 'inactive' THEN 0
-         WHEN COALESCE(latest.access_status, 'granted') = 'revoked' THEN 0
+         WHEN p.status_key != 'inactive' AND COALESCE(latest.access_status, 'granted') = 'granted' THEN 0
          WHEN COALESCE(latest.access_status, 'granted') = 'suspended' THEN 1
+         WHEN p.status_key = 'inactive' THEN 2
          ELSE 2
        END,
        p.full_name`

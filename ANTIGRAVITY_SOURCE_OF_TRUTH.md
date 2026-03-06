@@ -437,6 +437,57 @@ pm2 save
 
 ---
 
+### March 5, 2026: UPS Shipping Fixes & Enhancements
+
+**1. Negotiated Rate Fix ($32 vs $7 Discrepancy)**
+- **Problem**: Shipment creation showed $7.41 quoted rate but UPS charged $32.11. The `createShipment` request was not requesting the negotiated rate in the response.
+- **Fix**: Added `ShipmentRatingOptions: { NegotiatedRatesIndicator: '' }` to the shipment request.
+- **File**: `lib/ups.ts` L424-431
+
+**2. Healthie Address Sync Fix (Location Mutations)**
+- **Problem**: Address updates in the dashboard silently failed to sync to Healthie. `updateClient` mutation **ignores** the `location` field — Healthie requires dedicated `createLocation`/`updateLocation` mutations.
+- **Root Cause #2**: `getClientLocations` used a standalone `locations(user_id:)` query that returned empty results. Healthie requires querying `user(id:) { locations { ... } }` instead.
+- **Result**: Every save created a new "Primary" location without updating existing ones → duplicates piled up.
+
+| Fix | File | Change |
+|-----|------|--------|
+| Location CRUD methods | `lib/healthie.ts` | Added `getClientLocations`, `createLocation`, `updateLocation`, `deleteLocation`, `upsertClientLocation` |
+| Query fix | `lib/healthie.ts` | Changed from `locations(user_id:)` to `user(id:) { locations { ... } }` |
+| Dedup logic | `lib/healthie.ts` `upsertClientLocation` | Updates first location, auto-deletes all duplicates |
+| Use location mutations | `lib/healthieDemographics.ts` | Calls `upsertClientLocation()` instead of passing `location` to `updateClient()` |
+| Skip inactive patients | `lib/healthieDemographics.ts` | Added `status_key` lookup; skips sync if `status_key = 'inactive'` |
+
+> [!CAUTION]
+> **Healthie API Gotcha**: The `updateClient` mutation silently ignores the `location` field. You MUST use `createLocation`/`updateLocation` mutations to manage patient addresses. The `locations` field must be queried via the `user` object, NOT via a standalone `locations` query.
+
+**3. UPS SMS Tracking Notifications (via GHL)**
+- **What**: When a shipping label is created → patient receives SMS with tracking # and UPS tracking link. When a shipment is voided → patient receives SMS cancellation notice.
+- **Channel**: Sent via GHL `928-212-2112` number using `GHLClient.sendSms()`
+- **Non-blocking**: SMS is fire-and-forget (async `.catch()`). Failures are logged but don't block shipment operations.
+
+| File | Purpose |
+|------|---------|
+| `lib/upsNotifications.ts` [NEW] | `notifyShipmentCreated()`, `notifyShipmentVoided()` — looks up `ghl_contact_id` from `patients` table, routes through correct GHL location client |
+| `app/api/ups/ship/route.ts` | Calls `notifyShipmentCreated()` after successful shipment |
+| `app/api/ups/void/route.ts` | Calls `notifyShipmentVoided()` after successful void |
+
+**4. Admin Shipments Dashboard Page**
+- **Navigation**: Admin dropdown → Shipments (`/ops/admin/shipments`)
+- **Features**: Stat cards (total, active, delivered, voided, total cost), search bar, status filter buttons, data table with expandable detail rows, clickable tracking links (UPS.com), print label, void actions.
+
+| File | Purpose |
+|------|---------|
+| `app/admin/shipments/page.tsx` [NEW] | Server page with admin auth check |
+| `app/admin/ShipmentsAdminClient.tsx` [NEW] | Client component with full dashboard UI |
+| `app/api/admin/shipments/route.ts` [NEW] | API endpoint — JOINs `ups_shipments` with `patients`, aggregates stats |
+| `app/layout.tsx` | Added `{ label: 'Shipments', href: '/admin/shipments' }` to `adminItems` |
+
+**5. Healthie `requestFormCompletion` Method**
+- Added `requestFormCompletion(userId, formId)` to `HealthieClient` class for assigning forms to patients.
+- **File**: `lib/healthie.ts`
+
+---
+
 ### March 4, 2026: RDS Connectivity Fix (psycopg2-binary 2.9.11 → 2.9.10)
 
 **Problem**: All Python scripts using psycopg2 could not connect to RDS. Connections hung indefinitely during TLS handshake. `psql`, `openssl s_client`, and pg8000 (pure Python) all worked fine.
@@ -3939,7 +3990,48 @@ Patient SMS → GHL → Webhook → Port 3001 (Proxy) → Port 3003 (Handler)
 
 ---
 
-*Last Updated: February 19, 2026*
+## 📦 UPS Shipping Integration (March 5, 2026)
+
+**Purpose**: Ship medical supplies (TRT kits, syringes, etc.) to patients directly from the patient profile page.
+
+### UPS Developer Account
+- **Client ID**: `UPS_CLIENT_ID` in `.env.local`
+- **Account Number**: `158V7K`
+- **Billing**: Account #158V7K
+- **API Products Enabled**: Rating, Address Validation, Authorization (OAuth), Tracking, Shipping, Locator, Time In Transit, Smart Pickup, UPS SCS Transportation
+
+### Verified API Endpoints (Production: `https://onlinetools.ups.com`)
+| API | Method | Path | Status |
+|-----|--------|------|--------|
+| OAuth | POST | `/security/v1/oauth/token` | ✅ |
+| Address Validation | POST | `/api/addressvalidation/v1/3` | ✅ |
+| Rating | POST | `/api/rating/v2403/Rate` (or `/Shop`) | ✅ |
+| Shipping | POST | `/api/shipments/v2409/ship` | ✅ |
+| Tracking | GET | `/api/track/v1/details/{trackingNumber}` | ✅ |
+| Void | DELETE | `/api/shipments/v2409/void/cancel/{id}` | ✅ |
+
+### Files
+- **API Client**: `lib/ups.ts` — OAuth2 token management, address validation, rating, shipping, tracking, void
+- **DB Queries**: `lib/upsShipmentQueries.ts` — CRUD for `ups_shipments` table
+- **API Routes**: `app/api/ups/` — validate-address, rate, ship, track, shipments, void
+- **Frontend**: `app/patients/[id]/ShippingPanel.tsx` — shipping UI component in patient profile
+- **Migration**: `migrations/20260305_ups_shipments.sql`
+
+### Default Package Settings
+- **Weight**: 0.4 lbs
+- **Dimensions**: 12" × 8" × 3"
+- **Service**: UPS Ground (code `03`)
+- **Shipper**: NOW Men's Health, 215 N McCormick, Prescott AZ 86301
+
+### Environment Variables
+`UPS_CLIENT_ID`, `UPS_CLIENT_SECRET`, `UPS_ACCOUNT_NUMBER`, `UPS_SHIPPER_NAME`, `UPS_SHIPPER_PHONE`, `UPS_SHIPPER_ADDRESS_LINE1`, `UPS_SHIPPER_CITY`, `UPS_SHIPPER_STATE`, `UPS_SHIPPER_POSTAL`, `UPS_SHIPPER_COUNTRY`
+
+### Database
+Table: `ups_shipments` (24 columns, 3 indexes on patient_id, tracking_number, status)
+
+---
+
+*Last Updated: March 5, 2026*
 *Maintained by: AntiGravity AI Assistant + manual updates*
 *Update this document after any significant system changes.*
 

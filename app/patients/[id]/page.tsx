@@ -7,7 +7,9 @@ import { fetchPatientFinancialData } from '@/lib/patientFinancials';
 import { query } from '@/lib/db';
 import { createGHLClient } from '@/lib/ghl';
 import PatientDetailClient from './PatientDetailClient';
+import ShippingPanel from './ShippingPanel';
 import { fetchHealthiePatientProfile } from '@/lib/healthiePatientData';
+import { getShipmentsForPatient } from '@/lib/upsShipmentQueries';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,6 +80,14 @@ export default async function PatientDetailPage({ params }: PageProps) {
   const financials = await fetchPatientFinancialData(params.id);
   const dispenses = await fetchDispensesForPatient(params.id, 200);
   const healthie = await fetchHealthiePatientProfile(params.id);
+
+  // Fetch UPS shipments for this patient
+  let upsShipments: any[] = [];
+  try {
+    upsShipments = await getShipmentsForPatient(params.id);
+  } catch {
+    // Table may not exist yet (migration pending)
+  }
 
   // Generate initials for avatar fallback
   const initials = (patient.patient_name ?? '')
@@ -897,6 +907,19 @@ export default async function PatientDetailPage({ params }: PageProps) {
           )}
         </div>
       )}
+
+      {/* UPS Shipping */}
+      <ShippingPanel
+        patientId={params.id}
+        patientName={patient.patient_name || ''}
+        address={patient.address}
+        addressLine1={patient.address_line1}
+        city={patient.city}
+        state={patient.state}
+        postalCode={patient.postal_code}
+        phone={patient.phone_number}
+        initialShipments={upsShipments}
+      />
 
       <div
         style={{

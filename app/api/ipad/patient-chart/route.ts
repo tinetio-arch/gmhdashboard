@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
-import { healthieGraphQL } from '@/lib/healthieApi';
 
 export const dynamic = 'force-dynamic';
 
@@ -79,9 +78,9 @@ export async function GET(request: NextRequest) {
                 }
             `, { patientId: healthieId }),
 
-            // Appointments
+            // Appointments — user_id is ID type
             safeHealthieQuery<any>('appointments', `
-                query GetAppointments($userId: String) {
+                query GetAppointments($userId: ID) {
                     appointments(
                         user_id: $userId,
                         is_active: true,
@@ -102,9 +101,9 @@ export async function GET(request: NextRequest) {
                 }
             `, { userId: healthieId }),
 
-            // Entries (Vitals)
+            // Entries (Vitals) — client_id is String type
             safeHealthieQuery<any>('entries', `
-                query GetEntries($clientId: ID) {
+                query GetEntries($clientId: String) {
                     entries(
                         client_id: $clientId,
                         type: "MetricEntry",
@@ -120,32 +119,36 @@ export async function GET(request: NextRequest) {
                 }
             `, { clientId: healthieId }),
 
-            // Allergies & Sensitivities
+            // Allergies — accessed via user object (root allergySensitivities query doesn't exist)
             safeHealthieQuery<any>('allergies', `
-                query AllergySensitivities($patientId: String) {
-                    allergySensitivities(patient_id: $patientId) {
-                        id
-                        name
-                        reaction
-                        severity
-                        notes
+                query GetUserAllergies($userId: ID) {
+                    user(id: $userId) {
+                        allergy_sensitivities {
+                            id
+                            name
+                            reaction
+                            severity
+                            status
+                            category_type
+                            onset_date
+                        }
                     }
                 }
-            `, { patientId: healthieId }),
+            `, { userId: healthieId }),
 
-            // Documents
+            // Documents — viewable_user_id is String, returns file_content_type/friendly_type
             safeHealthieQuery<any>('documents', `
-                query GetDocuments($clientId: String) {
-                    documents(client_id: $clientId, offset: 0) {
+                query GetDocuments($viewableUserId: String) {
+                    documents(viewable_user_id: $viewableUserId, offset: 0, page_size: 30) {
                         id
                         display_name
-                        document_type
-                        created_at
                         file_content_type
+                        friendly_type
+                        created_at
                         rel_user_id
                     }
                 }
-            `, { clientId: healthieId }),
+            `, { viewableUserId: healthieId }),
 
             // User profile (for avatar)
             safeHealthieQuery<any>('userProfile', `
@@ -187,7 +190,7 @@ export async function GET(request: NextRequest) {
                 healthie_id: healthieId,
                 chart_notes: chartNotes?.formAnswerGroups || [],
                 medications: medications?.medications || [],
-                allergies: allergies?.allergySensitivities || [],
+                allergies: allergies?.user?.allergy_sensitivities || [],
                 appointments: appointments?.appointments || [],
                 documents: documents?.documents || [],
                 vitals: entries?.entries || [],
@@ -204,19 +207,50 @@ export async function GET(request: NextRequest) {
     }
 }
 
-// Safe wrapper with 10s timeout to avoid one Healthie query blocking the whole chart
+// Direct Healthie fetch — bypasses rate limiter to prevent zombie connection buildup.
+// Uses AbortController for proper cancellation of timed-out requests.
+const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
+const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
+
 async function safeHealthieQuery<T>(label: string, gql: string, variables: Record<string, unknown>): Promise<T | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+        controller.abort();
+        console.warn(`[iPad:PatientChart] ${label} aborted after 8s`);
+    }, 8000);
+
     try {
-        const result = await Promise.race([
-            healthieGraphQL<T>(gql, variables),
-            new Promise<null>((resolve) => setTimeout(() => {
-                console.warn(`[iPad:PatientChart] ${label} timed out after 10s`);
-                resolve(null);
-            }, 10000)),
-        ]);
-        return result;
-    } catch (error) {
-        console.warn(`[iPad:PatientChart] ${label} Healthie query failed:`, error instanceof Error ? error.message : error);
+        const response = await fetch(HEALTHIE_API_URL, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                'AuthorizationSource': 'API',
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ query: gql, variables }),
+            signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+            console.warn(`[iPad:PatientChart] ${label} HTTP ${response.status}`);
+            return null;
+        }
+
+        const result = await response.json();
+        if (result.errors) {
+            console.warn(`[iPad:PatientChart] ${label} Healthie query failed:`, result.errors.map((e: any) => e.message).join(', '));
+            return null;
+        }
+        return result.data as T;
+    } catch (error: any) {
+        clearTimeout(timeout);
+        if (error.name === 'AbortError') {
+            // Already logged above
+        } else {
+            console.warn(`[iPad:PatientChart] ${label} error:`, error.message || error);
+        }
         return null;
     }
 }

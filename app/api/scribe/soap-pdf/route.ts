@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
                 sn.soap_subjective, sn.soap_objective, sn.soap_assessment, sn.soap_plan,
                 sn.icd10_codes, sn.cpt_codes, sn.full_note_text
             FROM scribe_sessions ss
-            LEFT JOIN patients p ON ss.patient_id = p.patient_id
+            LEFT JOIN patients p ON ss.patient_id::text = p.patient_id::text
             LEFT JOIN scribe_notes sn ON ss.session_id = sn.session_id
             WHERE ss.session_id = $1
         `, [sessionId]);

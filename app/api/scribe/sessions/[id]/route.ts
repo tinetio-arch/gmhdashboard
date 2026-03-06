@@ -39,7 +39,7 @@ export async function GET(
                 sn.reviewed_by,
                 sn.reviewed_at
             FROM scribe_sessions ss
-            LEFT JOIN patients p ON ss.patient_id = p.patient_id
+            LEFT JOIN patients p ON ss.patient_id::text = p.patient_id::text
             LEFT JOIN scribe_notes sn ON ss.session_id = sn.session_id
             WHERE ss.session_id = $1
         `, [sessionId]);

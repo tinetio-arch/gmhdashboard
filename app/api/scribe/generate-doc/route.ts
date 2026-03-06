@@ -194,7 +194,7 @@ export async function POST(request: NextRequest) {
         const [session] = await query<any>(`
             SELECT ss.*, p.full_name as patient_name
             FROM scribe_sessions ss
-            LEFT JOIN patients p ON ss.patient_id = p.patient_id
+            LEFT JOIN patients p ON ss.patient_id::text = p.patient_id::text
             WHERE ss.session_id = $1
         `, [session_id]);
 

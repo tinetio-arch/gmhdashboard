@@ -20,7 +20,7 @@ export async function GET(
         const [note] = await query<any>(
             `SELECT sn.*, p.full_name as patient_name, p.dob as patient_dob
              FROM scribe_notes sn
-             LEFT JOIN patients p ON sn.patient_id = p.patient_id
+             LEFT JOIN patients p ON sn.patient_id::text = p.patient_id::text
              WHERE sn.note_id = $1`,
             [params.id]
         );

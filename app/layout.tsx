@@ -44,6 +44,7 @@ export default async function RootLayout({
 
   const adminItems = user ? [
     { label: 'User Admin', href: '/admin/users' },
+    { label: 'Shipments', href: '/admin/shipments' },
     { label: 'App Control', href: '/admin/app-control' },
     (user.can_sign || userHasRole(user, 'admin')) ? { label: 'Provider Signatures', href: '/provider/signatures' } : null,
   ].filter((item): item is { label: string; href: string } => item !== null) : [];

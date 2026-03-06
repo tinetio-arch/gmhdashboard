@@ -13,6 +13,7 @@ type PatientRow = {
   postal_code: string | null;
   method_of_payment: string | null;
   client_type: string | null;
+  status_key: string | null;
 };
 
 const HEALTHIE_PAYMENT_REGEX = /healthie/i;
@@ -178,7 +179,8 @@ async function fetchPatientRow(patientId: string): Promise<PatientRow | null> {
         state,
         postal_code,
         method_of_payment,
-        type_of_client AS client_type
+        type_of_client AS client_type,
+        status_key
       FROM patient_data_entry_v
       WHERE patient_id = $1
       LIMIT 1
@@ -201,6 +203,10 @@ export async function syncHealthiePatientDemographics(
   if (!row) {
     return { status: 'skipped', reason: 'Patient not found' };
   }
+  // Skip sync for archived/inactive patients
+  if (row.status_key === 'inactive') {
+    return { status: 'skipped', reason: 'Patient is archived/inactive' };
+  }
   if (!shouldSyncPatient(row)) {
     return { status: 'skipped', reason: 'Patient not billed via Healthie' };
   }
@@ -211,17 +217,23 @@ export async function syncHealthiePatientDemographics(
   }
 
   const healthieClientId = await ensureHealthieClientId(row, healthieClient);
-  const location = buildLocationInput(row);
   const { first, last } = splitName(row.patient_name);
 
+  // Update core demographics (name, email, phone, DOB)
   await healthieClient.updateClient(healthieClientId, {
     first_name: first,
     last_name: last,
     email: row.email ?? undefined,
     phone_number: sanitizePhone(row.phone_number),
     dob: normalizeDob(row.date_of_birth),
-    location,
   });
+
+  // Update address using dedicated Healthie location mutation
+  // (updateClient ignores the location field — Healthie requires createLocation/updateLocation)
+  const location = buildLocationInput(row);
+  if (location) {
+    await healthieClient.upsertClientLocation(healthieClientId, location);
+  }
 
   return { status: 'synced' };
 }

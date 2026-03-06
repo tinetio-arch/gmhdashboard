@@ -1740,10 +1740,17 @@ async function beginScribeCapture() {
         // Auto-open chart panel BEFORE rendering so it renders as open
         chartPanelOpen = true;
         renderCurrentTab();
-        // Load chart data AFTER render so it writes to the new DOM element
+        // After render creates new DOM, populate chart panel
         const pid = scribePatientId || activeScribeSession?.patient_id;
-        if (pid && pid !== chartPanelPatientId) {
-            loadChartData(pid);
+        if (pid) {
+            if (chartPanelData && chartPanelPatientId === pid) {
+                // Data already loaded for this patient — render it to the new DOM
+                const content = document.getElementById('chartPanelContent');
+                if (content) renderChartPanel(content);
+            } else {
+                // No data yet — load from API
+                loadChartData(pid);
+            }
         }
         // Start timer
         recordingTimer = setInterval(updateRecordingTimer, 1000);
@@ -1834,7 +1841,29 @@ async function handleRecordingComplete() {
             body: formData,
             credentials: 'include',
         });
-        const data = await resp.json();
+
+        // Check response status BEFORE parsing JSON
+        if (!resp.ok) {
+            const errorText = await resp.text().catch(() => 'Unknown error');
+            console.error('[Scribe] Upload failed:', resp.status, errorText.substring(0, 200));
+            showToast(`Upload failed (${resp.status}): ${errorText.substring(0, 100)}`, 'error');
+            scribeView = 'list';
+            renderCurrentTab();
+            return;
+        }
+
+        // Safe JSON parse
+        let data;
+        try {
+            data = await resp.json();
+        } catch (parseErr) {
+            console.error('[Scribe] Response parse error:', parseErr);
+            showToast('Server returned invalid response. Please try again.', 'error');
+            scribeView = 'list';
+            renderCurrentTab();
+            return;
+        }
+
         if (data.success) {
             activeScribeSession = data.data;
             // Check if transcription is async (AWS Transcribe) or already done
@@ -2408,7 +2437,27 @@ function renderChartPanel(content) {
     // Default to charting tab
     if (!window._chartTab) window._chartTab = 'charting';
 
+    const demo = d.demographics || {};
+
     content.innerHTML = `
+        <!-- Patient Photo + Demographics (always visible above tabs) -->
+        <div style="padding:0 4px; border-bottom:1px solid rgba(255,255,255,0.08); margin-bottom:4px;">
+            <div style="display:flex; align-items:center; gap:12px; padding:10px 0 6px;">
+                ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border);">\ud83d\udc64</div>`}
+                <div style="flex:1;">
+                    <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${new Date(demo.dob).toLocaleDateString()}` : ''} ${demo.status_key ? '\u00b7 ' + demo.status_key : ''}</div>
+                </div>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 8px; font-size:11px;">
+                ${demo.phone_primary ? `<div><span style="color:var(--text-tertiary);">Phone:</span> <span style="color:var(--text-secondary);">${demo.phone_primary}</span></div>` : ''}
+                ${demo.email ? `<div><span style="color:var(--text-tertiary);">Email:</span> <span style="color:var(--text-secondary);">${demo.email}</span></div>` : ''}
+                ${demo.regimen ? `<div><span style="color:var(--text-tertiary);">Regimen:</span> <span style="color:var(--text-secondary);">${demo.regimen}</span></div>` : ''}
+                ${demo.client_type_key ? `<div><span style="color:var(--text-tertiary);">Type:</span> <span style="color:var(--text-secondary);">${demo.client_type_key}</span></div>` : ''}
+            </div>
+        </div>
+
+        <!-- Tabs -->
         <div class="chart-tab-nav">
             <button class="chart-tab-btn ${window._chartTab === 'charting' ? 'active' : ''}" onclick="switchChartTab('charting')">📋 Charting</button>
             <button class="chart-tab-btn ${window._chartTab === 'forms' ? 'active' : ''}" onclick="switchChartTab('forms')">📝 Forms</button>
@@ -2459,39 +2508,11 @@ function renderChartingTab(container, d) {
     const alerts = d.alerts || [];
 
     container.innerHTML = `
-        <!-- Patient Photo + Name Header -->
-        <div style="display:flex; align-items:center; gap:12px; padding:12px 0 8px; border-bottom:1px solid rgba(255,255,255,0.06); margin-bottom:8px;">
-            ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:56px; height:56px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:56px; height:56px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:22px; border:2px solid var(--border);">👤</div>`}
-            <div>
-                <div style="font-size:16px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
-                <div style="font-size:12px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${new Date(demo.dob).toLocaleDateString()}` : ''} ${demo.status_key ? `· ${demo.status_key}` : ''}</div>
-            </div>
-        </div>
-
-        <!-- Demographics -->
-        <div class="chart-section collapsed">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>👤 Demographics</span>
-                <span class="chart-chevron">›</span>
-            </div>
-            <div class="chart-section-body">
-                <div class="chart-info-grid">
-                    <div class="chart-info-item"><span class="chart-label">Name</span><span class="chart-value">${demo.full_name || 'Unknown'}</span></div>
-                    <div class="chart-info-item"><span class="chart-label">DOB</span><span class="chart-value">${demo.dob ? new Date(demo.dob).toLocaleDateString() : '—'}</span></div>
-                    <div class="chart-info-item"><span class="chart-label">Status</span><span class="chart-value">${demo.status_key || '—'}</span></div>
-                    <div class="chart-info-item"><span class="chart-label">Regimen</span><span class="chart-value">${demo.regimen || '—'}</span></div>
-                    <div class="chart-info-item"><span class="chart-label">Phone</span><span class="chart-value">${demo.phone_primary || '—'}</span></div>
-                    <div class="chart-info-item"><span class="chart-label">Email</span><span class="chart-value">${demo.email || '—'}</span></div>
-                    ${demo.client_type_key ? `<div class="chart-info-item"><span class="chart-label">Type</span><span class="chart-value">${demo.client_type_key}</span></div>` : ''}
-                </div>
-            </div>
-        </div>
-
         <!-- Allergies & Sensitivities -->
         <div class="chart-section${hAllergies.length === 0 ? ' collapsed' : ''}">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
                 <span>🚨 Allergies & Sensitivities (${hAllergies.length})</span>
-                <span class="chart-chevron">›</span>
+                <span style="display:flex;align-items:center;gap:6px;"><button class="chart-add-btn" onclick="event.stopPropagation();showPatientDataForm('allergy')" title="Add Allergy">＋</button><span class="chart-chevron">›</span></span>
             </div>
             <div class="chart-section-body">
                 ${hAllergies.length > 0 ? hAllergies.map(a => `
@@ -2507,7 +2528,7 @@ function renderChartingTab(container, d) {
         <div class="chart-section">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
                 <span>💊 Medications (${peptides.length + trt.length + hMeds.length})</span>
-                <span class="chart-chevron">›</span>
+                <span style="display:flex;align-items:center;gap:6px;"><button class="chart-add-btn" onclick="event.stopPropagation();showPatientDataForm('medication')" title="Add Medication">＋</button><span class="chart-chevron">›</span></span>
             </div>
             <div class="chart-section-body">
                 ${hMeds.length > 0 ? `
@@ -2546,7 +2567,7 @@ function renderChartingTab(container, d) {
         <div class="chart-section${hVitals.length === 0 ? ' collapsed' : ''}">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
                 <span>📊 Vitals (${hVitals.length})</span>
-                <span class="chart-chevron">›</span>
+                <span style="display:flex;align-items:center;gap:6px;"><button class="chart-add-btn" onclick="event.stopPropagation();showPatientDataForm('vital')" title="Add Vital">＋</button><span class="chart-chevron">›</span></span>
             </div>
             <div class="chart-section-body">
                 ${hVitals.length > 0 ? hVitals.slice(0, 20).map(v => `
@@ -2666,6 +2687,184 @@ function renderFormsTab(container, d) {
     `;
 }
 
+// ==================== PATIENT DATA ENTRY ====================
+
+function showPatientDataForm(type) {
+    const healthieId = chartPanelData?.healthie_id;
+    if (!healthieId) {
+        showToast('No Healthie ID — cannot add data for unmapped patients', 'error');
+        return;
+    }
+
+    const container = document.getElementById('chartTabContent');
+    if (!container) return;
+
+    let formHTML = '';
+
+    if (type === 'vital') {
+        formHTML = `
+            <div class="chart-data-form" id="patientDataForm">
+                <div class="chart-data-form-header">
+                    <span>📊 Add Vital</span>
+                    <button class="chart-data-form-close" onclick="closePatientDataForm()">✕</button>
+                </div>
+                <div class="chart-data-form-body">
+                    <select id="vitalCategory" class="chart-data-input">
+                        <option value="">Select type…</option>
+                        <option value="Blood Pressure">Blood Pressure</option>
+                        <option value="Weight">Weight (lbs)</option>
+                        <option value="Height">Height (in)</option>
+                        <option value="Temperature">Temperature (°F)</option>
+                        <option value="Heart Rate">Heart Rate (bpm)</option>
+                        <option value="SpO2">SpO2 (%)</option>
+                        <option value="BMI">BMI</option>
+                        <option value="Waist">Waist (in)</option>
+                    </select>
+                    <input type="text" id="vitalValue" class="chart-data-input" placeholder="Value (e.g. 120/80, 165, 98.6)" />
+                    <input type="text" id="vitalNotes" class="chart-data-input" placeholder="Notes (optional)" />
+                    <button class="chart-data-submit" onclick="submitPatientData('vital')">
+                        <span id="vitalSubmitText">Save Vital</span>
+                    </button>
+                </div>
+            </div>
+        `;
+    } else if (type === 'allergy') {
+        formHTML = `
+            <div class="chart-data-form" id="patientDataForm">
+                <div class="chart-data-form-header">
+                    <span>🚨 Add Allergy</span>
+                    <button class="chart-data-form-close" onclick="closePatientDataForm()">✕</button>
+                </div>
+                <div class="chart-data-form-body">
+                    <input type="text" id="allergyName" class="chart-data-input" placeholder="Allergy name (e.g. Penicillin)" />
+                    <select id="allergySeverity" class="chart-data-input">
+                        <option value="">Severity…</option>
+                        <option value="Mild">Mild</option>
+                        <option value="Moderate">Moderate</option>
+                        <option value="Severe">Severe</option>
+                    </select>
+                    <input type="text" id="allergyReaction" class="chart-data-input" placeholder="Reaction (e.g. Hives, Anaphylaxis)" />
+                    <select id="allergyType" class="chart-data-input">
+                        <option value="Allergy">Allergy</option>
+                        <option value="Sensitivity">Sensitivity</option>
+                        <option value="Intolerance">Intolerance</option>
+                    </select>
+                    <button class="chart-data-submit" onclick="submitPatientData('allergy')">
+                        <span id="allergySubmitText">Save Allergy</span>
+                    </button>
+                </div>
+            </div>
+        `;
+    } else if (type === 'medication') {
+        formHTML = `
+            <div class="chart-data-form" id="patientDataForm">
+                <div class="chart-data-form-header">
+                    <span>💊 Add Medication</span>
+                    <button class="chart-data-form-close" onclick="closePatientDataForm()">✕</button>
+                </div>
+                <div class="chart-data-form-body">
+                    <input type="text" id="medName" class="chart-data-input" placeholder="Medication name" />
+                    <input type="text" id="medDosage" class="chart-data-input" placeholder="Dosage (e.g. 10mg, 200 IU)" />
+                    <input type="text" id="medFrequency" class="chart-data-input" placeholder="Frequency (e.g. Once daily, BID)" />
+                    <input type="text" id="medDirections" class="chart-data-input" placeholder="Directions (e.g. Take with food)" />
+                    <button class="chart-data-submit" onclick="submitPatientData('medication')">
+                        <span id="medSubmitText">Save Medication</span>
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+
+    // Prepend form to the tab content
+    const formDiv = document.createElement('div');
+    formDiv.id = 'patientDataFormWrapper';
+    formDiv.innerHTML = formHTML;
+    container.prepend(formDiv);
+
+    // Focus first input
+    setTimeout(() => {
+        const firstInput = formDiv.querySelector('input[type="text"]');
+        if (firstInput) firstInput.focus();
+    }, 100);
+}
+
+function closePatientDataForm() {
+    const wrapper = document.getElementById('patientDataFormWrapper');
+    if (wrapper) wrapper.remove();
+}
+
+async function submitPatientData(type) {
+    const healthieId = chartPanelData?.healthie_id;
+    if (!healthieId) { showToast('No Healthie ID', 'error'); return; }
+
+    let payload = { healthie_id: healthieId };
+    let submitBtn;
+
+    if (type === 'vital') {
+        const category = document.getElementById('vitalCategory')?.value;
+        const value = document.getElementById('vitalValue')?.value?.trim();
+        const notes = document.getElementById('vitalNotes')?.value?.trim();
+        if (!category || !value) { showToast('Select a type and enter a value', 'error'); return; }
+        payload.action = 'add_vital';
+        payload.category = category;
+        payload.value = value;
+        payload.description = notes || '';
+        submitBtn = document.getElementById('vitalSubmitText');
+    } else if (type === 'allergy') {
+        const name = document.getElementById('allergyName')?.value?.trim();
+        const severity = document.getElementById('allergySeverity')?.value;
+        const reaction = document.getElementById('allergyReaction')?.value?.trim();
+        const categoryType = document.getElementById('allergyType')?.value;
+        if (!name) { showToast('Enter an allergy name', 'error'); return; }
+        payload.action = 'add_allergy';
+        payload.name = name;
+        payload.severity = severity || '';
+        payload.reaction = reaction || '';
+        payload.category_type = categoryType || 'Allergy';
+        submitBtn = document.getElementById('allergySubmitText');
+    } else if (type === 'medication') {
+        const name = document.getElementById('medName')?.value?.trim();
+        const dosage = document.getElementById('medDosage')?.value?.trim();
+        const frequency = document.getElementById('medFrequency')?.value?.trim();
+        const directions = document.getElementById('medDirections')?.value?.trim();
+        if (!name) { showToast('Enter a medication name', 'error'); return; }
+        payload.action = 'add_medication';
+        payload.name = name;
+        payload.dosage = dosage || '';
+        payload.frequency = frequency || '';
+        payload.directions = directions || '';
+        submitBtn = document.getElementById('medSubmitText');
+    }
+
+    // Show loading
+    if (submitBtn) submitBtn.textContent = 'Saving…';
+    const btns = document.querySelectorAll('.chart-data-submit');
+    btns.forEach(b => b.disabled = true);
+
+    try {
+        const resp = await apiFetch('/ops/api/ipad/patient-data/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+
+        if (resp.success) {
+            showToast(`${type === 'vital' ? 'Vital' : type === 'allergy' ? 'Allergy' : 'Medication'} added to Healthie! ✅`, 'success');
+            closePatientDataForm();
+            // Reload chart data to show the new entry
+            loadChartData(chartPanelPatientId);
+        } else {
+            showToast(resp.error || 'Failed to save', 'error');
+            if (submitBtn) submitBtn.textContent = 'Retry';
+            btns.forEach(b => b.disabled = false);
+        }
+    } catch (e) {
+        showToast('Error: ' + (e.message || 'Network error'), 'error');
+        if (submitBtn) submitBtn.textContent = 'Retry';
+        btns.forEach(b => b.disabled = false);
+    }
+}
+
 // ==================== DOCUMENTS TAB ====================
 function renderDocumentsTab(container, d) {
     const hDocs = d.healthie_documents || [];
@@ -2687,7 +2886,7 @@ function renderDocumentsTab(container, d) {
                             <span style="font-size:18px;">${(doc.file_content_type || '').includes('pdf') ? '📄' : (doc.file_content_type || '').includes('image') ? '🖼️' : '📎'}</span>
                             <div>
                                 <div class="chart-lab-name">${doc.display_name || 'Document'}</div>
-                                <div class="chart-lab-detail">${doc.document_type || ''} · ${doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}</div>
+                                <div class="chart-lab-detail">${doc.friendly_type || ''} · ${doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}</div>
                             </div>
                         </div>
                     </div>

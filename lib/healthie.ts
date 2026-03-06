@@ -919,6 +919,201 @@ export class HealthieClient {
   }
 
   /**
+   * Get all locations for a client by querying the user object
+   */
+  async getClientLocations(clientId: string): Promise<Array<{
+    id: string;
+    name?: string;
+    line1?: string;
+    line2?: string;
+    city?: string;
+    state?: string;
+    zip?: string;
+    country?: string;
+  }>> {
+    const q = `
+      query GetUserLocations($id: ID!) {
+        user(id: $id) {
+          locations {
+            id
+            name
+            line1
+            line2
+            city
+            state
+            zip
+            country
+          }
+        }
+      }
+    `;
+    const result = await this.graphql<{
+      user: {
+        locations: Array<{
+          id: string;
+          name?: string | null;
+          line1?: string | null;
+          line2?: string | null;
+          city?: string | null;
+          state?: string | null;
+          zip?: string | null;
+          country?: string | null;
+        }> | null;
+      } | null;
+    }>(q, { id: clientId });
+    return (result.user?.locations ?? []).map((l) => ({
+      id: l.id,
+      name: l.name ?? undefined,
+      line1: l.line1 ?? undefined,
+      line2: l.line2 ?? undefined,
+      city: l.city ?? undefined,
+      state: l.state ?? undefined,
+      zip: l.zip ?? undefined,
+      country: l.country ?? undefined,
+    }));
+  }
+
+  /**
+   * Create a new location for a client
+   */
+  async createLocation(clientId: string, location: HealthieLocationInput): Promise<string> {
+    const mutation = `
+      mutation CreateLocation($input: createLocationInput!) {
+        createLocation(input: $input) {
+          location {
+            id
+          }
+          messages {
+            field
+            message
+          }
+        }
+      }
+    `;
+    const input: Record<string, unknown> = {
+      user_id: clientId,
+    };
+    if (location.name) input.name = location.name;
+    if (location.line1) input.line1 = location.line1;
+    if (location.line2) input.line2 = location.line2;
+    if (location.city) input.city = location.city;
+    if (location.state) input.state = location.state;
+    if (location.zip) input.zip = location.zip;
+    if (location.country) input.country = location.country;
+
+    const result = await this.graphql<{
+      createLocation: {
+        location: { id: string } | null;
+        messages?: Array<{ field?: string | null; message?: string | null }> | null;
+      };
+    }>(mutation, { input });
+
+    if (!result.createLocation.location?.id) {
+      const msgs = (result.createLocation.messages ?? [])
+        .map((m) => `${m.field ?? 'base'}: ${m.message ?? 'error'}`)
+        .join('; ');
+      throw new Error(`Healthie createLocation failed: ${msgs || 'unknown error'}`);
+    }
+    this.debugLog('Created location:', result.createLocation.location.id);
+    return result.createLocation.location.id;
+  }
+
+  /**
+   * Update an existing location
+   */
+  async updateLocation(locationId: string, location: HealthieLocationInput): Promise<void> {
+    const mutation = `
+      mutation UpdateLocation($input: updateLocationInput!) {
+        updateLocation(input: $input) {
+          location {
+            id
+          }
+          messages {
+            field
+            message
+          }
+        }
+      }
+    `;
+    const input: Record<string, unknown> = { id: locationId };
+    if (location.name) input.name = location.name;
+    if (location.line1) input.line1 = location.line1;
+    if (location.line2) input.line2 = location.line2;
+    if (location.city) input.city = location.city;
+    if (location.state) input.state = location.state;
+    if (location.zip) input.zip = location.zip;
+    if (location.country) input.country = location.country;
+
+    const result = await this.graphql<{
+      updateLocation: {
+        location: { id: string } | null;
+        messages?: Array<{ field?: string | null; message?: string | null }> | null;
+      };
+    }>(mutation, { input });
+
+    if (!result.updateLocation.location?.id) {
+      const msgs = (result.updateLocation.messages ?? [])
+        .map((m) => `${m.field ?? 'base'}: ${m.message ?? 'error'}`)
+        .join('; ');
+      throw new Error(`Healthie updateLocation failed: ${msgs || 'unknown error'}`);
+    }
+    this.debugLog('Updated location:', locationId);
+  }
+
+  /**
+   * Delete a location by ID
+   */
+  async deleteLocation(locationId: string): Promise<void> {
+    const mutation = `
+      mutation DeleteLocation($id: ID!) {
+        deleteLocation(input: { id: $id }) {
+          location {
+            id
+          }
+          messages {
+            field
+            message
+          }
+        }
+      }
+    `;
+    await this.graphql<unknown>(mutation, { id: locationId });
+    this.debugLog('Deleted location:', locationId);
+  }
+
+  /**
+   * Upsert a client's primary location.
+   * Finds the first existing location, updates it, and deletes any duplicates.
+   * If no locations exist, creates one.
+   */
+  async upsertClientLocation(clientId: string, location: HealthieLocationInput): Promise<string> {
+    const existing = await this.getClientLocations(clientId);
+    this.debugLog(`Found ${existing.length} existing locations for client ${clientId}`);
+
+    if (existing.length > 0) {
+      // Update the first location
+      const primary = existing[0];
+      await this.updateLocation(primary.id, { ...location, name: location.name ?? 'Primary' });
+
+      // Clean up duplicates — delete all except the first
+      if (existing.length > 1) {
+        this.debugLog(`Cleaning up ${existing.length - 1} duplicate locations`);
+        for (let i = 1; i < existing.length; i++) {
+          try {
+            await this.deleteLocation(existing[i].id);
+          } catch (err) {
+            this.debugLog(`Failed to delete duplicate location ${existing[i].id}:`, err);
+          }
+        }
+      }
+
+      return primary.id;
+    } else {
+      return this.createLocation(clientId, { ...location, name: location.name ?? 'Primary' });
+    }
+  }
+
+  /**
    * Create a package (recurring payment plan)
    */
   async createPackage(input: CreatePackageInput): Promise<HealthiePackage> {
@@ -1478,6 +1673,47 @@ export class HealthieClient {
 
   getLastDispenseMetadataKey(): string {
     return this.lastDispenseKey;
+  }
+
+  /**
+   * Request a form completion from a patient (assign a form to fill out)
+   */
+  async requestFormCompletion(userId: string, formId: string): Promise<string> {
+    const mutation = `
+      mutation RequestFormCompletion($input: createRequestedFormCompletionInput!) {
+        createRequestedFormCompletion(input: $input) {
+          requestedFormCompletion {
+            id
+          }
+          messages {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    const result = await this.graphql<{
+      createRequestedFormCompletion: {
+        requestedFormCompletion: { id: string } | null;
+        messages?: Array<{ field?: string | null; message?: string | null }> | null;
+      };
+    }>(mutation, {
+      input: {
+        recipient_id: userId,
+        custom_module_form_id: formId,
+      },
+    });
+
+    const completion = result.createRequestedFormCompletion.requestedFormCompletion;
+    if (!completion?.id) {
+      const msgs = (result.createRequestedFormCompletion.messages ?? [])
+        .map((m) => `${m.field ?? 'base'}: ${m.message ?? 'error'}`)
+        .join('; ');
+      throw new Error(`Failed to request form completion: ${msgs || 'unknown error'}`);
+    }
+    this.debugLog('Requested form completion:', completion.id);
+    return completion.id;
   }
 }
 
