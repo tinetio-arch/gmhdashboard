@@ -383,7 +383,38 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 5, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 7, 2026)
+
+### March 7, 2026: 🔴 IPv6 Root Cause Fix — Persistent Command Hanging
+
+**Problem**: `node`, `npx`, `npm`, `psql`, and other outbound commands would hang for 30-120+ seconds or indefinitely. Previously misdiagnosed as a Node v20 race condition (Mar 2 fix). The Node upgrade helped that specific issue but the hanging persisted.
+
+**Root Cause**: **Broken IPv6 connectivity.** IPv6 is enabled at the kernel level (`disable_ipv6 = 0`) but the EC2 instance has **no global IPv6 address** (only `fe80::` link-local) and **no IPv6 route**. DNS returns AAAA records (e.g., npm registry on Cloudflare). Tools try IPv6 first → connection hangs (kernel doesn't reject it, just waits) → eventually times out or hangs forever. Made worse by Node v22's `verbatim` DNS order (prefers IPv6 first).
+
+**Fix (3-part):**
+
+| Fix | File | Change |
+|-----|------|--------|
+| System-wide IPv4 preference | `/etc/gai.conf` [NEW] | `precedence ::ffff:0:0/96 100` — tells `getaddrinfo()` to sort IPv4 before IPv6 |
+| Node.js defense-in-depth | `/home/ec2-user/ecosystem.config.js` | Added `NODE_OPTIONS: '--dns-result-order=ipv4first'` to all 7 Node.js services |
+| Interactive shell fix | `~/.bashrc` | Added `export NODE_OPTIONS="--dns-result-order=ipv4first"` |
+
+**Verification Results:**
+
+| Test | Before | After |
+|------|--------|-------|
+| `node -e "console.log('OK')"` | Hang (30s+) | **0.01s** |
+| `node HTTP fetch` | Hang (indefinite) | **0.03s** |
+| `npm view express version` | Hang (30s+) | **0.15s** |
+| `npx -y semver --version` | Hang (indefinite) | **0.15s** |
+
+> [!CAUTION]
+> **DO NOT enable global IPv6 on this VPC** unless you add a proper IPv6 CIDR block, update route tables, security groups, and assign a global IPv6 address to the instance. The current state (IPv6 kernel enabled, no connectivity) is the worst case — connections hang instead of being rejected.
+
+> [!IMPORTANT]
+> If the server is rebuilt or AMI-cloned, `/etc/gai.conf` must be recreated. The `ecosystem.config.js` and `.bashrc` changes will carry over with the home directory.
+
+---
 
 ### March 5, 2026: 🔴 Critical Dispensing Data Integrity Fix
 
@@ -554,11 +585,11 @@ pm2 save
 - **File**: `app/api/labs/order/[id]/approve/route.ts`
 - **Status**: ✅ Deployed (PM2 restart completed)
 
-**4. Node.js v20.20.0 Hang Fix**
-- **Root Cause**: Node v20.20.0 (NodeSource RPM) had a **race condition** causing all Node processes to hang on startup. Proven by running under `strace` which added enough timing delay for Node to work. Even `node -e "console.log('test')"` would hang.
+**4. Node.js v20.20.0 Hang Fix (PARTIALLY CORRECT — see March 7 IPv6 fix)**
+- **Root Cause**: Node v20.20.0 (NodeSource RPM) had a **race condition** causing all Node processes to hang on startup. Proven by running under `strace` which added enough timing delay for Node to work.
 - **Fix**: Installed `nvm` (v0.40.1) and upgraded to **Node v22.22.0** (latest LTS). Reinstalled PM2 globally under new Node.
-- **CRITICAL LEARNING**: If Node hangs on EC2, check the version. NodeSource v20.20.0 has a known race condition. Use `nvm` to manage Node versions instead of system packages.
-- **Status**: ✅ Deployed (nvm + Node v22.22.0 active)
+- **NOTE (Mar 7 2026)**: This fix resolved the Node v20 race condition but the hanging persisted. The **true root cause** was broken IPv6 connectivity (see March 7, 2026 entry). Node v22's `verbatim` DNS order actually made IPv6 hangs MORE frequent.
+- **Status**: ✅ Node upgrade deployed; IPv6 fix applied March 7, 2026
 
 ### February 26, 2026: Lab Review Queue Migration (JSON → PostgreSQL)
 
