@@ -107,6 +107,50 @@ export async function GET(
       `, [patientId]),
         ]);
 
+        // Fetch Healthie avatar if we have a healthie_client_id
+        let healthieAvatarUrl: string | null = null;
+        if (patient.healthie_client_id) {
+            try {
+                const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
+                const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 5000);
+                const resp = await fetch(HEALTHIE_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                        'AuthorizationSource': 'API',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: `query GetAvatar($id: ID) { user(id: $id) { avatar_url } }`,
+                        variables: { id: patient.healthie_client_id },
+                    }),
+                    signal: controller.signal,
+                });
+                clearTimeout(timeout);
+                if (resp.ok) {
+                    const result = await resp.json();
+                    healthieAvatarUrl = result?.data?.user?.avatar_url || null;
+                }
+            } catch (e) {
+                // Avatar fetch is non-critical — swallow errors
+            }
+        }
+
+        // Helper: PostgreSQL date columns serialize as "2026-03-28T00:00:00.000Z" via pg driver.
+        // The iPhone interprets UTC midnight in Arizona (UTC-7) as the PREVIOUS day.
+        // Fix: strip time component — send "2026-03-28" only.
+        const toDateOnly = (v: any): string | null => {
+            if (!v) return null;
+            const s = String(v);
+            // Already date-only
+            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+            // ISO timestamp — extract date part
+            const match = s.match(/^(\d{4}-\d{2}-\d{2})/);
+            return match ? match[1] : s;
+        };
+
         return NextResponse.json({
             success: true,
             data: {
@@ -115,7 +159,7 @@ export async function GET(
                     full_name: patient.full_name,
                     first_name: patient.first_name,
                     last_name: patient.last_name,
-                    dob: patient.dob,
+                    dob: toDateOnly(patient.dob),
                     gender: patient.gender,
                     phone_primary: patient.phone_primary,
                     email: patient.email,
@@ -132,6 +176,10 @@ export async function GET(
                     location_name: patient.location_name,
                     last_controlled_dispense_at: patient.last_controlled_dispense_at,
                     last_dea_drug: patient.last_dea_drug,
+                    last_lab: toDateOnly(patient.last_lab),
+                    next_lab: toDateOnly(patient.next_lab),
+                    lab_status: patient.lab_status,
+                    healthie_avatar_url: healthieAvatarUrl,
                 },
                 recent_dispenses: recentDispenses,
                 recent_peptides: recentPeptides,

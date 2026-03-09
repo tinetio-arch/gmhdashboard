@@ -44,10 +44,12 @@ export async function GET(request: NextRequest) {
             return NextResponse.json({
                 carrieboyd_full_vials: counts.cb30ml.fullVials,
                 carrieboyd_partial_ml: counts.cb30ml.partialVialMl,
+                carrieboyd_staged_ml: counts.cb30ml.stagedDoseMl,
                 carrieboyd_total_ml: counts.cb30ml.totalMl,
                 toprx_vials: counts.topRx10ml.vialCount,
                 toprx_full_vials: counts.topRx10ml.fullVials,
                 toprx_partial_ml: counts.topRx10ml.partialVialMl,
+                toprx_staged_ml: counts.topRx10ml.stagedDoseMl,
                 toprx_total_ml: counts.topRx10ml.totalMl
             });
         }

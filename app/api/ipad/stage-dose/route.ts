@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
         const specifiedVialId = body.vial_id || body.vialId;
         const dispenseImmediately = body.dispense_immediately || body.dispenseImmediately;
         const stagedForDate = body.stagedForDate || body.staged_for_date ||
-            (dispenseImmediately ? new Date().toISOString().split('T')[0] : null);
+            (dispenseImmediately ? new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }) : null);
 
         // Validate required fields
         if (!doseMl || doseMl <= 0) {
@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Create DEA transaction for the staging
-        const stagedDate = new Date().toISOString().split('T')[0];
+        const stagedDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
         const deaTx = await client.query<{ dea_tx_id: string }>(`
       INSERT INTO dea_transactions (
         dispense_id,

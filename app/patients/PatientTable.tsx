@@ -482,16 +482,12 @@ function parseDate(value: unknown): Date | null {
 function normalizeDateValue(value: unknown): string | null {
   const parsed = parseDate(value);
   if (!parsed) return null;
-  // Use Arizona timezone for normalization to YYYY-MM-DD
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Phoenix',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(parsed);
-  const year = parts.find(p => p.type === 'year')?.value ?? '2026';
-  const month = parts.find(p => p.type === 'month')?.value ?? '01';
-  const day = parts.find(p => p.type === 'day')?.value ?? '01';
+  // IMPORTANT: Use UTC for storage — NEVER use timezone conversion here!
+  // Arizona timezone is for DISPLAY only (formatDateInput).
+  // Using timezone here caused dates to shift backward by 1 day on each save.
+  const year = parsed.getUTCFullYear();
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 

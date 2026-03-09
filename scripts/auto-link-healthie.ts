@@ -98,6 +98,11 @@ async function run() {
           `, [patient.patient_id, healthieClient.id, patient.email ? 'email' : 'phone']);
                 }
 
+                // Also update patients.healthie_client_id directly (used by iPad app)
+                await pool.query(`
+          UPDATE patients SET healthie_client_id = $2 WHERE patient_id = $1
+        `, [patient.patient_id, healthieClient.id]);
+
                 console.log(`✅ Linked: ${patient.patient_name} → Healthie ID ${healthieClient.id}`);
                 linked++;
             } else {

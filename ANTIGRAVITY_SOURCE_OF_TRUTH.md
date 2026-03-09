@@ -462,9 +462,26 @@ pm2 save
 | `app/components/QuickBooksCard.tsx` | `safeDateFormat` |
 
 > [!CAUTION]
-> **Date Formatting Rule**: ALL dates displayed to users MUST use `America/Phoenix` timezone via `Intl.DateTimeFormat`. NEVER use `getUTCMonth()`/`getUTCDate()`. The clinic is in Arizona — dates must match the wall clock.
+> **Date DISPLAY Rule**: ALL dates displayed to users MUST use `America/Phoenix` timezone via `Intl.DateTimeFormat`. The clinic is in Arizona — dates must match the wall clock.
 > 
 > For date-only strings (YYYY-MM-DD), parse as noon UTC (`${date}T12:00:00Z`) to avoid day-boundary shift.
+
+> [!CAUTION]
+> **Date STORAGE Rule (CRITICAL)**: When saving dates to the database (`normalizeDateValue`, any YYYY-MM-DD conversion for API calls), ALWAYS use UTC (`getUTCFullYear`, `getUTCMonth`, `getUTCDate`). **NEVER** use `America/Phoenix` for storage normalization — this causes dates to shift backward by 1 day per save (UTC midnight → PHX = previous day). This bug was introduced March 5 and fixed March 9.
+
+### March 9, 2026: Date Save Shift Bug (CRITICAL FIX)
+
+**Problem**: Every time a date field (DOB, lastLab, nextLab, serviceStartDate, contractEnd) was edited and saved, the date shifted backward by 1 day. Saving twice = 2-day shift.
+
+**Root Cause**: The March 5 Arizona timezone fix incorrectly applied `America/Phoenix` to `normalizeDateValue()` in `PatientTable.tsx`. This function converts dates to YYYY-MM-DD for database storage. When a date stored as `2026-03-09` was parsed as UTC midnight and then formatted in Arizona time (UTC-7), it became `2026-03-08`.
+
+**Fix**: Reverted `normalizeDateValue()` to use UTC date extraction for storage. Arizona timezone is now ONLY used in display functions (`formatDateInput`, `formatDisplayDate`).
+
+### March 9, 2026: Morning Check Prefilled Dose Count Fix
+
+**Problem**: Morning inventory check showed inflated partial volume (38mL instead of 7mL) because staged/prefilled doses had already been deducted from source vials.
+
+**Fix**: `getSystemInventoryCounts()` now queries `staged_doses` table separately and reports `stagedDoseMl` as a distinct value. Morning check form subtracts staged dose volume from the partial pre-fill and shows prefilled doses as a separate purple info line.
 
 ---
 

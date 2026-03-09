@@ -22,13 +22,11 @@ export async function GET(request: NextRequest) {
 
     try {
         const today = new Date();
-        const todayStr = today.toISOString().split('T')[0];
+        const todayStr = today.toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
 
         // Fetch appointments from Healthie with a timeout
         let appointments: any[] = [];
         try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 12000);
 
             const data = await healthieGraphQL<{
                 appointments: any[];
@@ -44,7 +42,7 @@ export async function GET(request: NextRequest) {
                         date
                         appointment_type { name }
                         provider { full_name }
-                        status
+                        pm_status
                         client {
                             id
                             first_name
@@ -54,7 +52,6 @@ export async function GET(request: NextRequest) {
                 }
             `, { date: todayStr });
 
-            clearTimeout(timeout);
             appointments = data?.appointments || [];
         } catch (err) {
             console.warn('[iPad Schedule] Healthie appointments fetch failed:', err instanceof Error ? err.message : err);
@@ -93,12 +90,13 @@ export async function GET(request: NextRequest) {
             const healthieId = appt.client?.id || '';
             const local = patientMap.get(healthieId);
             return {
+                appointment_id: appt.id,
                 healthie_id: healthieId,
                 patient_id: local?.patient_id || null,
                 full_name: local?.full_name || `${appt.client?.first_name || ''} ${appt.client?.last_name || ''}`.trim(),
                 appointment_type: appt.appointment_type?.name || 'Appointment',
                 provider: appt.provider?.full_name || '',
-                appointment_status: appt.status || 'unknown',
+                appointment_status: appt.pm_status || 'Scheduled',
                 time: appt.date ? new Date(appt.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '',
             };
         });

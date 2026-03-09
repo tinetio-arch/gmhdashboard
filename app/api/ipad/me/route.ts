@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
             // Computed permissions for the iPad app
             permissions: {
                 can_view_ceo_dashboard: user.role === 'admin',
-                can_use_scribe: true, // All staff can enter clinic notes/vitals
+                can_use_scribe: user.role === 'admin' || user.role === 'write' || user.is_provider,
                 can_dispense: true,
                 can_sign_notes: user.can_sign,
                 can_edit_inventory: true, // All staff can manage inventory

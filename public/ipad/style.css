@@ -2898,6 +2898,23 @@ h6 {
     }
 }
 
+/* Paused recording state */
+.recording-pulse-ring.recording-paused {
+    background: rgba(251, 191, 36, 0.15);
+    animation: pulse-ring-paused 3s ease-in-out infinite;
+}
+
+.recording-pulse-ring.recording-paused .recording-pulse-dot {
+    background: #fbbf24;
+    animation: none;
+    opacity: 0.6;
+}
+
+@keyframes pulse-ring-paused {
+    0%, 100% { transform: scale(1); background: rgba(251, 191, 36, 0.1); }
+    50% { transform: scale(1.03); background: rgba(251, 191, 36, 0.2); }
+}
+
 .recording-timer {
     font-family: 'Space Grotesk', monospace;
     font-size: 48px;

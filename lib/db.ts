@@ -1,8 +1,17 @@
-import { Pool } from 'pg';
+import { Pool, types } from 'pg';
 import type { QueryResultRow } from 'pg';
 import * as fs from 'fs';
 import * as path from 'path';
 
+// GLOBAL FIX: Override pg driver's date parser.
+// By default, pg converts PostgreSQL 'date' columns (OID 1082) into JavaScript
+// Date objects at UTC midnight (e.g., "2026-03-28" → new Date("2026-03-28T00:00:00Z")).
+// When clients in Arizona (UTC-7) display this using local time methods, they see
+// the PREVIOUS day (March 27 at 5PM instead of March 28).
+// Fix: Return raw YYYY-MM-DD strings — no timezone conversion, no ambiguity.
+types.setTypeParser(1082, (val: string) => val);  // date → raw string
+// Note: timestamp columns (1114, 1184) are left as default — they carry time info
+// and are handled correctly by new Date() throughout the app
 let pool: Pool | null = null;
 
 export function getPool(): Pool {

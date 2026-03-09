@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
           sd.staged_by_name,
           sd.notes,
           CASE
-            WHEN sd.staged_for_date < (NOW() AT TIME ZONE 'America/Denver')::date
+            WHEN sd.staged_for_date < (NOW() AT TIME ZONE 'America/Phoenix')::date
             THEN true ELSE false
           END as is_stale
         FROM staged_doses sd

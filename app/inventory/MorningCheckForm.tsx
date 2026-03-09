@@ -6,10 +6,12 @@ import { withBasePath } from '@/lib/basePath';
 interface SystemCounts {
     carrieboyd_full_vials: number;
     carrieboyd_partial_ml: number;
+    carrieboyd_staged_ml: number;
     carrieboyd_total_ml: number;
     toprx_vials: number;
     toprx_full_vials: number;
     toprx_partial_ml: number;
+    toprx_staged_ml: number;
     toprx_total_ml: number;
 }
 
@@ -49,14 +51,20 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
 
     // Calculate if there's a significant discrepancy (>2ml triggers required reason)
     // Small differences (<=2ml) are auto-documented as waste
+    // NOTE: Compare against vial-only totals (excluding staged/prefilled doses)
+    //       because staff counts vials, not prefilled syringes
     const hasDiscrepancy = useMemo(() => {
         if (!systemCounts) return false;
 
         const physicalCbTotal = (parseInt(cbFull) || 0) * 30 + (parseFloat(cbPartial) || 0);
         const physicalTrTotal = (parseInt(trCount) || 0) * 10 + (parseFloat(trPartial) || 0);
 
-        const cbDiff = Math.abs(systemCounts.carrieboyd_total_ml - physicalCbTotal);
-        const trDiff = Math.abs(systemCounts.toprx_total_ml - physicalTrTotal);
+        // Vial-only system total = total in vials (excludes staged doses since those left the vials)
+        const systemCbVialOnly = systemCounts.carrieboyd_total_ml;
+        const systemTrVialOnly = systemCounts.toprx_total_ml;
+
+        const cbDiff = Math.abs(systemCbVialOnly - physicalCbTotal);
+        const trDiff = Math.abs(systemTrVialOnly - physicalTrTotal);
 
         // Only require explanation for >2ml difference
         return cbDiff > 2.0 || trDiff > 2.0;
@@ -82,11 +90,16 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
             setSystemCounts(countsData);
 
             // Pre-fill with system counts as default
+            // IMPORTANT: subtract staged dose volume from partial, because staff
+            // counts what's in VIALS only — prefilled syringes are separate.
             if (countsData) {
                 setCbFull(String(countsData.carrieboyd_full_vials || 0));
-                setCbPartial(String(countsData.carrieboyd_partial_ml?.toFixed(1) || 0));
+                // Vial-only partial = DB partial minus staged doses
+                const cbVialPartial = Math.max(0, (countsData.carrieboyd_partial_ml || 0) - (countsData.carrieboyd_staged_ml || 0));
+                setCbPartial(String(cbVialPartial.toFixed(1)));
                 setTrCount(String(countsData.toprx_full_vials ?? countsData.toprx_vials ?? 0));
-                setTrPartial(String(countsData.toprx_partial_ml?.toFixed(1) || 0));
+                const trVialPartial = Math.max(0, (countsData.toprx_partial_ml || 0) - (countsData.toprx_staged_ml || 0));
+                setTrPartial(String(trVialPartial.toFixed(1)));
             }
         } catch (err) {
             console.error('Failed to load check status:', err);
@@ -223,14 +236,22 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
             )}
 
             <form onSubmit={handleSubmit}>
-                {/* System shows what it expects */}
+                {/* System shows what it expects — vial-only counts, staged doses shown separately */}
                 <div style={{ backgroundColor: '#f8fafc', padding: '0.75rem 1rem', borderRadius: '0.5rem', marginBottom: '1rem' }}>
                     <p style={{ margin: 0, fontSize: '0.85rem', color: '#64748b' }}>
                         <strong>System expects:</strong>{' '}
-                        Carrie Boyd: {systemCounts?.carrieboyd_full_vials} full + {systemCounts?.carrieboyd_partial_ml?.toFixed(1)}ml partial = {systemCounts?.carrieboyd_total_ml?.toFixed(1)}ml
+                        Carrie Boyd: {systemCounts?.carrieboyd_full_vials} full + {Math.max(0, (systemCounts?.carrieboyd_partial_ml ?? 0) - (systemCounts?.carrieboyd_staged_ml ?? 0)).toFixed(1)}ml partial = {((systemCounts?.carrieboyd_total_ml ?? 0) - (systemCounts?.carrieboyd_staged_ml ?? 0)).toFixed(1)}ml
                         {' | '}
-                        TopRX: {systemCounts?.toprx_full_vials ?? systemCounts?.toprx_vials} full{(systemCounts?.toprx_partial_ml ?? 0) > 0 ? ` + ${systemCounts?.toprx_partial_ml?.toFixed(1)}ml partial` : ''} = {systemCounts?.toprx_total_ml?.toFixed(1)}ml
+                        TopRX: {systemCounts?.toprx_full_vials ?? systemCounts?.toprx_vials} full{Math.max(0, (systemCounts?.toprx_partial_ml ?? 0) - (systemCounts?.toprx_staged_ml ?? 0)) > 0 ? ` + ${Math.max(0, (systemCounts?.toprx_partial_ml ?? 0) - (systemCounts?.toprx_staged_ml ?? 0)).toFixed(1)}ml partial` : ''} = {((systemCounts?.toprx_total_ml ?? 0) - (systemCounts?.toprx_staged_ml ?? 0)).toFixed(1)}ml
                     </p>
+                    {((systemCounts?.carrieboyd_staged_ml ?? 0) > 0 || (systemCounts?.toprx_staged_ml ?? 0) > 0) && (
+                        <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: '#7c3aed', fontWeight: 500 }}>
+                            💉 Prefilled doses (not in vials):{' '}
+                            {(systemCounts?.carrieboyd_staged_ml ?? 0) > 0 && `CB: ${systemCounts?.carrieboyd_staged_ml?.toFixed(1)}ml staged`}
+                            {(systemCounts?.carrieboyd_staged_ml ?? 0) > 0 && (systemCounts?.toprx_staged_ml ?? 0) > 0 && ' | '}
+                            {(systemCounts?.toprx_staged_ml ?? 0) > 0 && `TopRX: ${systemCounts?.toprx_staged_ml?.toFixed(1)}ml staged`}
+                        </p>
+                    )}
                 </div>
 
                 <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' }}>

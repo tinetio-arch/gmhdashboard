@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
           sd.status,
           sd.notes
         FROM staged_doses sd
-        WHERE sd.staged_for_date = (NOW() AT TIME ZONE 'America/Denver')::date
+        WHERE sd.staged_for_date = (NOW() AT TIME ZONE 'America/Phoenix')::date
           AND sd.status = 'staged'
         ORDER BY sd.patient_name ASC
       `),
@@ -70,7 +70,7 @@ export async function GET(request: NextRequest) {
           (SELECT COUNT(*) FROM staged_doses sd2
            WHERE sd2.patient_id = p.patient_id
              AND sd2.status = 'staged'
-             AND sd2.staged_for_date = (NOW() AT TIME ZONE 'America/Denver')::date
+             AND sd2.staged_for_date = (NOW() AT TIME ZONE 'America/Phoenix')::date
           ) as staged_dose_count,
           (SELECT COUNT(*) FROM payment_issues pi
            WHERE pi.patient_id = p.patient_id
@@ -78,7 +78,7 @@ export async function GET(request: NextRequest) {
           ) as open_alert_count
         FROM patients p
         JOIN staged_doses sd ON sd.patient_id = p.patient_id
-        WHERE sd.staged_for_date = (NOW() AT TIME ZONE 'America/Denver')::date
+        WHERE sd.staged_for_date = (NOW() AT TIME ZONE 'America/Phoenix')::date
           AND sd.status = 'staged'
         ORDER BY p.patient_id, p.full_name
       `),
@@ -86,14 +86,14 @@ export async function GET(request: NextRequest) {
       // Revenue: today, this week, this month (gracefully handle missing table)
       query<any>(`
         SELECT
-          COALESCE(SUM(CASE WHEN sale_date >= (NOW() AT TIME ZONE 'America/Denver')::date
+          COALESCE(SUM(CASE WHEN sale_date >= (NOW() AT TIME ZONE 'America/Phoenix')::date
                         THEN total_price::numeric ELSE 0 END), 0)::text as today,
-          COALESCE(SUM(CASE WHEN sale_date >= date_trunc('week', (NOW() AT TIME ZONE 'America/Denver')::date)
+          COALESCE(SUM(CASE WHEN sale_date >= date_trunc('week', (NOW() AT TIME ZONE 'America/Phoenix')::date)
                         THEN total_price::numeric ELSE 0 END), 0)::text as week,
-          COALESCE(SUM(CASE WHEN sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Denver')::date)
+          COALESCE(SUM(CASE WHEN sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
                         THEN total_price::numeric ELSE 0 END), 0)::text as month
         FROM peptide_sales
-        WHERE sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Denver')::date)
+        WHERE sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
       `).catch(() => [{ today: '0', week: '0', month: '0' }]),
 
       // Total active patients
@@ -115,11 +115,26 @@ export async function GET(request: NextRequest) {
       ptByType[row.client_type_key] = parseInt(row.count, 10);
     }
 
+    // Strip time from date-only columns to prevent UTC midnight → Arizona timezone shift
+    const toDateOnly = (v: any): string | null => {
+      if (!v) return null;
+      const s = String(v);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+      const match = s.match(/^(\d{4}-\d{2}-\d{2})/);
+      return match ? match[1] : s;
+    };
+
+    // Fix date fields in patient rows before sending to client
+    const fixedPatients = todayPatients.map((p: any) => ({
+      ...p,
+      dob: toDateOnly(p.dob),
+    }));
+
     return NextResponse.json({
       success: true,
       data: {
-        date: new Date().toISOString().split('T')[0],
-        patients: todayPatients,
+        date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }),
+        patients: fixedPatients,
         staged_doses: stagedDoses,
         payment_alerts: paymentIssues,
         revenue: {

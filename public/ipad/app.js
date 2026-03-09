@@ -15,10 +15,15 @@ let allPatients = [];            // from /ops/api/patients
 let scribeSessions = [];         // from /ops/api/scribe/sessions
 let activeScribeSession = null;  // currently selected session
 let isRecording = false;
+let isPaused = false;
 let mediaRecorder = null;
 let audioChunks = [];
 let recordingStartTime = null;
 let recordingTimer = null;
+let audioAnalyser = null;
+let audioContext = null;
+let pausedDuration = 0;
+let pauseStartTime = null;
 let scribeView = 'list';        // 'list' | 'new' | 'recording' | 'transcript' | 'note' | 'review'
 let scribePatientId = null;
 let scribePatientName = '';
@@ -38,8 +43,11 @@ let labsLoaded = false;         // prevent infinite reload
 let patientsLoaded = false;     // prevent infinite reload
 let currentUser = null;          // from /api/ipad/me — role, permissions
 
-// Cron secret for Healthie appointments
-const CRON_SECRET = '59c7ba5958b3c753f607a1bdeeb53ae36aabac6ebcf8729f6d411f43fc704122';
+// HTML sanitizer to prevent XSS
+function sanitize(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
 
 // ─── INIT ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
@@ -180,8 +188,8 @@ function applyRolePermissions() {
         scribeTab.style.display = 'none';
     }
 
-    // Add Schedule tab for providers/admins
-    if ((perms.can_use_scribe || perms.can_view_ceo_dashboard) && nav) {
+    // Add Schedule tab for providers/admins (prevent duplicates)
+    if ((perms.can_use_scribe || perms.can_view_ceo_dashboard) && nav && !nav.querySelector('[data-tab="schedule"]')) {
         const scheduleTab = document.createElement('button');
         scheduleTab.className = 'tab-item';
         scheduleTab.dataset.tab = 'schedule';
@@ -201,8 +209,8 @@ function applyRolePermissions() {
         }
     }
 
-    // Add CEO tab for admins
-    if (perms.can_view_ceo_dashboard && nav) {
+    // Add CEO tab for admins (prevent duplicates)
+    if (perms.can_view_ceo_dashboard && nav && !nav.querySelector('[data-tab="ceo"]')) {
         const ceoTab = document.createElement('button');
         ceoTab.className = 'tab-item';
         ceoTab.dataset.tab = 'ceo';
@@ -406,14 +414,16 @@ async function loadAllData() {
     scribeLoaded = false; // reset on full refresh
     labsLoaded = false;
     patientsLoaded = false;
+    patient360Cache = {}; // clear stale patient data on full refresh
     renderCurrentTab(); // Show loading states
 
     let anySuccess = false;
 
-    // Parallel fetch: dashboard + inventory alerts + Healthie appointments + patients + labs
+    // Parallel fetch: dashboard + inventory + schedule + patients + labs
     const results = await Promise.allSettled([
         loadDashboard(),
         loadInventoryAlerts(),
+        loadInventorySummary(),
         loadHealthieAppointments(),
         loadAllPatients(),
         loadLabsQueue()
@@ -469,23 +479,22 @@ async function loadDashboard() {
 
 async function loadHealthieAppointments() {
     try {
-        const data = await apiFetch('/ops/api/cron/morning-prep/', {
-            headers: { 'x-cron-secret': CRON_SECRET }
-        });
-        // Morning-prep returns { success, data: { summary: { patients: [...] } } }
-        if (data?.success && data?.data?.summary?.patients) {
-            healthieAppointments = data.data.summary.patients.map(p => ({
-                id: p.healthie_id || p.patient_id || '',
-                patient_name: p.full_name || p.name || '',
+        // Use lightweight schedule endpoint (cookie-authenticated, no cron secret)
+        const data = await apiFetch('/ops/api/ipad/schedule/');
+        if (data?.success && Array.isArray(data.patients)) {
+            healthieAppointments = data.patients.map(p => ({
+                id: p.appointment_id || '',
+                patient_id: p.patient_id || p.healthie_id || '',
+                patient_name: p.full_name || p.patient_name || '',
                 appointment_type: p.appointment_type || '',
                 status: p.appointment_status || 'scheduled',
-                time: '',
+                appointment_status: p.appointment_status || 'scheduled',
+                time: p.time || '',
+                provider: p.provider || '',
                 has_staged_dose: p.has_staged_dose || false,
                 has_payment_issue: p.has_payment_issue || false,
                 has_pending_lab: p.has_pending_lab || false,
             }));
-        } else if (data && data.appointments) {
-            healthieAppointments = data.appointments;
         } else if (Array.isArray(data)) {
             healthieAppointments = data;
         }
@@ -604,8 +613,8 @@ async function loadAllPatients() {
     }
 }
 
-async function loadPatient360(patientId) {
-    if (patient360Cache[patientId]) return patient360Cache[patientId];
+async function loadPatient360(patientId, forceRefresh = false) {
+    if (!forceRefresh && patient360Cache[patientId]) return patient360Cache[patientId];
     try {
         const data = await apiFetch(`/ops/api/ipad/patient/${patientId}/`);
         // API returns { success, data: { demographics, recent_dispenses, recent_peptides, payment_issues, staged_doses, summary } }
@@ -617,6 +626,11 @@ async function loadPatient360(patientId) {
         console.warn(`Patient 360 load failed for ${patientId}:`, e);
         return null;
     }
+}
+
+// Invalidate patient cache after mutations so next view shows fresh data
+function invalidatePatientCache(patientId) {
+    delete patient360Cache[patientId];
 }
 
 // ─── BADGE UPDATES ──────────────────────────────────────────
@@ -668,7 +682,8 @@ function getGreeting() {
 
 function formatDate() {
     return new Date().toLocaleDateString('en-US', {
-        weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+        weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+        timeZone: 'America/Phoenix'
     });
 }
 
@@ -743,40 +758,42 @@ function renderTodayView(container) {
     const stagedDoses = getStagedDoses();
     const paymentIssues = getPaymentIssues();
     const patients = getPatients();
+    const revenue = dashboardData?.revenue || {};
 
-    // Compute stats — use allPatients count for active count, not today's dashboard patients
-    const activePatientCount = allPatients.length || patients.length || 0;
+    // Compute stats
+    const activePatientCount = dashboardData?.totalActivePatients || allPatients.length || patients.length || 0;
     const labsPendingCount = getLabsPending().length || 0;
     const stagedCount = stagedDoses.length || 0;
     const paymentIssueCount = paymentIssues.length || 0;
+    const appointmentCount = healthieAppointments.length;
 
     // Build action items from live data
     const actions = buildActionItems(labsPendingCount, paymentIssueCount, stagedCount);
 
-    // Merge Healthie appointments with staged doses for the schedule
-    const scheduleItems = buildSchedule(stagedDoses);
+    // Greeting — personalized to logged-in user
+    const userName = currentUser?.display_name || currentUser?.email?.split('@')[0] || 'Team';
 
     container.innerHTML = `
         <div class="greeting">
-            <h1>${getGreeting()}, Team</h1>
+            <h1>${getGreeting()}, ${sanitize(userName)}</h1>
             <div class="date">${formatDate()}</div>
         </div>
 
         <div class="stats-row stagger-in">
+            <div class="stat-card" onclick="window.location.hash='#schedule'">
+                <div class="stat-icon cyan">📅</div>
+                <div class="stat-value">${appointmentCount}</div>
+                <div class="stat-label">Today's Appts</div>
+            </div>
             <div class="stat-card" onclick="window.location.hash='#patients'">
-                <div class="stat-icon cyan">👥</div>
+                <div class="stat-icon purple">👥</div>
                 <div class="stat-value">${activePatientCount}</div>
                 <div class="stat-label">Active Patients</div>
             </div>
             <div class="stat-card" onclick="window.location.hash='#labs'">
-                <div class="stat-icon purple">🧪</div>
+                <div class="stat-icon green">🧪</div>
                 <div class="stat-value">${labsPendingCount}</div>
                 <div class="stat-label">Labs Pending</div>
-            </div>
-            <div class="stat-card" onclick="scrollToSection('stagedDosesSection')">
-                <div class="stat-icon green">💉</div>
-                <div class="stat-value">${stagedCount}</div>
-                <div class="stat-label">Staged Doses</div>
             </div>
             <div class="stat-card ${paymentIssueCount > 0 ? 'alert' : ''}" onclick="scrollToSection('paymentSection')">
                 <div class="stat-icon red">💳</div>
@@ -784,6 +801,26 @@ function renderTodayView(container) {
                 <div class="stat-label">Payment Issues</div>
             </div>
         </div>
+
+        ${(revenue.today > 0 || revenue.week > 0 || revenue.month > 0) ? `
+            <div class="section-header">
+                <h2>Revenue</h2>
+            </div>
+            <div class="stats-row stagger-in" style="margin-bottom:12px;">
+                <div class="stat-card" style="flex:1; border-left:3px solid #22c55e;">
+                    <div class="stat-value" style="color:#22c55e;">$${(revenue.today || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                    <div class="stat-label">Today</div>
+                </div>
+                <div class="stat-card" style="flex:1; border-left:3px solid #3b82f6;">
+                    <div class="stat-value" style="color:#3b82f6;">$${(revenue.week || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                    <div class="stat-label">This Week</div>
+                </div>
+                <div class="stat-card" style="flex:1; border-left:3px solid #a855f7;">
+                    <div class="stat-value" style="color:#a855f7;">$${(revenue.month || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                    <div class="stat-label">This Month</div>
+                </div>
+            </div>
+        ` : ''}
 
         ${actions.length > 0 ? `
             <div class="section-header">
@@ -795,25 +832,25 @@ function renderTodayView(container) {
             </div>
         ` : ''}
 
-        ${healthieAppointments.length > 0 ? `
-            <div class="section-header">
-                <h2>Healthie Appointments</h2>
-                <span class="section-action">${healthieAppointments.length} today</span>
-            </div>
+        <div class="section-header">
+            <h2>Today's Schedule</h2>
+            <button class="section-action" onclick="window.location.hash='#schedule'">${appointmentCount} appointments →</button>
+        </div>
+        ${appointmentCount > 0 ? `
             <div class="stagger-in">
                 ${healthieAppointments.map(a => renderHealthieAppointment(a)).join('')}
             </div>
-        ` : ''}
+        ` : renderEmptyState('📅', 'No Appointments Today', 'No patients are scheduled for today')}
 
-        <div class="section-header" id="stagedDosesSection">
-            <h2>Staged Doses</h2>
-            <span class="section-action">${stagedCount} staged</span>
-        </div>
         ${stagedDoses.length > 0 ? `
-            <div class="schedule-timeline stagger-in">
-                ${scheduleItems.map(s => renderScheduleItem(s)).join('')}
+            <div class="section-header" id="stagedDosesSection">
+                <h2>Staged Doses</h2>
+                <span class="section-action">${stagedCount} staged</span>
             </div>
-        ` : renderEmptyState('💉', 'No staged doses', 'No doses staged for today')}
+            <div class="schedule-timeline stagger-in">
+                ${buildSchedule(stagedDoses).map(s => renderScheduleItem(s)).join('')}
+            </div>
+        ` : ''}
 
         ${paymentIssues.length > 0 ? `
             <div class="section-header" id="paymentSection">
@@ -946,47 +983,88 @@ function renderActionCard(action, index) {
 }
 
 function renderHealthieAppointment(appt) {
-    // Normalize different possible field names from the morning-prep endpoint
-    const name = appt.patient_name || appt.patientName || appt.name || 'Unknown';
+    const name = appt.patient_name || appt.patientName || appt.name || appt.full_name || 'Unknown';
     const time = appt.time || appt.scheduled_time || appt.start_time || '';
     const type = appt.type || appt.appointment_type || appt.reason || '';
-    const status = appt.status || 'scheduled';
+    const provider = appt.provider || '';
+    const status = appt.status || appt.appointment_status || 'scheduled';
+    const patientId = appt.patient_id || appt.id || '';
 
     let statusClass = 'scheduled';
-    if (status === 'checked_in' || status === 'Checked In') statusClass = 'checked_in';
-    else if (status === 'in_progress' || status === 'In Progress') statusClass = 'in_progress';
-    else if (status === 'completed' || status === 'Completed') statusClass = 'completed';
+    let statusLabel = 'Scheduled';
+    if (status === 'checked_in' || status === 'Checked In') { statusClass = 'checked_in'; statusLabel = 'Checked In'; }
+    else if (status === 'in_progress' || status === 'In Progress') { statusClass = 'in_progress'; statusLabel = 'In Progress'; }
+    else if (status === 'completed' || status === 'Completed') { statusClass = 'completed'; statusLabel = 'Complete'; }
+    else if (status === 'Confirmed') { statusClass = 'checked_in'; statusLabel = 'Confirmed'; }
+    else if (status === 'No Show') { statusClass = 'completed'; statusLabel = 'No Show'; }
 
     const displayTime = typeof time === 'string' && time.includes('T')
-        ? new Date(time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+        ? new Date(time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Phoenix' })
         : time;
 
+    const apptId = appt.id || appt.healthie_id || '';
+    const canAdvance = statusClass !== 'completed' && apptId;
+
     return `
-        <div class="healthie-appt-card" onclick="handleHealthieClick('${appt.id || ''}', '${status}')">
-            <div class="healthie-appt-time">${displayTime}</div>
+        <div class="healthie-appt-card" onclick="${patientId ? `navigateToPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}')` : ''}" style="cursor:${patientId ? 'pointer' : 'default'};">
+            <div class="healthie-appt-time">${displayTime || '—'}</div>
             <div class="healthie-appt-info">
-                <div class="healthie-appt-name">${name}</div>
-                <div class="healthie-appt-type">${type}</div>
+                <div class="healthie-appt-name">${sanitize(name)}</div>
+                <div class="healthie-appt-type">${sanitize(type)}${provider ? ' · ' + sanitize(provider) : ''}</div>
             </div>
-            <div class="healthie-appt-status sched-status ${statusClass}">${statusClass.replace('_', ' ')}</div>
+            <div class="healthie-appt-status sched-status ${statusClass}" ${canAdvance ? `onclick="event.stopPropagation(); handleHealthieClick('${apptId}', '${status}')" style="cursor:pointer;" title="Click to advance status"` : ''}>${statusLabel}</div>
         </div>
     `;
 }
 
-function handleHealthieClick(id, currentStatus) {
-    const nextStatus = {
-        'scheduled': 'checked_in',
-        'checked_in': 'in_progress',
-        'in_progress': 'completed'
+async function handleHealthieClick(id, currentStatus) {
+    // Map Healthie statuses to next status in workflow
+    const normalized = (currentStatus || '').toLowerCase().replace(/\s+/g, '_');
+    const nextStatusMap = {
+        'scheduled': 'Confirmed',
+        'confirmed': 'Checked In',
+        'checked_in': 'In Progress',
+        'in_progress': 'Completed',
     };
-    const next = nextStatus[currentStatus];
+    const next = nextStatusMap[normalized];
     if (!next || !id) return;
 
-    // Update locally
-    const appt = healthieAppointments.find(a => String(a.id) === String(id));
-    if (appt) appt.status = next;
+    // Optimistic update — change local state immediately
+    // Try healthieAppointments (Today view)
+    let appt = healthieAppointments.find(a => String(a.id) === String(id));
+    const previousStatus = appt ? (appt.status || appt.appointment_status) : null;
+    if (appt) {
+        appt.status = next;
+        appt.appointment_status = next;
+    }
     renderCurrentTab();
-    showToast(`Status → ${next.replace('_', ' ')}`, 'success');
+    showToast(`Status → ${next}`, 'info');
+
+    // Persist to Healthie via backend API
+    try {
+        const resp = await apiFetch('/ops/api/ipad/appointment-status/', {
+            method: 'PATCH',
+            body: JSON.stringify({ appointment_id: id, status: next }),
+        });
+        if (resp.success) {
+            showToast(`✓ Status saved to Healthie`, 'success');
+            // Reload schedule data to reflect change (handles Schedule view)
+            if (currentTab === 'schedule') loadScheduleData();
+        } else {
+            throw new Error(resp.error || 'Unknown error');
+        }
+    } catch (e) {
+        console.error('[iPad] Status update failed:', e);
+        // Rollback to previous status (Today view)
+        if (appt && previousStatus) {
+            appt.status = previousStatus;
+            appt.appointment_status = previousStatus;
+        }
+        renderCurrentTab();
+        // If on schedule tab, reload from server to ensure consistent state
+        if (currentTab === 'schedule') loadScheduleData();
+        showToast(`Status update failed: ${e.message}`, 'error');
+    }
 }
 
 function renderScheduleItem(dose) {
@@ -1007,17 +1085,24 @@ function renderScheduleItem(dose) {
 
 function renderPaymentIssueCard(issue) {
     const name = issue.patient_name || issue.patientName || issue.name || 'Unknown';
-    const detail = issue.issue || issue.reason || issue.description || 'Payment issue';
-    const amount = issue.amount || issue.balance || '';
+    const issueType = issue.issue_type || issue.issue || issue.reason || 'Payment issue';
+    const severity = issue.issue_severity || issue.severity || 'medium';
+    const amount = parseFloat(issue.amount_owed || issue.amount || issue.balance || 0);
+    const daysOverdue = issue.days_overdue || '';
+    const patientId = issue.patient_id || '';
+
+    const severityColors = { high: '#ef4444', critical: '#ef4444', medium: '#f59e0b', low: '#3b82f6' };
+    const severityColor = severityColors[severity] || '#f59e0b';
+    const severityLabels = { high: '🔴', critical: '🔴', medium: '🟡', low: '🔵' };
 
     return `
-        <div class="payment-issue-card" onclick="showToast('Opening payment details…', 'info')">
-            <div class="payment-issue-icon">💳</div>
+        <div class="payment-issue-card" onclick="${patientId ? `navigateToPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}')` : ''}" style="border-left:3px solid ${severityColor};">
+            <div class="payment-issue-icon">${severityLabels[severity] || '💳'}</div>
             <div class="payment-issue-text">
-                <div class="payment-issue-name">${name}</div>
-                <div class="payment-issue-detail">${detail}</div>
+                <div class="payment-issue-name">${sanitize(name)}</div>
+                <div class="payment-issue-detail">${sanitize(issueType)}${daysOverdue ? ` · ${daysOverdue} days overdue` : ''}</div>
             </div>
-            ${amount ? `<div class="payment-issue-amount">$${typeof amount === 'number' ? amount.toFixed(2) : amount}</div>` : ''}
+            ${amount > 0 ? `<div class="payment-issue-amount" style="color:${severityColor};">$${amount.toFixed(2)}</div>` : ''}
         </div>
     `;
 }
@@ -1364,6 +1449,12 @@ function renderScribeView(container) {
         case 'note': renderScribeNote(container); break;
         case 'review': renderScribeReview(container); break;
         default: renderScribeList(container);
+    }
+
+    // Restore chart panel content after re-render if patient data is loaded
+    if (chartPanelOpen && chartPanelData && (scribeView === 'recording' || scribeView === 'note' || scribeView === 'review')) {
+        const content = document.getElementById('chartPanelContent');
+        if (content) renderChartPanel(content);
     }
 }
 
@@ -1735,6 +1826,19 @@ async function beginScribeCapture() {
         mediaRecorder.onstop = handleRecordingComplete;
         mediaRecorder.start(1000); // collect in 1-sec chunks
         isRecording = true;
+        isPaused = false;
+        pausedDuration = 0;
+        pauseStartTime = null;
+        // Set up AudioContext analyser for real audio level visualization
+        try {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(stream);
+            audioAnalyser = audioContext.createAnalyser();
+            audioAnalyser.fftSize = 128;
+            source.connect(audioAnalyser);
+        } catch (e) {
+            console.warn('AudioContext not available, using fallback waveform:', e);
+        }
         recordingStartTime = Date.now();
         scribeView = 'recording';
         // Auto-open chart panel BEFORE rendering so it renders as open
@@ -1761,15 +1865,18 @@ async function beginScribeCapture() {
 }
 
 function renderScribeRecording(container) {
+    const pauseLabel = isPaused ? '▶ Resume' : '⏸ Pause';
+    const recordingState = isPaused ? 'paused' : 'active';
+
     container.innerHTML = `
         <div class="scribe-recording-view">
             <div class="scribe-header-row">
-                <h1 style="font-size:24px;">Recording Visit</h1>
+                <h1 style="font-size:24px;">${isPaused ? '⏸ Paused' : '🔴 Recording Visit'}</h1>
                 ${getChartToggleBtn()}
             </div>
             ${getChartPanelHTML()}
             <div class="scribe-recording-center">
-                <div class="recording-pulse-ring">
+                <div class="recording-pulse-ring ${isPaused ? 'recording-paused' : ''}">
                     <div class="recording-pulse-dot"></div>
                 </div>
                 <div class="recording-timer" id="recordingTimer">00:00</div>
@@ -1779,7 +1886,14 @@ function renderScribeRecording(container) {
             <div class="recording-waveform" id="waveform">
                 ${Array.from({ length: 40 }, () => '<div class="wave-bar"></div>').join('')}
             </div>
-            <div class="recording-controls">
+            <div class="recording-controls" style="display:flex; gap:12px; justify-content:center;">
+                <button class="btn-pause-recording" onclick="togglePauseRecording()" style="
+                    padding:14px 28px; border-radius:12px; font-size:15px; font-weight:600;
+                    background:${isPaused ? 'rgba(34,197,94,0.15)' : 'rgba(251,191,36,0.15)'};
+                    color:${isPaused ? '#22c55e' : '#fbbf24'};
+                    border:1px solid ${isPaused ? 'rgba(34,197,94,0.3)' : 'rgba(251,191,36,0.3)'};
+                    cursor:pointer; font-family:inherit;
+                ">${pauseLabel}</button>
                 <button class="btn-stop-recording" onclick="stopScribeRecording()">
                     <span class="stop-icon">◼</span> Stop Recording
                 </button>
@@ -1792,7 +1906,9 @@ function renderScribeRecording(container) {
 function updateRecordingTimer() {
     const el = document.getElementById('recordingTimer');
     if (!el || !recordingStartTime) return;
-    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+    // Subtract paused time from elapsed
+    const currentPause = isPaused && pauseStartTime ? (Date.now() - pauseStartTime) : 0;
+    const elapsed = Math.floor((Date.now() - recordingStartTime - pausedDuration - currentPause) / 1000);
     const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
     const s = (elapsed % 60).toString().padStart(2, '0');
     el.textContent = `${m}:${s}`;
@@ -1801,11 +1917,53 @@ function updateRecordingTimer() {
 function animateWaveform() {
     const bars = document.querySelectorAll('.wave-bar');
     if (bars.length === 0 || !isRecording) return;
-    bars.forEach(bar => {
-        const h = Math.random() * 60 + 10;
-        bar.style.height = h + '%';
-    });
-    if (isRecording) requestAnimationFrame(() => setTimeout(animateWaveform, 100));
+
+    if (isPaused) {
+        // Show flat bars when paused
+        bars.forEach(bar => { bar.style.height = '8%'; });
+        if (isRecording) requestAnimationFrame(() => setTimeout(animateWaveform, 200));
+        return;
+    }
+
+    if (audioAnalyser) {
+        // Use real audio frequency data
+        const dataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+        audioAnalyser.getByteFrequencyData(dataArray);
+        const step = Math.max(1, Math.floor(dataArray.length / bars.length));
+        bars.forEach((bar, i) => {
+            const val = dataArray[Math.min(i * step, dataArray.length - 1)] || 0;
+            bar.style.height = Math.max(5, (val / 255) * 90) + '%';
+        });
+    } else {
+        // Fallback: random animation
+        bars.forEach(bar => {
+            bar.style.height = (Math.random() * 60 + 10) + '%';
+        });
+    }
+    if (isRecording) requestAnimationFrame(() => setTimeout(animateWaveform, 80));
+}
+
+function togglePauseRecording() {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+
+    if (isPaused) {
+        // Resume
+        mediaRecorder.resume();
+        isPaused = false;
+        pausedDuration += (Date.now() - (pauseStartTime || Date.now()));
+        pauseStartTime = null;
+        showToast('Recording resumed', 'info');
+    } else {
+        // Pause
+        mediaRecorder.pause();
+        isPaused = true;
+        pauseStartTime = Date.now();
+        showToast('Recording paused', 'info');
+    }
+    renderCurrentTab();
+    // Restart timer update
+    if (recordingTimer) clearInterval(recordingTimer);
+    recordingTimer = setInterval(updateRecordingTimer, 1000);
 }
 
 function getPatientNameById(id) {
@@ -1818,12 +1976,19 @@ function getPatientNameById(id) {
 }
 
 function stopScribeRecording() {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
+    if (mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused')) {
+        if (mediaRecorder.state === 'paused') mediaRecorder.resume(); // must resume before stop
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach(t => t.stop());
     }
     isRecording = false;
+    isPaused = false;
+    pausedDuration = 0;
+    pauseStartTime = null;
     if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
+    // Clean up audio analyser
+    if (audioContext) { try { audioContext.close(); } catch (e) { } audioContext = null; }
+    audioAnalyser = null;
 }
 
 async function handleRecordingComplete() {
@@ -3020,6 +3185,11 @@ function renderDEASection() {
             💉 Stage Dose (Controlled)
         </button>
 
+        <!-- Dispense Now Button -->
+        <button class="btn-dispense" style="background:linear-gradient(135deg, #059669 0%, #10b981 100%); margin-top:8px;" onclick="openQuickDispenseModal()">
+            ✅ Dispense Now (Record Administration)
+        </button>
+
         <!-- Stage Dose Modal -->
         <div class="modal-overlay" id="stageDoseModal">
             <div class="modal modal-large">
@@ -3657,13 +3827,16 @@ function renderPatientListItem(p) {
     const label = formatStatusLabel(rawStatus);
     const statusColor = getStatusColor(rawStatus);
     const clientType = formatClientType(p.client_type_key || p.client_type || '');
+    const hasHealthie = !!(p.healthie_client_id || p.healthie_id);
 
     return `
         <div class="patient-list-item" onclick="selectPatient('${p.id || p.patient_id}')">
             <div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>
             <div class="patient-list-info">
-                <div class="patient-list-name">${name}</div>
-                ${clientType ? `<div style="font-size:11px; color:var(--text-tertiary); margin-top:1px;">${clientType}</div>` : ''}
+                <div class="patient-list-name">${sanitize(name)}
+                    ${hasHealthie ? '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:#22c55e; font-weight:500;">✓ Healthie</span>' : '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(239,68,68,0.1); color:#ef4444; font-weight:500;">✗ Not linked</span>'}
+                </div>
+                ${clientType ? `<div style="font-size:11px; color:var(--text-tertiary); margin-top:1px;">${sanitize(clientType)}</div>` : ''}
             </div>
             <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${label}</span>
         </div>
@@ -3707,11 +3880,14 @@ async function selectPatient(id) {
     detail.innerHTML = `
         <div class="patient-detail">
             <div class="patient-detail-header">
-                <div class="patient-detail-avatar" style="background:${color}">${getInitials(name)}</div>
+                <div class="patient-detail-avatar" style="background:${color}" id="patientAvatar-${id}">${getInitials(name)}</div>
                 <div style="flex:1">
-                    <div class="patient-detail-name">${name}</div>
+                    <div class="patient-detail-name">${sanitize(name)}</div>
                     ${patient.dob ? `<div class="patient-detail-dob">DOB: ${formatDateDisplay(patient.dob)}</div>` : ''}
-                    <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${statusLabel}</span>
+                    <div style="display:flex; gap:4px; margin-top:4px;">
+                        <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${statusLabel}</span>
+                        ${patient.healthie_client_id ? '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ Healthie</span>' : '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(239,68,68,0.12); color:#ef4444;">❌ Not linked</span>'}
+                    </div>
                 </div>
                 <button class="quick-action-btn-sm" onclick="openStatusChangeModal('${id}', '${rawStatus}')" title="Change Status">✏️</button>
             </div>
@@ -3734,12 +3910,14 @@ async function selectPatient(id) {
 function formatDateDisplay(dateStr) {
     if (!dateStr) return '';
     try {
-        const d = new Date(dateStr);
+        // Parse date-only strings as noon UTC to avoid day-boundary shift in Arizona (UTC-7)
+        const raw = String(dateStr);
+        const d = raw.match(/^\d{4}-\d{2}-\d{2}$/) ? new Date(raw + 'T12:00:00Z') : new Date(raw);
         if (isNaN(d.getTime())) return dateStr;
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const dd = String(d.getDate()).padStart(2, '0');
-        const yyyy = d.getFullYear();
-        return `${mm}-${dd}-${yyyy}`;
+        return d.toLocaleDateString('en-US', {
+            month: '2-digit', day: '2-digit', year: 'numeric',
+            timeZone: 'America/Phoenix'
+        }).replace(/\//g, '-');
     } catch { return dateStr; }
 }
 
@@ -3769,13 +3947,20 @@ function renderPatient360(data, patient, patientId) {
     const hasHealthie = !!(demo.healthie_client_id || patient?.healthie_client_id);
     const healthiePhoto = demo.healthie_avatar_url || patient?.healthie_avatar_url || '';
 
+    // If we have a Healthie avatar, update the patient detail header avatar
+    if (healthiePhoto) {
+        const avatarEl = document.getElementById(`patientAvatar-${patientId}`);
+        if (avatarEl) {
+            avatarEl.innerHTML = `<img src="${healthiePhoto}" style="width:100%; height:100%; border-radius:inherit; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(demo.full_name || '')}'"/>`;
+        }
+    }
+
     let html = '';
 
     // ─── Badges & Info Grid (no duplicate name — name is in the header above) ───
     html += `
         <div class="patient-360-section">
             <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
-                ${healthiePhoto ? `<img src="${healthiePhoto}" style="width:40px; height:40px; border-radius:10px; object-fit:cover; border:2px solid var(--border-light);">` : ''}
                 <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ GMH</span>
                 <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${hasGHL ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${hasGHL ? '#22c55e' : '#ef4444'};">${hasGHL ? '✅' : '❌'} GHL</span>
                 <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:${hasHealthie ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${hasHealthie ? '#22c55e' : '#ef4444'};">${hasHealthie ? '✅' : '❌'} Healthie</span>
@@ -4630,17 +4815,7 @@ async function loadScheduleData() {
     if (!contentEl) return;
 
     try {
-        // Use lightweight schedule endpoint (not heavy morning-prep cron)
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 25000);
-        let data;
-        try {
-            data = await apiFetch('/ops/api/ipad/schedule/');
-        } catch (fetchErr) {
-            clearTimeout(timeout);
-            throw fetchErr;
-        }
-        clearTimeout(timeout);
+        const data = await apiFetch('/ops/api/ipad/schedule/');
         const patients = data?.patients || [];
 
         if (patients.length === 0) {
@@ -4665,14 +4840,21 @@ async function loadScheduleData() {
                 </span>
             </div>
             ${patients.map(p => {
-            const statusColor = p.appointment_status === 'Confirmed' ? '#22c55e' :
-                p.appointment_status === 'Checked In' ? '#22d3ee' :
-                    p.appointment_status === 'No Show' ? '#ef4444' : '#fbbf24';
-            const statusBg = p.appointment_status === 'Confirmed' ? 'rgba(34,197,94,0.15)' :
-                p.appointment_status === 'Checked In' ? 'rgba(34,211,238,0.15)' :
-                    p.appointment_status === 'No Show' ? 'rgba(239,68,68,0.15)' : 'rgba(251,191,36,0.15)';
+            const st = p.appointment_status || 'Pending';
+            const statusColor = st === 'Confirmed' ? '#22c55e' :
+                st === 'Checked In' ? '#22d3ee' :
+                    st === 'In Progress' ? '#a855f7' :
+                        st === 'Completed' ? '#10b981' :
+                            st === 'No Show' ? '#ef4444' : '#fbbf24';
+            const statusBg = st === 'Confirmed' ? 'rgba(34,197,94,0.15)' :
+                st === 'Checked In' ? 'rgba(34,211,238,0.15)' :
+                    st === 'In Progress' ? 'rgba(168,85,247,0.15)' :
+                        st === 'Completed' ? 'rgba(16,185,129,0.15)' :
+                            st === 'No Show' ? 'rgba(239,68,68,0.15)' : 'rgba(251,191,36,0.15)';
+            const apptId = p.appointment_id || '';
+            const canAdvance = apptId && st !== 'Completed' && st !== 'No Show';
             return `
-                <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:10px; cursor:pointer;" onclick="navigateToPatient('${p.patient_id || ''}', '${(p.full_name || '').replace(/'/g, "\\'")}')">
+                <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:10px; cursor:pointer;" onclick="navigateToPatient('${p.patient_id || ''}', '${(p.full_name || '').replace(/'/g, "\\\'")}')">
                     <div style="display:flex; align-items:center; justify-content:space-between;">
                         <div style="display:flex; align-items:center; gap:12px;">
                             <div style="width:42px; height:42px; border-radius:10px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--text-primary);">
@@ -4685,8 +4867,8 @@ async function loadScheduleData() {
                                 ${p.needs_payment ? '<span style="font-size:11px; color:#ef4444; margin-left:6px;">💳 Payment issue</span>' : ''}
                             </div>
                         </div>
-                        <span style="font-size:11px; padding:4px 10px; border-radius:6px; background:${statusBg}; color:${statusColor}; font-weight:500;">
-                            ${p.appointment_status || 'Pending'}
+                        <span style="font-size:11px; padding:4px 10px; border-radius:6px; background:${statusBg}; color:${statusColor}; font-weight:500; ${canAdvance ? 'cursor:pointer;' : ''}" ${canAdvance ? `onclick="event.stopPropagation(); handleHealthieClick('${apptId}', '${st}')" title="Click to advance status"` : ''}>
+                            ${st}
                         </span>
                     </div>
                 </div>
@@ -4701,11 +4883,11 @@ async function loadScheduleData() {
 
 function navigateToPatient(patientId, patientName) {
     if (!patientId) return;
-    selectedPatient = patientId;
     window.location.hash = '#patients';
+    // Wait for tab to render, then trigger proper patient selection
     setTimeout(() => {
-        loadPatient360(patientId);
-    }, 200);
+        selectPatient(patientId);
+    }, 300);
 }
 
 // ─── VITALS / METRICS ENTRY ─────────────────────────────────
@@ -4859,7 +5041,8 @@ async function submitVitals(patientId) {
         document.getElementById('vitalsNotes').value = '';
 
         // Refresh patient data to show new vitals
-        loadPatient360(patientId);
+        invalidatePatientCache(patientId);
+        loadPatient360(patientId, true);
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         errorEl.textContent = e.message || 'Failed to save vitals';
@@ -5168,13 +5351,195 @@ async function submitControlledDispense(patientId, patientName) {
         btn.textContent = '✅ Done';
         setTimeout(() => {
             document.getElementById('controlledDispenseModal')?.remove();
-            loadPatient360(patientId);
+            invalidatePatientCache(patientId);
+            loadPatient360(patientId, true);
         }, 1500);
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         errorEl.textContent = e.message || 'Dispense failed';
         errorEl.style.display = 'block';
         btn.textContent = '💉 Stage & Dispense';
+        btn.disabled = false;
+    }
+}
+// ─── QUICK DISPENSE MODAL (from Inventory tab) ─────────────
+async function openQuickDispenseModal() {
+    const existing = document.getElementById('quickDispenseModal');
+    if (existing) existing.remove();
+
+    // Load available vials
+    let vials = [];
+    try {
+        const data = await apiFetch('/ops/api/inventory/vials?status=active');
+        vials = data?.data || data?.vials || data || [];
+        if (!Array.isArray(vials)) vials = [];
+    } catch { vials = []; }
+
+    const deaVials = vials.filter(v => v.dea_schedule || v.dea_drug_name);
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="quickDispenseModal" class="modal-overlay" style="display:flex;">
+            <div class="modal modal-large" style="max-width:540px;">
+                <div class="modal-header">
+                    <h2 style="font-size:18px; margin:0;">✅ Record Controlled Dispense</h2>
+                    <button class="modal-close" onclick="document.getElementById('quickDispenseModal').remove()">✕</button>
+                </div>
+                <div class="modal-body" style="padding:20px;">
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Patient</label>
+                        <div class="patient-search-wrapper">
+                            <input type="text" id="qdPatientSearch" class="patient-search-input" placeholder="Type 2+ letters to search patients…" autocomplete="off" />
+                            <div id="qdPatientResults" class="patient-search-results"></div>
+                            <div id="qdPatientBadge" class="patient-selected-badge" style="display:none;"></div>
+                        </div>
+                    </div>
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Select Vial</label>
+                        <select id="qdVial" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                            <option value="">Choose a vial…</option>
+                            ${deaVials.map(v => `<option value="${v.external_id || v.vial_id}" data-drug="${v.dea_drug_name || 'Testosterone Cypionate'}" data-remaining="${v.remaining_ml || v.volume_ml || 10}">${v.external_id || v.vial_id} — ${v.dea_drug_name || 'Testosterone'} (${parseFloat(v.remaining_ml || v.volume_ml || 10).toFixed(1)}mL remain)</option>`).join('')}
+                        </select>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px;">
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Dose (mL)</label>
+                            <input id="qdDoseMl" type="number" step="0.01" value="0.50" min="0.01" max="10" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Waste (mL)</label>
+                            <input id="qdWasteMl" type="number" step="0.01" value="0.00" min="0" max="10" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Syringes</label>
+                            <input id="qdSyringes" type="number" value="1" min="1" max="5" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                        </div>
+                    </div>
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Notes</label>
+                        <input id="qdNotes" type="text" placeholder="Optional notes…" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                    </div>
+                    <div id="qdError" style="display:none; padding:8px 12px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.2); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:12px;"></div>
+                    <div id="qdSuccess" style="display:none; padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); border-radius:8px; color:#22c55e; font-size:13px; margin-bottom:12px;"></div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-cancel" onclick="document.getElementById('quickDispenseModal').remove()">Cancel</button>
+                    <button class="btn-primary" id="qdSubmitBtn" onclick="submitQuickDispense()" style="background:linear-gradient(135deg, #059669 0%, #10b981 100%);">✅ Record Dispense</button>
+                </div>
+            </div>
+        </div>
+    `);
+
+    // Setup patient search
+    let qdTimeout = null;
+    let qdSelectedPatientId = null;
+    let qdSelectedPatientName = '';
+    const input = document.getElementById('qdPatientSearch');
+    const results = document.getElementById('qdPatientResults');
+    if (input) {
+        input.addEventListener('input', () => {
+            const q = input.value.trim();
+            if (q.length < 2) { results.innerHTML = ''; results.style.display = 'none'; return; }
+            clearTimeout(qdTimeout);
+            qdTimeout = setTimeout(() => {
+                const matches = allPatients.filter(p => {
+                    const name = (p.name || p.full_name || '').toLowerCase();
+                    return name.includes(q.toLowerCase());
+                }).slice(0, 10);
+                if (matches.length > 0) {
+                    results.style.display = 'block';
+                    results.innerHTML = matches.map(p => `
+                        <div class="patient-search-item" onclick="selectQuickDispensePatient('${p.id || p.patient_id}', '${sanitize(p.name || p.full_name || '').replace(/'/g, "\\\\'")}')">
+                            <span class="patient-search-name">${sanitize(p.name || p.full_name)}</span>
+                        </div>
+                    `).join('');
+                } else {
+                    results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
+                    results.style.display = 'block';
+                }
+            }, 200);
+        });
+    }
+
+    // Store patient selection on window for the submit function
+    window._qdPatientId = null;
+    window._qdPatientName = '';
+}
+
+function selectQuickDispensePatient(patientId, patientName) {
+    window._qdPatientId = patientId;
+    window._qdPatientName = patientName;
+    const input = document.getElementById('qdPatientSearch');
+    const results = document.getElementById('qdPatientResults');
+    const badge = document.getElementById('qdPatientBadge');
+    if (input) input.value = '';
+    if (results) { results.innerHTML = ''; results.style.display = 'none'; }
+    if (badge) {
+        badge.style.display = 'flex';
+        badge.innerHTML = `
+            <span>👤 ${patientName}</span>
+            <button onclick="window._qdPatientId=null; window._qdPatientName=''; this.parentElement.style.display='none';" class="patient-clear-btn">✕</button>
+        `;
+    }
+}
+
+async function submitQuickDispense() {
+    const btn = document.getElementById('qdSubmitBtn');
+    const errorEl = document.getElementById('qdError');
+    const successEl = document.getElementById('qdSuccess');
+    const vialSelect = document.getElementById('qdVial');
+    const vialExternalId = vialSelect?.value;
+    const drugName = vialSelect?.selectedOptions[0]?.dataset?.drug || 'Testosterone Cypionate';
+    const doseMl = parseFloat(document.getElementById('qdDoseMl')?.value || 0);
+    const wasteMl = parseFloat(document.getElementById('qdWasteMl')?.value || 0);
+    const syringes = parseInt(document.getElementById('qdSyringes')?.value || 1);
+    const notes = document.getElementById('qdNotes')?.value || '';
+    const patientId = window._qdPatientId;
+    const patientName = window._qdPatientName;
+
+    if (!patientId) { errorEl.textContent = 'Please select a patient'; errorEl.style.display = 'block'; return; }
+    if (!vialExternalId) { errorEl.textContent = 'Please select a vial'; errorEl.style.display = 'block'; return; }
+    if (doseMl <= 0) { errorEl.textContent = 'Dose must be greater than 0'; errorEl.style.display = 'block'; return; }
+
+    btn.textContent = 'Dispensing…';
+    btn.disabled = true;
+    errorEl.style.display = 'none';
+
+    try {
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+        const resp = await apiFetch('/ops/api/ipad/quick-dispense/', {
+            method: 'POST',
+            body: JSON.stringify({
+                vialExternalId,
+                patientId,
+                patientName,
+                dispenseDate: today,
+                syringeCount: syringes,
+                dosePerSyringeMl: doseMl / syringes,
+                totalDispensedMl: doseMl,
+                wasteMl,
+                transactionType: 'dispense',
+                notes,
+                deaDrugName: drugName,
+            })
+        });
+
+        if (resp.error) throw new Error(resp.error);
+
+        successEl.textContent = `${drugName} dispensed to ${patientName}: ${doseMl}mL + ${wasteMl}mL waste`;
+        successEl.style.display = 'block';
+
+        btn.textContent = '✅ Done';
+        setTimeout(() => {
+            document.getElementById('quickDispenseModal')?.remove();
+            // Refresh inventory data
+            loadInventorySummary().then(() => { if (currentTab === 'inventory') renderCurrentTab(); });
+        }, 1500);
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        errorEl.textContent = e.message || 'Dispense failed';
+        errorEl.style.display = 'block';
+        btn.textContent = '✅ Record Dispense';
         btn.disabled = false;
     }
 }
@@ -5305,7 +5670,8 @@ async function submitDemographicsEdit(patientId) {
         delete patient360Cache[patientId];
         setTimeout(() => {
             document.getElementById('editDemoModal')?.remove();
-            loadPatient360(patientId);
+            invalidatePatientCache(patientId);
+            loadPatient360(patientId, true);
         }, 1500);
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;

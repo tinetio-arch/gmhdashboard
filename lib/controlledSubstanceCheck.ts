@@ -137,8 +137,8 @@ export async function getTodayCheckStatus(checkType: 'morning' | 'evening' = 'mo
  * Get current system inventory counts
  */
 export async function getSystemInventoryCounts(): Promise<{
-    cb30ml: { fullVials: number; vialCount: number; totalMl: number; partialVialMl: number };
-    topRx10ml: { fullVials: number; vialCount: number; totalMl: number; partialVialMl: number };
+    cb30ml: { fullVials: number; vialCount: number; totalMl: number; partialVialMl: number; stagedDoseMl: number };
+    topRx10ml: { fullVials: number; vialCount: number; totalMl: number; partialVialMl: number; stagedDoseMl: number };
 }> {
     // Carrie Boyd 30ml
     const cbResult = await query<{
@@ -184,18 +184,35 @@ export async function getSystemInventoryCounts(): Promise<{
       AND remaining_volume_ml::numeric > 0
   `);
 
+    // Pending staged doses — volume already drawn from vials into prefilled syringes
+    // These are physically on the shelf but NOT in vials anymore.
+    // We report them separately so the morning check can display accurate vial-only counts.
+    const stagedResult = await query<{ cb_staged_ml: string; tr_staged_ml: string }>(`
+    SELECT 
+      COALESCE(SUM(CASE WHEN v.size_ml::numeric >= 20 THEN sd.total_ml::numeric ELSE 0 END), 0) as cb_staged_ml,
+      COALESCE(SUM(CASE WHEN v.size_ml::numeric < 20 THEN sd.total_ml::numeric ELSE 0 END), 0) as tr_staged_ml
+    FROM staged_doses sd
+    LEFT JOIN vials v ON sd.vial_id = v.vial_id
+    WHERE sd.status = 'staged'
+  `);
+
+    const cbStagedMl = parseFloat(stagedResult[0]?.cb_staged_ml || '0');
+    const trStagedMl = parseFloat(stagedResult[0]?.tr_staged_ml || '0');
+
     return {
         cb30ml: {
             fullVials: parseInt(cbResult[0]?.full_vials || '0'),
             vialCount: parseInt(cbResult[0]?.vial_count || '0'),
             totalMl: parseFloat(cbResult[0]?.total_ml || '0'),
-            partialVialMl: parseFloat(cbResult[0]?.partial_ml || '0')
+            partialVialMl: parseFloat(cbResult[0]?.partial_ml || '0'),
+            stagedDoseMl: cbStagedMl
         },
         topRx10ml: {
             fullVials: parseInt(topRxResult[0]?.full_vials || '0'),
             vialCount: parseInt(topRxResult[0]?.vial_count || '0'),
             totalMl: parseFloat(topRxResult[0]?.total_ml || '0'),
-            partialVialMl: parseFloat(topRxResult[0]?.partial_ml || '0')
+            partialVialMl: parseFloat(topRxResult[0]?.partial_ml || '0'),
+            stagedDoseMl: trStagedMl
         }
     };
 }
