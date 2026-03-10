@@ -89,7 +89,7 @@ export async function getTodayCheckStatus(checkType: 'morning' | 'evening' = 'mo
         check_type: string;
     }>(`
     SELECT * FROM controlled_substance_checks
-    WHERE check_date = (NOW() AT TIME ZONE 'America/Denver')::DATE
+    WHERE check_date = (NOW() AT TIME ZONE 'America/Phoenix')::DATE
       AND check_type = $1
     ORDER BY performed_at DESC
     LIMIT 1
@@ -285,7 +285,7 @@ export async function recordControlledSubstanceCheck(
       status,
       check_type
     ) VALUES (
-      (NOW() AT TIME ZONE 'America/Denver')::DATE,
+      (NOW() AT TIME ZONE 'America/Phoenix')::DATE,
       $1, $2, NOW(),
       $3, $4, $5, $6,
       $7, $8, $9, $10,
@@ -314,7 +314,7 @@ export async function recordControlledSubstanceCheck(
 
     return {
         checkId: result[0].check_id,
-        checkDate: new Date().toISOString().split('T')[0],
+        checkDate: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }),
         performedBy: input.performedBy,
         performedByName: input.performedByName,
         performedAt: new Date().toISOString(),
@@ -482,7 +482,7 @@ export async function adjustInventoryToPhysicalCount(
 export async function getCheckHistory(days: number = 30): Promise<ControlledSubstanceCheck[]> {
     const result = await query<any>(`
     SELECT * FROM controlled_substance_checks
-    WHERE check_date >= (NOW() AT TIME ZONE 'America/Denver')::DATE - INTERVAL '${days} days'
+    WHERE check_date >= (NOW() AT TIME ZONE 'America/Phoenix')::DATE - INTERVAL '${days} days'
     ORDER BY check_date DESC, performed_at DESC
   `);
 

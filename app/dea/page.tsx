@@ -26,7 +26,7 @@ export default async function DeaPage({ searchParams }: { searchParams: { startD
            discrepancy_found, discrepancy_ml_cb, discrepancy_ml_toprx,
            discrepancy_notes, notes
       FROM controlled_substance_checks
-     WHERE check_date >= (NOW() AT TIME ZONE 'America/Denver')::date - INTERVAL '14 days'
+     WHERE check_date >= (NOW() AT TIME ZONE 'America/Phoenix')::date - INTERVAL '14 days'
      ORDER BY check_date DESC, check_type DESC
   `);
 

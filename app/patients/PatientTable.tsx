@@ -450,6 +450,7 @@ function formatDisplayDate(value: unknown): string {
 function parseDate(value: unknown): Date | null {
   const source = normaliseDateSource(value);
   if (!source) return null;
+  // Handle MM-DD-YYYY or M/D/YY user input format
   const shortMatch = source.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
   if (shortMatch) {
     const month = Number(shortMatch[1]);
@@ -467,14 +468,32 @@ function parseDate(value: unknown): Date | null {
       day >= 1 &&
       day <= 31
     ) {
-      return new Date(Date.UTC(year, month - 1, day));
+      // Use noon UTC to prevent Arizona timezone shift (SOT rule)
+      return new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
     }
   }
+  // Handle YYYY-MM-DD date-only strings (from DB or API)
+  // CRITICAL: Parse as NOON UTC to avoid day-boundary shift.
+  // Without this, UTC midnight (00:00Z) in Arizona (UTC-7) = previous day 5PM.
+  const isoDateOnly = source.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateOnly) {
+    const y = Number(isoDateOnly[1]);
+    const m = Number(isoDateOnly[2]);
+    const d = Number(isoDateOnly[3]);
+    return new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  }
+  // Handle full ISO timestamps (with time component)
   const candidate = source.replace(' ', 'T');
   const isoCandidate = candidate.includes('Z') || candidate.includes('+') ? candidate : `${candidate}Z`;
   const date = new Date(isoCandidate);
   if (Number.isNaN(date.getTime())) {
     return null;
+  }
+  // If the timestamp is exactly midnight UTC (T00:00:00), it's a date-only value
+  // from the pg driver. Shift to noon UTC to prevent Arizona timezone from showing
+  // the previous day. (UTC midnight = 5PM previous day in Arizona)
+  if (date.getUTCHours() === 0 && date.getUTCMinutes() === 0 && date.getUTCSeconds() === 0 && date.getUTCMilliseconds() === 0) {
+    date.setUTCHours(12);
   }
   return date;
 }

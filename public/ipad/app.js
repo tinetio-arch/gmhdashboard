@@ -3223,7 +3223,7 @@ function renderDEASection() {
                     </div>
                     <div class="modal-field half">
                         <label>Staged For Date</label>
-                        <input type="date" id="stageDoseDate" value="${new Date().toISOString().split('T')[0]}">
+                        <input type="date" id="stageDoseDate" value="${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' })}">
                     </div>
                 </div>
                 <div class="modal-field">

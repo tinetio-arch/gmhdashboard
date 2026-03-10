@@ -120,7 +120,7 @@ export async function GET(
         FROM staged_doses
         WHERE patient_id = $1
           AND status = 'staged'
-          AND staged_for_date > (NOW() AT TIME ZONE 'America/Denver')::date
+          AND staged_for_date > (NOW() AT TIME ZONE 'America/Phoenix')::date
       `, [patientId]),
         ]);
 

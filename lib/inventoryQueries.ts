@@ -654,12 +654,12 @@ export type CreateDispenseResult = {
 
 // Check if today's MORNING controlled substance check has been completed
 // (EOD check is optional - does not block dispensing)
-// Uses America/Denver timezone since CURRENT_DATE is UTC and the clinic is in Mountain time.
+// Uses America/Phoenix timezone since CURRENT_DATE is UTC and the clinic is in Mountain time.
 // Without this, after 5 PM Mountain (= midnight UTC), the query looks for "tomorrow's" check.
 async function isTodayCheckCompleted(client: any): Promise<boolean> {
   const result = await client.query(`
     SELECT check_id FROM controlled_substance_checks
-    WHERE check_date = (NOW() AT TIME ZONE 'America/Denver')::date
+    WHERE check_date = (NOW() AT TIME ZONE 'America/Phoenix')::date
       AND check_type = 'morning'
     LIMIT 1
   `);
@@ -1082,6 +1082,12 @@ export async function deleteDispense(
       });
     }
 
+    // Nullify staged_doses FK references to DEA transactions that will be deleted
+    await client.query(
+      `UPDATE staged_doses SET dispense_dea_tx_id = NULL
+       WHERE dispense_dea_tx_id IN (SELECT dea_tx_id FROM dea_transactions WHERE dispense_id = $1)`,
+      [dispenseId]
+    );
     await client.query('DELETE FROM dea_transactions WHERE dispense_id = $1', [dispenseId]);
     await client.query('DELETE FROM dispense_history WHERE dispense_id = $1', [dispenseId]);
     await client.query('DELETE FROM dispenses WHERE dispense_id = $1', [dispenseId]);

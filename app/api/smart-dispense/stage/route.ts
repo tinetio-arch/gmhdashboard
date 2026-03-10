@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Create DEA transaction for staging
-        const stagedDate = new Date().toISOString().split('T')[0];
+        const stagedDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
         const deaTx = await client.query<{ dea_tx_id: string }>(`
       INSERT INTO dea_transactions (
         dispense_id, vial_id, patient_id, prescriber,

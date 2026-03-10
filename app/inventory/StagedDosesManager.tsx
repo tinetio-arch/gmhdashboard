@@ -52,7 +52,7 @@ export default function StagedDosesManager({ patients, onUpdate }: Props) {
     const [wasteMl, setWasteMl] = useState('0.1');
     const [syringeCount, setSyringeCount] = useState('4');
     const [vendor, setVendor] = useState('Carrie Boyd - Testosterone Miglyol 812 Oil Injection 200mg/ml (Pre-Filled Syringes) - 30 ML Vials');
-    const [stagedForDate, setStagedForDate] = useState(new Date().toISOString().split('T')[0]);
+    const [stagedForDate, setStagedForDate] = useState(new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }));
     const [notes, setNotes] = useState('');
 
     // Filter patients like TransactionForm does

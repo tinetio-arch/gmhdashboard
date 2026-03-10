@@ -1691,8 +1691,8 @@ Example:
   | EOD | ❌ NO - Optional | Audit trail - verify inventory at end of day |
 
 **Timezone Handling (IMPORTANT)**:
-- All date comparisons use **Mountain Time** (`America/Denver`), NOT UTC
-- PostgreSQL queries use: `(NOW() AT TIME ZONE 'America/Denver')::DATE`
+- All date comparisons use **Mountain Time** (`America/Phoenix`), NOT UTC
+- PostgreSQL queries use: `(NOW() AT TIME ZONE 'America/Phoenix')::DATE`
 - This ensures EOD checks submitted after 5PM MST are recorded for TODAY, not tomorrow
 - Morning check requirement is based on local Mountain Time date, not server UTC
 

@@ -128,7 +128,7 @@ async function checkStagedDoses(matchedPatients: MatchedPatient[]): Promise<void
     SELECT DISTINCT patient_id
     FROM staged_doses
     WHERE patient_id = ANY($1)
-      AND staged_for_date = (NOW() AT TIME ZONE 'America/Denver')::date
+      AND staged_for_date = (NOW() AT TIME ZONE 'America/Phoenix')::date
       AND status = 'staged'
   `, [patientIds]);
 
