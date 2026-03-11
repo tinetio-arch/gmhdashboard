@@ -1813,17 +1813,74 @@ function selectScribeMethod(method) {
     }
 }
 
+// Smart MIME type detection — iPad/Safari prefers mp4, Chrome/Firefox prefer webm
+function getRecordingMimeType() {
+    const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+        'audio/wav',
+    ];
+    for (const mt of candidates) {
+        try {
+            if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(mt)) {
+                console.log('[Scribe] Using MIME type:', mt);
+                return mt;
+            }
+        } catch (e) { /* skip */ }
+    }
+    console.warn('[Scribe] No preferred MIME type supported, using browser default');
+    return ''; // let browser pick
+}
+
+// Store detected MIME type globally so handleRecordingComplete can use it
+let recordingMimeType = '';
+
 async function beginScribeCapture() {
     if (!scribePatientId) {
         showToast('Please select a patient first', 'error');
         return;
     }
+
+    // Check for MediaRecorder support (very old browsers)
+    if (typeof MediaRecorder === 'undefined') {
+        showToast('Recording not supported on this browser. Please update your iPad.', 'error');
+        return;
+    }
+
+    let stream;
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (micErr) {
+        console.error('[Scribe] Microphone access error:', micErr);
+        if (micErr.name === 'NotAllowedError' || micErr.name === 'PermissionDeniedError') {
+            showToast('Microphone access denied. Please allow microphone access in Settings → Safari → Microphone.', 'error');
+        } else if (micErr.name === 'NotFoundError') {
+            showToast('No microphone found. Please check your device.', 'error');
+        } else {
+            showToast('Could not access microphone: ' + (micErr.message || micErr.name), 'error');
+        }
+        return;
+    }
+
+    try {
         audioChunks = [];
-        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+        recordingMimeType = getRecordingMimeType();
+        const recorderOptions = recordingMimeType ? { mimeType: recordingMimeType } : {};
+        mediaRecorder = new MediaRecorder(stream, recorderOptions);
+        // Update recordingMimeType to what the browser actually chose
+        recordingMimeType = mediaRecorder.mimeType || recordingMimeType;
+        console.log('[Scribe] MediaRecorder created with mimeType:', mediaRecorder.mimeType);
+
         mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
         mediaRecorder.onstop = handleRecordingComplete;
+        mediaRecorder.onerror = (e) => {
+            console.error('[Scribe] MediaRecorder error:', e);
+            showToast('Recording error: ' + (e.error?.message || 'unknown'), 'error');
+            stopScribeRecording();
+        };
         mediaRecorder.start(1000); // collect in 1-sec chunks
         isRecording = true;
         isPaused = false;
@@ -1858,9 +1915,12 @@ async function beginScribeCapture() {
         }
         // Start timer
         recordingTimer = setInterval(updateRecordingTimer, 1000);
+        showToast('Recording started', 'success');
     } catch (err) {
-        showToast('Microphone access denied', 'error');
-        console.error('Mic error:', err);
+        // Stop the mic stream if MediaRecorder fails
+        stream.getTracks().forEach(t => t.stop());
+        console.error('[Scribe] MediaRecorder creation error:', err);
+        showToast('Could not start recording: ' + (err.message || 'unsupported format'), 'error');
     }
 }
 
@@ -1993,9 +2053,27 @@ function stopScribeRecording() {
 
 async function handleRecordingComplete() {
     showToast('Uploading audio for transcription…', 'info');
-    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+
+    // Use the actual MIME type that was recorded (detected in beginScribeCapture)
+    const mimeType = recordingMimeType || 'audio/webm';
+    const blob = new Blob(audioChunks, { type: mimeType });
+
+    // Determine file extension from MIME type
+    const extMap = {
+        'audio/webm;codecs=opus': 'webm',
+        'audio/webm': 'webm',
+        'audio/mp4;codecs=mp4a.40.2': 'mp4',
+        'audio/mp4': 'mp4',
+        'audio/ogg;codecs=opus': 'ogg',
+        'audio/wav': 'wav',
+        'audio/x-wav': 'wav',
+    };
+    const ext = extMap[mimeType] || (mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm');
+    const filename = `visit-recording.${ext}`;
+    console.log(`[Scribe] Uploading: ${filename} (${mimeType}, ${(blob.size / 1024).toFixed(1)}KB)`);
+
     const formData = new FormData();
-    formData.append('audio', blob, 'visit-recording.webm');
+    formData.append('audio', blob, filename);
     formData.append('patient_id', scribePatientId);
     formData.append('visit_type', scribeVisitType);
     formData.append('patient_name', scribePatientName || '');
