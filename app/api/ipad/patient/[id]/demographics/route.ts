@@ -30,7 +30,7 @@ export async function PUT(
 
         // 1. Update local GMH DB
         await query(
-            `UPDATE patient_360 SET
+            `UPDATE patients SET
                 full_name = $2, first_name = $3, last_name = $4,
                 dob = $5, gender = $6, phone_primary = $7, email = $8,
                 address_line_1 = $9, city = $10, state = $11, zip = $12,
@@ -45,7 +45,7 @@ export async function PUT(
         let healthieSynced = false;
         try {
             const patientRows = await query(
-                `SELECT healthie_client_id FROM patient_360 WHERE patient_id = $1`,
+                `SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1`,
                 [patientId]
             );
             const healthieClientId = (patientRows as any[])[0]?.healthie_client_id;
@@ -84,7 +84,7 @@ export async function PUT(
         let ghlSynced = false;
         try {
             const patientRows = await query(
-                `SELECT ghl_contact_id FROM patient_360 WHERE patient_id = $1`,
+                `SELECT ghl_contact_id FROM patients WHERE patient_id = $1`,
                 [patientId]
             );
             const ghlContactId = (patientRows as any[])[0]?.ghl_contact_id;

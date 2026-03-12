@@ -124,7 +124,7 @@ export async function POST(
         let healthieEntryId: string | null = null;
         try {
             const patientRows = await query(
-                `SELECT healthie_client_id FROM patient_360 WHERE patient_id = $1`,
+                `SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1`,
                 [patientId]
             );
             const healthieClientId = (patientRows as any[])[0]?.healthie_client_id;

@@ -24,7 +24,40 @@ let audioAnalyser = null;
 let audioContext = null;
 let pausedDuration = 0;
 let pauseStartTime = null;
+let autoPausedBySystem = false;  // true when auto-paused by visibilitychange (phone call, app switch)
 let scribeView = 'list';        // 'list' | 'new' | 'recording' | 'transcript' | 'note' | 'review'
+
+// ─── RECORDING INTERRUPTION PROTECTION ──────────────────────
+// Auto-pause recording when the page loses visibility (phone call, app switch, lock screen)
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden && isRecording && !isPaused && mediaRecorder && mediaRecorder.state === 'recording') {
+        console.log('[Scribe] Page hidden — auto-pausing recording to prevent data loss');
+        mediaRecorder.pause();
+        isPaused = true;
+        autoPausedBySystem = true;
+        pauseStartTime = Date.now();
+        // Timer keeps running so user sees elapsed time when they return
+    }
+    if (!document.hidden && autoPausedBySystem && isRecording) {
+        // Page visible again — show warning but DON'T auto-resume
+        console.log('[Scribe] Page visible again — recording still paused, awaiting manual resume');
+        showToast('⚠️ Recording was auto-paused (interruption detected). Tap Resume to continue.', 'warning', 5000);
+        renderCurrentTab();
+    }
+});
+
+// Emergency safety net — try to preserve chunks if page is closing
+window.addEventListener('beforeunload', (e) => {
+    if (isRecording && mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused')) {
+        console.warn('[Scribe] Page unloading during recording — attempting to stop and preserve audio');
+        try {
+            if (mediaRecorder.state === 'paused') mediaRecorder.resume();
+            mediaRecorder.stop();
+        } catch (err) {
+            console.error('[Scribe] Emergency stop failed:', err);
+        }
+    }
+});
 let scribePatientId = null;
 let scribePatientName = '';
 let scribeVisitType = 'follow_up';
@@ -713,17 +746,17 @@ function getLabsPending() {
 }
 
 // ─── TOAST ──────────────────────────────────────────────────
-function showToast(message, type = 'info') {
+function showToast(message, type = 'info', duration = 3000) {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    const icons = { success: '✓', error: '✕', info: 'ℹ' };
+    const icons = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
     toast.innerHTML = `<span>${icons[type] || 'ℹ'}</span> ${message}`;
     container.appendChild(toast);
     setTimeout(() => {
         toast.style.animation = 'toast-out 0.3s ease-out forwards';
         setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    }, duration);
 }
 
 // ─── LOADING STATE ──────────────────────────────────────────
@@ -1884,6 +1917,7 @@ async function beginScribeCapture() {
         mediaRecorder.start(1000); // collect in 1-sec chunks
         isRecording = true;
         isPaused = false;
+        autoPausedBySystem = false;
         pausedDuration = 0;
         pauseStartTime = null;
         // Set up AudioContext analyser for real audio level visualization
@@ -1928,12 +1962,23 @@ function renderScribeRecording(container) {
     const pauseLabel = isPaused ? '▶ Resume' : '⏸ Pause';
     const recordingState = isPaused ? 'paused' : 'active';
 
+    const autoPauseBanner = autoPausedBySystem ? `
+                <div class="auto-pause-banner" onclick="togglePauseRecording()">
+                    <div class="auto-pause-icon">⚠️</div>
+                    <div class="auto-pause-text">
+                        <strong>Recording auto-paused</strong>
+                        <span>Interrupted by phone call or app switch — tap here to resume</span>
+                    </div>
+                </div>
+            ` : '';
+
     container.innerHTML = `
         <div class="scribe-recording-view">
             <div class="scribe-header-row">
-                <h1 style="font-size:24px;">${isPaused ? '⏸ Paused' : '🔴 Recording Visit'}</h1>
+                <h1 style="font-size:24px;">${autoPausedBySystem ? '⚠️ Auto-Paused' : isPaused ? '⏸ Paused' : '🔴 Recording Visit'}</h1>
                 ${getChartToggleBtn()}
             </div>
+            ${autoPauseBanner}
             ${getChartPanelHTML()}
             <div class="scribe-recording-center">
                 <div class="recording-pulse-ring ${isPaused ? 'recording-paused' : ''}">
@@ -2010,6 +2055,7 @@ function togglePauseRecording() {
         // Resume
         mediaRecorder.resume();
         isPaused = false;
+        autoPausedBySystem = false;
         pausedDuration += (Date.now() - (pauseStartTime || Date.now()));
         pauseStartTime = null;
         showToast('Recording resumed', 'info');
@@ -2043,6 +2089,7 @@ function stopScribeRecording() {
     }
     isRecording = false;
     isPaused = false;
+    autoPausedBySystem = false;
     pausedDuration = 0;
     pauseStartTime = null;
     if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
@@ -2595,17 +2642,53 @@ async function generateScribeDoc(docType) {
 let chartPanelData = null;
 let chartPanelOpen = false;
 let chartPanelPatientId = null;
+let chartPanelState = 'normal'; // 'normal' | 'minimized' | 'expanded'
 
 function toggleChartPanel() {
     const panel = document.getElementById('chartPanel');
     if (!panel) return;
-    chartPanelOpen = !chartPanelOpen;
-    panel.classList.toggle('open', chartPanelOpen);
+
+    if (chartPanelState === 'minimized') {
+        // Restore from minimized
+        chartPanelState = 'normal';
+        panel.classList.remove('minimized', 'expanded');
+        panel.classList.add('open');
+        chartPanelOpen = true;
+    } else {
+        // Toggle open/close
+        chartPanelOpen = !chartPanelOpen;
+        panel.classList.toggle('open', chartPanelOpen);
+        panel.classList.remove('minimized', 'expanded');
+        chartPanelState = 'normal';
+    }
 
     // Load data if opening and we have a patient
     const pid = scribePatientId || activeScribeSession?.patient_id;
     if (chartPanelOpen && pid && pid !== chartPanelPatientId) {
         loadChartData(pid);
+    }
+}
+
+function minimizeChartPanel() {
+    const panel = document.getElementById('chartPanel');
+    if (!panel) return;
+    chartPanelState = 'minimized';
+    panel.classList.remove('expanded');
+    panel.classList.add('open', 'minimized');
+    chartPanelOpen = true; // still technically "open" in DOM
+}
+
+function expandChartPanel() {
+    const panel = document.getElementById('chartPanel');
+    if (!panel) return;
+    if (chartPanelState === 'expanded') {
+        // Collapse back to normal
+        chartPanelState = 'normal';
+        panel.classList.remove('expanded');
+    } else {
+        chartPanelState = 'expanded';
+        panel.classList.remove('minimized');
+        panel.classList.add('expanded');
     }
 }
 
@@ -2657,6 +2740,7 @@ async function loadChartData(patientId) {
             healthie_appointments: healthieChart?.appointments || [],
             scribe_history: healthieChart?.scribe_history || [],
             avatar_url: healthieChart?.avatar_url || null,
+            healthie_id: healthieChart?.healthie_id || local360?.demographics?.healthie_client_id || '',
         };
         renderChartPanel(content);
     } catch (e) {
@@ -2689,7 +2773,7 @@ function renderChartPanel(content) {
                 ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border);">\ud83d\udc64</div>`}
                 <div style="flex:1;">
                     <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
-                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${new Date(demo.dob).toLocaleDateString()}` : ''} ${demo.status_key ? '\u00b7 ' + demo.status_key : ''}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${formatDateDisplay(demo.dob)}` : ''} ${demo.status_key ? '\u00b7 ' + demo.status_key : ''}</div>
                 </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 8px; font-size:11px;">
@@ -3161,11 +3245,21 @@ function renderDocumentsTab(container, d) {
 // HTML for the chart panel (injected into scribe views)
 function getChartPanelHTML() {
     const patientName = scribePatientName || activeScribeSession?.patient_name || 'Patient';
+    const expandIcon = chartPanelState === 'expanded' ? '⊟' : '⊞';
+    const expandTitle = chartPanelState === 'expanded' ? 'Collapse' : 'Expand';
     return `
-        <div id="chartPanel" class="chart-panel ${chartPanelOpen ? 'open' : ''}">
+        <div id="chartPanel" class="chart-panel ${chartPanelOpen ? 'open' : ''} ${chartPanelState === 'minimized' ? 'minimized' : ''} ${chartPanelState === 'expanded' ? 'expanded' : ''}">
+            <div class="chart-panel-minimized-tab" onclick="toggleChartPanel()" title="Restore chart panel">
+                <span>📋</span>
+                <span class="minimized-patient-name">${patientName.split(' ')[0]}</span>
+            </div>
             <div class="chart-panel-header">
                 <div class="chart-panel-title">📋 ${patientName}</div>
-                <button class="chart-panel-close" onclick="toggleChartPanel()">✕</button>
+                <div class="chart-panel-actions">
+                    <button class="chart-panel-btn" onclick="minimizeChartPanel()" title="Minimize">⊟</button>
+                    <button class="chart-panel-btn" onclick="expandChartPanel()" title="${expandTitle}">${expandIcon}</button>
+                    <button class="chart-panel-close" onclick="toggleChartPanel()">✕</button>
+                </div>
             </div>
             <div id="chartPanelContent" class="chart-panel-content">
                 <div class="chart-loading"><div class="spinner"></div> Loading chart…</div>

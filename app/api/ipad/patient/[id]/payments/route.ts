@@ -17,7 +17,11 @@ export async function GET(
 
         // Look up Healthie client ID
         const rows = await query(
-            `SELECT healthie_client_id, full_name FROM patient_360 WHERE patient_id = $1`,
+            `SELECT hc.healthie_client_id, p.full_name
+             FROM patients p
+             LEFT JOIN healthie_clients hc ON p.patient_id = hc.patient_id AND hc.is_active = true
+             WHERE p.patient_id = $1
+             LIMIT 1`,
             [patientId]
         );
         const healthieClientId = (rows as any[])[0]?.healthie_client_id;

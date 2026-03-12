@@ -24,50 +24,85 @@ export async function GET(request: NextRequest) {
         const today = new Date();
         const todayStr = today.toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
 
-        // Fetch appointments from Healthie with a timeout
+        // Fetch appointments from Healthie — try rate-limited client first, fallback to direct fetch
         let appointments: any[] = [];
-        try {
-
-            const data = await healthieGraphQL<{
-                appointments: any[];
-            }>(`
-                query GetTodayAppointments($date: String) {
-                    appointments(
-                        filter_by_date_range: true,
-                        date_from: $date,
-                        date_to: $date,
-                        should_paginate: false
-                    ) {
+        const appointmentQuery = `
+            query GetTodayAppointments($date: String) {
+                appointments(
+                    filter_by_date_range: true,
+                    date_from: $date,
+                    date_to: $date,
+                    should_paginate: false
+                ) {
+                    id
+                    date
+                    appointment_type { name }
+                    provider { full_name }
+                    pm_status
+                    client {
                         id
-                        date
-                        appointment_type { name }
-                        provider { full_name }
-                        pm_status
-                        client {
-                            id
-                            first_name
-                            last_name
-                        }
+                        first_name
+                        last_name
                     }
                 }
-            `, { date: todayStr });
+            }
+        `;
+
+        try {
+            const data = await healthieGraphQL<{
+                appointments: any[];
+            }>(appointmentQuery, { date: todayStr });
 
             appointments = data?.appointments || [];
         } catch (err) {
-            console.warn('[iPad Schedule] Healthie appointments fetch failed:', err instanceof Error ? err.message : err);
-            // Return empty schedule rather than failing
-            return NextResponse.json({
-                success: true,
-                patients: [],
-                error: 'Could not reach Healthie — try again in a moment',
-            });
+            console.warn('[iPad Schedule] healthieGraphQL failed, trying direct fetch:', err instanceof Error ? err.message : err);
+
+            // Fallback: direct fetch (bypasses rate limiter, like patient-chart route does)
+            try {
+                const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
+                const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
+
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 10000);
+
+                const response = await fetch(HEALTHIE_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                        'AuthorizationSource': 'API',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: appointmentQuery,
+                        variables: { date: todayStr },
+                    }),
+                    signal: controller.signal,
+                });
+
+                clearTimeout(timeout);
+
+                if (response.ok) {
+                    const result = await response.json();
+                    appointments = result.data?.appointments || [];
+                    console.log('[iPad Schedule] Direct fetch succeeded:', appointments.length, 'appointments');
+                } else {
+                    console.warn('[iPad Schedule] Direct fetch HTTP', response.status);
+                }
+            } catch (directErr) {
+                console.warn('[iPad Schedule] Direct fetch also failed:', directErr instanceof Error ? directErr.message : directErr);
+                return NextResponse.json({
+                    success: true,
+                    patients: [],
+                    error: 'Could not reach Healthie — try again in a moment',
+                });
+            }
         }
 
         if (appointments.length === 0) {
             return NextResponse.json({ success: true, patients: [] });
         }
 
-        // Cross-reference with local patients
+        // Cross-reference with local patients using CANONICAL healthie_clients table
         const healthieIds = appointments
             .map(a => a.client?.id)
             .filter(Boolean);
@@ -76,8 +111,10 @@ export async function GET(request: NextRequest) {
         if (healthieIds.length > 0) {
             try {
                 const patients = await query<any>(
-                    `SELECT patient_id, healthie_client_id, full_name, status_key
-                     FROM patients WHERE healthie_client_id = ANY($1)`,
+                    `SELECT p.patient_id, hc.healthie_client_id, p.full_name, p.status_key
+                     FROM healthie_clients hc
+                     JOIN patients p ON p.patient_id = hc.patient_id
+                     WHERE hc.healthie_client_id = ANY($1) AND hc.is_active = true`,
                     [healthieIds]
                 );
                 patientMap = new Map(patients.map((p: any) => [p.healthie_client_id, p]));
