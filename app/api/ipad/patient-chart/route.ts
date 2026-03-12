@@ -34,7 +34,16 @@ export async function GET(request: NextRequest) {
             patient = rows?.[0] || null;
         }
 
-        const healthieId = patient?.healthie_client_id || patientId;
+        // Look up the real Healthie ID from the canonical healthie_clients table
+        let healthieId = '';
+        if (patient) {
+            const hcRows = await query<any>(
+                'SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1',
+                [patient.patient_id]
+            );
+            healthieId = hcRows?.[0]?.healthie_client_id || '';
+        }
+        if (!healthieId) healthieId = patientId; // last resort fallback
         const localData: any = { demographics: patient || {} };
 
         // 2. Fetch from Healthie in parallel (each query fails gracefully)

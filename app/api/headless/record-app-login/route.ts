@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
         );
 
         // Also try via healthie_clients mapping table
-        if (result.rows.length === 0) {
+        if (result.length === 0) {
             await query(
                 `UPDATE patients SET first_app_login = NOW()
          WHERE patient_id IN (

@@ -46,8 +46,11 @@ async function getPM2Processes(): Promise<Array<{
     pid: number;
 }>> {
     try {
-        const { stdout } = await execAsync('pm2 jlist 2>/dev/null || echo "[]"');
-        const processes = JSON.parse(stdout);
+        const { stdout } = await execAsync('pm2 jlist 2>/dev/null || echo "[]"', { timeout: 15000 });
+        // Strip any non-JSON prefix lines (e.g., PM2 "out-of-date" warnings)
+        const jsonStart = stdout.indexOf('[');
+        const jsonStr = jsonStart >= 0 ? stdout.slice(jsonStart) : '[]';
+        const processes = JSON.parse(jsonStr);
 
         return processes.map((p: any) => ({
             name: p.name,

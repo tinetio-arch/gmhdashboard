@@ -14,6 +14,7 @@ interface PatientSummary {
     last_reason: string | null;
     last_reason_category: string | null;
     status_key: string | null;
+    first_app_login: string | null;
 }
 
 interface Stats {
@@ -592,6 +593,7 @@ export default function AppControlClient() {
                                     <th style={thStyle}>Group</th>
                                     <th style={thStyle}>Tags</th>
                                     <th style={thStyle}>Healthie ID</th>
+                                    <th style={thStyle}>📱 First Login</th>
                                     <th style={thStyle}>Last Change</th>
                                     <th style={thStyle}>Actions</th>
                                 </tr>
@@ -640,6 +642,24 @@ export default function AppControlClient() {
                                             </td>
                                             <td style={{ ...tdStyle, fontSize: '0.8rem', fontFamily: 'monospace', color: '#64748b' }}>
                                                 {p.healthie_client_id || '—'}
+                                            </td>
+                                            <td style={tdStyle}>
+                                                {(p as any).first_app_login ? (
+                                                    <span style={{
+                                                        display: 'inline-block',
+                                                        padding: '0.15rem 0.5rem',
+                                                        borderRadius: '999px',
+                                                        fontSize: '0.75rem',
+                                                        fontWeight: 500,
+                                                        background: '#eff6ff',
+                                                        color: '#1d4ed8',
+                                                        border: '1px solid #bfdbfe',
+                                                    }}>
+                                                        ✅ {formatDate((p as any).first_app_login)}
+                                                    </span>
+                                                ) : (
+                                                    <span style={{ color: '#cbd5e1', fontSize: '0.75rem', fontStyle: 'italic' }}>Not yet</span>
+                                                )}
                                             </td>
                                             <td style={{ ...tdStyle, fontSize: '0.8rem', color: '#64748b' }}>
                                                 {p.last_changed_at ? (

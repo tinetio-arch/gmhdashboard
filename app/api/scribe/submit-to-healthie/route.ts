@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Duplicate submission protection (30-second window)
-        if (note.healthie_status === 'submitted' || note.healthie_status === 'locked') {
+        if (note.healthie_status === 'submitted' || note.healthie_status === 'locked' || note.healthie_status === 'signed') {
             const submittedAt = note.reviewed_at ? new Date(note.reviewed_at).getTime() : 0;
             const elapsed = Date.now() - submittedAt;
             if (elapsed < 30000) {
@@ -57,12 +57,13 @@ export async function POST(request: NextRequest) {
             // Allow re-submission if > 30s (user intentionally retrying)
         }
 
-        // 2. Fetch patient's Healthie ID
+        // 2. Fetch patient + Healthie ID from canonical healthie_clients table
         const [patient] = await query<any>(
-            'SELECT patient_id, full_name, healthie_client_id FROM patients WHERE patient_id = $1',
+            'SELECT p.patient_id, p.full_name, p.dob, hc.healthie_client_id FROM patients p LEFT JOIN healthie_clients hc ON p.patient_id = hc.patient_id::uuid AND hc.is_active = true WHERE p.patient_id = $1',
             [note.patient_id]
         );
-        if (!patient?.healthie_client_id) {
+        const healthiePatientId = patient?.healthie_client_id;
+        if (!healthiePatientId) {
             return NextResponse.json(
                 { success: false, error: 'Patient has no Healthie client ID. Link patient to Healthie first.' },
                 { status: 400 }
@@ -87,10 +88,10 @@ export async function POST(request: NextRequest) {
         };
 
         const formAnswers = [
-            { custom_module_id: FIELD_IDS.subjective, answer: formatSectionHtml(note.soap_subjective || ''), user_id: patient.healthie_client_id },
-            { custom_module_id: FIELD_IDS.objective, answer: formatSectionHtml(note.soap_objective || ''), user_id: patient.healthie_client_id },
-            { custom_module_id: FIELD_IDS.assessment, answer: formatSectionHtml(note.soap_assessment || ''), user_id: patient.healthie_client_id },
-            { custom_module_id: FIELD_IDS.plan, answer: formatSectionHtml(note.soap_plan || ''), user_id: patient.healthie_client_id },
+            { custom_module_id: FIELD_IDS.subjective, answer: formatSectionHtml(note.soap_subjective || ''), user_id: healthiePatientId },
+            { custom_module_id: FIELD_IDS.objective, answer: formatSectionHtml(note.soap_objective || ''), user_id: healthiePatientId },
+            { custom_module_id: FIELD_IDS.assessment, answer: formatSectionHtml(note.soap_assessment || ''), user_id: healthiePatientId },
+            { custom_module_id: FIELD_IDS.plan, answer: formatSectionHtml(note.soap_plan || ''), user_id: healthiePatientId },
         ];
 
         // 4. Create or Update FormAnswerGroup in Healthie (matching Telegram bot)
@@ -128,7 +129,7 @@ export async function POST(request: NextRequest) {
                 `, {
                     input: {
                         custom_module_form_id: SOAP_FORM_ID,
-                        user_id: patient.healthie_client_id,
+                        user_id: healthiePatientId,
                         finished: true,
                         form_answers: formAnswers,
                     },
@@ -146,7 +147,7 @@ export async function POST(request: NextRequest) {
             `, {
                 input: {
                     custom_module_form_id: SOAP_FORM_ID,
-                    user_id: patient.healthie_client_id,
+                    user_id: healthiePatientId,
                     finished: true,
                     form_answers: formAnswers,
                 },
@@ -160,6 +161,7 @@ export async function POST(request: NextRequest) {
 
         // 5. Lock the form answer group
         let locked = false;
+        let signed = false;
         try {
             await healthieGraphQL(`
                 mutation LockFormAnswerGroup($id: ID!) {
@@ -172,6 +174,35 @@ export async function POST(request: NextRequest) {
         } catch (lockErr) {
             console.warn('[Scribe:Submit] Note locking failed:', lockErr instanceof Error ? lockErr.message : lockErr);
             // Non-fatal
+        }
+
+        // 5.1. Sign the form answer group (provider signature)
+        if (locked) {
+            try {
+                await healthieGraphQL(`
+                    mutation SignFormAnswerGroup($input: signFormAnswerGroupInput!) {
+                        signFormAnswerGroup(input: $input) {
+                            form_answer_group {
+                                id
+                                locked
+                                form_answer_group_signings {
+                                    id
+                                    signed_at
+                                }
+                            }
+                        }
+                    }
+                `, {
+                    input: {
+                        id: healthieNoteId,
+                    },
+                });
+                signed = true;
+                console.log(`[Scribe:Submit] Chart signed in Healthie: ${healthieNoteId}`);
+            } catch (signErr) {
+                console.warn('[Scribe:Submit] Chart signing failed:', signErr instanceof Error ? signErr.message : signErr);
+                // Non-fatal — chart is still locked even if signing fails
+            }
         }
 
         // 5.5. Generate PDF and upload to Healthie as a document
@@ -207,7 +238,7 @@ export async function POST(request: NextRequest) {
                 }
             `, {
                 input: {
-                    rel_user_id: String(patient.healthie_client_id || healthiePatientId),
+                    rel_user_id: String(healthiePatientId),
                     display_name: pdfFilename,
                     file_string: dataUrl,
                     include_in_charting: true,
@@ -352,7 +383,7 @@ export async function POST(request: NextRequest) {
             WHERE note_id = $4
         `, [
             healthieNoteId,
-            locked ? 'locked' : 'submitted',
+            signed ? 'signed' : (locked ? 'locked' : 'submitted'),
             user.user_id,
             note_id,
         ]);
@@ -374,7 +405,7 @@ export async function POST(request: NextRequest) {
                     `👤 Patient: ${patient.full_name}`,
                     `📝 Visit: ${note.visit_type}`,
                     `🏥 Healthie SOAP Form: ${healthieNoteId}`,
-                    locked ? `🔒 Status: Locked` : `📤 Status: Submitted (not locked)`,
+                    signed ? `✍️ Status: Signed & Locked` : locked ? `🔒 Status: Locked` : `📤 Status: Submitted (not locked)`,
                     ``,
                     `_${verb} by ${user.display_name || user.email} via iPad_`,
                 ].filter(Boolean).join('\n');
@@ -390,7 +421,7 @@ export async function POST(request: NextRequest) {
             data: {
                 note_id,
                 healthie_note_id: healthieNoteId,
-                healthie_status: locked ? 'locked' : 'submitted',
+                healthie_status: signed ? 'signed' : (locked ? 'locked' : 'submitted'),
                 is_resubmit: isResubmit,
             },
         });

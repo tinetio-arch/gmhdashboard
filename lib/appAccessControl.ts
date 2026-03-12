@@ -334,7 +334,7 @@ export async function getAllPatientAccessSummaries(): Promise<PatientAccessSumma
      LEFT JOIN LATERAL (
        SELECT COALESCE(array_agg(pst.tag) FILTER (WHERE pst.tag IS NOT NULL), ARRAY[]::TEXT[]) AS active_tags
        FROM patient_service_tags pst
-       WHERE pst.patient_id = p.patient_id
+       WHERE pst.patient_id = p.patient_id::text
      ) tags ON TRUE
      LEFT JOIN users u ON u.user_id = latest.changed_by
      ORDER BY 
