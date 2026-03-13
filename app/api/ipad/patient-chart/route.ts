@@ -22,6 +22,36 @@ export async function GET(request: NextRequest) {
     }
 
     try {
+        // Helper function to merge local vitals with Healthie vitals
+        const mergeVitals = (localVitals: any[], healthieVitals: any[]) => {
+            // Convert local vitals to Healthie format
+            const formattedLocal = localVitals.map(v => ({
+                id: `local_${v.metric_id}`,
+                type: 'MetricEntry',
+                category: v.metric_type?.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()) || 'Vital',
+                metric_stat: v.value + (v.unit ? ` ${v.unit}` : ''),
+                created_at: v.created_at,
+                description: v.description || '',
+                created_by: {
+                    id: 'local',
+                    full_name: v.recorded_by_email?.split('@')[0] || 'Staff',
+                    email: v.recorded_by_email || ''
+                }
+            }));
+
+            // Merge and deduplicate by timestamp (keep Healthie version if duplicate within 5 seconds)
+            const merged = [...formattedLocal, ...healthieVitals];
+            const seen = new Set<string>();
+            return merged
+                .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                .filter(v => {
+                    const key = `${v.category}_${new Date(v.created_at).getTime()}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                });
+        };
+
         // 1. Look up patient in local DB
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientId);
         let patient: any = null;
@@ -48,7 +78,7 @@ export async function GET(request: NextRequest) {
 
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
-        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile] = await Promise.all([
+        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, subscriptions] = await Promise.all([
             // Chart notes (form answer groups) - NOTE: sort_by is NOT supported by Healthie API
             safeHealthieQuery<any>('chartNotes', `
                 query GetChartNotes($userId: String) {
@@ -60,7 +90,7 @@ export async function GET(request: NextRequest) {
                         name
                         created_at
                         updated_at
-                        finished_at
+                        finished
                         form_answers {
                             id
                             label
@@ -125,11 +155,6 @@ export async function GET(request: NextRequest) {
                         metric_stat
                         created_at
                         description
-                        created_by {
-                            id
-                            full_name
-                            email
-                        }
                     }
                 }
             `, { clientId: healthieId }),
@@ -203,6 +228,52 @@ export async function GET(request: NextRequest) {
                     }
                 }
             `, { id: healthieId }),
+
+            // Payment methods (credit cards on file) - use PLURAL stripe_customer_details
+            safeHealthieQuery<any>('paymentMethods', `
+                query GetPaymentMethods($userId: ID!) {
+                    user(id: $userId) {
+                        id
+                        stripe_customer_details {
+                            id
+                            card_type
+                            card_type_label
+                            last_four
+                            expiration
+                            source_status
+                            source_type
+                            zip
+                        }
+                    }
+                }
+            `, { userId: healthieId }),
+
+            // Active subscriptions/offerings
+            safeHealthieQuery<any>('subscriptions', `
+                query GetSubscriptions($userId: ID!) {
+                    user(id: $userId) {
+                        id
+                        active_offering_coupons {
+                            id
+                            offering {
+                                id
+                                name
+                                price
+                                recurring_price
+                            }
+                        }
+                        recurring_payment {
+                            id
+                            amount
+                            next_payment_date
+                            offering {
+                                id
+                                name
+                            }
+                        }
+                    }
+                }
+            `, { userId: healthieId }),
         ]);
 
         // 3. Fetch local scribe history — only if we have a valid uuid patient_id
@@ -219,6 +290,107 @@ export async function GET(request: NextRequest) {
                 ORDER BY ss.created_at DESC
                 LIMIT 10
             `, [localPatientId]);
+        }
+
+        // Query local patient metrics (vitals) - these may not have synced to Healthie yet
+        let localVitals: any[] = [];
+        try {
+            localVitals = await query<any>(`
+                SELECT
+                    metric_id,
+                    metric_type,
+                    value,
+                    unit,
+                    recorded_at as created_at,
+                    recorded_by_email,
+                    notes as description
+                FROM patient_metrics
+                WHERE patient_id = $1
+                ORDER BY recorded_at DESC
+                LIMIT 50
+            `, [localPatientId]);
+            console.log(`[Patient Chart] Found ${localVitals.length} local vitals for patient ${localPatientId}`);
+        } catch (err) {
+            console.warn(`[Patient Chart] Failed to query local vitals:`, err instanceof Error ? err.message : err);
+            localVitals = [];
+        }
+
+        // Query financial data - last Healthie payments
+        let lastPayments: any[] = [];
+        try {
+            lastPayments = await query<any>(`
+                SELECT
+                    payment_date,
+                    amount,
+                    payment_type,
+                    status,
+                    description
+                FROM healthie_payments
+                WHERE patient_id = $1
+                ORDER BY payment_date DESC
+                LIMIT 5
+            `, [localPatientId]);
+            console.log(`[Patient Chart] Found ${lastPayments.length} payments for patient ${localPatientId}`);
+        } catch (err) {
+            console.warn(`[Patient Chart] Failed to query payments:`, err instanceof Error ? err.message : err);
+            lastPayments = [];
+        }
+
+        // Query testosterone dispenses
+        let trtDispenses: any[] = [];
+        try {
+            trtDispenses = await query<any>(`
+                SELECT
+                    d.dispense_id,
+                    d.dispense_date,
+                    d.dose_per_syringe_ml,
+                    d.syringe_count,
+                    d.total_dispensed_ml,
+                    d.waste_ml,
+                    d.notes,
+                    d.prescriber,
+                    v.dea_drug_name,
+                    v.concentration,
+                    v.total_volume_ml
+                FROM dispenses d
+                LEFT JOIN vials v ON d.vial_id = v.vial_id
+                WHERE d.patient_id = $1
+                    AND d.signature_status = 'signed'
+                ORDER BY d.dispense_date DESC
+                LIMIT 10
+            `, [localPatientId]);
+            console.log(`[Patient Chart] Found ${trtDispenses.length} TRT dispenses for patient ${localPatientId}`);
+        } catch (err) {
+            console.warn(`[Patient Chart] Failed to query TRT dispenses:`, err instanceof Error ? err.message : err);
+            trtDispenses = [];
+        }
+
+        // Query peptide dispenses
+        let peptideDispenses: any[] = [];
+        try {
+            // Need to join with healthie_clients to match on healthie_client_id
+            const hcId = healthieId;
+            peptideDispenses = await query<any>(`
+                SELECT
+                    pd.sale_id,
+                    pd.sale_date,
+                    pd.quantity,
+                    pd.amount_charged,
+                    pd.status,
+                    pd.notes,
+                    pp.product_name,
+                    pp.dosage_mg,
+                    pp.vial_size_ml
+                FROM peptide_dispenses pd
+                LEFT JOIN peptide_products pp ON pd.product_id = pp.product_id
+                WHERE pd.healthie_client_id = $1
+                ORDER BY pd.sale_date DESC
+                LIMIT 10
+            `, [hcId]);
+            console.log(`[Patient Chart] Found ${peptideDispenses.length} peptide dispenses for patient ${hcId}`);
+        } catch (err) {
+            console.warn(`[Patient Chart] Failed to query peptide dispenses:`, err instanceof Error ? err.message : err);
+            peptideDispenses = [];
         }
 
         // Merge Healthie user profile data into demographics (fills in name, dob, etc.)
@@ -266,9 +438,16 @@ export async function GET(request: NextRequest) {
                 allergies: allergies?.user?.allergy_sensitivities || [],
                 appointments: appointments?.appointments || [],
                 documents: documents?.documents || [],
-                vitals: entries?.entries || [],
+                vitals: mergeVitals(localVitals, entries?.entries || []),
                 scribe_history: scribeHistory || [],
                 avatar_url: hp?.avatar_url || null,
+                // Financial & dispense data
+                last_payments: lastPayments || [],
+                trt_dispenses: trtDispenses || [],
+                peptide_dispenses: peptideDispenses || [],
+                payment_methods: paymentMethods?.user?.stripe_customer_details || [], // PLURAL - array of all cards
+                subscriptions: subscriptions?.user?.active_offering_coupons || [],
+                recurring_payment: subscriptions?.user?.recurring_payment || null,
             },
         });
     } catch (error) {

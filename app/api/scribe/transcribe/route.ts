@@ -257,7 +257,39 @@ export async function GET(request: NextRequest) {
                     if (!bodyStr) throw new Error('Empty transcript file from S3');
 
                     const transcriptData = JSON.parse(bodyStr);
-                    const transcript = transcriptData.results?.transcripts?.[0]?.transcript || '';
+
+                    // Extract speaker-labeled transcript (AWS Medical Transcribe format)
+                    let transcript = '';
+
+                    if (transcriptData.results?.speaker_labels?.segments) {
+                        // Build transcript with speaker labels: "Speaker 0: Hello doctor\nSpeaker 1: How can I help?"
+                        const segments = transcriptData.results.speaker_labels.segments;
+                        const items = transcriptData.results.items || [];
+
+                        transcript = segments.map((segment: any) => {
+                            const speaker = segment.speaker_label || 'Unknown';
+                            const startTime = parseFloat(segment.start_time || 0);
+                            const endTime = parseFloat(segment.end_time || 0);
+
+                            // Find all items within this segment's time range
+                            const segmentWords = items
+                                .filter((item: any) => {
+                                    if (item.type !== 'pronunciation') return false;
+                                    const itemTime = parseFloat(item.start_time || 0);
+                                    return itemTime >= startTime && itemTime <= endTime;
+                                })
+                                .map((item: any) => item.alternatives?.[0]?.content || '')
+                                .join(' ');
+
+                            return `${speaker}: ${segmentWords}`;
+                        }).join('\n\n');
+
+                        console.log(`[Scribe] Built speaker-labeled transcript: ${segments.length} segments`);
+                    } else {
+                        // Fallback to plain transcript if speaker labels not available
+                        transcript = transcriptData.results?.transcripts?.[0]?.transcript || '';
+                        console.warn('[Scribe] No speaker labels found in transcript, using plain text');
+                    }
 
                     // Update session with transcript
                     await query(

@@ -368,13 +368,14 @@ export async function POST(request: NextRequest) {
                             `, {
                                 input: {
                                     user_id: String(healthiePatientId),
-                                    type: type,
-                                    metric_stat: value,
-                                    category: 'Vital',
+                                    type: 'MetricEntry',
+                                    category: type,
+                                    metric_stat: String(value),
                                     created_at: new Date().toISOString(),
                                 }
                             });
                             vitalsCreated++;
+                            console.log(`[Scribe:Submit] Vital "${type}" created: ${value}`);
 
                             // Also sync diastolic for BP
                             if (type === 'Blood Pressure - Systolic' && match[2]) {
@@ -390,13 +391,14 @@ export async function POST(request: NextRequest) {
                                     `, {
                                         input: {
                                             user_id: String(healthiePatientId),
-                                            type: 'Blood Pressure - Diastolic',
-                                            metric_stat: diastolic,
-                                            category: 'Vital',
+                                            type: 'MetricEntry',
+                                            category: 'Blood Pressure - Diastolic',
+                                            metric_stat: String(diastolic),
                                             created_at: new Date().toISOString(),
                                         }
                                     });
                                     vitalsCreated++;
+                                    console.log(`[Scribe:Submit] Vital "Blood Pressure - Diastolic" created: ${diastolic}`);
                                 }
                             }
                         } catch (vitalErr) {

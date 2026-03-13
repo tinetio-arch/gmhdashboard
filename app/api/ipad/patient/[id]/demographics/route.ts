@@ -19,7 +19,8 @@ export async function PUT(
         const {
             first_name, last_name, dob, gender,
             phone_primary, email,
-            address_line_1, city, state, zip,
+            address_line_1, address_line_2, city, state, zip,
+            regimen, height, weight, preferred_name,
         } = body;
 
         if (!first_name || !last_name) {
@@ -28,17 +29,21 @@ export async function PUT(
 
         const fullName = `${first_name} ${last_name}`;
 
-        // 1. Update local GMH DB
+        // 1. Update local GMH DB (note: patients table doesn't have first_name/last_name columns, only full_name)
         await query(
             `UPDATE patients SET
-                full_name = $2, first_name = $3, last_name = $4,
-                dob = $5, gender = $6, phone_primary = $7, email = $8,
-                address_line_1 = $9, city = $10, state = $11, zip = $12,
+                full_name = $2,
+                preferred_name = $3,
+                dob = $4, gender = $5, phone_primary = $6, email = $7,
+                address_line1 = $8, address_line2 = $9, city = $10, state = $11, postal_code = $12,
+                regimen = $13,
                 updated_at = NOW()
             WHERE patient_id = $1`,
-            [patientId, fullName, first_name, last_name,
+            [patientId, fullName,
+                preferred_name || null,
                 dob || null, gender || null, phone_primary || null, email || null,
-                address_line_1 || null, city || null, state || null, zip || null]
+                address_line_1 || null, address_line_2 || null, city || null, state || null, zip || null,
+                regimen || null]
         );
 
         // 2. Sync to Healthie
@@ -52,7 +57,11 @@ export async function PUT(
 
             if (healthieClientId) {
                 await healthieGraphQL(`
-                    mutation UpdateClient($id: ID, $first_name: String, $last_name: String, $dob: String, $gender: String, $phone_number: String, $email: String) {
+                    mutation UpdateClient(
+                        $id: ID, $first_name: String, $last_name: String, $dob: String,
+                        $gender: String, $phone_number: String, $email: String,
+                        $height: String, $weight: String, $preferred_name: String
+                    ) {
                         updateClient(input: {
                             id: $id,
                             first_name: $first_name,
@@ -60,7 +69,10 @@ export async function PUT(
                             dob: $dob,
                             gender: $gender,
                             phone_number: $phone_number,
-                            email: $email
+                            email: $email,
+                            height: $height,
+                            weight: $weight,
+                            preferred_name: $preferred_name
                         }) {
                             user { id first_name last_name }
                             messages { field message }
@@ -73,6 +85,9 @@ export async function PUT(
                     gender: gender || undefined,
                     phone_number: phone_primary || undefined,
                     email: email || undefined,
+                    height: height || undefined,
+                    weight: weight || undefined,
+                    preferred_name: preferred_name || undefined,
                 });
                 healthieSynced = true;
             }
