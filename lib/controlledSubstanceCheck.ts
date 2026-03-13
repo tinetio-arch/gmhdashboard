@@ -88,7 +88,11 @@ export async function getTodayCheckStatus(checkType: 'morning' | 'evening' = 'mo
         status: string;
         check_type: string;
     }>(`
-    SELECT * FROM controlled_substance_checks
+    SELECT check_id, check_date, performed_by, performed_by_name, performed_at,
+           system_vials_cb_30ml, system_remaining_ml_cb, system_vials_toprx_10ml, system_remaining_ml_toprx,
+           physical_vials_cb_30ml, physical_partial_ml_cb, physical_vials_toprx_10ml, physical_partial_ml_toprx,
+           discrepancy_found, discrepancy_ml_cb, discrepancy_ml_toprx, discrepancy_notes, notes, status, check_type
+    FROM controlled_substance_checks
     WHERE check_date = (NOW() AT TIME ZONE 'America/Phoenix')::DATE
       AND check_type = $1
     ORDER BY performed_at DESC
@@ -481,7 +485,11 @@ export async function adjustInventoryToPhysicalCount(
  */
 export async function getCheckHistory(days: number = 30): Promise<ControlledSubstanceCheck[]> {
     const result = await query<any>(`
-    SELECT * FROM controlled_substance_checks
+    SELECT check_id, check_date, performed_by, performed_by_name, performed_at,
+           system_vials_cb_30ml, system_remaining_ml_cb, system_vials_toprx_10ml, system_remaining_ml_toprx,
+           physical_vials_cb_30ml, physical_partial_ml_cb, physical_vials_toprx_10ml, physical_partial_ml_toprx,
+           discrepancy_found, discrepancy_ml_cb, discrepancy_ml_toprx, discrepancy_notes, notes, status, check_type
+    FROM controlled_substance_checks
     WHERE check_date >= (NOW() AT TIME ZONE 'America/Phoenix')::DATE - INTERVAL '${days} days'
     ORDER BY check_date DESC, performed_at DESC
   `);

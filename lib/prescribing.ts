@@ -169,7 +169,9 @@ function mapDraftRow(row: PrescriptionDraftRow): PrescriptionDraft {
 async function fetchDraft(draftId: string): Promise<PrescriptionDraft | null> {
   await ensureDraftTable();
   const rows = await dbQuery<PrescriptionDraftRow>(
-    `SELECT * FROM prescription_drafts WHERE draft_id = $1`,
+    `SELECT draft_id, patient_id, intent_payload, safety_payload, status,
+            healthie_prescription_id, submission_notes, created_at, updated_at, submitted_at
+     FROM prescription_drafts WHERE draft_id = $1`,
     [draftId]
   );
   if (!rows.length) {

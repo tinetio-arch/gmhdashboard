@@ -76,7 +76,7 @@ function computeStatus(qty: number, par: number | null): SupplyItem['status'] {
 
 export async function fetchSupplyLocations(): Promise<SupplyLocation[]> {
     return query<SupplyLocation>(
-        `SELECT * FROM supply_locations WHERE active = true ORDER BY id DESC`
+        `SELECT id, name, address, active FROM supply_locations WHERE active = true ORDER BY id DESC`
     );
 }
 

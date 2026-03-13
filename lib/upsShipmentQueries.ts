@@ -95,17 +95,25 @@ export async function getShipmentsForPatient(
     limit: number = 50,
 ): Promise<UPSShipmentRow[]> {
     return query<UPSShipmentRow>(
-        `SELECT * FROM ups_shipments
-     WHERE patient_id = $1
-     ORDER BY created_at DESC
-     LIMIT $2`,
+        `SELECT id, patient_id, tracking_number, shipment_id, service_code, service_name, status,
+                ship_to_name, ship_to_address, ship_to_city, ship_to_state, ship_to_zip,
+                package_weight, package_description, shipping_cost, label_format, label_data,
+                estimated_delivery, actual_delivery, created_by, created_at, updated_at, voided_at, notes
+         FROM ups_shipments
+         WHERE patient_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2`,
         [patientId, limit]
     );
 }
 
 export async function getShipmentById(id: number): Promise<UPSShipmentRow | null> {
     const [row] = await query<UPSShipmentRow>(
-        `SELECT * FROM ups_shipments WHERE id = $1`,
+        `SELECT id, patient_id, tracking_number, shipment_id, service_code, service_name, status,
+                ship_to_name, ship_to_address, ship_to_city, ship_to_state, ship_to_zip,
+                package_weight, package_description, shipping_cost, label_format, label_data,
+                estimated_delivery, actual_delivery, created_by, created_at, updated_at, voided_at, notes
+         FROM ups_shipments WHERE id = $1`,
         [id]
     );
     return row ?? null;

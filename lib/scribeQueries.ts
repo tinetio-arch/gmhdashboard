@@ -77,7 +77,9 @@ export async function createScribeSession(data: {
 
 export async function getScribeSession(sessionId: string): Promise<ScribeSession | null> {
     const [session] = await query<ScribeSession>(
-        'SELECT * FROM scribe_sessions WHERE session_id = $1',
+        `SELECT session_id, patient_id, appointment_id, visit_type, audio_s3_key,
+                transcript, transcript_source, status, created_by, created_at, updated_at
+         FROM scribe_sessions WHERE session_id = $1`,
         [sessionId]
     );
     return session || null;
@@ -106,7 +108,9 @@ export async function listScribeSessions(options?: {
     vals.push(limit);
 
     return query<ScribeSession>(`
-    SELECT * FROM scribe_sessions
+    SELECT session_id, patient_id, appointment_id, visit_type, audio_s3_key,
+           transcript, transcript_source, status, created_by, created_at, updated_at
+    FROM scribe_sessions
     ${where}
     ORDER BY created_at DESC
     LIMIT $${idx}
@@ -202,7 +206,11 @@ export async function createScribeNote(data: {
 
 export async function getScribeNote(noteId: string): Promise<ScribeNote | null> {
     const [note] = await query<ScribeNote>(
-        'SELECT * FROM scribe_notes WHERE note_id = $1',
+        `SELECT note_id, session_id, patient_id, visit_type, soap_subjective, soap_objective,
+                soap_assessment, soap_plan, icd10_codes, cpt_codes, full_note_text, ai_model,
+                ai_prompt_version, healthie_note_id, healthie_status, reviewed_by, reviewed_at,
+                created_at, updated_at
+         FROM scribe_notes WHERE note_id = $1`,
         [noteId]
     );
     return note || null;
@@ -210,7 +218,11 @@ export async function getScribeNote(noteId: string): Promise<ScribeNote | null> 
 
 export async function getScribeNoteBySession(sessionId: string): Promise<ScribeNote | null> {
     const [note] = await query<ScribeNote>(
-        'SELECT * FROM scribe_notes WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1',
+        `SELECT note_id, session_id, patient_id, visit_type, soap_subjective, soap_objective,
+                soap_assessment, soap_plan, icd10_codes, cpt_codes, full_note_text, ai_model,
+                ai_prompt_version, healthie_note_id, healthie_status, reviewed_by, reviewed_at,
+                created_at, updated_at
+         FROM scribe_notes WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1`,
         [sessionId]
     );
     return note || null;
@@ -244,7 +256,11 @@ export async function listScribeNotes(options?: {
     vals.push(limit);
 
     return query<ScribeNote>(`
-    SELECT * FROM scribe_notes
+    SELECT note_id, session_id, patient_id, visit_type, soap_subjective, soap_objective,
+           soap_assessment, soap_plan, icd10_codes, cpt_codes, full_note_text, ai_model,
+           ai_prompt_version, healthie_note_id, healthie_status, reviewed_by, reviewed_at,
+           created_at, updated_at
+    FROM scribe_notes
     ${where}
     ORDER BY created_at DESC
     LIMIT $${idx}

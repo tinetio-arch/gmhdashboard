@@ -278,7 +278,8 @@ export async function updatePatientStatusFromPayments(): Promise<PaymentSyncResu
 
     // Get active payment rule
     const ruleResult = await client.query(
-      `SELECT * FROM payment_rules WHERE is_active = TRUE ORDER BY created_at DESC LIMIT 1`
+      `SELECT min_days_overdue, min_amount_threshold, target_status_key, is_active, created_at
+       FROM payment_rules WHERE is_active = TRUE ORDER BY created_at DESC LIMIT 1`
     );
 
     if (ruleResult.rows.length === 0) {

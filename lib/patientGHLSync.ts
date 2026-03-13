@@ -42,7 +42,8 @@ export type PatientGHLSync = {
  */
 async function getActiveTagMappings(): Promise<GHLTagMapping[]> {
   return query<GHLTagMapping>(
-    `SELECT * FROM ghl_tag_mappings WHERE is_active = true`
+    `SELECT mapping_id, condition_type, condition_value, ghl_tag_name, ghl_tag_id, is_active
+     FROM ghl_tag_mappings WHERE is_active = true`
   );
 }
 
