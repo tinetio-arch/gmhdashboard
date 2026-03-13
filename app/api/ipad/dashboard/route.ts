@@ -83,18 +83,47 @@ export async function GET(request: NextRequest) {
         ORDER BY p.patient_id, p.full_name
       `),
 
-      // Revenue: today, this week, this month (gracefully handle missing table)
-      query<any>(`
-        SELECT
-          COALESCE(SUM(CASE WHEN sale_date >= (NOW() AT TIME ZONE 'America/Phoenix')::date
-                        THEN total_price::numeric ELSE 0 END), 0)::text as today,
-          COALESCE(SUM(CASE WHEN sale_date >= date_trunc('week', (NOW() AT TIME ZONE 'America/Phoenix')::date)
-                        THEN total_price::numeric ELSE 0 END), 0)::text as week,
-          COALESCE(SUM(CASE WHEN sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
-                        THEN total_price::numeric ELSE 0 END), 0)::text as month
-        FROM peptide_sales
-        WHERE sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
-      `).catch(() => [{ today: '0', week: '0', month: '0' }]),
+      // Revenue: Use Healthie billing cache (same as main dashboard) instead of just peptide_sales
+      // This includes ALL revenue (peptides, consults, TRT, labs, etc.) from Healthie Billing API
+      Promise.resolve().then(() => {
+        try {
+          const fs = require('fs');
+          const cacheFile = '/tmp/healthie-revenue-cache.json';
+          if (fs.existsSync(cacheFile)) {
+            const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+
+            // Get today's date in Phoenix timezone
+            const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+
+            // Find today's revenue from daily array
+            let todayRevenue = 0;
+            if (cache.daily && Array.isArray(cache.daily)) {
+              const todayEntry = cache.daily.find((d: any) => d.day === today);
+              todayRevenue = todayEntry?.amount || 0;
+            }
+
+            return [{
+              today: String(todayRevenue),
+              week: String(cache.day7 || 0),
+              month: String(cache.day30 || 0)
+            }];
+          }
+        } catch (e) {
+          console.warn('[iPad Dashboard] Failed to read Healthie revenue cache:', e);
+        }
+        // Fallback to peptide_sales if cache unavailable
+        return query<any>(`
+          SELECT
+            COALESCE(SUM(CASE WHEN sale_date >= (NOW() AT TIME ZONE 'America/Phoenix')::date
+                          THEN total_price::numeric ELSE 0 END), 0)::text as today,
+            COALESCE(SUM(CASE WHEN sale_date >= date_trunc('week', (NOW() AT TIME ZONE 'America/Phoenix')::date)
+                          THEN total_price::numeric ELSE 0 END), 0)::text as week,
+            COALESCE(SUM(CASE WHEN sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
+                          THEN total_price::numeric ELSE 0 END), 0)::text as month
+          FROM peptide_sales
+          WHERE sale_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
+        `).catch(() => [{ today: '0', week: '0', month: '0' }]);
+      }),
 
       // Total active patients
       query<any>(`SELECT COUNT(*) as count FROM patients WHERE status_key = 'Active'`),
@@ -109,11 +138,47 @@ export async function GET(request: NextRequest) {
       `),
     ]);
 
-    const rev = revenueData[0] || {};
+    const healthieRev = revenueData[0] || {};
     const ptByType: Record<string, number> = {};
     for (const row of patientsByType) {
       ptByType[row.client_type_key] = parseInt(row.count, 10);
     }
+
+    // Also fetch QuickBooks revenue (cash payments, insurance, etc. not in Healthie)
+    let qbRev = { today: 0, week: 0, month: 0 };
+    try {
+      const qbData = await query<any>(`
+        SELECT
+          COALESCE(SUM(CASE WHEN receipt_date >= (NOW() AT TIME ZONE 'America/Phoenix')::date
+                        THEN amount ELSE 0 END), 0) as today,
+          COALESCE(SUM(CASE WHEN receipt_date >= date_trunc('week', (NOW() AT TIME ZONE 'America/Phoenix')::date)
+                        THEN amount ELSE 0 END), 0) as week,
+          COALESCE(SUM(CASE WHEN receipt_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
+                        THEN amount ELSE 0 END), 0) as month
+        FROM quickbooks_sales_receipts
+        WHERE receipt_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
+      `);
+      qbRev = {
+        today: parseFloat(qbData[0]?.today || '0'),
+        week: parseFloat(qbData[0]?.week || '0'),
+        month: parseFloat(qbData[0]?.month || '0')
+      };
+    } catch (e) {
+      console.warn('[iPad Dashboard] QuickBooks revenue query failed (non-critical):', e);
+    }
+
+    // Combine all revenue sources (Healthie is primary, QuickBooks is supplementary)
+    const combinedRevenue = {
+      today: parseFloat(healthieRev.today || '0') + qbRev.today,
+      week: parseFloat(healthieRev.week || '0') + qbRev.week,
+      month: parseFloat(healthieRev.month || '0') + qbRev.month,
+      healthie_today: parseFloat(healthieRev.today || '0'),
+      healthie_week: parseFloat(healthieRev.week || '0'),
+      healthie_month: parseFloat(healthieRev.month || '0'),
+      quickbooks_today: qbRev.today,
+      quickbooks_week: qbRev.week,
+      quickbooks_month: qbRev.month
+    };
 
     // Strip time from date-only columns to prevent UTC midnight → Arizona timezone shift
     const toDateOnly = (v: any): string | null => {
@@ -137,11 +202,7 @@ export async function GET(request: NextRequest) {
         patients: fixedPatients,
         staged_doses: stagedDoses,
         payment_alerts: paymentIssues,
-        revenue: {
-          today: parseFloat(rev.today || '0'),
-          week: parseFloat(rev.week || '0'),
-          month: parseFloat(rev.month || '0'),
-        },
+        revenue: combinedRevenue,
         total_active_patients: parseInt(activePatientCount[0]?.count || '0', 10),
         patients_by_type: ptByType,
         summary: {

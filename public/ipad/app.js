@@ -1,7 +1,33 @@
 /* ============================================================
    GMH Ops v2.0 — iPad Companion App (LIVE DATA)
    Connects to /ops/api/* endpoints via same-origin cookies
+   VERSION: 2.1.0 - March 12, 2026 22:30 MST
+   FIXES: Close button, Combined revenue, Logout button
    ============================================================ */
+
+// Log version immediately so we can verify correct file is loaded
+console.log('%c📱 iPad App v2.1.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
+console.log('✅ Fixes: Close button, Combined revenue (Healthie + QuickBooks), Logout');
+console.log('🕒 Build time: March 12, 2026 22:30 MST');
+
+// Show version in page (will be visible in bottom corner)
+window.addEventListener('DOMContentLoaded', () => {
+    document.body.insertAdjacentHTML('beforeend', `
+        <div style="
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #22d3ee;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-family: monospace;
+            z-index: 9999;
+            pointer-events: none;
+        ">v2.1.0</div>
+    `);
+});
 
 // ─── STATE ──────────────────────────────────────────────────
 let dashboardData = null;       // from /ops/api/ipad/dashboard
@@ -248,11 +274,53 @@ async function loadCurrentUser() {
         const data = await resp.json();
         if (data.error) return false;
         currentUser = data;
+
+        // Show logout button when logged in
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn) {
+            logoutBtn.style.display = 'inline-block';
+        }
+
+        // Update connection text to show username
+        const connText = document.getElementById('connectionText');
+        if (connText && data.email) {
+            connText.textContent = data.email.split('@')[0];
+        }
+
+        console.log('[Auth] Logged in as:', data.email, '| Role:', data.role, '| Permissions:', data.permissions);
+
         return true;
     } catch (e) {
         console.warn('Auth check failed:', e);
         return false;
     }
+}
+
+// Logout handler
+async function handleLogout() {
+    if (!confirm('Are you sure you want to logout?')) return;
+
+    console.log('[Auth] Logging out...');
+
+    try {
+        await fetch('/ops/api/auth/logout', {
+            method: 'POST',
+            credentials: 'include'
+        });
+    } catch (e) {
+        console.warn('Logout API failed:', e);
+    }
+
+    // Clear local state
+    currentUser = null;
+    dashboardData = null;
+
+    // Hide logout button
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) logoutBtn.style.display = 'none';
+
+    // Reload page to show login
+    window.location.reload();
 }
 
 function showLoginOverlay() {
@@ -2671,8 +2739,47 @@ function openScribeSession(sessionId, view) {
         activeScribeSession = session;
         scribeView = view || 'note';
         scribePatientId = session.patient_id;
-        renderCurrentTab();
+
+        // ✅ FIX: If opening review and note exists, load it first (don't regenerate!)
+        if (view === 'review' && session.has_note) {
+            console.log('[Scribe] Loading existing note instead of regenerating...');
+            loadExistingScribeNote(sessionId).then(loaded => {
+                if (loaded) {
+                    console.log('[Scribe] ✅ Existing note loaded from cache');
+                } else {
+                    console.warn('[Scribe] Failed to load existing note - will need to regenerate');
+                }
+                renderCurrentTab();
+            });
+        } else {
+            renderCurrentTab();
+        }
     }
+}
+
+// ✅ NEW: Load existing note from database (avoid CPU-heavy regeneration)
+async function loadExistingScribeNote(sessionId) {
+    try {
+        const resp = await fetch(`/ops/api/scribe/sessions/${sessionId}/note`, {
+            credentials: 'include'
+        });
+
+        if (resp.ok) {
+            const result = await resp.json();
+            if (result.success) {
+                currentNote = result.data;
+                console.log('[Scribe] Note loaded:', currentNote.note_id, '| Status:', currentNote.healthie_status);
+                return true;
+            }
+        } else if (resp.status === 404) {
+            console.log('[Scribe] No existing note found (will need to generate)');
+        } else {
+            console.warn('[Scribe] Failed to load note:', resp.status);
+        }
+    } catch (e) {
+        console.error('[Scribe] Exception loading note:', e);
+    }
+    return false;
 }
 
 function renderScribeNote(container) {
@@ -2873,6 +2980,16 @@ function renderScribeReview(container) {
                     📄 Preview PDF
                 </button>
             </div>
+            ${(currentUser?.role === 'admin' || currentUser?.is_provider) ? `
+                <div style="margin-top:12px; padding:12px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.3); border-radius:8px;">
+                    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;">
+                        ⚠️ This note is <strong>${noteData?.healthie_status || 'locked'}</strong>. To make corrections:
+                    </div>
+                    <button class="btn-secondary" onclick="unlockScribeNote()" style="background:rgba(251,191,36,0.2); border:1px solid rgba(251,191,36,0.4); color:#fbbf24; font-size:13px;">
+                        🔓 Unlock for Editing
+                    </button>
+                </div>
+            ` : ''}
         `}
     `;
 }
@@ -2976,6 +3093,41 @@ async function aiEditNote() {
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         showToast('AI edit failed', 'error');
+    }
+}
+
+// ✅ NEW: Unlock a locked/signed note for editing
+async function unlockScribeNote() {
+    if (!currentNote?.note_id) {
+        showToast('No note to unlock', 'error');
+        return;
+    }
+
+    const status = currentNote.healthie_status;
+    if (!confirm(`Unlock this ${status} note for editing?\n\nThis will change status to Draft and allow modifications.`)) {
+        return;
+    }
+
+    console.log('[Scribe] Unlocking note:', currentNote.note_id);
+
+    try {
+        const resp = await fetch(`/ops/api/scribe/notes/${currentNote.note_id}/unlock`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+
+        const result = await resp.json();
+        if (result.success) {
+            showToast(`✅ Note unlocked (was: ${result.previous_status})`, 'success');
+            currentNote.healthie_status = 'draft';
+            // Reload to refresh UI with edit buttons
+            renderCurrentTab();
+        } else {
+            showToast(`Failed to unlock: ${result.error}`, 'error');
+        }
+    } catch (e) {
+        console.error('[Scribe] Unlock error:', e);
+        showToast('Error unlocking note', 'error');
     }
 }
 
@@ -3088,7 +3240,7 @@ function openChartForPatient(patientId, patientName) {
                 <div class="chart-panel-actions">
                     <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
                     <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
-                    <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
+                    <button class="chart-panel-close" onclick="closeGlobalChart()" style="background:rgba(239,68,68,0.8); color:white; font-size:18px; font-weight:bold;">✕</button>
                 </div>
             </div>
             <div id="globalChartContent" class="chart-panel-content">
@@ -3105,16 +3257,26 @@ function openChartForPatient(patientId, patientName) {
         header.className = 'chart-panel-header';
         panel.insertBefore(header, panel.firstChild);
     }
-    
+
     // Completely overwrite the header HTML every time to guarantee buttons exist
     header.innerHTML = `
         <div class="chart-panel-title" id="globalChartTitle">📋 Patient Chart</div>
         <div class="chart-panel-actions">
             <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
             <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
-            <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
+            <button class="chart-panel-close" onclick="closeGlobalChart()" style="background:rgba(239,68,68,0.8); color:white; font-size:18px; font-weight:bold;">✕</button>
         </div>
     `;
+
+    console.log('[openChartForPatient] Chart panel header created with BIG RED close buttons');
+
+    // Verify close button exists
+    const closeBtn = panel.querySelector('.chart-panel-close');
+    if (closeBtn) {
+        console.log('[openChartForPatient] ✅ Close button verified in DOM');
+    } else {
+        console.error('[openChartForPatient] ❌ Close button NOT FOUND in DOM!');
+    }
 
     // Update header
     const title = document.getElementById('globalChartTitle');
@@ -3122,7 +3284,8 @@ function openChartForPatient(patientId, patientName) {
     if (title) title.textContent = '📋 ' + (patientName || 'Patient');
     if (nameEl) nameEl.textContent = (patientName || 'Patient').split(' ')[0];
 
-    // Open panel
+    // Open panel - clear any inline styles and use CSS classes
+    panel.style.right = ''; // Clear inline style to use CSS .open class
     panel.classList.add('open');
     panel.classList.remove('minimized', 'expanded');
     globalChartState = 'normal';
@@ -3155,11 +3318,18 @@ function expandGlobalChart() {
 }
 
 function closeGlobalChart() {
+    console.log('[closeGlobalChart] Closing chart panel');
     const panel = document.getElementById('globalChartPanel');
-    if (!panel) return;
+    if (!panel) {
+        console.warn('[closeGlobalChart] Panel not found!');
+        return;
+    }
     panel.classList.remove('open', 'minimized', 'expanded');
+    // Force slide out animation by ensuring no open class
+    panel.style.right = '-500px';
     globalChartState = 'closed';
     chartPanelOpen = false;
+    console.log('[closeGlobalChart] Chart panel closed');
 }
 
 function toggleGlobalChart() {
@@ -3289,6 +3459,7 @@ function renderChartPanel(content) {
                     <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
                     <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${formatDateDisplay(demo.dob)}` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''}</div>
                 </div>
+                <button onclick="closeGlobalChart()" style="padding:4px 10px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer; margin-right:8px;" title="Close chart">✕ Close</button>
                 <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
@@ -3349,11 +3520,15 @@ function renderChartPanel(content) {
             </div>
             <div id="quickVitalsFormArea"></div>
             ${recentVitals.length > 0
-                ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(100px, 1fr)); gap:4px;">${recentVitals.map(v => `<div style="font-size:11px; padding:4px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border);">
+                ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:4px;">${recentVitals.map(v => {
+                    const recordedBy = v.created_by?.full_name || v.created_by?.email || (v.description && v.description.includes('by ') ? v.description.split('by ').pop().split(')')[0] : '');
+                    return `<div style="font-size:11px; padding:4px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border);">
                     <div style="color:var(--text-tertiary); font-size:9px; text-transform:uppercase;">${v.category || v.type || '?'}</div>
                     <div style="color:var(--text-primary); font-weight:600;">${v.metric_stat || '—'}</div>
-                    <div style="color:var(--text-tertiary); font-size:9px;">${fmtVitalDate(v.created_at)}</div>
-                </div>`).join('')}</div>`
+                    <div style="color:var(--text-tertiary); font-size:8px;">${fmtVitalDate(v.created_at)}</div>
+                    ${recordedBy ? `<div style="color:var(--cyan); font-size:8px;">by ${recordedBy.split('@')[0]}</div>` : ''}
+                </div>`;
+                }).join('')}</div>`
                 : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No vitals on file</div>`}
         </div>
 
@@ -5750,24 +5925,46 @@ var scheduleAllData = [];
 
 async function renderScheduleView(container) {
     var today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    console.log('[Schedule] renderScheduleView - setting HTML...');
     container.innerHTML = '<div style="padding: 0 4px;">' +
         '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
         '<div><h1 style="font-size:24px; margin:0; color:var(--text-primary);">Schedule</h1>' +
-        '<p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;">' + today + '</p></div>' +
+        '<p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0.">' + today + '</p></div>' +
         '<button onclick="loadScheduleData(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>' +
         '</div>' +
         '<div id="scheduleProviderTabs" style="display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap;"></div>' +
         '<div id="scheduleContent"><div class="loading-spinner" style="margin:40px auto;"></div></div>' +
         '</div>';
-    await loadScheduleData();
+
+    // CRITICAL FIX: Wait for DOM to process innerHTML before calling loadScheduleData
+    console.log('[Schedule] Waiting for DOM to update...');
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Verify element exists
+    var verifyEl = document.getElementById('scheduleContent');
+    console.log('[Schedule] scheduleContent element exists:', !!verifyEl);
+
+    if (verifyEl) {
+        await loadScheduleData();
+    } else {
+        console.error('[Schedule] CRITICAL: scheduleContent not found after DOM wait!');
+        // Try one more time after longer delay
+        await new Promise(resolve => setTimeout(resolve, 200));
+        await loadScheduleData();
+    }
 }
 
 async function loadScheduleData(forceRefresh) {
+    console.log('[Schedule] loadScheduleData called, forceRefresh:', forceRefresh);
     var contentEl = document.getElementById('scheduleContent');
-    if (!contentEl) return;
+    if (!contentEl) {
+        console.warn('[Schedule] scheduleContent element not found!');
+        return;
+    }
 
     // Use already-loaded data from Today tab if available (same API endpoint)
     if (!forceRefresh && healthieAppointments.length > 0) {
+        console.log('[Schedule] Using cached data from Today tab:', healthieAppointments.length, 'appointments');
         scheduleAllData = healthieAppointments.map(function(a) {
             return {
                 appointment_id: a.id || a.appointment_id || '',
@@ -5791,15 +5988,28 @@ async function loadScheduleData(forceRefresh) {
         return;
     }
 
+    console.log('[Schedule] Fetching fresh data from API...');
     contentEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
     try {
         var controller = new AbortController();
-        var tid = setTimeout(function() { controller.abort(); }, 25000);
+        var tid = setTimeout(function() {
+            console.warn('[Schedule] Aborting request after 25s timeout');
+            controller.abort();
+        }, 25000);
+
+        var startTime = Date.now();
         var resp = await fetch('/ops/api/ipad/schedule/', { credentials: 'include', signal: controller.signal });
+        var elapsed = Date.now() - startTime;
+        console.log('[Schedule] API response received in', elapsed, 'ms, status:', resp.status);
+
         clearTimeout(tid);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
         var data = await resp.json();
+        console.log('[Schedule] API data parsed:', data);
+
         scheduleAllData = data.patients || [];
+        console.log('[Schedule] scheduleAllData set to', scheduleAllData.length, 'appointments');
 
         // Also update the global so Today tab stays in sync
         if (scheduleAllData.length > 0) {
@@ -5818,17 +6028,25 @@ async function loadScheduleData(forceRefresh) {
         }
 
         if (scheduleAllData.length === 0) {
+            console.log('[Schedule] No appointments - rendering empty state');
             renderProviderTabs([]);
             contentEl.innerHTML = '<div class="empty-state-card"><div class="empty-state-icon">📅</div><h3>No Appointments Today</h3><p>No patients are scheduled for today.</p></div>';
             return;
         }
+        console.log('[Schedule] Rendering', scheduleAllData.length, 'appointments');
         var provMap = new Map();
         scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
         renderProviderTabs([...provMap.values()]);
         renderScheduleList(contentEl);
+        console.log('[Schedule] Render complete');
     } catch (e) {
+        console.error('[Schedule] Error:', e);
         if (e.message === 'AUTH_EXPIRED') throw e;
-        contentEl.innerHTML = '<div class="empty-state-card"><h3>Could not load schedule</h3><p>' + (e.message || 'Network error') + '</p></div>';
+        if (e.name === 'AbortError') {
+            contentEl.innerHTML = '<div class="empty-state-card"><h3>Request Timeout</h3><p>The schedule took too long to load. <button onclick="loadScheduleData(true)" style="margin-top:8px; padding:6px 12px; border-radius:6px; background:var(--cyan); border:none; color:#000; cursor:pointer;">Try Again</button></p></div>';
+        } else {
+            contentEl.innerHTML = '<div class="empty-state-card"><h3>Could not load schedule</h3><p>' + (e.message || 'Network error') + ' <button onclick="loadScheduleData(true)" style="margin-top:8px; padding:6px 12px; border-radius:6px; background:var(--cyan); border:none; color:#000; cursor:pointer;">Try Again</button></p></div>';
+        }
     }
 }
 

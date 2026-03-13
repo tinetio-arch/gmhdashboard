@@ -39,6 +39,7 @@
             <span class="connection-dot" id="connectionDot"></span>
             <span class="connection-text" id="connectionText">Connecting…</span>
             <span class="status-time" id="statusTime"></span>
+            <button id="logoutBtn" onclick="handleLogout()" style="display:none; margin-left:12px; padding:6px 12px; background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.4); border-radius:6px; color:#f87171; font-size:12px; font-weight:600; cursor:pointer;">Logout</button>
         </div>
     </header>
 
@@ -197,7 +198,7 @@
             <div class="chart-panel-actions">
                 <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
                 <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
-                <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
+                <button class="chart-panel-close" onclick="closeGlobalChart()" style="background:rgba(239,68,68,0.8); color:white; font-size:18px; font-weight:bold;">✕</button>
             </div>
         </div>
         <div id="globalChartContent" class="chart-panel-content">

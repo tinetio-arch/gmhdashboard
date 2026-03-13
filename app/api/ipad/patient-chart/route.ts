@@ -49,18 +49,18 @@ export async function GET(request: NextRequest) {
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
         const [chartNotes, medications, appointments, entries, allergies, documents, userProfile] = await Promise.all([
-            // Chart notes (form answer groups) - get most recent first
+            // Chart notes (form answer groups) - NOTE: sort_by is NOT supported by Healthie API
             safeHealthieQuery<any>('chartNotes', `
                 query GetChartNotes($userId: String) {
                     formAnswerGroups(
                         user_id: $userId,
-                        offset: 0,
-                        sort_by: "CREATED_AT"
+                        offset: 0
                     ) {
                         id
                         name
                         created_at
                         updated_at
+                        finished_at
                         form_answers {
                             id
                             label
@@ -125,6 +125,11 @@ export async function GET(request: NextRequest) {
                         metric_stat
                         created_at
                         description
+                        created_by {
+                            id
+                            full_name
+                            email
+                        }
                     }
                 }
             `, { clientId: healthieId }),

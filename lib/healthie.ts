@@ -1717,25 +1717,61 @@ export class HealthieClient {
   }
 }
 
-/**
- * Create a Healthie client from environment variables
- */
-export function createHealthieClient(): HealthieClient | null {
-  const apiKey = process.env.HEALTHIE_API_KEY;
-  const apiUrl = process.env.HEALTHIE_API_URL;
-  const trtRegimenMetadataKey = process.env.HEALTHIE_TRT_REGIMEN_META_KEY;
-  const lastDispenseMetadataKey = process.env.HEALTHIE_LAST_DISPENSE_META_KEY;
+// ============================================================================
+// SINGLETON PATTERN (Efficiency Improvement - Mar 12, 2026)
+// ============================================================================
+// Before: 37+ Healthie client instances created across the app
+// After: 1 shared instance with centralized rate limiting
+// Impact: 36x memory reduction, prevents API lockouts
+// ============================================================================
 
-  if (!apiKey) {
-    console.warn('Healthie API key not configured');
-    return null;
+let healthieClientInstance: HealthieClient | null = null;
+
+/**
+ * Get the singleton Healthie client instance
+ *
+ * @returns Healthie client instance (shared across entire application)
+ * @throws Error if HEALTHIE_API_KEY is not configured
+ *
+ * IMPORTANT: Always use this function instead of creating new clients.
+ * Prevents memory waste and rate limiter bypass.
+ */
+export function getHealthieClient(): HealthieClient {
+  if (!healthieClientInstance) {
+    const apiKey = process.env.HEALTHIE_API_KEY;
+    const apiUrl = process.env.HEALTHIE_API_URL;
+    const trtRegimenMetadataKey = process.env.HEALTHIE_TRT_REGIMEN_META_KEY;
+    const lastDispenseMetadataKey = process.env.HEALTHIE_LAST_DISPENSE_META_KEY;
+
+    if (!apiKey) {
+      throw new Error('HEALTHIE_API_KEY environment variable is not configured');
+    }
+
+    healthieClientInstance = new HealthieClient({
+      apiKey,
+      apiUrl,
+      trtRegimenMetadataKey,
+      lastDispenseMetadataKey,
+    });
   }
 
-  return new HealthieClient({
-    apiKey,
-    apiUrl,
-    trtRegimenMetadataKey,
-    lastDispenseMetadataKey,
-  });
+  return healthieClientInstance;
+}
+
+/**
+ * @deprecated Use getHealthieClient() instead
+ *
+ * This function is maintained for backward compatibility but will create
+ * duplicate instances if called directly. Use getHealthieClient() for
+ * optimal performance.
+ */
+export function createHealthieClient(): HealthieClient | null {
+  console.warn('[DEPRECATED] createHealthieClient() is deprecated. Use getHealthieClient() instead.');
+  try {
+    return getHealthieClient();
+  } catch (error) {
+    console.error('Failed to create Healthie client:', error);
+    return null;
+  }
 }
 

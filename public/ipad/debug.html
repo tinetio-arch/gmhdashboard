@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iPad Debug Tool</title>
+    <style>
+        body {
+            font-family: -apple-system, system-ui, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #0a0f1a;
+            color: #e2e8f0;
+        }
+        h1 {
+            color: #22d3ee;
+            border-bottom: 2px solid #1e293b;
+            padding-bottom: 10px;
+        }
+        .section {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid #334155;
+        }
+        .section h2 {
+            margin-top: 0;
+            color: #22d3ee;
+            font-size: 18px;
+        }
+        button {
+            background: linear-gradient(135deg, #22d3ee, #06b6d4);
+            color: #0a0f1a;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        pre {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            border: 1px solid #334155;
+            font-size: 12px;
+        }
+        .success { color: #22c55e; }
+        .error { color: #ef4444; }
+        .warning { color: #f59e0b; }
+        .info { color: #22d3ee; }
+    </style>
+</head>
+<body>
+    <h1>🔧 iPad System Debug Tool</h1>
+    <p>Use this page to diagnose issues with the iPad system.</p>
+
+    <div class="section">
+        <h2>1. Check Your User Permissions</h2>
+        <button onclick="checkPermissions()">Check My Permissions</button>
+        <pre id="permissionsResult">Click the button above to check your permissions...</pre>
+    </div>
+
+    <div class="section">
+        <h2>2. Check Dashboard Data (includes revenue)</h2>
+        <button onclick="checkDashboard()">Check Dashboard Data</button>
+        <pre id="dashboardResult">Click the button above to check dashboard data...</pre>
+    </div>
+
+    <div class="section">
+        <h2>3. Check Schedule Data</h2>
+        <button onclick="checkSchedule()">Check Schedule</button>
+        <pre id="scheduleResult">Click the button above to check schedule...</pre>
+    </div>
+
+    <div class="section">
+        <h2>4. Cache Status</h2>
+        <button onclick="checkCache()">Check Cache</button>
+        <button onclick="clearAndReload()">Clear Cache & Reload</button>
+        <pre id="cacheResult">Click to check cache status...</pre>
+    </div>
+
+    <div class="section">
+        <h2>5. App.js Version Check</h2>
+        <button onclick="checkAppJsVersion()">Check app.js Version</button>
+        <pre id="appJsResult">Click to check if app.js is latest version...</pre>
+    </div>
+
+    <script>
+        function formatJSON(obj) {
+            return JSON.stringify(obj, null, 2);
+        }
+
+        async function checkPermissions() {
+            const result = document.getElementById('permissionsResult');
+            result.innerHTML = '<span class="info">Loading...</span>';
+
+            try {
+                const response = await fetch('/ops/api/ipad/me', {
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                let html = '<span class="success">✅ Logged in successfully!</span>\n\n';
+                html += `<strong>User:</strong> ${data.email || 'Unknown'}\n`;
+                html += `<strong>Role:</strong> ${data.role || 'Unknown'}\n\n`;
+                html += `<strong>Permissions:</strong>\n`;
+                html += formatJSON(data.permissions || {});
+
+                // Highlight important permission
+                if (data.permissions?.can_view_revenue) {
+                    html += '\n\n<span class="success">✅ You SHOULD see revenue!</span>';
+                } else {
+                    html += '\n\n<span class="warning">⚠️ You do NOT have can_view_revenue permission</span>';
+                }
+
+                result.innerHTML = html;
+            } catch (error) {
+                result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>\n\nYou may not be logged in. Go to https://nowoptimal.com/ipad/ and log in first.`;
+            }
+        }
+
+        async function checkDashboard() {
+            const result = document.getElementById('dashboardResult');
+            result.innerHTML = '<span class="info">Loading...</span>';
+
+            try {
+                const response = await fetch('/ops/api/ipad/dashboard', {
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                let html = '<span class="success">✅ Dashboard loaded!</span>\n\n';
+
+                if (data.revenue) {
+                    html += `<strong>Revenue Data:</strong>\n`;
+                    html += `  Today: $${data.revenue.today || 0}\n`;
+                    html += `  Week: $${data.revenue.week || 0}\n`;
+                    html += `  Month: $${data.revenue.month || 0}\n\n`;
+                } else {
+                    html += '<span class="warning">⚠️ No revenue data in response</span>\n\n';
+                }
+
+                html += `<strong>Full Response:</strong>\n`;
+                html += formatJSON(data);
+
+                result.innerHTML = html;
+            } catch (error) {
+                result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+            }
+        }
+
+        async function checkSchedule() {
+            const result = document.getElementById('scheduleResult');
+            result.innerHTML = '<span class="info">Loading...</span>';
+
+            try {
+                const response = await fetch('/ops/api/ipad/schedule', {
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                let html = '<span class="success">✅ Schedule loaded!</span>\n\n';
+                html += `<strong>Patients:</strong> ${data.patients?.length || 0}\n\n`;
+
+                if (data.patients && data.patients.length > 0) {
+                    html += `<strong>First 3 appointments:</strong>\n`;
+                    html += formatJSON(data.patients.slice(0, 3));
+                } else {
+                    html += '<span class="info">No patient appointments today (breaks/blocked time filtered out)</span>';
+                }
+
+                result.innerHTML = html;
+            } catch (error) {
+                result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+            }
+        }
+
+        function checkCache() {
+            const result = document.getElementById('cacheResult');
+
+            let html = '<strong>Browser:</strong> ' + navigator.userAgent + '\n\n';
+            html += '<strong>Cache Info:</strong>\n';
+            html += `  Page loaded: ${new Date().toLocaleString()}\n`;
+            html += `  Cache API available: ${('caches' in window) ? 'Yes' : 'No'}\n\n`;
+
+            html += '<strong>App.js Load Check:</strong>\n';
+            const scripts = document.querySelectorAll('script[src*="app.js"]');
+            if (scripts.length > 0) {
+                scripts.forEach(script => {
+                    html += `  ${script.src}\n`;
+                });
+            } else {
+                html += '  Not loaded yet (this is debug.html, not the main app)\n';
+            }
+
+            html += '\n<span class="info">💡 Tip: Use Cmd+Shift+R (Mac) or Ctrl+Shift+R (Windows) to hard reload</span>';
+
+            result.innerHTML = html;
+        }
+
+        async function checkAppJsVersion() {
+            const result = document.getElementById('appJsResult');
+            result.innerHTML = '<span class="info">Loading...</span>';
+
+            try {
+                // Fetch app.js with cache-buster
+                const response = await fetch(`/ipad/app.js?v=${Date.now()}`, {
+                    cache: 'no-store'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const text = await response.text();
+
+                let html = '<span class="success">✅ app.js loaded!</span>\n\n';
+                html += `<strong>File size:</strong> ${text.length.toLocaleString()} characters\n`;
+                html += `<strong>Expected size:</strong> ~338,635 characters\n\n`;
+
+                // Check for key fixes
+                const checks = [
+                    { name: 'Revenue permission check', pattern: 'can_view_revenue', expected: true },
+                    { name: 'Close chart function', pattern: 'function closeGlobalChart()', expected: true },
+                    { name: 'Schedule loading', pattern: 'loadHealthieAppointments', expected: true }
+                ];
+
+                html += '<strong>Fix Verification:</strong>\n';
+                checks.forEach(check => {
+                    const found = text.includes(check.pattern);
+                    const status = found === check.expected ? '✅' : '❌';
+                    html += `  ${status} ${check.name}: ${found ? 'Found' : 'Missing'}\n`;
+                });
+
+                if (text.length > 330000 && text.length < 350000) {
+                    html += '\n<span class="success">✅ File size looks correct - you have the latest version!</span>';
+                } else {
+                    html += '\n<span class="warning">⚠️ File size unexpected - may be cached</span>';
+                }
+
+                result.innerHTML = html;
+            } catch (error) {
+                result.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+            }
+        }
+
+        function clearAndReload() {
+            if (confirm('This will clear cache and reload. Continue?')) {
+                // Clear service worker cache if exists
+                if ('caches' in window) {
+                    caches.keys().then(names => {
+                        names.forEach(name => {
+                            caches.delete(name);
+                        });
+                    });
+                }
+
+                // Hard reload
+                window.location.href = window.location.href.split('?')[0] + '?nocache=' + Date.now();
+                window.location.reload(true);
+            }
+        }
+    </script>
+</body>
+</html>

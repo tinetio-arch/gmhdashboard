@@ -136,30 +136,47 @@ export async function POST(
             }
 
             if (healthieClientId) {
+                // Special handling for blood pressure - needs to be a formatted string for Healthie
+                let metricStatValue: string;
+                if (metric_type === 'blood_pressure') {
+                    // For BP, send the combined value like "120/80"
+                    metricStatValue = displayValue; // Already formatted as "sys/dia"
+                } else {
+                    // For other metrics, ensure it's a string
+                    metricStatValue = String(value).trim();
+                }
+
+                console.log(`[metrics] Creating Healthie entry: type="${HEALTHIE_METRIC_TYPES[metric_type]}", stat="${metricStatValue}", user=${healthieClientId}`);
+
                 const entryResult = await healthieGraphQL<{
                     createEntry: {
-                        entry?: { id?: string } | null;
+                        entry?: { id?: string; created_at?: string } | null;
                         messages?: Array<{ field?: string; message?: string }> | null;
                     };
                 }>(`
                     mutation CreateEntry($input: createEntryInput!) {
                         createEntry(input: $input) {
-                            entry { id }
+                            entry { id created_at }
                             messages { field message }
                         }
                     }
                 `, {
                     input: {
-                        user_id: healthieClientId,
+                        user_id: String(healthieClientId),
                         type: HEALTHIE_METRIC_TYPES[metric_type] || metric_type,
-                        metric_stat: String(parseFloat(value) || 0),
+                        metric_stat: metricStatValue,
                         category: 'Vital',
                         created_at: recordedAt,
-                        description: notes || `${metric_type}: ${displayValue} ${unit || ''}`.trim(),
+                        description: notes ? `${notes} (by ${user.email})` : `Recorded by ${user.email}`,
                     }
                 });
 
+                if (entryResult.createEntry?.messages && entryResult.createEntry.messages.length > 0) {
+                    console.warn('[metrics] Healthie validation errors:', entryResult.createEntry.messages);
+                }
+
                 healthieEntryId = entryResult.createEntry?.entry?.id || null;
+                console.log(`[metrics] Healthie entry created: ${healthieEntryId || 'FAILED'}`);
 
                 if (healthieEntryId && metricId) {
                     await query(
