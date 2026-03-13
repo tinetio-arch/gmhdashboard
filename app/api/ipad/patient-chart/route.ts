@@ -49,12 +49,13 @@ export async function GET(request: NextRequest) {
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
         const [chartNotes, medications, appointments, entries, allergies, documents, userProfile] = await Promise.all([
-            // Chart notes (form answer groups)
+            // Chart notes (form answer groups) - get most recent first
             safeHealthieQuery<any>('chartNotes', `
                 query GetChartNotes($userId: String) {
                     formAnswerGroups(
                         user_id: $userId,
-                        offset: 0
+                        offset: 0,
+                        sort_by: "CREATED_AT"
                     ) {
                         id
                         name

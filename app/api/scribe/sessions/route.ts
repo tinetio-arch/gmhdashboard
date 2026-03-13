@@ -49,6 +49,56 @@ export async function GET(request: NextRequest) {
             LIMIT $1
         `, params);
 
+        // Fallback check for new leads not yet synced to the Local DB (like Marley Hershey)
+        const missingNames = sessions.filter(s => s.patient_id && !s.patient_name);
+        
+        if (missingNames.length > 0) {
+            try {
+                // Collect unique missing Healthie IDs
+                const uniqueIds = Array.from(new Set(missingNames.map(s => s.patient_id)));
+                const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
+                const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
+
+                // Build a grouped GraphQL query to find these patients in one shot on Healthie
+                const qBody = `query GetMissingUsers {
+                    users(ids: ${JSON.stringify(uniqueIds)}) {
+                        id
+                        first_name
+                        last_name
+                    }
+                }`;
+                
+                const response = await fetch(HEALTHIE_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                        'AuthorizationSource': 'API',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query: qBody })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    const fetchedUsers = result?.data?.users || [];
+                    
+                    // Map the found names back into the sessions
+                    const nameMap = new Map();
+                    fetchedUsers.forEach((u: any) => {
+                        nameMap.set(u.id, `${u.first_name || ''} ${u.last_name || ''}`.trim());
+                    });
+
+                    for (const s of sessions) {
+                        if (s.patient_id && !s.patient_name && nameMap.has(s.patient_id)) {
+                            s.patient_name = nameMap.get(s.patient_id);
+                        }
+                    }
+                }
+            } catch (fallbackError) {
+                console.warn('[Scribe Sessions] Healthie fallback name lookup failed:', fallbackError);
+            }
+        }
+
         return NextResponse.json({
             success: true,
             data: sessions,

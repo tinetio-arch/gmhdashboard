@@ -21,6 +21,7 @@ export async function GET(request: NextRequest) {
             // Computed permissions for the iPad app
             permissions: {
                 can_view_ceo_dashboard: user.role === 'admin',
+                can_view_revenue: user.role !== 'read', // ✅ All except read-only can see revenue
                 can_use_scribe: user.role === 'admin' || user.role === 'write' || user.is_provider,
                 can_dispense: true,
                 can_sign_notes: user.can_sign,

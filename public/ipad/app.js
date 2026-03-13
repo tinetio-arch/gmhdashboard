@@ -27,6 +27,124 @@ let pauseStartTime = null;
 let autoPausedBySystem = false;  // true when auto-paused by visibilitychange (phone call, app switch)
 let scribeView = 'list';        // 'list' | 'new' | 'recording' | 'transcript' | 'note' | 'review'
 
+// ─── BACKGROUND TRANSCRIPTION POLLING SERVICE ───────────────
+// Survives tab navigation, page visibility changes, and user actions
+let activePolls = new Map(); // sessionId → { sessionId, attempts, maxAttempts, interval }
+
+function startBackgroundTranscriptionPoll(sessionId) {
+    if (activePolls.has(sessionId)) {
+        console.log(`[Background Poll] Already polling session ${sessionId}`);
+        return;
+    }
+
+    const pollInfo = {
+        sessionId,
+        attempts: 0,
+        maxAttempts: 60,
+        interval: null,
+    };
+
+    activePolls.set(sessionId, pollInfo);
+
+    pollInfo.interval = setInterval(async () => {
+        pollInfo.attempts++;
+
+        try {
+            const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+
+            if (data?.success && data.data?.status === 'transcribed') {
+                stopBackgroundPoll(sessionId);
+                scribeLoaded = false;
+                await loadScribeSessions();
+                const patientName = data.data.patient_name || scribeSessions.find(s => s.session_id === sessionId)?.patient_name || 'patient';
+                showToast(`✅ Transcription complete for ${patientName}`, 'success');
+                updateBadges();
+                if (currentTab === 'scribe') renderCurrentTab();
+            } else if (data?.data?.status === 'error') {
+                stopBackgroundPoll(sessionId);
+                showToast(`❌ Transcription failed`, 'error');
+                scribeLoaded = false;
+                await loadScribeSessions();
+                if (currentTab === 'scribe') renderCurrentTab();
+            } else if (pollInfo.attempts >= pollInfo.maxAttempts) {
+                stopBackgroundPoll(sessionId);
+                showToast(`⏱ Transcription timed out - check back later`, 'warning');
+            }
+        } catch (err) {
+            if (err.message === 'AUTH_EXPIRED') {
+                stopBackgroundPoll(sessionId);
+                throw err;
+            }
+            console.warn(`[Background Poll] Error for ${sessionId}:`, err);
+        }
+    }, 5000);
+
+    console.log(`[Background Poll] Started for session ${sessionId}`);
+}
+
+function stopBackgroundPoll(sessionId) {
+    const pollInfo = activePolls.get(sessionId);
+    if (pollInfo?.interval) {
+        clearInterval(pollInfo.interval);
+        activePolls.delete(sessionId);
+        console.log(`[Background Poll] Stopped for session ${sessionId}`);
+    }
+}
+
+function stopAllBackgroundPolls() {
+    for (const [sessionId] of activePolls) {
+        stopBackgroundPoll(sessionId);
+    }
+}
+
+async function checkForPendingTranscriptions() {
+    try {
+        const sessions = scribeSessions.filter(s => s.status === 'transcribing');
+        if (sessions.length === 0) return;
+
+        console.log(`[Scribe Recovery] Found ${sessions.length} sessions in 'transcribing' status`);
+
+        for (const session of sessions) {
+            const check = await apiFetch(`/ops/api/scribe/transcribe?session_id=${session.session_id}`);
+
+            if (check?.success && check.data?.status === 'transcribed') {
+                console.log(`[Scribe Recovery] ✅ Recovered completed transcription for ${session.patient_name}`);
+                scribeLoaded = false;
+                await loadScribeSessions();
+                showToast(`✅ Recovered completed transcription for ${session.patient_name}`, 'success');
+            } else if (check?.data?.status === 'transcribing') {
+                console.log(`[Scribe Recovery] Session ${session.session_id} still processing - starting background poll`);
+                startBackgroundTranscriptionPoll(session.session_id);
+            }
+        }
+    } catch (err) {
+        console.warn('[Scribe Recovery] Check failed:', err);
+    }
+}
+
+async function retryTranscription(sessionId) {
+    showToast('Checking transcription status...', 'info');
+    try {
+        const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+
+        if (data?.success && data.data?.status === 'transcribed') {
+            showToast('✅ Transcription complete!', 'success');
+            scribeLoaded = false;
+            await loadScribeSessions();
+            renderCurrentTab();
+        } else if (data?.data?.status === 'transcribing') {
+            showToast('Still processing... started background check', 'info');
+            startBackgroundTranscriptionPoll(sessionId);
+        } else if (data?.data?.status === 'error') {
+            showToast('❌ Transcription failed: ' + (data.data.error || 'Unknown error'), 'error');
+        } else {
+            showToast('Status: ' + (data?.data?.status || 'unknown'), 'info');
+        }
+    } catch (err) {
+        showToast('Status check failed: ' + err.message, 'error');
+    }
+}
+
 // ─── RECORDING INTERRUPTION PROTECTION ──────────────────────
 // Auto-pause recording when the page loses visibility (phone call, app switch, lock screen)
 document.addEventListener('visibilitychange', () => {
@@ -79,7 +197,13 @@ let currentUser = null;          // from /api/ipad/me — role, permissions
 // HTML sanitizer to prevent XSS
 function sanitize(str) {
     if (!str) return '';
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+        .replace(/\//g, '&#x2F;'); // Extra protection for URLs
 }
 
 // ─── INIT ───────────────────────────────────────────────────
@@ -99,6 +223,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyRolePermissions();
     setupHashRouting();
     loadAllData();
+
+    // ✅ AUTO-REFRESH: Schedule tab refreshes every 5 minutes
+    setInterval(async () => {
+        if (currentTab === 'schedule' && isConnected && !isLoading) {
+            console.log('[Auto-Refresh] Reloading schedule...');
+            try {
+                await loadHealthieAppointments();
+                if (currentTab === 'schedule') {
+                    renderCurrentTab();
+                }
+            } catch (e) {
+                console.warn('[Auto-Refresh] Failed:', e);
+            }
+        }
+    }, 300000); // 5 minutes
 });
 
 // ─── AUTH & RBAC ────────────────────────────────────────────
@@ -412,12 +551,32 @@ async function apiFetch(url, options = {}) {
         }
 
         if (!resp.ok) {
+            // ✅ USER-FRIENDLY ERROR MESSAGES
+            const errorText = await resp.text().catch(() => '');
+            console.error(`[API Error] ${resp.status} ${url}:`, errorText.substring(0, 200));
+
+            if (resp.status >= 500) {
+                showToast('Server error - please try again', 'error');
+            } else if (resp.status === 404) {
+                showToast('Resource not found', 'error');
+            } else if (resp.status === 400) {
+                showToast('Invalid request', 'error');
+            } else {
+                showToast(`Request failed (${resp.status})`, 'error');
+            }
+
             throw new Error(`HTTP ${resp.status}`);
         }
 
         return await resp.json();
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
+
+        // ✅ NETWORK ERROR MESSAGES
+        if (e.name === 'TypeError' && e.message.includes('fetch')) {
+            showToast('Network error - check your connection', 'error');
+        }
+
         console.warn(`API call failed: ${url}`, e);
         throw e;
     }
@@ -529,6 +688,7 @@ async function loadDashboard() {
 }
 
 async function loadHealthieAppointments() {
+    console.log("[iPad] Loading Healthie appointments...");
     try {
         // Use lightweight schedule endpoint (cookie-authenticated, no cron secret)
         const data = await apiFetch('/ops/api/ipad/schedule/');
@@ -853,7 +1013,7 @@ function renderTodayView(container) {
             </div>
         </div>
 
-        ${(revenue.today > 0 || revenue.week > 0 || revenue.month > 0) ? `
+        ${(currentUser?.permissions?.can_view_revenue && (revenue.today >= 0 || revenue.week >= 0 || revenue.month >= 0)) ? `
             <div class="section-header">
                 <h2>Revenue</h2>
             </div>
@@ -1473,6 +1633,9 @@ async function loadScribeSessions() {
             scribeSessions = data.data;
         }
         scribeLoaded = true;
+
+        // ✅ AUTO-RECOVERY: Check for stuck transcriptions
+        await checkForPendingTranscriptions();
     } catch (e) {
         scribeLoaded = true; // mark as attempted even on failure
         if (e.message === 'AUTH_EXPIRED') throw e;
@@ -1570,11 +1733,11 @@ function renderScribeSessionCard(session) {
     }) : '';
     const status = session.status || 'recording';
     const statusColors = {
-        recording: 'var(--red)', transcribed: 'var(--yellow)',
+        recording: 'var(--red)', transcribed: 'var(--yellow)', transcribing: 'var(--cyan)',
         note_generated: 'var(--cyan)', submitted: 'var(--green)', signed: 'var(--green)',
     };
     const statusLabels = {
-        recording: 'Recording', transcribed: 'Needs Note',
+        recording: 'Recording', transcribed: 'Needs Note', transcribing: '⏳ Transcribing...',
         note_generated: 'Review Note', submitted: 'Submitted', signed: 'Signed',
     };
     const nextAction = {
@@ -1604,6 +1767,12 @@ function renderScribeSessionCard(session) {
                     ${statusLabels[status] || status}
                 </div>
             </div>
+            ${status === 'transcribing' ? `
+                <button class="scribe-retry-btn" onclick="event.stopPropagation(); retryTranscription('${session.session_id}');"
+                        style="margin-top:8px; padding:8px 16px; background:var(--cyan); color:#000; border:none; border-radius:8px; font-weight:600; cursor:pointer;">
+                    🔄 Check Status
+                </button>
+            ` : ''}
             ${session.transcript_length > 0 ? `
                 <div class="scribe-session-detail">
                     <span>📝 ${session.transcript_length.toLocaleString()} chars transcribed</span>
@@ -1735,7 +1904,8 @@ async function selectPatientForSession(healthieId, patientName) {
         const result = await resp.json();
         if (result.success) {
             showToast(`✅ Connected ${result.data.new_patient_name} to session`, 'success');
-            // Refresh the scribe list
+            // Refresh the scribe list by invalidating memory cache
+            scribeLoaded = false;
             scribeView = 'list';
             renderCurrentTab();
         } else {
@@ -2029,6 +2199,8 @@ function getRecordingMimeType() {
 let recordingMimeType = '';
 
 async function beginScribeCapture() {
+    // ✅ Reset recording warning flag
+    window._recordingWarningShown = false;
     if (!scribePatientId) {
         showToast('Please select a patient first', 'error');
         return;
@@ -2164,6 +2336,19 @@ function updateRecordingTimer() {
     // Subtract paused time from elapsed
     const currentPause = isPaused && pauseStartTime ? (Date.now() - pauseStartTime) : 0;
     const elapsed = Math.floor((Date.now() - recordingStartTime - pausedDuration - currentPause) / 1000);
+
+    // ✅ AUTO-STOP AT 60 MINUTES
+    if (elapsed >= 3600 && isRecording) {
+        showToast('⚠️ Maximum recording length (1 hour) reached - stopping automatically', 'warning');
+        stopScribeRecording();
+        return;
+    }
+
+    // ✅ WARN AT 55 MINUTES
+    if (elapsed === 3300 && !window._recordingWarningShown) {
+        showToast('⚠️ Recording will auto-stop at 60 minutes (5 min remaining)', 'warning', 10000);
+        window._recordingWarningShown = true;
+    }
     const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
     const s = (elapsed % 60).toString().padStart(2, '0');
     el.textContent = `${m}:${s}`;
@@ -2339,9 +2524,22 @@ async function attemptScribeUpload(blob, filename) {
             activeScribeSession = data.data;
             // Check if transcription is async (AWS Transcribe) or already done
             if (data.data.status === 'transcribing' || data.data.transcription_job_name) {
-                showToast('Audio uploaded! Transcription in progress…', 'info');
-                // Poll for completion
-                await pollTranscription(data.data.session_id);
+                // ✅ NEW: Start background polling instead of blocking UI
+                startBackgroundTranscriptionPoll(data.data.session_id);
+                showToast('✅ Audio uploaded! Transcribing in background...', 'success');
+                // Return to list immediately
+                scribeView = 'list';
+                await loadScribeSessions();
+                renderCurrentTab();
+                updateBadges();
+                return;
+            } else if (data.data.status === 'transcribed') {
+                // Sync transcription already complete
+                showToast(`✅ Transcribed! ${data.data.transcript_length || 0} characters`, 'success');
+                await loadScribeSessions();
+                scribeView = 'note';
+                renderCurrentTab();
+                updateBadges();
             } else {
                 showToast(`Transcribed! ${data.data.transcript_length || 0} characters`, 'success');
                 await loadScribeSessions();
@@ -2424,54 +2622,8 @@ function downloadPendingRecording() {
     showToast('Audio file downloaded', 'success');
 }
 
-async function pollTranscription(sessionId) {
-    // Show a polling view
-    const container = document.getElementById('mainContent');
-    if (container) {
-        container.innerHTML = `
-            <div style="text-align:center; padding:60px 20px;">
-                <div class="loading-spinner" style="margin:0 auto 20px;"></div>
-                <h2 style="margin-bottom:8px;">Transcribing Visit Audio</h2>
-                <p style="color:var(--text-tertiary);">AWS Transcribe Medical is processing your recording.<br>This usually takes 30-90 seconds.</p>
-                <div id="pollStatus" style="margin-top:20px; color:var(--cyan); font-weight:600;">Polling…</div>
-            </div>
-        `;
-    }
-
-    let attempts = 0;
-    const maxAttempts = 60; // 5 min max
-    const pollInterval = 5000; // 5 sec
-
-    while (attempts < maxAttempts) {
-        attempts++;
-        await new Promise(r => setTimeout(r, pollInterval));
-        try {
-            const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
-            const statusEl = document.getElementById('pollStatus');
-            if (statusEl) statusEl.textContent = `Checking… (attempt ${attempts})`;
-
-            if (data?.success && data.data?.status === 'transcribed') {
-                showToast(`Transcription complete! ${data.data.transcript_length || 0} chars`, 'success');
-                await loadScribeSessions();
-                activeScribeSession = scribeSessions.find(s => s.session_id === sessionId) || activeScribeSession;
-                scribeView = 'note';
-                renderCurrentTab();
-                updateBadges();
-                return;
-            } else if (data?.data?.status === 'error') {
-                showToast('Transcription failed: ' + (data.data.error || 'Unknown'), 'error');
-                scribeView = 'list';
-                renderCurrentTab();
-                return;
-            }
-        } catch (e) {
-            console.warn('Poll error:', e);
-        }
-    }
-    showToast('Transcription timed out — check back later', 'error');
-    scribeView = 'list';
-    renderCurrentTab();
-}
+// ❌ DEPRECATED: Old blocking pollTranscription removed - now using background polling
+// See startBackgroundTranscriptionPoll() instead
 
 async function submitManualTranscript() {
     const textarea = document.getElementById('scribeManualTranscript');
@@ -2946,44 +3098,23 @@ function openChartForPatient(patientId, patientName) {
         document.body.appendChild(panel);
     }
 
-    // ALWAYS ensure the close button exists (old cached HTML may lack it)
-    if (!panel.querySelector('.chart-panel-close')) {
-        // Find or create the header
-        let header = panel.querySelector('.chart-panel-header');
-        if (!header) {
-            header = document.createElement('div');
-            header.className = 'chart-panel-header';
-            header.innerHTML = `
-                <div class="chart-panel-title" id="globalChartTitle">📋 Patient Chart</div>
-                <div class="chart-panel-actions">
-                    <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
-                    <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
-                    <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
-                </div>
-            `;
-            panel.insertBefore(header, panel.firstChild);
-        } else {
-            // Header exists but without close button — add actions div
-            let actions = header.querySelector('.chart-panel-actions');
-            if (!actions) {
-                actions = document.createElement('div');
-                actions.className = 'chart-panel-actions';
-                actions.innerHTML = `
-                    <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
-                    <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
-                    <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
-                `;
-                header.appendChild(actions);
-            } else {
-                // Actions div exists but no close button
-                const closeBtn = document.createElement('button');
-                closeBtn.className = 'chart-panel-close';
-                closeBtn.onclick = closeGlobalChart;
-                closeBtn.textContent = '✕';
-                actions.appendChild(closeBtn);
-            }
-        }
+    // ALWAYS ensure the header and close button exist dynamically (busts iPad HTML cache)
+    let header = panel.querySelector('.chart-panel-header');
+    if (!header) {
+        header = document.createElement('div');
+        header.className = 'chart-panel-header';
+        panel.insertBefore(header, panel.firstChild);
     }
+    
+    // Completely overwrite the header HTML every time to guarantee buttons exist
+    header.innerHTML = `
+        <div class="chart-panel-title" id="globalChartTitle">📋 Patient Chart</div>
+        <div class="chart-panel-actions">
+            <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
+            <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
+            <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
+        </div>
+    `;
 
     // Update header
     const title = document.getElementById('globalChartTitle');
@@ -3912,34 +4043,18 @@ function renderDocumentsTab(container, d) {
     `;
 }
 
-// HTML for the chart panel (Scribe local view)
+// HTML for the chart panel (Scribe local view) -> Now deprecated to prevent zombie cache panels.
+// We strictly use the dynamic globalChartPanel for everything to bypass iPad caching.
 function getChartPanelHTML() {
-    return `
-        <div id="chartPanel" class="chart-panel">
-            <div class="chart-panel-minimized-tab" onclick="toggleChartPanel()" title="Restore chart panel">
-                <span>📋</span>
-                <span class="minimized-patient-name" id="chartPatientName"></span>
-            </div>
-            <div class="chart-panel-header">
-                <div class="chart-panel-title" id="chartTitle">📋 Patient Chart</div>
-                <div class="chart-panel-actions">
-                    <button class="chart-panel-btn" onclick="minimizeChartPanel()" title="Minimize">⊟</button>
-                    <button class="chart-panel-btn" onclick="expandChartPanel()" title="Expand">⊞</button>
-                    <button class="chart-panel-close" onclick="toggleChartPanel()">✕</button>
-                </div>
-            </div>
-            <div id="chartPanelContent" class="chart-panel-content">
-                <div class="chart-loading"><div class="spinner"></div> Loading chart…</div>
-            </div>
-        </div>
-    `;
+    return ``; // Empty to prevent rendering a broken duplicate chart panel
 }
 
 // Chart toggle button HTML (used in scribe header rows)
 function getChartToggleBtn() {
     const pid = scribePatientId || activeScribeSession?.patient_id;
+    const pname = scribePatientName || activeScribeSession?.patient_name || 'Patient';
     if (!pid) return '';
-    return `<button class="chart-toggle-btn" onclick="toggleChartPanel()" title="View patient chart">📋 Chart</button>`;
+    return `<button class="chart-toggle-btn" onclick="openChartForPatient('${pid}', '${pname}')" title="View patient chart">📋 Chart</button>`;
 }
 
 // ============================================================
@@ -5888,6 +6003,21 @@ async function submitAllVitals(patientId) {
     var vitals = [];
     var bpSys = document.getElementById('vBpSys')?.value;
     var bpDia = document.getElementById('vBpDia')?.value;
+    // ✅ Validate BP format
+    if (bpSys && bpDia) {
+        if (!/^\d{2,3}$/.test(bpSys) || !/^\d{2,3}$/.test(bpDia)) {
+            errorEl.textContent = 'Blood pressure must be numeric (e.g., 120/80)';
+            errorEl.style.display = 'block';
+            return;
+        }
+        var systolic = parseInt(bpSys);
+        var diastolic = parseInt(bpDia);
+        if (systolic < 60 || systolic > 250 || diastolic < 30 || diastolic > 150) {
+            errorEl.textContent = 'Blood pressure values out of range (60-250 / 30-150)';
+            errorEl.style.display = 'block';
+            return;
+        }
+    }
     if (bpSys && bpDia) vitals.push({ metric_type: 'blood_pressure', value: bpSys + '/' + bpDia, unit: 'mmHg', blood_pressure_systolic: bpSys, blood_pressure_diastolic: bpDia });
     var pulse = document.getElementById('vPulse')?.value;
     if (pulse) vitals.push({ metric_type: 'heart_rate', value: pulse, unit: 'bpm' });
