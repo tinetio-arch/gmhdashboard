@@ -127,7 +127,13 @@ export async function POST(
                 `SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1`,
                 [patientId]
             );
-            const healthieClientId = (patientRows as any[])[0]?.healthie_client_id;
+            let healthieClientId = (patientRows as any[])[0]?.healthie_client_id;
+
+            // Fallback: if patient isn't in healthie_clients, check if patientId is itself a Healthie ID (numeric)
+            if (!healthieClientId && /^\d+$/.test(patientId)) {
+                healthieClientId = patientId;
+                console.log(`[metrics] No healthie_clients mapping for ${patientId}, using as direct Healthie ID`);
+            }
 
             if (healthieClientId) {
                 const entryResult = await healthieGraphQL<{
@@ -146,7 +152,7 @@ export async function POST(
                     input: {
                         user_id: healthieClientId,
                         type: HEALTHIE_METRIC_TYPES[metric_type] || metric_type,
-                        metric_stat: parseFloat(value) || 0,
+                        metric_stat: String(parseFloat(value) || 0),
                         category: 'Vital',
                         created_at: recordedAt,
                         description: notes || `${metric_type}: ${displayValue} ${unit || ''}`.trim(),

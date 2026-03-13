@@ -159,18 +159,41 @@ export async function GET(request: NextRequest) {
                 }
             `, { viewableUserId: healthieId }),
 
-            // User profile (for avatar)
+            // User profile (full demographics)
             safeHealthieQuery<any>('userProfile', `
                 query GetUser($id: ID) {
                     user(id: $id) {
                         id
                         first_name
                         last_name
+                        legal_name
                         avatar_url
                         dob
                         gender
+                        sex
+                        pronouns
                         phone_number
                         email
+                        height
+                        weight
+                        location {
+                            id
+                            line1
+                            line2
+                            city
+                            state
+                            zip
+                            country
+                        }
+                        dietitian_id
+                        user_group {
+                            id
+                            name
+                        }
+                        active_tags {
+                            id
+                            name
+                        }
                     }
                 }
             `, { id: healthieId }),
@@ -192,11 +215,46 @@ export async function GET(request: NextRequest) {
             `, [localPatientId]);
         }
 
+        // Merge Healthie user profile data into demographics (fills in name, dob, etc.)
+        const hp = userProfile?.user;
+        if (hp) {
+            const demographics = localData.demographics;
+            if (!demographics.full_name && (hp.first_name || hp.last_name)) {
+                demographics.full_name = `${hp.first_name || ''} ${hp.last_name || ''}`.trim();
+            }
+            if (!demographics.dob && hp.dob) demographics.dob = hp.dob;
+            if (!demographics.phone_primary && hp.phone_number) demographics.phone_primary = hp.phone_number;
+            if (!demographics.email && hp.email) demographics.email = hp.email;
+            if (!demographics.gender && hp.gender) demographics.gender = hp.gender;
+            // Additional fields from expanded profile
+            demographics.sex = hp.sex || demographics.sex || '';
+            demographics.pronouns = hp.pronouns || demographics.pronouns || '';
+            demographics.height = hp.height || demographics.height || '';
+            demographics.weight = hp.weight || demographics.weight || '';
+            demographics.legal_name = hp.legal_name || '';
+            // Address
+            if (hp.location) {
+                demographics.address_line1 = hp.location.line1 || '';
+                demographics.address_line2 = hp.location.line2 || '';
+                demographics.city = hp.location.city || '';
+                demographics.state = hp.location.state || '';
+                demographics.zip = hp.location.zip || '';
+                demographics.country = hp.location.country || '';
+                demographics.location_id = hp.location.id || '';
+            }
+            // Insurance — TODO: Use insurance_authorization field in future
+
+            // Tags and group
+            demographics.tags = hp.active_tags || [];
+            demographics.user_group = hp.user_group?.name || '';
+        }
+
         return NextResponse.json({
             success: true,
             data: {
                 ...localData,
                 healthie_id: healthieId,
+                healthie_profile: hp || null,
                 chart_notes: chartNotes?.formAnswerGroups || [],
                 medications: medications?.medications || [],
                 allergies: allergies?.user?.allergy_sensitivities || [],
@@ -204,7 +262,7 @@ export async function GET(request: NextRequest) {
                 documents: documents?.documents || [],
                 vitals: entries?.entries || [],
                 scribe_history: scribeHistory || [],
-                avatar_url: userProfile?.user?.avatar_url || null,
+                avatar_url: hp?.avatar_url || null,
             },
         });
     } catch (error) {

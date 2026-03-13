@@ -3775,6 +3775,19 @@ h6 {
     border-radius: 8px;
     margin-bottom: 4px;
     border-left: 3px solid rgba(0, 212, 255, 0.4);
+    transition: background 0.2s;
+}
+
+/* Expandable chart notes */
+.chart-lab-card.chart-note-expanded {
+    background: rgba(0, 212, 255, 0.06);
+    border-left-color: var(--cyan);
+}
+.chart-lab-card.chart-note-expanded .chart-note-preview {
+    display: none !important;
+}
+.chart-lab-card.chart-note-expanded .chart-note-full {
+    display: block !important;
 }
 
 .chart-lab-name {

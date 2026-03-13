@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
                 sn.healthie_note_id,
                 CASE WHEN sn.soap_subjective IS NOT NULL THEN true ELSE false END as has_note
             FROM scribe_sessions ss
-            LEFT JOIN patients p ON ss.patient_id::text = p.patient_id::text
+            LEFT JOIN patients p ON (ss.patient_id::text = p.patient_id::text OR ss.patient_id = p.healthie_client_id)
             LEFT JOIN scribe_notes sn ON ss.session_id = sn.session_id
             ${whereClause}
             ORDER BY ss.created_at DESC

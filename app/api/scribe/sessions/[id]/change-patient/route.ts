@@ -66,11 +66,17 @@ export async function POST(
         }
 
         // 4. Get old patient name for SOAP content replacement
-        const [oldPatient] = await query<any>(
-            'SELECT full_name FROM patients WHERE patient_id = $1',
-            [session.patient_id]
-        );
-        const oldPatientName = oldPatient?.full_name;
+        let oldPatientName = null;
+        if (session.patient_id) {
+            const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(session.patient_id);
+            const [oldPatient] = await query<any>(
+                isUUID 
+                    ? 'SELECT full_name FROM patients WHERE patient_id = $1'
+                    : 'SELECT full_name FROM patients WHERE healthie_client_id = $1',
+                [session.patient_id]
+            );
+            oldPatientName = oldPatient?.full_name;
+        }
 
         // 5. Update session patient_id
         await query(

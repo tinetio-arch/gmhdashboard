@@ -57,17 +57,60 @@ export async function POST(request: NextRequest) {
             // Allow re-submission if > 30s (user intentionally retrying)
         }
 
-        // 2. Fetch patient + Healthie ID from canonical healthie_clients table
-        const [patient] = await query<any>(
-            'SELECT p.patient_id, p.full_name, p.dob, hc.healthie_client_id FROM patients p LEFT JOIN healthie_clients hc ON p.patient_id = hc.patient_id::uuid AND hc.is_active = true WHERE p.patient_id = $1',
-            [note.patient_id]
-        );
-        const healthiePatientId = patient?.healthie_client_id;
-        if (!healthiePatientId) {
-            return NextResponse.json(
-                { success: false, error: 'Patient has no Healthie client ID. Link patient to Healthie first.' },
-                { status: 400 }
+        // 2. Fetch patient + Healthie ID
+        // First try local patients table with healthie_clients mapping
+        let patient: any = null;
+        let healthiePatientId: string | null = null;
+
+        // Check if patient_id is a UUID (local patient) or a Healthie numeric ID
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(note.patient_id);
+        
+        if (isUuid) {
+            const [localPatient] = await query<any>(
+                'SELECT p.patient_id, p.full_name, p.dob, hc.healthie_client_id FROM patients p LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true WHERE p.patient_id = $1',
+                [note.patient_id]
             );
+            if (localPatient) {
+                patient = localPatient;
+                healthiePatientId = localPatient.healthie_client_id;
+            }
+        }
+
+        // Try lookup by healthie_client_id if not found by UUID
+        if (!patient) {
+            const [byHealthie] = await query<any>(
+                'SELECT p.patient_id, p.full_name, p.dob, hc.healthie_client_id FROM patients p JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true WHERE hc.healthie_client_id = $1',
+                [note.patient_id]
+            );
+            if (byHealthie) {
+                patient = byHealthie;
+                healthiePatientId = byHealthie.healthie_client_id;
+            }
+        }
+
+        // FALLBACK: If patient not in local DB, use note.patient_id as Healthie ID directly
+        // This supports the 4000+ Healthie patients not synced to local patients table
+        if (!healthiePatientId) {
+            healthiePatientId = note.patient_id;
+            console.log(`[Scribe:Submit] Patient not in local DB, using patient_id as Healthie ID: ${healthiePatientId}`);
+            
+            // Fetch patient name from Healthie API for PDF generation
+            try {
+                const healthieUser = await healthieGraphQL<any>(`
+                    query GetUser($id: ID!) {
+                        user(id: $id) { id first_name last_name dob }
+                    }
+                `, { id: healthiePatientId });
+                if (healthieUser?.user) {
+                    patient = {
+                        full_name: `${healthieUser.user.first_name || ''} ${healthieUser.user.last_name || ''}`.trim(),
+                        dob: healthieUser.user.dob,
+                    };
+                }
+            } catch (healthieErr) {
+                console.warn('[Scribe:Submit] Failed to fetch patient from Healthie:', healthieErr);
+                patient = { full_name: 'Unknown Patient', dob: null };
+            }
         }
 
         // 3. Format SOAP sections as HTML (matching Telegram bot formatSectionHtml)

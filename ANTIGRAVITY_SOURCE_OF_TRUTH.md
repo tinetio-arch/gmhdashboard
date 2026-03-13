@@ -385,7 +385,70 @@ pm2 save
 
 ## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 7, 2026)
 
+### March 12, 2026: 🔴 Server Stability Deep Fix — PM2 Mismatch, Crash Loop, Antigravity Anti-Hang
+
+**Problem**: Server commands hanging, `uptime-monitor` crash-looping (398+ restarts), `system-health` API returning errors, CLI tools (psql, node scripts) hanging when connecting to RDS. User reported persistent hangs despite March 7 IPv6 fix.
+
+**Root Cause Analysis** (5 issues found):
+
+| Issue | Root Cause | Impact |
+|-------|-----------|--------|
+| **PM2 version mismatch** | In-memory PM2 (6.0.13) older than installed (6.0.14). `pm2 jlist` prepended a red warning to stdout. | `system-health` API parsed this as JSON → crash |
+| **Uptime-monitor crash loop** | `uptime_monitor.py` calls `pm2 jlist` → got corrupted JSON → crashed → PM2 restarted it → infinite loop (398+ restarts) | Resource drain |
+| **system-health route fragile** | Directly passed `pm2 jlist` output to `JSON.parse()` with no sanitization | Any PM2 warning = total API failure |
+| **Missing CLI env vars** | `psql` and ad-hoc Node scripts lacked `PGHOST`, `PGPORT`, etc. → defaulted to `localhost:5432` | CLI DB commands hung |
+| **NODE_OPTIONS duplication** | Exported multiple times in `~/.bashrc` from repeated shell sourcing | Minor, but cluttered env |
+
+**Fix (5-part):**
+
+| Fix | File | Change |
+|-----|------|--------|
+| PM2 updated | `pm2` in-memory | Ran `pm2 update` to sync in-memory (6.0.14) with installed version |
+| system-health hardened | `app/api/analytics/system-health/route.ts` | Strip non-JSON prefix lines from `pm2 jlist` output before parsing; added 15s timeout |
+| Env vars centralized | `~/.server_env` [NEW] | Single source for `NODE_OPTIONS`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGSSLMODE`, `DATABASE_HOST/PORT/NAME/USER/SSLMODE`, curl/wget IPv4 aliases |
+| `.bashrc` simplified | `~/.bashrc` | Replaced inline env vars with `source ~/.server_env` |
+| Antigravity workflow | `~/.agents/workflows/server-commands.md` [NEW] | Enforces `source ~/.server_env && timeout <N> <cmd>` for all agent-run commands |
+
+**Key Files Created:**
+
+- **`~/.server_env`** — Central environment file sourced by `~/.bashrc` AND Antigravity workflows. Contains IPv4 enforcement for Node.js (`NODE_OPTIONS`), Python/curl/wget (`-4` flag), and PostgreSQL CLI vars.
+- **`~/.agents/workflows/server-commands.md`** — Workflow that every Antigravity agent follows: source env, use timeout, prefer `view_file` over shell reads.
+
+**Antigravity User Rule Added** (in Settings → Customizations):
+```
+CRITICAL SERVER RULE: This EC2 server has NO working IPv6. Any command that attempts IPv6 will hang forever.
+1. ALWAYS source ~/.server_env before running any command
+2. ALWAYS wrap commands with timeout
+3. Follow the workflow at ~/.agents/workflows/server-commands.md
+4. Prefer view_file over tail/cat for reading log files
+5. Never run pm2 logs without --nostream flag
+```
+
+**Verification Results (from uptime-monitor logs at 11:26 MST):**
+
+| Service | Status |
+|---------|--------|
+| GMH Dashboard | ✅ OK (restarts: 2 — from rebuild) |
+| System Health API | ✅ OK |
+| Webhook Health | ✅ 314 processed, 0 pending |
+| upload-receiver | ✅ OK (restarts: 0) |
+| telegram-ai-bot-v2 | ✅ OK (restarts: 0) |
+| email-triage | ✅ OK (restarts: 0) |
+| ghl-webhooks | ✅ OK (restarts: 0) |
+| nowmenshealth-website | ✅ OK (restarts: 0) |
+| QuickBooks token refresh | ✅ Working (DB queries succeeded) |
+| Dashboard error log | ✅ Empty (cleared, no new PM2 errors) |
+
+> [!IMPORTANT]
+> The March 7 IPv6 fix IS working correctly. The hangs in this session were caused by PM2 version mismatch and missing CLI env vars, NOT IPv6 regression.
+
+> [!TIP]
+> If commands hang in Antigravity despite the workflow, the agent's terminal session may be corrupted from previous hung processes. The agent should use `view_file` for reading files and terminate stuck background commands.
+
+---
+
 ### March 7, 2026: 🔴 IPv6 Root Cause Fix — Persistent Command Hanging
+
 
 **Problem**: `node`, `npx`, `npm`, `psql`, and other outbound commands would hang for 30-120+ seconds or indefinitely. Previously misdiagnosed as a Node v20 race condition (Mar 2 fix). The Node upgrade helped that specific issue but the hanging persisted.
 

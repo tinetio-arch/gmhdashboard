@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
             await query(
                 `UPDATE patients SET first_app_login = NOW()
          WHERE patient_id IN (
-           SELECT patient_id FROM healthie_clients WHERE healthie_client_id = $1 AND is_active = true
+           SELECT patient_id::uuid FROM healthie_clients WHERE healthie_client_id = $1 AND is_active = true
          ) AND first_app_login IS NULL`,
                 [healthie_user_id]
             );

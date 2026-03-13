@@ -1584,12 +1584,20 @@ function renderScribeSessionCard(session) {
         signed: () => `onclick="openScribeSession('${session.session_id}', 'review')"`,
     };
     const clickAttr = nextAction[status] ? nextAction[status]() : '';
+    const isUnknown = !session.patient_name || session.patient_name === 'Unknown Patient' || session.patient_name === 'Unknown';
+    const connectBtn = `<button onclick="event.stopPropagation(); connectPatientToSession('${session.session_id}')"
+        style="padding:4px 10px; font-size:12px; border:1px solid var(--cyan); color:var(--cyan); background:rgba(0,212,255,0.1);
+        border-radius:6px; cursor:pointer; margin-left:8px; white-space:nowrap;">
+        ${isUnknown ? '🔗 Connect Patient' : '🔄 Change'}
+    </button>`;
 
     return `
         <div class="scribe-session-card" ${clickAttr}>
             <div class="scribe-session-header">
                 <div class="scribe-session-info">
-                    <div class="scribe-session-patient">${name}</div>
+                    <div class="scribe-session-patient" style="display:flex; align-items:center;">
+                        ${name} ${connectBtn}
+                    </div>
                     <div class="scribe-session-meta">${visitType} · ${time}</div>
                 </div>
                 <div class="scribe-status-badge" style="background:${statusColors[status] || 'var(--text-tertiary)'}20; color:${statusColors[status] || 'var(--text-tertiary)'}">
@@ -1605,6 +1613,137 @@ function renderScribeSessionCard(session) {
             ` : ''}
         </div>
     `;
+}
+
+// Connect or change the patient for a scribe session
+async function connectPatientToSession(sessionId) {
+    // Show a patient picker overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'patientPickerOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:#1a2332;border-radius:16px;padding:24px;width:90%;max-width:500px;max-height:70vh;display:flex;flex-direction:column;border:1px solid rgba(0,212,255,0.2);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h3 style="margin:0;color:#f0f4f8;font-size:18px;">🔗 Connect Patient</h3>
+                <button onclick="document.getElementById('patientPickerOverlay').remove()"
+                    style="background:none;border:none;color:#8899aa;font-size:20px;cursor:pointer;">✕</button>
+            </div>
+            <input id="patientPickerSearch" type="text" placeholder="Search any patient by name..."
+                style="padding:12px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#f0f4f8;font-size:15px;margin-bottom:12px;outline:none;"
+                oninput="debouncedPatientSearch(this.value)">
+            <div id="patientPickerList" style="flex:1;overflow-y:auto;"></div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    window._pickerSessionId = sessionId;
+    
+    // Default to today's scheduled patients
+    const patientPickerList = document.getElementById('patientPickerList');
+    const uniquePatients = [];
+    const seen = new Set();
+    (healthieAppointments || []).forEach(a => {
+        const id = a.healthie_id || a.patient_id || a.id;
+        const nm = a.patient_name || a.full_name;
+        if (id && nm && !seen.has(id)) {
+            seen.add(id);
+            uniquePatients.push({ id: id, first_name: nm, last_name: '' });
+        }
+    });
+
+    if (uniquePatients.length > 0) {
+        renderPatientPickerList(uniquePatients);
+    } else {
+        patientPickerList.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Type a name to search Healthie</div>';
+    }
+}
+
+let _pickerSearchTimeout = null;
+function debouncedPatientSearch(searchText) {
+    if (_pickerSearchTimeout) clearTimeout(_pickerSearchTimeout);
+    
+    const list = document.getElementById('patientPickerList');
+    if (!searchText || searchText.length < 2) {
+        // Revert to default schedule if empty
+        const uniquePatients = [];
+        const seen = new Set();
+        (healthieAppointments || []).forEach(a => {
+            const id = a.healthie_id || a.patient_id || a.id;
+            const nm = a.patient_name || a.full_name;
+            if (id && !seen.has(id)) { seen.add(id); uniquePatients.push({ id: id, first_name: nm, last_name: '' }); }
+        });
+        if (uniquePatients.length > 0) renderPatientPickerList(uniquePatients);
+        else list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Type a name to search Healthie</div>';
+        return;
+    }
+
+    list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Searching Healthie...</div>';
+    
+    _pickerSearchTimeout = setTimeout(async () => {
+        try {
+            const resp = await fetch(`/ops/api/patients/search/?q=${encodeURIComponent(searchText)}`);
+            const data = await resp.json();
+            if (data.success && data.patients && data.patients.length > 0) {
+                renderPatientPickerList(data.patients);
+            } else {
+                list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">No patients found matching "'+searchText+'"</div>';
+            }
+        } catch(e) {
+            list.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center;">Search failed</div>';
+        }
+    }, 400);
+}
+
+function renderPatientPickerList(patients) {
+    const list = document.getElementById('patientPickerList');
+    if (!list) return;
+    list.innerHTML = '<div style="font-size:11px;color:#8899aa;margin-bottom:8px;padding-left:8px;text-transform:uppercase;">Select Patient</div>' + patients.map(p => {
+        const name = p.full_name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown';
+        const hid = p.healthie_id || p.id || '';
+        return `
+            <div onclick="selectPatientForSession('${hid}', '${name.replace(/'/g, "\\'")}')"
+                style="padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;color:#f0f4f8;
+                display:flex;justify-content:space-between;align-items:center;transition:background 0.15s; border-radius:8px;"
+                onmouseover="this.style.background='rgba(0,212,255,0.08)'" onmouseout="this.style.background='none'">
+                <div>
+                    <div style="font-weight:600;font-size:15px;">${name}</div>
+                    <div style="font-size:12px;color:#8899aa;">Healthie ID: ${hid}</div>
+                </div>
+                <span style="color:var(--cyan);font-size:14px;">Select →</span>
+            </div>
+        `;
+    }).join('');
+}
+
+async function selectPatientForSession(healthieId, patientName) {
+    const sessionId = window._pickerSessionId;
+    if (!sessionId || !healthieId) return;
+
+    // Close the picker
+    const overlay = document.getElementById('patientPickerOverlay');
+    if (overlay) overlay.remove();
+
+    showToast(`Connecting ${patientName} to session…`, 'info');
+
+    try {
+        const resp = await fetch(`/ops/api/scribe/sessions/${sessionId}/change-patient/`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ healthie_patient_id: healthieId }),
+        });
+        const result = await resp.json();
+        if (result.success) {
+            showToast(`✅ Connected ${result.data.new_patient_name} to session`, 'success');
+            // Refresh the scribe list
+            scribeView = 'list';
+            renderCurrentTab();
+        } else {
+            showToast('Failed: ' + (result.error || 'Unknown error'), 'error');
+        }
+    } catch (e) {
+        showToast('Error connecting patient: ' + e.message, 'error');
+    }
 }
 
 function startNewScribeSession() {
@@ -1792,8 +1931,8 @@ function selectScribePatient(healthieId, name) {
     }
     if (btn) btn.disabled = false;
 
-    // Auto-load chart data so it's available before recording
-    loadChartData(healthieId);
+    // Auto-load chart into the global panel (visible from any view)
+    openChartForPatient(healthieId, name);
 
     // Add chart button to header if not already present
     const headerRow = document.querySelector('.scribe-header-row');
@@ -1950,20 +2089,13 @@ async function beginScribeCapture() {
         }
         recordingStartTime = Date.now();
         scribeView = 'recording';
-        // Auto-open chart panel BEFORE rendering so it renders as open
+        // Auto-open chart in global panel (persists across view changes)
         chartPanelOpen = true;
         renderCurrentTab();
-        // After render creates new DOM, populate chart panel
         const pid = scribePatientId || activeScribeSession?.patient_id;
+        const pname = scribePatientName || activeScribeSession?.patient_name || 'Patient';
         if (pid) {
-            if (chartPanelData && chartPanelPatientId === pid) {
-                // Data already loaded for this patient — render it to the new DOM
-                const content = document.getElementById('chartPanelContent');
-                if (content) renderChartPanel(content);
-            } else {
-                // No data yet — load from API
-                loadChartData(pid);
-            }
+            openChartForPatient(pid, pname);
         }
         // Start timer
         recordingTimer = setInterval(updateRecordingTimer, 1000);
@@ -2137,6 +2269,36 @@ async function handleRecordingComplete() {
     const filename = `visit-recording.${ext}`;
     console.log(`[Scribe] Uploading: ${filename} (${mimeType}, ${(blob.size / 1024).toFixed(1)}KB)`);
 
+    // CRITICAL: Save blob to global variable for retry on failure
+    window._pendingRecordingBlob = blob;
+    window._pendingRecordingMeta = {
+        filename, mimeType, ext,
+        patientId: scribePatientId,
+        patientName: scribePatientName || 'Unknown',
+        visitType: scribeVisitType,
+        savedAt: new Date().toISOString(),
+    };
+
+    // Also backup to IndexedDB so it survives page refresh
+    try {
+        const dbReq = indexedDB.open('scribe_backup', 1);
+        dbReq.onupgradeneeded = (e) => { e.target.result.createObjectStore('recordings', { keyPath: 'id' }); };
+        dbReq.onsuccess = (e) => {
+            const db = e.target.result;
+            const tx = db.transaction('recordings', 'readwrite');
+            tx.objectStore('recordings').put({
+                id: 'pending_' + Date.now(),
+                blob: blob,
+                meta: window._pendingRecordingMeta,
+            });
+        };
+    } catch (idbErr) { console.warn('[Scribe] IndexedDB backup failed:', idbErr); }
+
+    await attemptScribeUpload(blob, filename);
+}
+
+// Separate upload function so it can be retried
+async function attemptScribeUpload(blob, filename) {
     const formData = new FormData();
     formData.append('audio', blob, filename);
     formData.append('patient_id', scribePatientId);
@@ -2154,9 +2316,7 @@ async function handleRecordingComplete() {
         if (!resp.ok) {
             const errorText = await resp.text().catch(() => 'Unknown error');
             console.error('[Scribe] Upload failed:', resp.status, errorText.substring(0, 200));
-            showToast(`Upload failed (${resp.status}): ${errorText.substring(0, 100)}`, 'error');
-            scribeView = 'list';
-            renderCurrentTab();
+            showUploadFailedRetryScreen(resp.status, errorText.substring(0, 100));
             return;
         }
 
@@ -2166,13 +2326,16 @@ async function handleRecordingComplete() {
             data = await resp.json();
         } catch (parseErr) {
             console.error('[Scribe] Response parse error:', parseErr);
-            showToast('Server returned invalid response. Please try again.', 'error');
-            scribeView = 'list';
-            renderCurrentTab();
+            showUploadFailedRetryScreen(0, 'Server returned invalid response');
             return;
         }
 
         if (data.success) {
+            // Clear backup on success
+            window._pendingRecordingBlob = null;
+            window._pendingRecordingMeta = null;
+            try { indexedDB.deleteDatabase('scribe_backup'); } catch (e) {}
+
             activeScribeSession = data.data;
             // Check if transcription is async (AWS Transcribe) or already done
             if (data.data.status === 'transcribing' || data.data.transcription_job_name) {
@@ -2187,16 +2350,78 @@ async function handleRecordingComplete() {
                 updateBadges();
             }
         } else {
-            showToast(data.error || 'Transcription failed', 'error');
-            scribeView = 'list';
-            renderCurrentTab();
+            showUploadFailedRetryScreen(0, data.error || 'Transcription failed');
         }
     } catch (e) {
         console.error('[Scribe] Transcription error:', e);
-        showToast('Transcription failed: ' + (e.message || 'network error'), 'error');
-        scribeView = 'list';
-        renderCurrentTab();
+        showUploadFailedRetryScreen(0, e.message || 'Network error');
     }
+}
+
+// Show a retry screen instead of discarding the recording on failure
+function showUploadFailedRetryScreen(status, errorMsg) {
+    showToast('Upload failed — your recording is saved locally. You can retry.', 'error');
+    const container = document.getElementById('mainContent');
+    if (!container) return;
+    const meta = window._pendingRecordingMeta || {};
+    const blobSize = window._pendingRecordingBlob ? (window._pendingRecordingBlob.size / (1024 * 1024)).toFixed(1) + ' MB' : 'unknown';
+    container.innerHTML = `
+        <div style="text-align:center; padding:40px 20px; max-width:500px; margin:0 auto;">
+            <div style="font-size:48px; margin-bottom:16px;">⚠️</div>
+            <h2 style="color:#ef4444; margin-bottom:8px;">Upload Failed</h2>
+            <p style="color:var(--text-secondary); margin-bottom:20px;">
+                Error: ${errorMsg}${status ? ' (HTTP ' + status + ')' : ''}
+            </p>
+            <div style="background:var(--surface); border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:20px; text-align:left;">
+                <div style="font-size:13px; color:var(--text-secondary);">
+                    <strong>Patient:</strong> ${meta.patientName || 'Unknown'}<br>
+                    <strong>Audio size:</strong> ${blobSize}<br>
+                    <strong>Recorded at:</strong> ${meta.savedAt ? new Date(meta.savedAt).toLocaleTimeString() : 'Unknown'}
+                </div>
+            </div>
+            <p style="color:#22c55e; font-size:13px; margin-bottom:20px;">
+                ✅ Your recording is saved in browser memory. Do NOT close this tab.
+            </p>
+            <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                <button onclick="retryScribeUpload()" style="padding:12px 24px; border-radius:10px; background:var(--cyan); color:#000; font-weight:700; font-size:15px; border:none; cursor:pointer;">
+                    🔄 Retry Upload
+                </button>
+                <button onclick="downloadPendingRecording()" style="padding:12px 24px; border-radius:10px; background:var(--surface); color:var(--text-primary); font-weight:600; font-size:14px; border:1px solid var(--border-light); cursor:pointer;">
+                    💾 Download Audio
+                </button>
+                <button onclick="scribeView='list'; renderCurrentTab();" style="padding:12px 24px; border-radius:10px; background:transparent; color:var(--text-tertiary); font-weight:500; font-size:13px; border:1px solid var(--border-light); cursor:pointer;">
+                    Discard & Go Back
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function retryScribeUpload() {
+    if (!window._pendingRecordingBlob) {
+        showToast('No pending recording found', 'error');
+        return;
+    }
+    const meta = window._pendingRecordingMeta || {};
+    showToast('Retrying upload…', 'info');
+    attemptScribeUpload(window._pendingRecordingBlob, meta.filename || 'visit-recording.webm');
+}
+
+function downloadPendingRecording() {
+    if (!window._pendingRecordingBlob) {
+        showToast('No pending recording found', 'error');
+        return;
+    }
+    const meta = window._pendingRecordingMeta || {};
+    const url = URL.createObjectURL(window._pendingRecordingBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (meta.patientName || 'recording').replace(/[^a-zA-Z0-9]/g, '_') + '_' + new Date().toISOString().slice(0, 10) + '.' + (meta.ext || 'webm');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Audio file downloaded', 'success');
 }
 
 async function pollTranscription(sessionId) {
@@ -2663,86 +2888,209 @@ let chartPanelPatientId = null;
 let chartPanelState = 'normal'; // 'normal' | 'minimized' | 'expanded'
 
 function toggleChartPanel() {
-    const panel = document.getElementById('chartPanel');
-    if (!panel) return;
-
-    if (chartPanelState === 'minimized') {
-        // Restore from minimized
-        chartPanelState = 'normal';
-        panel.classList.remove('minimized', 'expanded');
-        panel.classList.add('open');
-        chartPanelOpen = true;
-    } else {
-        // Toggle open/close
-        chartPanelOpen = !chartPanelOpen;
-        panel.classList.toggle('open', chartPanelOpen);
-        panel.classList.remove('minimized', 'expanded');
-        chartPanelState = 'normal';
-    }
-
-    // Load data if opening and we have a patient
+    // Redirect to global chart panel
     const pid = scribePatientId || activeScribeSession?.patient_id;
-    if (chartPanelOpen && pid && pid !== chartPanelPatientId) {
-        loadChartData(pid);
+    const pname = scribePatientName || activeScribeSession?.patient_name || 'Patient';
+    const globalPanel = document.getElementById('globalChartPanel');
+    if (globalPanel && globalPanel.classList.contains('open')) {
+        closeGlobalChart();
+    } else if (pid) {
+        openChartForPatient(pid, pname);
+    } else {
+        toggleGlobalChart();
     }
 }
 
 function minimizeChartPanel() {
-    const panel = document.getElementById('chartPanel');
-    if (!panel) return;
-    chartPanelState = 'minimized';
-    panel.classList.remove('expanded');
-    panel.classList.add('open', 'minimized');
-    chartPanelOpen = true; // still technically "open" in DOM
+    // Redirect to global chart panel
+    minimizeGlobalChart();
 }
 
 function expandChartPanel() {
-    const panel = document.getElementById('chartPanel');
+    // Redirect to global chart panel
+    expandGlobalChart();
+}
+
+// ==================== GLOBAL CHART PANEL ====================
+// Opens a patient chart from ANY view (schedule, patients, etc.)
+// Uses the global #globalChartPanel div in index.html
+let globalChartState = 'normal'; // 'normal' | 'minimized' | 'expanded'
+
+function openChartForPatient(patientId, patientName) {
+    if (!patientId) return;
+    let panel = document.getElementById('globalChartPanel');
+
+    // Dynamically create the chart panel if it doesn't exist in index.html (cache issue)
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'globalChartPanel';
+        panel.className = 'chart-panel';
+        panel.style.zIndex = '200';
+        panel.innerHTML = `
+            <div class="chart-panel-minimized-tab" onclick="toggleGlobalChart()" title="Restore chart panel">
+                <span>📋</span>
+                <span class="minimized-patient-name" id="globalChartPatientName"></span>
+            </div>
+            <div class="chart-panel-header">
+                <div class="chart-panel-title" id="globalChartTitle">📋 Patient Chart</div>
+                <div class="chart-panel-actions">
+                    <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
+                    <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
+                    <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
+                </div>
+            </div>
+            <div id="globalChartContent" class="chart-panel-content">
+                <div class="chart-loading"><div class="spinner"></div> Loading…</div>
+            </div>
+        `;
+        document.body.appendChild(panel);
+    }
+
+    // ALWAYS ensure the close button exists (old cached HTML may lack it)
+    if (!panel.querySelector('.chart-panel-close')) {
+        // Find or create the header
+        let header = panel.querySelector('.chart-panel-header');
+        if (!header) {
+            header = document.createElement('div');
+            header.className = 'chart-panel-header';
+            header.innerHTML = `
+                <div class="chart-panel-title" id="globalChartTitle">📋 Patient Chart</div>
+                <div class="chart-panel-actions">
+                    <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
+                    <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
+                    <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
+                </div>
+            `;
+            panel.insertBefore(header, panel.firstChild);
+        } else {
+            // Header exists but without close button — add actions div
+            let actions = header.querySelector('.chart-panel-actions');
+            if (!actions) {
+                actions = document.createElement('div');
+                actions.className = 'chart-panel-actions';
+                actions.innerHTML = `
+                    <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
+                    <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
+                    <button class="chart-panel-close" onclick="closeGlobalChart()">✕</button>
+                `;
+                header.appendChild(actions);
+            } else {
+                // Actions div exists but no close button
+                const closeBtn = document.createElement('button');
+                closeBtn.className = 'chart-panel-close';
+                closeBtn.onclick = closeGlobalChart;
+                closeBtn.textContent = '✕';
+                actions.appendChild(closeBtn);
+            }
+        }
+    }
+
+    // Update header
+    const title = document.getElementById('globalChartTitle');
+    const nameEl = document.getElementById('globalChartPatientName');
+    if (title) title.textContent = '📋 ' + (patientName || 'Patient');
+    if (nameEl) nameEl.textContent = (patientName || 'Patient').split(' ')[0];
+
+    // Open panel
+    panel.classList.add('open');
+    panel.classList.remove('minimized', 'expanded');
+    globalChartState = 'normal';
+
+    // Load data (reuses existing loadChartData which looks for globalChartContent)
+    chartPanelPatientId = patientId;
+    chartPanelOpen = true;
+    loadChartData(patientId);
+}
+
+function minimizeGlobalChart() {
+    const panel = document.getElementById('globalChartPanel');
     if (!panel) return;
-    if (chartPanelState === 'expanded') {
-        // Collapse back to normal
-        chartPanelState = 'normal';
+    panel.classList.add('minimized');
+    panel.classList.remove('expanded');
+    globalChartState = 'minimized';
+}
+
+function expandGlobalChart() {
+    const panel = document.getElementById('globalChartPanel');
+    if (!panel) return;
+    if (globalChartState === 'expanded') {
         panel.classList.remove('expanded');
+        globalChartState = 'normal';
     } else {
-        chartPanelState = 'expanded';
-        panel.classList.remove('minimized');
         panel.classList.add('expanded');
+        panel.classList.remove('minimized');
+        globalChartState = 'expanded';
+    }
+}
+
+function closeGlobalChart() {
+    const panel = document.getElementById('globalChartPanel');
+    if (!panel) return;
+    panel.classList.remove('open', 'minimized', 'expanded');
+    globalChartState = 'closed';
+    chartPanelOpen = false;
+}
+
+function toggleGlobalChart() {
+    const panel = document.getElementById('globalChartPanel');
+    if (!panel) return;
+    if (panel.classList.contains('minimized')) {
+        panel.classList.remove('minimized');
+        globalChartState = 'normal';
+    } else {
+        panel.classList.add('open');
+        panel.classList.remove('minimized');
+        globalChartState = 'normal';
     }
 }
 
 async function loadChartData(patientId) {
     chartPanelPatientId = patientId;
-    const content = document.getElementById('chartPanelContent');
-    if (!content) return;
+
+    // Find the correct chart panel content element:
+    // 1. If the global chart panel is open, use #globalChartContent
+    // 2. If scribe panel exists (still in DOM), use it
+    // 3. If NEITHER is open/present, silently return — don't auto-open
+    const globalPanel = document.getElementById('globalChartPanel');
+    const globalContent = document.getElementById('globalChartContent');
+    const scribeContent = document.getElementById('chartPanelContent');
+
+    var content;
+    if (globalPanel && globalPanel.classList.contains('open') && globalContent) {
+        content = globalContent;
+    } else if (scribeContent) {
+        content = scribeContent;
+    } else {
+        // No panel is open — don't force-open one, just return
+        return;
+    }
     content.innerHTML = '<div class="chart-loading"><div class="spinner"></div> Loading chart…</div>';
 
-    // Hard timeout: if nothing loaded after 12s, render with whatever we got
-    const failsafe = setTimeout(() => {
-        if (content.querySelector('.chart-loading')) {
-            console.warn('Chart load timed out, rendering with empty data');
-            chartPanelData = chartPanelData || {
-                demographics: {}, medications: {}, labs: {}, visits: [], alerts: [],
-                controlled_substances: [], healthie_meds: [], healthie_allergies: [],
-                healthie_chart_notes: [], healthie_documents: [], healthie_vitals: [],
-                healthie_appointments: [], scribe_history: [], avatar_url: null,
-            };
-            renderChartPanel(content);
+    // Helper: fetch with a hard 10s timeout (AbortController)
+    async function timedFetch(url) {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 10000);
+        try {
+            const resp = await fetch(url, { credentials: 'include', signal: controller.signal });
+            clearTimeout(tid);
+            if (resp.status === 401 || resp.status === 403) return null; // auth expired, handle gracefully
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            return data?.success ? data.data : null;
+        } catch (e) {
+            clearTimeout(tid);
+            return null; // timeout, network error, or abort - all return null
         }
-    }, 12000);
+    }
 
     try {
-        // Fetch both local 360 and Healthie chart data in parallel
-        const [localResult, healthieResult] = await Promise.allSettled([
-            apiFetch(`/ops/api/patients/${patientId}/360/`),
-            apiFetch(`/ops/api/ipad/patient-chart/?patient_id=${patientId}`),
+        // Fetch both local 360 and Healthie chart data in parallel (each with own timeout)
+        const [local360, healthieChart] = await Promise.all([
+            timedFetch(`/ops/api/patients/${patientId}/360/`),
+            timedFetch(`/ops/api/ipad/patient-chart/?patient_id=${patientId}`),
         ]);
 
-        clearTimeout(failsafe);
-
-        const local360 = localResult.status === 'fulfilled' && localResult.value?.success ? localResult.value.data : null;
-        const healthieChart = healthieResult.status === 'fulfilled' && healthieResult.value?.success ? healthieResult.value.data : null;
-
-        // Merge data
+        // Merge data — always succeeds even if both APIs returned null
         chartPanelData = {
             demographics: local360?.demographics || healthieChart?.demographics || {},
             medications: local360?.medications || {},
@@ -2762,9 +3110,8 @@ async function loadChartData(patientId) {
         };
         renderChartPanel(content);
     } catch (e) {
-        clearTimeout(failsafe);
-        if (e.message === 'AUTH_EXPIRED') throw e;
-        // Still render the panel with empty data rather than showing an error
+        console.error('Chart load error:', e);
+        // Absolute fallback — always render, never leave spinner stuck
         chartPanelData = chartPanelData || {
             demographics: {}, medications: {}, labs: {}, visits: [], alerts: [],
             controlled_substances: [], healthie_meds: [], healthie_allergies: [],
@@ -2783,30 +3130,107 @@ function renderChartPanel(content) {
     if (!window._chartTab) window._chartTab = 'charting';
 
     const demo = d.demographics || {};
+    const hAllergies = d.healthie_allergies || [];
+    const hMeds = d.healthie_meds || [];
+    const hVitals = d.healthie_vitals || [];
+    const peptides = (d.medications || {}).peptides || d.peptides || [];
+    const trt = (d.medications || {}).trt || d.trt || [];
+
+    // Safe date formatter for vitals
+    function fmtVitalDate(dt) {
+        if (!dt) return '';
+        try {
+            const d = new Date(dt);
+            if (isNaN(d.getTime())) return '';
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Phoenix' });
+        } catch { return ''; }
+    }
+
+    // Get last 5 vitals (most recent)
+    const recentVitals = hVitals.slice(0, 5);
 
     content.innerHTML = `
-        <!-- Patient Photo + Demographics (always visible above tabs) -->
-        <div style="padding:0 4px; border-bottom:1px solid rgba(255,255,255,0.08); margin-bottom:4px;">
+        <!-- Patient Photo + Demographics -->
+        <div style="padding:0 4px; border-bottom:1px solid rgba(255,255,255,0.08); margin-bottom:0;">
             <div style="display:flex; align-items:center; gap:12px; padding:10px 0 6px;">
                 ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border);">\ud83d\udc64</div>`}
                 <div style="flex:1;">
                     <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
-                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${formatDateDisplay(demo.dob)}` : ''} ${demo.status_key ? '\u00b7 ' + demo.status_key : ''}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${formatDateDisplay(demo.dob)}` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''}</div>
                 </div>
+                <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
             </div>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 8px; font-size:11px;">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
                 ${demo.phone_primary ? `<div><span style="color:var(--text-tertiary);">Phone:</span> <span style="color:var(--text-secondary);">${demo.phone_primary}</span></div>` : ''}
                 ${demo.email ? `<div><span style="color:var(--text-tertiary);">Email:</span> <span style="color:var(--text-secondary);">${demo.email}</span></div>` : ''}
+                ${demo.height ? `<div><span style="color:var(--text-tertiary);">Height:</span> <span style="color:var(--text-secondary);">${demo.height}</span></div>` : ''}
+                ${demo.weight ? `<div><span style="color:var(--text-tertiary);">Weight:</span> <span style="color:var(--text-secondary);">${demo.weight}</span></div>` : ''}
                 ${demo.regimen ? `<div><span style="color:var(--text-tertiary);">Regimen:</span> <span style="color:var(--text-secondary);">${demo.regimen}</span></div>` : ''}
-                ${demo.client_type_key ? `<div><span style="color:var(--text-tertiary);">Type:</span> <span style="color:var(--text-secondary);">${demo.client_type_key}</span></div>` : ''}
+                ${demo.client_type_key || demo.user_group ? `<div><span style="color:var(--text-tertiary);">Group:</span> <span style="color:var(--text-secondary);">${demo.user_group || demo.client_type_key}</span></div>` : ''}
             </div>
+            ${demo.address_line1 || demo.city ? `
+            <div style="padding:2px 0 4px; font-size:11px;">
+                <span style="color:var(--text-tertiary);">Address:</span>
+                <span style="color:var(--text-secondary);">${demo.address_line1 || ''}${demo.address_line2 ? ', ' + demo.address_line2 : ''}${demo.city ? ', ' + demo.city : ''}${demo.state ? ', ' + demo.state : ''} ${demo.zip || ''}</span>
+            </div>` : ''}
+            ${demo.insurance ? `
+            <div style="padding:2px 0 4px; font-size:11px;">
+                <span style="color:var(--text-tertiary);">Insurance:</span>
+                <span style="color:var(--text-secondary);">${demo.insurance.payer_name || 'None'}${demo.insurance.plan_name ? ' — ' + demo.insurance.plan_name : ''}${demo.insurance.member_id ? ' (ID: ' + demo.insurance.member_id + ')' : ''}</span>
+            </div>` : ''}
+            ${demo.tags && demo.tags.length > 0 ? `
+            <div style="display:flex; flex-wrap:wrap; gap:3px; padding:2px 0 6px;">
+                ${demo.tags.map(t => `<span style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7;">${t.name}</span>`).join('')}
+            </div>` : ''}
         </div>
 
-        <!-- Tabs -->
+        <!-- ALLERGIES (always visible) -->
+        <div style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>\ud83d\udea8 Allergies</span>
+                <button class="chart-add-btn" onclick="showPatientDataForm('allergy')" title="Add Allergy" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+            </div>
+            ${hAllergies.length > 0
+                ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${hAllergies.map(a => `<span style="font-size:11px; padding:2px 8px; border-radius:10px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.2);">${a.name || 'Unknown'}${a.severity ? ` (${a.severity})` : ''}</span>`).join('')}</div>`
+                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">NKDA</div>`}
+        </div>
+
+        <!-- MEDICATIONS (always visible) -->
+        <div style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>\ud83d\udc8a Medications (${hMeds.length + peptides.length + trt.length})</span>
+                <button class="chart-add-btn" onclick="showPatientDataForm('medication')" title="Add Medication" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+            </div>
+            ${hMeds.length + peptides.length + trt.length > 0
+                ? `<div style="font-size:11px; color:var(--text-secondary); line-height:1.5;">${[
+                    ...hMeds.map(m => `${m.name || '?'}${m.dosage ? ' ' + m.dosage : ''}`),
+                    ...peptides.map(m => m.medication_name || m.product_name || '?'),
+                    ...trt.map(m => m.medication_name || '?')
+                ].join(' · ')}</div>`
+                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No medications on file</div>`}
+        </div>
+
+        <!-- LAST VITALS (always visible) -->
+        <div style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.08);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>\ud83d\udcca Last Vitals</span>
+                <button class="chart-add-btn" onclick="showQuickVitalsForm()" title="Quick Vitals" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+            </div>
+            <div id="quickVitalsFormArea"></div>
+            ${recentVitals.length > 0
+                ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(100px, 1fr)); gap:4px;">${recentVitals.map(v => `<div style="font-size:11px; padding:4px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border);">
+                    <div style="color:var(--text-tertiary); font-size:9px; text-transform:uppercase;">${v.category || v.type || '?'}</div>
+                    <div style="color:var(--text-primary); font-weight:600;">${v.metric_stat || '—'}</div>
+                    <div style="color:var(--text-tertiary); font-size:9px;">${fmtVitalDate(v.created_at)}</div>
+                </div>`).join('')}</div>`
+                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No vitals on file</div>`}
+        </div>
+
+        <!-- Tabs (Charting / Forms / Documents) -->
         <div class="chart-tab-nav">
-            <button class="chart-tab-btn ${window._chartTab === 'charting' ? 'active' : ''}" onclick="switchChartTab('charting')">📋 Charting</button>
-            <button class="chart-tab-btn ${window._chartTab === 'forms' ? 'active' : ''}" onclick="switchChartTab('forms')">📝 Forms</button>
-            <button class="chart-tab-btn ${window._chartTab === 'documents' ? 'active' : ''}" onclick="switchChartTab('documents')">📁 Documents</button>
+            <button class="chart-tab-btn ${window._chartTab === 'charting' ? 'active' : ''}" onclick="switchChartTab('charting')">\ud83d\udccb Charting</button>
+            <button class="chart-tab-btn ${window._chartTab === 'forms' ? 'active' : ''}" onclick="switchChartTab('forms')">\ud83d\udcdd Forms</button>
+            <button class="chart-tab-btn ${window._chartTab === 'documents' ? 'active' : ''}" onclick="switchChartTab('documents')">\ud83d\udcc1 Documents</button>
         </div>
         <div id="chartTabContent"></div>
     `;
@@ -2840,34 +3264,42 @@ function renderChartTabContent() {
 }
 
 // ==================== CHARTING TAB ====================
-// Shows: scribe notes (SOAP notes from visits) + allergies, meds, vitals
+// Shows: scribe notes, Healthie chart notes (expandable), appointments, controlled substances, alerts
+// NOTE: Allergies, Medications, and Vitals are now shown permanently above the tabs
 function renderChartingTab(container, d) {
-    const demo = d.demographics || {};
-    const meds = d.medications || {};
-    const peptides = meds.peptides || d.peptides || [];
-    const trt = meds.trt || d.trt || [];
-    const hMeds = d.healthie_meds || [];
-    const hAllergies = d.healthie_allergies || [];
-    const hVitals = d.healthie_vitals || [];
     const hAppts = d.healthie_appointments || [];
     const controlled = d.controlled_substances || [];
     const alerts = d.alerts || [];
     const scribeHist = d.scribe_history || [];
 
+    // Safe date formatter
+    function fmtDate(dt) {
+        if (!dt) return '—';
+        try { const dd = new Date(dt); return isNaN(dd.getTime()) ? '—' : dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/Phoenix' }); } catch { return '—'; }
+    }
+
+    // Separate SOAP/chart notes from patient forms
+    const allChartNotes = d.healthie_chart_notes || [];
+    const soapNotes = allChartNotes.filter(n => {
+        const name = (n.name || '').toLowerCase();
+        return name.includes('soap') || name.includes('chart note') || name.includes('progress note') || name.includes('visit note') || name.includes('encounter');
+    });
+
     container.innerHTML = `
-        <!-- Prior Scribe Notes (SOAP notes from visits) -->
+        <!-- Prior Scribe Notes -->
         <div class="chart-section${scribeHist.length === 0 ? ' collapsed' : ''}">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>🎙️ Scribe Notes (${scribeHist.length})</span>
-                <span class="chart-chevron">›</span>
+                <span>\ud83c\udf99\ufe0f Scribe Notes (${scribeHist.length})</span>
+                <span class="chart-chevron">\u203a</span>
             </div>
             <div class="chart-section-body">
                 ${scribeHist.length > 0 ? scribeHist.map(s => `
                     <div class="chart-visit-card">
-                        <div class="chart-visit-date">${s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'}</div>
+                        <div class="chart-visit-date">${fmtDate(s.created_at)}</div>
                         <div style="flex:1">
-                            <div class="chart-med-name">${(s.visit_type || '').replace(/_/g, ' ')} · ${s.status}</div>
-                            ${s.soap_assessment ? `<div class="chart-med-detail" style="margin-top:2px">${s.soap_assessment.substring(0, 120)}…</div>` : ''}
+                            <div class="chart-med-name">${(s.visit_type || '').replace(/_/g, ' ')} \u00b7 ${s.status}</div>
+                            ${s.soap_subjective ? `<div class="chart-med-detail" style="margin-top:4px"><strong>S:</strong> ${s.soap_subjective.substring(0, 150)}${s.soap_subjective.length > 150 ? '\u2026' : ''}</div>` : ''}
+                            ${s.soap_assessment ? `<div class="chart-med-detail" style="margin-top:2px"><strong>A:</strong> ${s.soap_assessment.substring(0, 150)}${s.soap_assessment.length > 150 ? '\u2026' : ''}</div>` : ''}
                             ${s.icd10_codes ? `<div class="chart-med-detail" style="color:var(--cyan); margin-top:2px">${Array.isArray(s.icd10_codes) ? s.icd10_codes.slice(0, 3).join(', ') : String(s.icd10_codes).substring(0, 80)}</div>` : ''}
                         </div>
                     </div>
@@ -2875,91 +3307,50 @@ function renderChartingTab(container, d) {
             </div>
         </div>
 
-        <!-- Allergies & Sensitivities -->
-        <div class="chart-section${hAllergies.length === 0 ? ' collapsed' : ''}">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>🚨 Allergies & Sensitivities (${hAllergies.length})</span>
-                <span style="display:flex;align-items:center;gap:6px;"><button class="chart-add-btn" onclick="event.stopPropagation();showPatientDataForm('allergy')" title="Add Allergy">＋</button><span class="chart-chevron">›</span></span>
-            </div>
-            <div class="chart-section-body">
-                ${hAllergies.length > 0 ? hAllergies.map(a => `
-                    <div class="chart-alert-card">
-                        <div class="chart-alert-type">${a.name || 'Unknown'}</div>
-                        <div class="chart-alert-detail">${a.reaction ? `Reaction: ${a.reaction}` : ''} ${a.severity ? `· ${a.severity}` : ''}</div>
-                    </div>
-                `).join('') : '<div class="chart-empty">No known allergies</div>'}
-            </div>
-        </div>
-
-        <!-- Active Medications -->
+        <!-- Healthie Chart Notes (expandable) -->
+        ${soapNotes.length > 0 ? `
         <div class="chart-section">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>💊 Medications (${peptides.length + trt.length + hMeds.length})</span>
-                <span style="display:flex;align-items:center;gap:6px;"><button class="chart-add-btn" onclick="event.stopPropagation();showPatientDataForm('medication')" title="Add Medication">＋</button><span class="chart-chevron">›</span></span>
+                <span>\ud83d\udccb Healthie Chart Notes (${soapNotes.length})</span>
+                <span class="chart-chevron">\u203a</span>
             </div>
             <div class="chart-section-body">
-                ${hMeds.length > 0 ? `
-                    <div class="chart-sub-label">Active (Healthie)</div>
-                    ${hMeds.map(m => `
-                        <div class="chart-med-card">
-                            <div class="chart-med-name">${m.name || 'Unknown'}</div>
-                            <div class="chart-med-detail">${m.dosage ? `${m.dosage}` : ''} ${m.frequency || ''} ${m.route ? `(${m.route})` : ''}</div>
-                            ${m.directions ? `<div class="chart-med-detail">${m.directions}</div>` : ''}
+                ${soapNotes.slice(0, 15).map((n, i) => `
+                    <div class="chart-lab-card" style="cursor:pointer;" onclick="this.classList.toggle('chart-note-expanded')">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div class="chart-lab-name">${n.name || 'Chart Note'}</div>
+                            <div class="chart-lab-detail">${fmtDate(n.created_at)}</div>
                         </div>
-                    `).join('')}
-                ` : ''}
-                ${peptides.length > 0 ? `
-                    <div class="chart-sub-label">Peptides (Local)</div>
-                    ${peptides.map(m => `
-                        <div class="chart-med-card">
-                            <div class="chart-med-name">${m.medication_name || m.product_name || 'Unknown'}</div>
-                            <div class="chart-med-detail">${m.dose || m.dose_ml ? `Dose: ${m.dose || m.dose_ml}` : ''} ${m.frequency || ''}</div>
+                        <div class="chart-note-preview" style="margin-top:4px;">
+                            ${n.form_answers?.length > 0 ? `<div class="chart-med-detail">${n.form_answers.slice(0, 2).map(a => `${a.label}: ${(a.displayed_answer || a.answer || '').substring(0, 80)}`).join('; ')}${n.form_answers.length > 2 ? '\u2026 (click to expand)' : ''}</div>` : '<div class="chart-med-detail" style="color:var(--text-tertiary);">Click to expand</div>'}
                         </div>
-                    `).join('')}
-                ` : ''}
-                ${trt.length > 0 ? `
-                    <div class="chart-sub-label">TRT (Local)</div>
-                    ${trt.map(m => `
-                        <div class="chart-med-card">
-                            <div class="chart-med-name">${m.medication_name || m.product_name || 'Unknown'}</div>
-                            <div class="chart-med-detail">${m.dose || m.dose_ml ? `Dose: ${m.dose || m.dose_ml}` : ''}</div>
+                        <div class="chart-note-full" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
+                            ${n.form_answers?.length > 0 ? n.form_answers.map(a => `
+                                <div style="margin-bottom:6px;">
+                                    <div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">${a.label || 'Field'}</div>
+                                    <div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${a.displayed_answer || a.answer || '—'}</div>
+                                </div>
+                            `).join('') : '<div class="chart-empty">No content</div>'}
                         </div>
-                    `).join('')}
-                ` : ''}
-                ${peptides.length === 0 && trt.length === 0 && hMeds.length === 0 ? '<div class="chart-empty">No medications on file</div>' : ''}
-            </div>
-        </div>
-
-        <!-- Vitals -->
-        <div class="chart-section${hVitals.length === 0 ? ' collapsed' : ''}">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>📊 Vitals (${hVitals.length})</span>
-                <span style="display:flex;align-items:center;gap:6px;"><button class="chart-add-btn" onclick="event.stopPropagation();showPatientDataForm('vital')" title="Add Vital">＋</button><span class="chart-chevron">›</span></span>
-            </div>
-            <div class="chart-section-body">
-                ${hVitals.length > 0 ? hVitals.slice(0, 20).map(v => `
-                    <div class="chart-visit-card">
-                        <div class="chart-visit-date">${v.created_at ? new Date(v.created_at).toLocaleDateString() : '—'}</div>
-                        <div class="chart-visit-detail">${v.category || v.type || ''}: ${v.metric_stat || v.description || ''}</div>
                     </div>
-                `).join('') : '<div class="chart-empty">No vitals recorded</div>'}
+                `).join('')}
             </div>
-        </div>
+        </div>` : ''}
 
         <!-- Appointments -->
         ${hAppts.length > 0 ? `
         <div class="chart-section collapsed">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>📅 Appointments (${hAppts.length})</span>
-                <span class="chart-chevron">›</span>
+                <span>\ud83d\udcc5 Appointments (${hAppts.length})</span>
+                <span class="chart-chevron">\u203a</span>
             </div>
             <div class="chart-section-body">
                 ${hAppts.slice(0, 10).map(a => `
                     <div class="chart-visit-card">
-                        <div class="chart-visit-date">${a.date ? new Date(a.date).toLocaleDateString() : '—'}</div>
+                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
                         <div style="flex:1">
                             <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
-                            <div class="chart-med-detail">${a.provider?.full_name || ''} · ${a.pm_status || a.status || ''}</div>
+                            <div class="chart-med-detail">${a.provider?.full_name || ''} \u00b7 ${a.pm_status || a.status || ''}</div>
                         </div>
                     </div>
                 `).join('')}
@@ -2971,14 +3362,14 @@ function renderChartingTab(container, d) {
         ${controlled.length > 0 ? `
         <div class="chart-section collapsed">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>🔐 Controlled Substances (${controlled.length})</span>
-                <span class="chart-chevron">›</span>
+                <span>\ud83d\udd10 Controlled Substances (${controlled.length})</span>
+                <span class="chart-chevron">\u203a</span>
             </div>
             <div class="chart-section-body">
                 ${controlled.map(c => `
                     <div class="chart-med-card">
                         <div class="chart-med-name">${c.medication_name || 'Unknown'}</div>
-                        <div class="chart-med-detail">${c.dose_ml ? `${c.dose_ml}mL` : ''} · Dispensed: ${c.dispensed_date ? new Date(c.dispensed_date).toLocaleDateString() : '—'}</div>
+                        <div class="chart-med-detail">${c.dose_ml ? `${c.dose_ml}mL` : ''} \u00b7 Dispensed: ${fmtDate(c.dispensed_date)}</div>
                     </div>
                 `).join('')}
             </div>
@@ -3006,30 +3397,188 @@ function renderChartingTab(container, d) {
 }
 
 // ==================== FORMS TAB ====================
-// Shows: Forms sent to patients (Healthie formAnswerGroups)
+// Shows: Patient intake/medical forms (NOT SOAP notes — those go in Charting)
 function renderFormsTab(container, d) {
-    const hChartNotes = d.healthie_chart_notes || [];
+    const allForms = d.healthie_chart_notes || [];
+    // Sanitize form answer text — strip 'Invalid Date' from displayed content
+    const cleanAnswer = (txt) => (txt || '').replace(/Invalid Date/gi, '').replace(/\s{2,}/g, ' ').trim() || '—';
+    // Filter OUT SOAP/chart notes — keep only patient-filled forms (intake, consent, history, etc.)
+    const patientForms = allForms.filter(n => {
+        const name = (n.name || '').toLowerCase();
+        return !name.includes('soap') && !name.includes('chart note') && !name.includes('progress note') && !name.includes('visit note') && !name.includes('encounter');
+    });
 
     container.innerHTML = `
-        <!-- Patient Forms (from Healthie) -->
-        <div class="chart-section${hChartNotes.length === 0 ? '' : ''}">
+        <!-- Patient Forms (intake, consent, medical history, etc.) -->
+        <div class="chart-section${patientForms.length === 0 ? '' : ''}">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>📝 Patient Forms (${hChartNotes.length})</span>
+                <span>📝 Patient Forms (${patientForms.length})</span>
                 <span class="chart-chevron">›</span>
             </div>
             <div class="chart-section-body">
-                ${hChartNotes.length > 0 ? hChartNotes.slice(0, 15).map(n => `
+                ${patientForms.length > 0 ? patientForms.slice(0, 15).map(n => `
                     <div class="chart-lab-card">
                         <div class="chart-lab-name">${n.name || 'Form'}</div>
-                        <div class="chart-lab-detail">${n.created_at ? new Date(n.created_at).toLocaleDateString() : ''}</div>
-                        ${n.form_answers?.length > 0 ? `<div class="chart-med-detail" style="margin-top:4px">${n.form_answers.slice(0, 2).map(a => `${a.label}: ${(a.displayed_answer || a.answer || '').substring(0, 80)}`).join('; ')}${n.form_answers.length > 2 ? '…' : ''}</div>` : ''}
+                        <div class="chart-lab-detail">${formatDateDisplay(n.created_at)}</div>
+                        ${n.form_answers?.length > 0 ? `<div class="chart-med-detail" style="margin-top:4px">${n.form_answers.slice(0, 2).map(a => `${a.label}: ${cleanAnswer(a.displayed_answer || a.answer).substring(0, 80)}`).join('; ')}${n.form_answers.length > 2 ? '…' : ''}</div>` : ''}
+                        ${n.form_answers?.length > 0 ? `
+                        <div class="chart-note-full" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
+                            ${n.form_answers.map(a => `
+                                <div style="margin-bottom:6px;">
+                                    <div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">${a.label || 'Field'}</div>
+                                    <div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${cleanAnswer(a.displayed_answer || a.answer)}</div>
+                                </div>
+                            `).join('')}
+                        </div>` : ''}
                     </div>
-                `).join('') : '<div class="chart-empty">No forms sent to this patient</div>'}
+                `).join('') : '<div class="chart-empty">No patient forms on file</div>'}
             </div>
         </div>
 
-        ${hChartNotes.length === 0 ? '<div class="chart-empty" style="padding:24px; text-align:center;">No forms on file</div>' : ''}
+        ${patientForms.length === 0 ? '<div class="chart-empty" style="padding:24px; text-align:center;">No patient forms on file</div>' : ''}
     `;
+
+    // Make form cards clickable to expand
+    container.querySelectorAll('.chart-lab-card').forEach(card => {
+        const full = card.querySelector('.chart-note-full');
+        if (full) {
+            card.style.cursor = 'pointer';
+            card.addEventListener('click', () => {
+                full.style.display = full.style.display === 'none' ? 'block' : 'none';
+            });
+        }
+    });
+}
+
+// ==================== EDIT DEMOGRAPHICS FORM ====================
+function showEditDemographicsForm() {
+    const demo = chartPanelData?.demographics || {};
+    const healthieId = chartPanelData?.healthie_id;
+    if (!healthieId) { showToast('No Healthie ID available', 'error'); return; }
+
+    const container = document.getElementById('globalChartContent');
+    if (!container) return;
+
+    // Save current content so we can restore on cancel
+    const previousHTML = container.innerHTML;
+
+    container.innerHTML = `
+        <div style="padding:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0; color:var(--text-primary); font-size:16px;">✏️ Edit Demographics</h3>
+                <button onclick="cancelEditDemographics()" style="padding:4px 12px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); font-size:12px; cursor:pointer;">Cancel</button>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:12px;">
+                <div>
+                    <label style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; display:block; margin-bottom:2px;">First Name</label>
+                    <input id="editFirstName" value="${(demo.full_name || '').split(' ')[0] || ''}" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                </div>
+                <div>
+                    <label style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; display:block; margin-bottom:2px;">Last Name</label>
+                    <input id="editLastName" value="${(demo.full_name || '').split(' ').slice(1).join(' ') || ''}" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                </div>
+                <div>
+                    <label style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; display:block; margin-bottom:2px;">Date of Birth</label>
+                    <input id="editDob" type="date" value="${demo.dob || ''}" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                </div>
+                <div>
+                    <label style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; display:block; margin-bottom:2px;">Gender</label>
+                    <select id="editGender" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px;">
+                        <option value="">—</option>
+                        <option value="Male" ${demo.gender === 'Male' ? 'selected' : ''}>Male</option>
+                        <option value="Female" ${demo.gender === 'Female' ? 'selected' : ''}>Female</option>
+                        <option value="Non-binary" ${demo.gender === 'Non-binary' ? 'selected' : ''}>Non-binary</option>
+                        <option value="Other" ${demo.gender === 'Other' ? 'selected' : ''}>Other</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; display:block; margin-bottom:2px;">Phone</label>
+                    <input id="editPhone" value="${demo.phone_primary || ''}" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                </div>
+                <div>
+                    <label style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; display:block; margin-bottom:2px;">Email</label>
+                    <input id="editEmail" type="email" value="${demo.email || ''}" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                </div>
+                <div>
+                    <label style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; display:block; margin-bottom:2px;">Height</label>
+                    <input id="editHeight" value="${demo.height || ''}" placeholder="e.g. 5'10&quot;" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                </div>
+                <div>
+                    <label style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; display:block; margin-bottom:2px;">Weight</label>
+                    <input id="editWeight" value="${demo.weight || ''}" placeholder="e.g. 180" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                </div>
+            </div>
+            <div style="margin-top:12px; font-size:12px;">
+                <h4 style="color:var(--text-tertiary); font-size:10px; text-transform:uppercase; margin:0 0 6px;">Address</h4>
+                <div style="display:grid; grid-template-columns:1fr; gap:8px;">
+                    <input id="editLine1" value="${demo.address_line1 || ''}" placeholder="Street address" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                    <input id="editLine2" value="${demo.address_line2 || ''}" placeholder="Apt, suite, etc." style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                    <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:8px;">
+                        <input id="editCity" value="${demo.city || ''}" placeholder="City" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                        <input id="editState" value="${demo.state || ''}" placeholder="State" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                        <input id="editZip" value="${demo.zip || ''}" placeholder="ZIP" style="width:100%; padding:6px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:13px; box-sizing:border-box;">
+                    </div>
+                </div>
+            </div>
+            <div style="margin-top:16px; display:flex; gap:8px;">
+                <button onclick="saveEditedDemographics()" style="flex:1; padding:10px; border-radius:8px; background:var(--cyan); border:none; color:#000; font-size:14px; font-weight:600; cursor:pointer;">💾 Save to Healthie</button>
+                <button onclick="cancelEditDemographics()" style="padding:10px 16px; border-radius:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>
+            </div>
+        </div>
+    `;
+
+    // Store previous HTML for cancel
+    window._editDemoPreviousHTML = previousHTML;
+}
+
+function cancelEditDemographics() {
+    const container = document.getElementById('globalChartContent');
+    if (container && window._editDemoPreviousHTML) {
+        container.innerHTML = window._editDemoPreviousHTML;
+    } else if (chartPanelPatientId) {
+        loadChartData(chartPanelPatientId);
+    }
+}
+
+async function saveEditedDemographics() {
+    const healthieId = chartPanelData?.healthie_id;
+    if (!healthieId) { showToast('No Healthie ID', 'error'); return; }
+
+    const payload = {
+        healthie_id: healthieId,
+        first_name: document.getElementById('editFirstName')?.value || '',
+        last_name: document.getElementById('editLastName')?.value || '',
+        dob: document.getElementById('editDob')?.value || '',
+        gender: document.getElementById('editGender')?.value || '',
+        phone_number: document.getElementById('editPhone')?.value || '',
+        email: document.getElementById('editEmail')?.value || '',
+        height: document.getElementById('editHeight')?.value || '',
+        weight: document.getElementById('editWeight')?.value || '',
+        line1: document.getElementById('editLine1')?.value || '',
+        line2: document.getElementById('editLine2')?.value || '',
+        city: document.getElementById('editCity')?.value || '',
+        state: document.getElementById('editState')?.value || '',
+        zip: document.getElementById('editZip')?.value || '',
+        location_id: chartPanelData?.demographics?.location_id || '',
+    };
+
+    try {
+        showToast('Saving to Healthie…', 'info');
+        const result = await apiFetch('/ops/api/ipad/patient-chart/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (result?.success) {
+            showToast('✅ Demographics saved to Healthie', 'success');
+            // Reload chart data to show updated info
+            if (chartPanelPatientId) loadChartData(chartPanelPatientId);
+        } else {
+            showToast('Error: ' + (result?.error || 'Unknown error'), 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save: ' + (e.message || 'Network error'), 'error');
+    }
 }
 
 // ==================== PATIENT DATA ENTRY ====================
@@ -3136,6 +3685,109 @@ function showPatientDataForm(type) {
 function closePatientDataForm() {
     const wrapper = document.getElementById('patientDataFormWrapper');
     if (wrapper) wrapper.remove();
+}
+
+// ==================== QUICK VITALS ENTRY ====================
+// Parses natural input like: "BP 120/80, SPO2 96%, P 66, T 98.6, RR 18"
+function showQuickVitalsForm() {
+    // Open the proper vitals modal with individual fields
+    const pid = chartPanelPatientId || '';
+    const patName = chartPanelData?.demographics?.full_name || 'Patient';
+    if (pid) {
+        openVitalsModal(pid, patName);
+    } else {
+        showToast('No patient selected', 'error');
+    }
+}
+
+async function submitQuickVitals() {
+    const input = document.getElementById('quickVitalsInput')?.value?.trim();
+    if (!input) { showToast('Enter vitals first', 'error'); return; }
+
+    const healthieId = chartPanelData?.healthie_id;
+    if (!healthieId) { showToast('No Healthie ID — cannot save vitals', 'error'); return; }
+
+    // Parse the input string into individual vital entries
+    const vitals = parseVitalsString(input);
+    if (vitals.length === 0) {
+        showToast('Could not parse vitals — use format: BP 120/80, P 66, T 98.6', 'error');
+        return;
+    }
+
+    const area = document.getElementById('quickVitalsFormArea');
+    if (area) area.innerHTML = '<div style="font-size:11px; color:var(--cyan); padding:4px 0;">Saving ' + vitals.length + ' vitals…</div>';
+
+    let saved = 0;
+    for (const vital of vitals) {
+        try {
+            const resp = await fetch('/ops/api/ipad/patient-data/', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    healthie_id: healthieId,
+                    type: 'vital',
+                    category: vital.category,
+                    value: vital.value,
+                }),
+            });
+            if (resp.ok) saved++;
+        } catch (e) { /* continue with next vital */ }
+    }
+
+    if (area) area.innerHTML = '';
+    showToast(`Saved ${saved}/${vitals.length} vitals`, saved === vitals.length ? 'success' : 'warning');
+
+    // Refresh chart data
+    if (chartPanelPatientId) loadChartData(chartPanelPatientId);
+}
+
+function parseVitalsString(input) {
+    const vitals = [];
+    // Normalize: remove extra spaces, split by comma or semicolon
+    const parts = input.split(/[,;]+/).map(s => s.trim()).filter(Boolean);
+    
+    for (const part of parts) {
+        const p = part.toUpperCase();
+        
+        // Blood Pressure: "BP 120/80" or "120/80"
+        const bpMatch = p.match(/(?:BP|BLOOD\s*PRESSURE)?\s*(\d{2,3})\s*\/\s*(\d{2,3})/);
+        if (bpMatch) { vitals.push({ category: 'Blood Pressure', value: `${bpMatch[1]}/${bpMatch[2]}` }); continue; }
+        
+        // SPO2: "SPO2 96" or "O2 SAT 96" or "SAT 96"
+        const spo2Match = p.match(/(?:SPO2|O2\s*SAT|SAT|SP02)\s*:?\s*(\d{2,3})%?/);
+        if (spo2Match) { vitals.push({ category: 'SpO2', value: spo2Match[1] + '%' }); continue; }
+        
+        // Pulse/Heart Rate: "P 66" or "HR 66" or "PULSE 66"
+        const pulseMatch = p.match(/(?:^P|HR|PULSE|HEART\s*RATE)\s*:?\s*(\d{2,3})\b/);
+        if (pulseMatch) { vitals.push({ category: 'Heart Rate', value: pulseMatch[1] + ' bpm' }); continue; }
+        
+        // Temperature: "T 98.6" or "TEMP 98.6"
+        const tempMatch = p.match(/(?:^T|TEMP|TEMPERATURE)\s*:?\s*(\d{2,3}\.?\d*)/);
+        if (tempMatch) { vitals.push({ category: 'Temperature', value: tempMatch[1] + '°F' }); continue; }
+        
+        // Respiratory Rate: "RR 18" or "RESP 18"
+        const rrMatch = p.match(/(?:RR|RESP|RESPIRATORY)\s*:?\s*(\d{1,3})/);
+        if (rrMatch) { vitals.push({ category: 'Respiratory Rate', value: rrMatch[1] }); continue; }
+        
+        // Weight: "Wt 185" or "WEIGHT 185"
+        const wtMatch = p.match(/(?:WT|WEIGHT|WGT)\s*:?\s*(\d{2,4}\.?\d*)\s*(?:LBS?|KG)?/);
+        if (wtMatch) { vitals.push({ category: 'Weight', value: wtMatch[1] + ' lbs' }); continue; }
+        
+        // Height: "Ht 72" or "HEIGHT 72"
+        const htMatch = p.match(/(?:HT|HEIGHT|HGT)\s*:?\s*(\d{2,3}\.?\d*)\s*(?:IN)?/);
+        if (htMatch) { vitals.push({ category: 'Height', value: htMatch[1] + ' in' }); continue; }
+        
+        // BMI: "BMI 24.5"
+        const bmiMatch = p.match(/BMI\s*:?\s*(\d{1,3}\.?\d*)/);
+        if (bmiMatch) { vitals.push({ category: 'BMI', value: bmiMatch[1] }); continue; }
+        
+        // Waist: "WAIST 34"
+        const waistMatch = p.match(/WAIST\s*:?\s*(\d{2,3}\.?\d*)/);
+        if (waistMatch) { vitals.push({ category: 'Waist', value: waistMatch[1] + ' in' }); continue; }
+    }
+    
+    return vitals;
 }
 
 async function submitPatientData(type) {
@@ -3260,22 +3912,19 @@ function renderDocumentsTab(container, d) {
     `;
 }
 
-// HTML for the chart panel (injected into scribe views)
+// HTML for the chart panel (Scribe local view)
 function getChartPanelHTML() {
-    const patientName = scribePatientName || activeScribeSession?.patient_name || 'Patient';
-    const expandIcon = chartPanelState === 'expanded' ? '⊟' : '⊞';
-    const expandTitle = chartPanelState === 'expanded' ? 'Collapse' : 'Expand';
     return `
-        <div id="chartPanel" class="chart-panel ${chartPanelOpen ? 'open' : ''} ${chartPanelState === 'minimized' ? 'minimized' : ''} ${chartPanelState === 'expanded' ? 'expanded' : ''}">
+        <div id="chartPanel" class="chart-panel">
             <div class="chart-panel-minimized-tab" onclick="toggleChartPanel()" title="Restore chart panel">
                 <span>📋</span>
-                <span class="minimized-patient-name">${patientName.split(' ')[0]}</span>
+                <span class="minimized-patient-name" id="chartPatientName"></span>
             </div>
             <div class="chart-panel-header">
-                <div class="chart-panel-title">📋 ${patientName}</div>
+                <div class="chart-panel-title" id="chartTitle">📋 Patient Chart</div>
                 <div class="chart-panel-actions">
                     <button class="chart-panel-btn" onclick="minimizeChartPanel()" title="Minimize">⊟</button>
-                    <button class="chart-panel-btn" onclick="expandChartPanel()" title="${expandTitle}">${expandIcon}</button>
+                    <button class="chart-panel-btn" onclick="expandChartPanel()" title="Expand">⊞</button>
                     <button class="chart-panel-close" onclick="toggleChartPanel()">✕</button>
                 </div>
             </div>
@@ -4981,266 +5630,328 @@ function renderCEODashboard(container) {
 }
 
 // ─── PROVIDER SCHEDULE TAB ──────────────────────────────────
+var scheduleProviderFilter = 'all';
+var scheduleAllData = [];
+
 async function renderScheduleView(container) {
-    const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-
-    container.innerHTML = `
-        <div style="padding: 0 4px;">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
-                <div>
-                    <h1 style="font-size:24px; margin:0; color:var(--text-primary);">Schedule</h1>
-                    <p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;">${today}</p>
-                </div>
-                <button onclick="loadScheduleData()" style="padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>
-            </div>
-            <div id="scheduleContent"><div class="loading-spinner" style="margin:40px auto;"></div></div>
-        </div>
-    `;
-
+    var today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    container.innerHTML = '<div style="padding: 0 4px;">' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
+        '<div><h1 style="font-size:24px; margin:0; color:var(--text-primary);">Schedule</h1>' +
+        '<p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;">' + today + '</p></div>' +
+        '<button onclick="loadScheduleData(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>' +
+        '</div>' +
+        '<div id="scheduleProviderTabs" style="display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap;"></div>' +
+        '<div id="scheduleContent"><div class="loading-spinner" style="margin:40px auto;"></div></div>' +
+        '</div>';
     await loadScheduleData();
 }
 
-async function loadScheduleData() {
-    const contentEl = document.getElementById('scheduleContent');
+async function loadScheduleData(forceRefresh) {
+    var contentEl = document.getElementById('scheduleContent');
     if (!contentEl) return;
 
-    try {
-        const data = await apiFetch('/ops/api/ipad/schedule/');
-        const patients = data?.patients || [];
+    // Use already-loaded data from Today tab if available (same API endpoint)
+    if (!forceRefresh && healthieAppointments.length > 0) {
+        scheduleAllData = healthieAppointments.map(function(a) {
+            return {
+                appointment_id: a.id || a.appointment_id || '',
+                healthie_id: a.patient_id || a.healthie_id || '',
+                patient_id: a.patient_id || null,
+                full_name: a.patient_name || a.full_name || 'Unknown',
+                appointment_type: a.appointment_type || 'Appointment',
+                provider: a.provider || '',
+                provider_id: a.provider_id || '',
+                appointment_status: a.appointment_status || a.status || 'Scheduled',
+                time: a.time || '',
+                date: a.date || '',
+                length: a.length || null,
+                location: a.location || '',
+            };
+        });
+        var provMap = new Map();
+        scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
+        renderProviderTabs([...provMap.values()]);
+        renderScheduleList(contentEl);
+        return;
+    }
 
-        if (patients.length === 0) {
-            contentEl.innerHTML = `
-                <div class="empty-state-card">
-                    <div class="empty-state-icon">📅</div>
-                    <h3>No Appointments Today</h3>
-                    <p>No patients are scheduled for today.</p>
-                </div>
-            `;
-            return;
+    contentEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+    try {
+        var controller = new AbortController();
+        var tid = setTimeout(function() { controller.abort(); }, 25000);
+        var resp = await fetch('/ops/api/ipad/schedule/', { credentials: 'include', signal: controller.signal });
+        clearTimeout(tid);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        scheduleAllData = data.patients || [];
+
+        // Also update the global so Today tab stays in sync
+        if (scheduleAllData.length > 0) {
+            healthieAppointments = scheduleAllData.map(function(p) {
+                return {
+                    id: p.appointment_id || '',
+                    patient_id: p.patient_id || p.healthie_id || '',
+                    patient_name: p.full_name || '',
+                    appointment_type: p.appointment_type || '',
+                    status: p.appointment_status || 'scheduled',
+                    appointment_status: p.appointment_status || 'scheduled',
+                    time: p.time || '',
+                    provider: p.provider || '',
+                };
+            });
         }
 
-        // Sort by time
-        patients.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-
-        contentEl.innerHTML = `
-            <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
-                <span style="font-size:14px; color:var(--text-secondary);">${patients.length} patients today</span>
-                <span style="font-size:12px; padding:3px 10px; border-radius:6px; background:rgba(34,211,238,0.1); color:#22d3ee;">
-                    ${patients.filter(p => p.appointment_status === 'Confirmed').length} confirmed
-                </span>
-            </div>
-            ${patients.map(p => {
-            const st = p.appointment_status || 'Pending';
-            const statusColor = st === 'Confirmed' ? '#22c55e' :
-                st === 'Checked In' ? '#22d3ee' :
-                    st === 'In Progress' ? '#a855f7' :
-                        st === 'Completed' ? '#10b981' :
-                            st === 'No Show' ? '#ef4444' : '#fbbf24';
-            const statusBg = st === 'Confirmed' ? 'rgba(34,197,94,0.15)' :
-                st === 'Checked In' ? 'rgba(34,211,238,0.15)' :
-                    st === 'In Progress' ? 'rgba(168,85,247,0.15)' :
-                        st === 'Completed' ? 'rgba(16,185,129,0.15)' :
-                            st === 'No Show' ? 'rgba(239,68,68,0.15)' : 'rgba(251,191,36,0.15)';
-            const apptId = p.appointment_id || '';
-            const canAdvance = apptId && st !== 'Completed' && st !== 'No Show';
-            return `
-                <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:10px; cursor:pointer;" onclick="navigateToPatient('${p.patient_id || ''}', '${(p.full_name || '').replace(/'/g, "\\\'")}')">
-                    <div style="display:flex; align-items:center; justify-content:space-between;">
-                        <div style="display:flex; align-items:center; gap:12px;">
-                            <div style="width:42px; height:42px; border-radius:10px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--text-primary);">
-                                ${getInitials(p.full_name)}
-                            </div>
-                            <div>
-                                <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${p.full_name || 'Unknown'}</div>
-                                <div style="font-size:12px; color:var(--text-tertiary);">${p.appointment_type || 'Appointment'} · ${p.time || 'TBD'}</div>
-                                ${p.needs_labs ? '<span style="font-size:11px; color:#f59e0b;">🔬 Labs needed</span>' : ''}
-                                ${p.needs_payment ? '<span style="font-size:11px; color:#ef4444; margin-left:6px;">💳 Payment issue</span>' : ''}
-                            </div>
-                        </div>
-                        <span style="font-size:11px; padding:4px 10px; border-radius:6px; background:${statusBg}; color:${statusColor}; font-weight:500; ${canAdvance ? 'cursor:pointer;' : ''}" ${canAdvance ? `onclick="event.stopPropagation(); handleHealthieClick('${apptId}', '${st}')" title="Click to advance status"` : ''}>
-                            ${st}
-                        </span>
-                    </div>
-                </div>
-                `;
-        }).join('')}
-        `;
+        if (scheduleAllData.length === 0) {
+            renderProviderTabs([]);
+            contentEl.innerHTML = '<div class="empty-state-card"><div class="empty-state-icon">📅</div><h3>No Appointments Today</h3><p>No patients are scheduled for today.</p></div>';
+            return;
+        }
+        var provMap = new Map();
+        scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
+        renderProviderTabs([...provMap.values()]);
+        renderScheduleList(contentEl);
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
-        contentEl.innerHTML = `<div class="empty-state-card"><h3>Could not load schedule</h3><p>${e.message}</p></div>`;
+        contentEl.innerHTML = '<div class="empty-state-card"><h3>Could not load schedule</h3><p>' + (e.message || 'Network error') + '</p></div>';
     }
+}
+
+function renderProviderTabs(providers) {
+    var tabsEl = document.getElementById('scheduleProviderTabs');
+    if (!tabsEl) return;
+    var tabs = [{ name: 'All', id: 'all' }].concat(providers.map(function(p) { return { name: p.name, id: p.name }; }));
+    var html = '';
+    tabs.forEach(function(t) {
+        var isActive = scheduleProviderFilter === t.id;
+        var count = t.id === 'all' ? scheduleAllData.length : scheduleAllData.filter(function(p) { return (p.provider || 'Unknown') === t.id; }).length;
+        html += '<button onclick="filterScheduleByProvider(this.dataset.prov)" data-prov="' + t.id + '" style="padding:6px 14px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; border:1px solid ' + (isActive ? 'var(--cyan)' : 'var(--border-light)') + '; background:' + (isActive ? 'rgba(0,212,255,0.15)' : 'var(--surface)') + '; color:' + (isActive ? 'var(--cyan)' : 'var(--text-secondary)') + ';">' + t.name + ' (' + count + ')</button>';
+    });
+    tabsEl.innerHTML = html;
+}
+
+function filterScheduleByProvider(providerName) {
+    scheduleProviderFilter = providerName;
+    var provMap = new Map();
+    scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
+    renderProviderTabs([...provMap.values()]);
+    var contentEl = document.getElementById('scheduleContent');
+    if (contentEl) renderScheduleList(contentEl);
+}
+
+function getApptStatusStyle(st) {
+    switch(st) {
+        case 'Confirmed': return { color: '#22c55e', bg: 'rgba(34,197,94,0.15)' };
+        case 'Checked In': return { color: '#22d3ee', bg: 'rgba(34,211,238,0.15)' };
+        case 'In Progress': return { color: '#a855f7', bg: 'rgba(168,85,247,0.15)' };
+        case 'Completed': return { color: '#10b981', bg: 'rgba(16,185,129,0.15)' };
+        case 'No Show': return { color: '#ef4444', bg: 'rgba(239,68,68,0.15)' };
+        default: return { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)' };
+    }
+}
+
+function renderScheduleList(contentEl) {
+    var filtered = scheduleProviderFilter === 'all' ? scheduleAllData : scheduleAllData.filter(function(p) { return (p.provider || 'Unknown') === scheduleProviderFilter; });
+    if (filtered.length === 0) { contentEl.innerHTML = '<div class="empty-state-card"><h3>No appointments</h3><p>No appointments for this provider today.</p></div>'; return; }
+    filtered.sort(function(a, b) { return new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime(); });
+
+    var confirmed = filtered.filter(function(p) { return p.appointment_status === 'Confirmed'; }).length;
+    var showProv = scheduleProviderFilter === 'all';
+    var html = '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;"><span style="font-size:14px; color:var(--text-secondary);">' + filtered.length + ' patients</span>';
+    if (confirmed > 0) html += '<span style="font-size:11px; padding:3px 10px; border-radius:6px; background:rgba(34,197,94,0.1); color:#22c55e;">' + confirmed + ' confirmed</span>';
+    html += '</div>';
+
+    filtered.forEach(function(p) {
+        var st = p.appointment_status || 'Pending';
+        var s = getApptStatusStyle(st);
+        var apptId = p.appointment_id || '';
+        var canAdv = apptId && st !== 'Completed' && st !== 'No Show';
+        var pid = p.patient_id || '';
+
+        html += '<div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:14px 16px; margin-bottom:8px;">';
+        html += '<div style="display:flex; align-items:center; justify-content:space-between;">';
+        html += '<div style="display:flex; align-items:center; gap:12px; flex:1; min-width:0;">';
+        html += '<div style="width:42px; height:42px; border-radius:10px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--text-primary); flex-shrink:0;">' + getInitials(p.full_name) + '</div>';
+        html += '<div style="min-width:0; flex:1;">';
+        html += '<div style="font-size:15px; font-weight:600; color:var(--text-primary);">' + (p.full_name || 'Unknown') + '</div>';
+        html += '<div style="font-size:12px; color:var(--text-tertiary);"><span style="color:var(--text-primary); font-weight:500;">' + (p.time || 'TBD') + '</span>';
+        if (p.length) html += ' &middot; ' + p.length + 'min';
+        html += ' &middot; ' + (p.appointment_type || 'Appt');
+        if (showProv && p.provider) html += ' &middot; <span style="color:var(--text-secondary);">' + p.provider + '</span>';
+        html += '</div></div></div>';
+        html += '<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">';
+        if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Open chart">📋 Chart</button>';
+        if (canAdv) {
+            html += '<span style="font-size:11px; padding:4px 10px; border-radius:6px; background:' + s.bg + '; color:' + s.color + '; font-weight:500; cursor:pointer;" onclick="event.stopPropagation(); handleHealthieClick(\x27' + apptId + '\x27, \x27' + st + '\x27)" title="Advance status">' + st + '</span>';
+        } else {
+            html += '<span style="font-size:11px; padding:4px 10px; border-radius:6px; background:' + s.bg + '; color:' + s.color + '; font-weight:500;">' + st + '</span>';
+        }
+        html += '</div></div></div>';
+    });
+    contentEl.innerHTML = html;
 }
 
 function navigateToPatient(patientId, patientName) {
     if (!patientId) return;
-    window.location.hash = '#patients';
-    // Wait for tab to render, then trigger proper patient selection
-    setTimeout(() => {
-        selectPatient(patientId);
-    }, 300);
+    openChartForPatient(patientId, patientName);
 }
 
 // ─── VITALS / METRICS ENTRY ─────────────────────────────────
 const METRIC_UNITS = {
-    weight: 'lbs', blood_pressure: 'mmHg', heart_rate: 'bpm',
+    weight: 'lbs', height: 'in', blood_pressure: 'mmHg', heart_rate: 'bpm',
     temperature: '°F', oxygen_saturation: '%', respiration_rate: '/min',
     testosterone_level: 'ng/dL', hematocrit: '%', psa: 'ng/mL',
     bmi: '', waist_circumference: 'in', hemoglobin: 'g/dL',
 };
 
 function openVitalsModal(patientId, patientName) {
-    const existingModal = document.getElementById('vitalsModal');
+    var existingModal = document.getElementById('vitalsModal');
     if (existingModal) existingModal.remove();
 
-    document.body.insertAdjacentHTML('beforeend', `
-        <div id="vitalsModal" class="modal-overlay" style="display:flex;">
-            <div class="modal modal-large" style="max-width:520px;">
-                <div class="modal-header">
-                    <h2 style="font-size:18px; margin:0;">📋 Record Vitals</h2>
-                    <button class="modal-close" onclick="document.getElementById('vitalsModal').remove()">✕</button>
-                </div>
-                <div class="modal-body" style="padding:20px;">
-                    <div style="font-size:13px; color:var(--text-tertiary); margin-bottom:16px;">Patient: <strong style="color:var(--text-primary);">${patientName}</strong></div>
+    var formStyle = 'width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;';
+    var labelStyle = 'display:block; font-size:11px; color:var(--text-secondary); margin-bottom:4px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;';
+    var fieldWrap = 'flex:1; min-width:120px;';
 
-                    <div style="margin-bottom:16px;">
-                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Metric Type</label>
-                        <select id="vitalsType" onchange="updateVitalsUnit()" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
-                            <option value="weight">Weight (lbs)</option>
-                            <option value="blood_pressure">Blood Pressure (mmHg)</option>
-                            <option value="heart_rate">Heart Rate (bpm)</option>
-                            <option value="temperature">Temperature (°F)</option>
-                            <option value="oxygen_saturation">Oxygen Saturation (%)</option>
-                            <option value="respiration_rate">Respiration Rate (/min)</option>
-                            <option value="testosterone_level">Testosterone Level (ng/dL)</option>
-                            <option value="hematocrit">Hematocrit (%)</option>
-                            <option value="psa">PSA (ng/mL)</option>
-                            <option value="bmi">BMI</option>
-                            <option value="waist_circumference">Waist Circumference (in)</option>
-                            <option value="hemoglobin">Hemoglobin (g/dL)</option>
-                        </select>
-                    </div>
+    var html = '<div id="vitalsModal" class="modal-overlay" style="display:flex;">';
+    html += '<div class="modal modal-large" style="max-width:620px;">';
+    html += '<div class="modal-header"><h2 style="font-size:18px; margin:0;">📋 Record Vitals</h2>';
+    html += '<button class="modal-close" onclick="document.getElementById(\'vitalsModal\').remove()">✕</button></div>';
+    html += '<div class="modal-body" style="padding:20px;">';
+    html += '<div style="font-size:13px; color:var(--text-tertiary); margin-bottom:14px;">Patient: <strong style="color:var(--text-primary);">' + patientName + '</strong></div>';
 
-                    <!-- Standard value input -->
-                    <div id="vitalsStandardInput" style="margin-bottom:16px;">
-                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Value <span id="vitalsUnitLabel" style="color:var(--text-tertiary);">(lbs)</span></label>
-                        <input id="vitalsValue" type="number" step="any" placeholder="Enter value" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
-                    </div>
+    // Row 1: Blood Pressure + Heart Rate + RR
+    html += '<div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">BP Systolic</label><input id="vBpSys" type="number" placeholder="120" style="' + formStyle + '"></div>';
+    html += '<div style="width:10px; display:flex; align-items:flex-end; padding-bottom:12px; color:var(--text-tertiary); font-size:16px;">/</div>';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">BP Diastolic</label><input id="vBpDia" type="number" placeholder="80" style="' + formStyle + '"></div>';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Pulse (bpm)</label><input id="vPulse" type="number" placeholder="72" style="' + formStyle + '"></div>';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">RR (/min)</label><input id="vRR" type="number" placeholder="18" style="' + formStyle + '"></div>';
+    html += '</div>';
 
-                    <!-- Blood pressure dual input (hidden by default) -->
-                    <div id="vitalsBPInput" style="display:none; margin-bottom:16px;">
-                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Blood Pressure</label>
-                        <div style="display:flex; gap:10px; align-items:center;">
-                            <input id="vitalsSystolic" type="number" placeholder="Systolic" style="flex:1; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
-                            <span style="color:var(--text-tertiary); font-size:18px;">/</span>
-                            <input id="vitalsDiastolic" type="number" placeholder="Diastolic" style="flex:1; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
-                            <span style="color:var(--text-tertiary); font-size:13px;">mmHg</span>
-                        </div>
-                    </div>
+    // Row 2: Temp + SpO2
+    html += '<div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Temp (°F)</label><input id="vTemp" type="number" step="0.1" placeholder="98.6" style="' + formStyle + '"></div>';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">SpO2 (%)</label><input id="vSpO2" type="number" placeholder="98" style="' + formStyle + '"></div>';
+    html += '</div>';
 
-                    <div style="margin-bottom:16px;">
-                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Notes (optional)</label>
-                        <input id="vitalsNotes" type="text" placeholder="e.g. Before medication, fasting" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
-                    </div>
+    // Row 3: Height + Weight + auto BMI
+    html += '<div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; align-items:flex-end;">';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Height (in)</label><input id="vHeight" type="number" step="0.1" placeholder="70" oninput="calcBMI()" style="' + formStyle + '"></div>';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Weight (lbs)</label><input id="vWeight" type="number" step="0.1" placeholder="185" oninput="calcBMI()" style="' + formStyle + '"></div>';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">BMI <span style="font-weight:400; color:var(--text-tertiary);">(auto)</span></label><input id="vBMI" type="text" readonly style="' + formStyle + ' background:var(--bg); color:var(--text-secondary);"></div>';
+    html += '</div>';
 
-                    <div id="vitalsError" style="display:none; padding:8px 12px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.2); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:12px;"></div>
-                    <div id="vitalsSuccess" style="display:none; padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); border-radius:8px; color:#22c55e; font-size:13px; margin-bottom:12px;"></div>
-                </div>
-                <div class="modal-actions">
-                    <button class="btn-cancel" onclick="document.getElementById('vitalsModal').remove()">Cancel</button>
-                    <button class="btn-primary" id="vitalsSubmitBtn" onclick="submitVitals('${patientId}')">Save Vitals</button>
-                </div>
-            </div>
-        </div>
-    `);
+    // Notes
+    html += '<div style="margin-bottom:14px;"><label style="' + labelStyle + '">Notes (optional)</label>';
+    html += '<input id="vNotes" type="text" placeholder="e.g. Before medication, fasting" style="' + formStyle + '"></div>';
+
+    // Status messages
+    html += '<div id="vitalsError" style="display:none; padding:8px 12px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.2); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:10px;"></div>';
+    html += '<div id="vitalsSuccess" style="display:none; padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); border-radius:8px; color:#22c55e; font-size:13px; margin-bottom:10px;"></div>';
+
+    html += '</div>';
+    html += '<div class="modal-actions">';
+    html += '<button class="btn-cancel" onclick="document.getElementById(\'vitalsModal\').remove()">Cancel</button>';
+    html += '<button class="btn-primary" id="vitalsSubmitBtn" onclick="submitAllVitals(\'' + patientId + '\')">Save All Vitals</button>';
+    html += '</div></div></div>';
+
+    document.body.insertAdjacentHTML('beforeend', html);
+    // Must add .visible class after insertion for CSS transition to work
+    requestAnimationFrame(function() {
+        var modal = document.getElementById('vitalsModal');
+        if (modal) modal.classList.add('visible');
+    });
 }
 
-function updateVitalsUnit() {
-    const type = document.getElementById('vitalsType').value;
-    const unit = METRIC_UNITS[type] || '';
-    const unitLabel = document.getElementById('vitalsUnitLabel');
-    if (unitLabel) unitLabel.textContent = unit ? `(${unit})` : '';
-
-    // Toggle BP dual-input vs standard input
-    const stdInput = document.getElementById('vitalsStandardInput');
-    const bpInput = document.getElementById('vitalsBPInput');
-    if (type === 'blood_pressure') {
-        stdInput.style.display = 'none';
-        bpInput.style.display = 'block';
-    } else {
-        stdInput.style.display = 'block';
-        bpInput.style.display = 'none';
+function calcBMI() {
+    var h = parseFloat(document.getElementById('vHeight')?.value);
+    var w = parseFloat(document.getElementById('vWeight')?.value);
+    var bmiEl = document.getElementById('vBMI');
+    if (bmiEl && h > 0 && w > 0) {
+        var bmi = (w / (h * h)) * 703;
+        bmiEl.value = bmi.toFixed(1);
+    } else if (bmiEl) {
+        bmiEl.value = '';
     }
 }
 
-async function submitVitals(patientId) {
-    const btn = document.getElementById('vitalsSubmitBtn');
-    const errorEl = document.getElementById('vitalsError');
-    const successEl = document.getElementById('vitalsSuccess');
-    const type = document.getElementById('vitalsType').value;
-    const notes = document.getElementById('vitalsNotes')?.value || '';
+function updateVitalsUnit() {} // kept for backwards compat
 
-    let value, systolic, diastolic;
-    if (type === 'blood_pressure') {
-        systolic = document.getElementById('vitalsSystolic')?.value;
-        diastolic = document.getElementById('vitalsDiastolic')?.value;
-        if (!systolic || !diastolic) {
-            errorEl.textContent = 'Enter both systolic and diastolic values';
-            errorEl.style.display = 'block';
-            return;
-        }
-        value = `${systolic}/${diastolic}`;
-    } else {
-        value = document.getElementById('vitalsValue')?.value;
-        if (!value) {
-            errorEl.textContent = 'Please enter a value';
-            errorEl.style.display = 'block';
-            return;
-        }
-    }
-
-    btn.textContent = 'Saving…';
-    btn.disabled = true;
+async function submitAllVitals(patientId) {
+    var btn = document.getElementById('vitalsSubmitBtn');
+    var errorEl = document.getElementById('vitalsError');
+    var successEl = document.getElementById('vitalsSuccess');
     errorEl.style.display = 'none';
     successEl.style.display = 'none';
 
+    // Gather all non-empty vitals
+    var vitals = [];
+    var bpSys = document.getElementById('vBpSys')?.value;
+    var bpDia = document.getElementById('vBpDia')?.value;
+    if (bpSys && bpDia) vitals.push({ metric_type: 'blood_pressure', value: bpSys + '/' + bpDia, unit: 'mmHg', blood_pressure_systolic: bpSys, blood_pressure_diastolic: bpDia });
+    var pulse = document.getElementById('vPulse')?.value;
+    if (pulse) vitals.push({ metric_type: 'heart_rate', value: pulse, unit: 'bpm' });
+    var rr = document.getElementById('vRR')?.value;
+    if (rr) vitals.push({ metric_type: 'respiration_rate', value: rr, unit: '/min' });
+    var temp = document.getElementById('vTemp')?.value;
+    if (temp) vitals.push({ metric_type: 'temperature', value: temp, unit: '°F' });
+    var spo2 = document.getElementById('vSpO2')?.value;
+    if (spo2) vitals.push({ metric_type: 'oxygen_saturation', value: spo2, unit: '%' });
+    var height = document.getElementById('vHeight')?.value;
+    if (height) vitals.push({ metric_type: 'height', value: height, unit: 'in' });
+    var weight = document.getElementById('vWeight')?.value;
+    if (weight) vitals.push({ metric_type: 'weight', value: weight, unit: 'lbs' });
+    var bmiVal = document.getElementById('vBMI')?.value;
+    if (bmiVal) vitals.push({ metric_type: 'bmi', value: bmiVal, unit: '' });
+    var notes = document.getElementById('vNotes')?.value || '';
+
+    if (vitals.length === 0) {
+        errorEl.textContent = 'Enter at least one vital sign';
+        errorEl.style.display = 'block';
+        return;
+    }
+
+    btn.textContent = 'Saving ' + vitals.length + ' vitals…';
+    btn.disabled = true;
+
     try {
-        const resp = await apiFetch(`/ops/api/ipad/patient/${patientId}/metrics/`, {
-            method: 'POST',
-            body: JSON.stringify({
-                metric_type: type,
-                value,
-                unit: METRIC_UNITS[type] || '',
-                notes,
-                blood_pressure_systolic: systolic,
-                blood_pressure_diastolic: diastolic,
-            })
-        });
-
-        if (resp.error) throw new Error(resp.error);
-
-        const syncMsg = resp.healthie_synced ? ' (synced to Healthie ✅)' : ' (saved locally)';
-        successEl.textContent = `${type.replace(/_/g, ' ')} recorded: ${value} ${METRIC_UNITS[type] || ''}${syncMsg}`;
+        var saved = 0;
+        var failed = 0;
+        for (var i = 0; i < vitals.length; i++) {
+            try {
+                var v = vitals[i];
+                v.notes = notes;
+                var resp = await apiFetch('/ops/api/ipad/patient/' + patientId + '/metrics/', {
+                    method: 'POST',
+                    body: JSON.stringify(v)
+                });
+                if (resp.error) { failed++; } else { saved++; }
+            } catch (e) {
+                failed++;
+            }
+        }
+        var msg = saved + ' vital(s) saved';
+        if (failed > 0) msg += ', ' + failed + ' failed';
+        successEl.textContent = msg + ' ✅';
         successEl.style.display = 'block';
-
-        // Reset form for next entry
-        btn.textContent = 'Save Another';
+        btn.textContent = 'Saved!';
         btn.disabled = false;
-        document.getElementById('vitalsValue').value = '';
-        document.getElementById('vitalsSystolic').value = '';
-        document.getElementById('vitalsDiastolic').value = '';
-        document.getElementById('vitalsNotes').value = '';
 
-        // Refresh patient data to show new vitals
+        // Refresh patient data
         invalidatePatientCache(patientId);
-        loadPatient360(patientId, true);
+        if (typeof loadChartData === 'function' && chartPanelPatientId === patientId) {
+            loadChartData(patientId);
+        }
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         errorEl.textContent = e.message || 'Failed to save vitals';
         errorEl.style.display = 'block';
-        btn.textContent = 'Save Vitals';
+        btn.textContent = 'Save All Vitals';
         btn.disabled = false;
     }
 }
+
+async function submitVitals(patientId) { submitAllVitals(patientId); } // backwards compat
 
 // ─── LAB ORDERS & RESULTS IN PATIENT PROFILE ────────────────
 async function loadPatientLabData(patientId) {

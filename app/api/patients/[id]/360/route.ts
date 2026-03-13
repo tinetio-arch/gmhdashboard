@@ -32,14 +32,23 @@ export async function GET(
 
     try {
         // 1. Demographics
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientId);
+        
         const [patient] = await query<any>(
-            'SELECT * FROM patients WHERE patient_id = $1', [patientId]
+            isUUID 
+                ? 'SELECT * FROM patients WHERE patient_id = $1'
+                : 'SELECT * FROM patients WHERE healthie_client_id = $1',
+            [patientId]
         );
+        
         if (!patient) {
             return NextResponse.json(
-                { success: false, error: 'Patient not found' }, { status: 404 }
+                { success: false, error: 'Patient not found locally' }, { status: 404 }
             );
         }
+
+        // Use the actual resolved local UUID for all subsequent queries
+        const localPatientId = patient.patient_id;
 
         // Run all data source queries individually with fault tolerance
         // Each query can fail independently without breaking the whole 360 view
@@ -77,7 +86,7 @@ export async function GET(
         JOIN vials v ON d.vial_id = v.vial_id
         WHERE d.patient_id = $1
         ORDER BY d.dispense_date DESC LIMIT 20
-      `, [patientId]),
+      `, [localPatientId]),
 
             // 4. Lab status from lab_review_queue
             safeQuery('labs', `
@@ -91,14 +100,14 @@ export async function GET(
         SELECT * FROM payment_issues
         WHERE patient_id = $1 AND resolved_at IS NULL
         ORDER BY created_at DESC
-      `, [patientId]),
+      `, [localPatientId]),
 
             // 5b. Payment total outstanding
             safeQuery('paymentTotal', `
         SELECT COALESCE(SUM(amount_owed), 0) as total_outstanding
         FROM payment_issues
         WHERE patient_id = $1 AND resolved_at IS NULL
-      `, [patientId]),
+      `, [localPatientId]),
 
             // 9a. Staged doses pending
             safeQuery('stagedDoses', `
@@ -107,14 +116,14 @@ export async function GET(
         WHERE sd.patient_id = $1
           AND sd.status IN ('staged', 'pending')
         ORDER BY sd.staged_for_date ASC
-      `, [patientId]),
+      `, [localPatientId]),
 
             // 10. Controlled substance history (may not exist yet)
             safeQuery('dea', `
         SELECT * FROM dispenses
         WHERE patient_id = $1
         ORDER BY dispense_date DESC LIMIT 20
-      `, [patientId]),
+      `, [localPatientId]),
         ]);
 
         // Healthie data (visits + labs) — graceful fallback on failure
