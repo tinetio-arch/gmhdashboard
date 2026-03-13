@@ -203,8 +203,12 @@ async function addDiagnosis(healthieId: string, body: any) {
         return NextResponse.json({ success: false, error: 'code and description are required' }, { status: 400 });
     }
 
-    // 1. Add diagnosis as a Chart Note in Healthie (visible in patient chart)
+    // 1. Add diagnosis as a properly formatted Chart Note in Healthie
+    // Healthie doesn't have a separate "Problem List" API - diagnoses are stored as chart notes or attached to encounters
+    // We'll create a prominently formatted note that will appear in the patient's chart
     try {
+        const noteContent = `🏥 ACTIVE DIAGNOSIS\n\nICD-10 Code: ${code}\nDescription: ${description}\n\nAdded: ${new Date().toLocaleDateString('en-US')}\nStatus: Active`;
+
         const noteResult = await healthieGraphQL<any>(`
             mutation CreateNote($input: createNoteInput!) {
                 createNote(input: $input) {
@@ -222,7 +226,7 @@ async function addDiagnosis(healthieId: string, body: any) {
         `, {
             input: {
                 user_id: healthieId,
-                content: `📋 **Diagnosis Added**: ${code} — ${description}`,
+                content: noteContent,
                 include_in_charting: true,
             }
         });

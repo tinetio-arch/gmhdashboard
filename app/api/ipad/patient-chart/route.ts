@@ -177,9 +177,10 @@ export async function GET(request: NextRequest) {
             `, { userId: healthieId }),
 
             // Documents — viewable_user_id is String, returns file_content_type/friendly_type
+            // Reduced page_size from 30 to 20 to speed up query
             safeHealthieQuery<any>('documents', `
                 query GetDocuments($viewableUserId: String) {
-                    documents(viewable_user_id: $viewableUserId, offset: 0, page_size: 30) {
+                    documents(viewable_user_id: $viewableUserId, offset: 0, page_size: 20, should_paginate: false) {
                         id
                         display_name
                         file_content_type
@@ -248,32 +249,8 @@ export async function GET(request: NextRequest) {
                 }
             `, { userId: healthieId }),
 
-            // Active subscriptions/offerings
-            safeHealthieQuery<any>('subscriptions', `
-                query GetSubscriptions($userId: ID!) {
-                    user(id: $userId) {
-                        id
-                        active_offering_coupons {
-                            id
-                            offering {
-                                id
-                                name
-                                price
-                                recurring_price
-                            }
-                        }
-                        recurring_payment {
-                            id
-                            amount
-                            next_payment_date
-                            offering {
-                                id
-                                name
-                            }
-                        }
-                    }
-                }
-            `, { userId: healthieId }),
+            // Active subscriptions/offerings - query from our database, not Healthie
+            // Packages are stored in healthie_packages and mapped to QB customers via healthie_package_mapping
         ]);
 
         // 3. Fetch local scribe history — only if we have a valid uuid patient_id
@@ -313,6 +290,33 @@ export async function GET(request: NextRequest) {
         } catch (err) {
             console.warn(`[Patient Chart] Failed to query local vitals:`, err instanceof Error ? err.message : err);
             localVitals = [];
+        }
+
+        // Query active packages/subscriptions - join through QB customer ID
+        let activePackages: any[] = [];
+        if (patient?.qbo_customer_id) {
+            try {
+                activePackages = await query<any>(`
+                    SELECT
+                        hp.name as package_name,
+                        hp.description,
+                        hp.price,
+                        hp.billing_frequency,
+                        hpm.amount,
+                        hpm.next_charge_date,
+                        hpm.frequency
+                    FROM healthie_package_mapping hpm
+                    JOIN healthie_packages hp ON hpm.healthie_package_id = hp.healthie_package_id
+                    WHERE hpm.qb_customer_id = $1
+                        AND hpm.is_active = TRUE
+                        AND hp.is_active = TRUE
+                    ORDER BY hpm.created_at DESC
+                `, [patient.qbo_customer_id]);
+                console.log(`[Patient Chart] Found ${activePackages.length} active packages for customer ${patient.qbo_customer_id}`);
+            } catch (err) {
+                console.warn(`[Patient Chart] Failed to query packages:`, err instanceof Error ? err.message : err);
+                activePackages = [];
+            }
         }
 
         // Query financial data - last Healthie payments
@@ -446,8 +450,9 @@ export async function GET(request: NextRequest) {
                 trt_dispenses: trtDispenses || [],
                 peptide_dispenses: peptideDispenses || [],
                 payment_methods: paymentMethods?.user?.stripe_customer_details || [], // PLURAL - array of all cards
-                subscriptions: subscriptions?.user?.active_offering_coupons || [],
-                recurring_payment: subscriptions?.user?.recurring_payment || null,
+                active_packages: activePackages || [], // Packages from healthie_package_mapping table
+                subscriptions: [], // Legacy field - packages are now in active_packages
+                recurring_payment: null, // Legacy field - replaced by active_packages
             },
         });
     } catch (error) {
@@ -468,8 +473,8 @@ async function safeHealthieQuery<T>(label: string, gql: string, variables: Recor
     const controller = new AbortController();
     const timeout = setTimeout(() => {
         controller.abort();
-        console.warn(`[iPad:PatientChart] ${label} aborted after 8s`);
-    }, 8000);
+        console.warn(`[iPad:PatientChart] ${label} aborted after 15s`);
+    }, 15000); // Increased from 8s to 15s for patients with lots of data
 
     try {
         const response = await fetch(HEALTHIE_API_URL, {

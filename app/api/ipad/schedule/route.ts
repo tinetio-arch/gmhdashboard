@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
                     provider_id: $providerId,
                     should_paginate: false
                 ) {
-                    id date length pm_status location
+                    id date length pm_status location other_party_id
                     appointment_type { name }
                     provider { id full_name }
                     attendees { id first_name last_name }
@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
                     endDate: $endDate,
                     should_paginate: false
                 ) {
-                    id date length pm_status location
+                    id date length pm_status location other_party_id
                     appointment_type { name }
                     provider { id full_name }
                     attendees { id first_name last_name }
@@ -112,7 +112,7 @@ export async function GET(request: NextRequest) {
                     filter: "upcoming",
                     should_paginate: false
                 ) {
-                    id date length pm_status location
+                    id date length pm_status location other_party_id
                     appointment_type { name }
                     provider { id full_name }
                     attendees { id first_name last_name }
@@ -166,10 +166,10 @@ export async function GET(request: NextRequest) {
 
         // Filter out entries with no patient (Breaks, holds, blocked time, etc.)
         appointments = appointments.filter((a: any) => {
-            // Has at least one attendee OR a user object
+            // ONLY include appointments with actual attendees or user (NOT other_party_id alone, as that's often the provider)
             if (a.attendees?.length > 0 || a.user) return true;
-            // Skip entries with no patient data (Breaks, blocked time)
-            console.log('[iPad Schedule] Skipping no-patient entry:', a.appointment_type?.name || 'unknown type', a.location || '');
+            // Skip entries with no patient data (Breaks, blocked time, or other_party_id = provider)
+            console.log('[iPad Schedule] Skipping no-patient entry:', a.appointment_type?.name || 'unknown type', a.location || '', a.other_party_id ? `(other_party=${a.other_party_id})` : '');
             return false;
         });
 
@@ -178,7 +178,7 @@ export async function GET(request: NextRequest) {
         }
 
         // Cross-reference with local patients
-        const healthieIds = appointments.map(a => a.attendees?.[0]?.id).filter(Boolean);
+        const healthieIds = appointments.map(a => a.attendees?.[0]?.id || a.user?.id).filter(Boolean);
         let patientMap = new Map<string, any>();
         if (healthieIds.length > 0) {
             try {
@@ -190,6 +190,7 @@ export async function GET(request: NextRequest) {
                     [healthieIds]
                 );
                 patientMap = new Map(patients.map((p: any) => [p.healthie_client_id, p]));
+                console.log(`[iPad Schedule] Cross-referenced ${patients.length} patients from ${healthieIds.length} healthie IDs`);
             } catch (err) {
                 console.warn('[iPad Schedule] Patient cross-ref failed:', err);
             }
@@ -203,7 +204,8 @@ export async function GET(request: NextRequest) {
             // Try multiple name sources: local DB > attendee name > user name
             const attendeeName = `${attendee?.first_name || ''} ${attendee?.last_name || ''}`.trim();
             const userName = `${user?.first_name || ''} ${user?.last_name || ''}`.trim();
-            const resolvedName = local?.full_name || attendeeName || userName || 'Unknown';
+            // If we have healthieId but no name, we'll need to fetch from Healthie (will be handled in batch below)
+            const resolvedName = local?.full_name || attendeeName || userName || '';
             return {
                 appointment_id: appt.id,
                 healthie_id: healthieId,
@@ -221,6 +223,42 @@ export async function GET(request: NextRequest) {
                 location: appt.location || '',
             };
         });
+
+        // Log what we have after mapping
+        console.log(`[iPad Schedule] Mapped ${result.length} patient appointments`);
+        if (result.length > 0) {
+            console.log(`[iPad Schedule] Sample result:`, JSON.stringify(result[0]));
+        }
+
+        // Fetch names from Healthie for any patients without names
+        const missingNames = result.filter(r => r.healthie_id && !r.full_name);
+        if (missingNames.length > 0) {
+            console.log(`[iPad Schedule] Fetching names from Healthie for ${missingNames.length} patients without names`);
+            try {
+                for (const item of missingNames) {
+                    const userQuery = `query { user(id: "${item.healthie_id}") { id first_name last_name } }`;
+                    const resp = await fetch(HEALTHIE_API_URL, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                            'AuthorizationSource': 'API',
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ query: userQuery }),
+                        signal: AbortSignal.timeout(5000),
+                    });
+                    if (resp.ok) {
+                        const userData = await resp.json();
+                        const user = userData.data?.user;
+                        if (user) {
+                            item.full_name = `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Unknown Patient';
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn('[iPad Schedule] Failed to fetch patient names from Healthie:', err);
+            }
+        }
 
         // Sort by appointment time
         result.sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());

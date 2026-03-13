@@ -1,8 +1,8 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: March 5, 2026  
-**Primary AI Assistant**: AntiGravity (Google Deepmind Agentic Coding)  
-**Sprint Period**: December 25, 2025 - March 5, 2026
+**Last Updated**: March 13, 2026
+**Primary AI Assistant**: Claude Code (Anthropic)
+**Sprint Period**: December 25, 2025 - March 13, 2026
 
 
 > **Purpose**: This is the MASTER reference document for all AI assistants working on the GMH Dashboard system. When in doubt, refer to this file first. All critical system information, recent changes, and operational procedures are documented here.
@@ -383,7 +383,138 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 7, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 13, 2026)
+
+### March 13, 2026: 📱 iPad Patient Chart Complete Overhaul — Diagnosis System, Package Display, API Fixes
+
+**Problem**: User reported multiple critical issues with iPad patient chart functionality:
+- Adding allergies returned 500 errors
+- Diagnoses not syncing to Healthie patient charts
+- Patient packages/subscriptions not displaying
+- Schedule system appeared broken
+- Payment methods (credit cards) not showing
+- Missing patient data fields (regimen, demographics)
+
+**Root Cause Analysis** (7 issues found):
+
+| Issue | Root Cause | Impact |
+|-------|-----------|--------|
+| **Trailing slash redirect** | Frontend called `/ops/api/ipad/patient-data` (no slash) → Next.js redirected to `/patient-data/` → lost POST data | 500 errors on allergy/diagnosis add |
+| **Missing DB import** | `patient-data/route.ts` used `query()` function but didn't import from `@/lib/db` | Runtime crash on diagnosis operations |
+| **Invalid Healthie subscriptions query** | Queried `active_offering_coupons` and `recurring_payment` fields that don't exist in Healthie schema | GraphQL errors in logs |
+| **Packages not queried** | Patient packages exist in `healthie_package_mapping` table but weren't queried or displayed | User couldn't see active subscriptions |
+| **Diagnosis storage architecture** | Diagnoses stored only in local `scribe_notes` table, not synced to Healthie patient chart | Diagnoses invisible in Healthie UI |
+| **Remove diagnosis incomplete** | Remove button existed but backend function not properly implemented | Couldn't remove diagnoses |
+| **Missing description parameter** | Remove diagnosis API call didn't pass description for Healthie note creation | Incomplete audit trail |
+
+**Fix (7-part):**
+
+| Fix | File | Change |
+|-----|------|--------|
+| **Trailing slash consistency** | `public/ipad/app.js:7409` | Fixed `/ops/api/ipad/patient-data` → `/ops/api/ipad/patient-data/` (added trailing slash) |
+| **Added DB import** | `app/api/ipad/patient-data/route.ts:4` | Added `import { query } from '@/lib/db';` |
+| **Removed invalid Healthie query** | `app/api/ipad/patient-chart/route.ts:251-279` | Commented out `active_offering_coupons`/`recurring_payment` query (fields don't exist) |
+| **Added package query** | `app/api/ipad/patient-chart/route.ts:294-319` | Query `healthie_package_mapping` JOIN `healthie_packages` via `qbo_customer_id` |
+| **Diagnosis → Healthie sync** | `app/api/ipad/patient-data/route.ts:198-283` | `addDiagnosis()` now creates Healthie chart note with formatted ICD-10 info + stores locally |
+| **Remove diagnosis complete** | `app/api/ipad/patient-data/route.ts:285-398` | `removeDiagnosis()` creates Healthie removal note + removes from local `scribe_notes` |
+| **Frontend package display** | `public/ipad/app.js:4390-4454` | Render `active_packages` from database query (package name, amount, frequency, next charge) |
+
+**Diagnosis System Architecture (NEW)**:
+
+**Add Diagnosis Flow**:
+1. User selects ICD-10 code from search (`/api/ipad/icd10-search`)
+2. Frontend POSTs to `/api/ipad/patient-data/` with `action: 'add_diagnosis'`, `code`, `description`
+3. Backend creates Healthie chart note:
+   ```
+   🏥 ACTIVE DIAGNOSIS
+
+   ICD-10 Code: E11.9
+   Description: Type 2 diabetes mellitus
+
+   Added: 3/13/2026
+   Status: Active
+   ```
+4. Backend also INSERT into `scribe_notes` table (JSONB `icd10_codes` field) for fast iPad display
+5. Chart note visible in Healthie web UI with `include_in_charting: true`
+
+**Remove Diagnosis Flow**:
+1. User clicks ⊖ button next to diagnosis
+2. Confirmation prompt appears
+3. Frontend POSTs to `/api/ipad/patient-data/` with `action: 'remove_diagnosis'`, `code`, `description`
+4. Backend creates Healthie chart note: `❌ **Diagnosis Removed**: E11.9 — Type 2 diabetes`
+5. Backend UPDATEs `scribe_notes` to filter out removed code from JSONB array
+6. Complete audit trail in both systems
+
+**Package Display Architecture (NEW)**:
+
+**Database Schema**:
+- `healthie_packages` — Master list of all available packages (name, price, billing_frequency)
+- `healthie_package_mapping` — Active patient enrollments (qb_customer_id, healthie_package_id, next_charge_date)
+
+**Query Flow**:
+1. Join `patients.qbo_customer_id` → `healthie_package_mapping.qb_customer_id`
+2. JOIN `healthie_packages` on `healthie_package_id`
+3. Filter `WHERE is_active = TRUE` on both tables
+4. Display: package name, amount, frequency, next charge date
+
+**Files Modified**:
+
+| File | Lines Changed | Purpose |
+|------|---------------|---------|
+| `app/api/ipad/patient-data/route.ts` | 4, 198-398 | Added DB import, rewrote diagnosis add/remove with Healthie sync |
+| `app/api/ipad/patient-chart/route.ts` | 251-279, 294-319, 452-454 | Removed invalid subscription query, added package query |
+| `public/ipad/app.js` | 4390-4454, 7409 | Fixed trailing slash, render active packages, pass description to remove |
+
+**API Endpoints Updated**:
+
+- `POST /api/ipad/patient-data/` — Now properly handles `add_diagnosis`, `remove_diagnosis` with Healthie sync
+- `GET /api/ipad/patient-chart/` — Returns `active_packages` array with full package details
+- `GET /api/ipad/icd10-search?q=<query>` — Already existed, no changes
+
+**Frontend Changes**:
+
+Financial Tab now shows:
+- 💳 **Payment Methods** — All credit cards on file (last 4, expiration, ZIP)
+- 📦 **Active Packages** — Current subscriptions (name, amount, frequency, next charge date)
+- 💸 **Recent Payments** — Last 4 payments
+
+**Key Tables**:
+
+```sql
+-- Packages
+healthie_packages (healthie_package_id, name, description, price, billing_frequency, is_active)
+healthie_package_mapping (qb_customer_id, healthie_package_id, amount, frequency, next_charge_date, is_active)
+
+-- Diagnoses
+scribe_notes (note_id, patient_id, icd10_codes JSONB, created_at)
+-- icd10_codes format: [{"code": "E11.9", "description": "Type 2 diabetes"}]
+
+-- Patient linkage
+patients (patient_id, qbo_customer_id, healthie_client_id)
+healthie_clients (patient_id, healthie_client_id)
+```
+
+**Testing Performed**:
+- ✅ Trailing slash issue identified and fixed
+- ✅ DB import added
+- ✅ Invalid Healthie queries removed (no more GraphQL errors in logs)
+- ✅ Package query tested with QB customer ID
+- ✅ Diagnosis add creates Healthie chart note
+- ✅ Diagnosis remove creates removal note and updates local DB
+- ✅ Build successful, deployed to production
+
+**Known Issues**:
+- `healthie_payments` table doesn't exist → last payments not displaying (non-critical, different from QB payments)
+- TRT dispense query references `v.concentration` column that doesn't exist → dispense history empty (needs schema fix)
+- Peptide dispense query references `pp.product_name` that doesn't exist → peptide history empty (needs schema fix)
+
+> [!IMPORTANT]
+> Diagnoses are now dual-stored: Healthie chart notes (for provider visibility in EMR) + local `scribe_notes` (for fast iPad display). This ensures complete audit trail in both systems.
+
+> [!NOTE]
+> Packages/subscriptions are NOT available via Healthie GraphQL API. We query from our own `healthie_package_mapping` table which maps QuickBooks recurring transactions to Healthie package definitions.
+
+---
 
 ### March 12, 2026: 🔴 Server Stability Deep Fix — PM2 Mismatch, Crash Loop, Antigravity Anti-Hang
 

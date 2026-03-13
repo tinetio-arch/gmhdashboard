@@ -4390,8 +4390,9 @@ async function submitPatientData(type) {
 function renderFinancialTab(container, d) {
     const payments = d.last_payments || [];
     const paymentMethods = d.payment_methods || []; // PLURAL - array
-    const subscriptions = d.subscriptions || [];
-    const recurring = d.recurring_payment || null;
+    const activePackages = d.active_packages || []; // Active packages from healthie_package_mapping
+    const subscriptions = d.subscriptions || []; // Legacy - now using active_packages
+    const recurring = d.recurring_payment || null; // Legacy - now using active_packages
 
     const formatDate = (dateStr) => {
         try {
@@ -4432,32 +4433,23 @@ function renderFinancialTab(container, d) {
             </div>
         </div>
 
-        <!-- Active Subscription/Package -->
-        <div class="chart-section${subscriptions.length === 0 && !recurring ? ' collapsed' : ''}">
+        <!-- Active Packages -->
+        <div class="chart-section${activePackages.length === 0 ? ' collapsed' : ''}">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>📦 Active Subscriptions</span>
+                <span>📦 Active Packages</span>
                 <span class="chart-chevron">›</span>
             </div>
             <div class="chart-section-body">
-                ${recurring ? `
+                ${activePackages.length > 0 ? activePackages.map(pkg => `
                     <div class="chart-lab-card" style="border-left:3px solid var(--green);">
-                        <div class="chart-lab-name">💚 ${recurring.offering?.name || 'Subscription'}</div>
+                        <div class="chart-lab-name">💚 ${pkg.package_name || 'Package'}</div>
                         <div class="chart-lab-detail">
-                            ${formatCurrency(recurring.amount)}/month ·
-                            Next payment: ${formatDate(recurring.next_payment_date)}
+                            ${formatCurrency(pkg.amount)} ${pkg.frequency || pkg.billing_frequency}
+                            ${pkg.next_charge_date ? ` · Next charge: ${formatDate(pkg.next_charge_date)}` : ''}
                         </div>
+                        ${pkg.description ? `<div class="chart-lab-notes" style="font-size:11px; color:var(--text-tertiary); margin-top:4px;">${pkg.description}</div>` : ''}
                     </div>
-                ` : ''}
-                ${subscriptions.map(sub => `
-                    <div class="chart-lab-card">
-                        <div class="chart-lab-name">${sub.offering?.name || 'Package'}</div>
-                        <div class="chart-lab-detail">
-                            ${sub.offering?.price ? formatCurrency(sub.offering.price) : ''}
-                            ${sub.offering?.recurring_price ? ` (${formatCurrency(sub.offering.recurring_price)}/mo)` : ''}
-                        </div>
-                    </div>
-                `).join('')}
-                ${!recurring && subscriptions.length === 0 ? '<div class="chart-empty">No active subscriptions</div>' : ''}
+                `).join('') : '<div class="chart-empty">No active packages</div>'}
             </div>
         </div>
 
@@ -7406,13 +7398,14 @@ async function removeDiagnosis(code, description) {
     if (!confirm(`Are you sure you want to remove ${diagnosisText}?`)) return;
 
     try {
-        const resp = await fetch('/ops/api/ipad/patient-data', {
+        const resp = await fetch('/ops/api/ipad/patient-data/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 action: 'remove_diagnosis',
                 healthie_id: currentPatientHealthieId,
-                code: code
+                code: code,
+                description: description
             })
         });
 
