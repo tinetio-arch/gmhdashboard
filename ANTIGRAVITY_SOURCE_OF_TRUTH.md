@@ -385,7 +385,71 @@ pm2 save
 
 ## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 13, 2026)
 
-### March 13, 2026: 📱 iPad Patient Chart Complete Overhaul — Diagnosis System, Package Display, API Fixes
+### March 13, 2026 PM: 🔐 Provider Schedule Auto-Filter + GMH Patient Chart Data Integration
+
+**Problem**: Providers couldn't see their own schedule when logged into iPad + Patient charts missing critical GMH dashboard data
+
+**Issues Fixed**:
+1. **Provider Schedule Not Auto-Filtering**: When Dr. Aaron Whitten logged in, he saw ALL providers' appointments instead of just his own
+2. **Missing GMH Dashboard Data**: iPad patient charts only showed Healthie data, missing status, notes, lab dates, supply dates, GHL sync, QB mapping
+3. **No Healthie Documents/Forms Display**: Frontend not rendering forms and documents that API already returns
+
+**Root Causes**:
+1. Users table had no `healthie_provider_id` column to map dashboard users → Healthie provider IDs
+2. `/api/ipad/me` didn't return provider ID, so frontend couldn't auto-filter
+3. Patient chart API returned barebones demographics without explicitly mapping GMH fields
+
+**Solution**:
+| Component | Change |
+|-----------|--------|
+| **Database** | Added `healthie_provider_id` column to `users` table via migration `20260313_add_provider_healthie_mapping.sql` |
+| **API** | `/api/ipad/me` now queries and returns `healthie_provider_id` for logged-in user |
+| **Frontend** | Schedule page auto-adds `?provider_id=12093125` query param when provider logs in |
+| **Patient Chart API** | Enhanced `/api/ipad/patient-chart` to JOIN `patient_status_lookup` and explicitly return all GMH fields |
+
+**New Data in Patient Chart API**:
+```typescript
+demographics: {
+  status_key, status_display, status_color,
+  patient_notes, lab_notes,
+  last_supply_date, next_eligible_date,
+  last_lab_date, next_lab_date, lab_status,
+  service_start_date, contract_end_date,
+  date_added, added_by, method_of_payment,
+  ghl_contact_id, ghl_sync_status, ghl_last_synced_at,
+  qbo_customer_id, qb_display_name
+}
+```
+
+**Manual Configuration Required**:
+```sql
+-- Map users to Healthie provider IDs (run once after deployment)
+UPDATE users SET healthie_provider_id = '12093125' WHERE email ILIKE '%whitten%' AND is_provider = true;
+UPDATE users SET healthie_provider_id = '12088269' WHERE email ILIKE '%schafer%' AND is_provider = true;
+```
+
+**Files Changed**:
+- [/migrations/20260313_add_provider_healthie_mapping.sql](file:///migrations/20260313_add_provider_healthie_mapping.sql) — Database migration
+- [/app/api/ipad/me/route.ts](file:///app/api/ipad/me/route.ts#L17-L34) — Fetch and return `healthie_provider_id`
+- [/app/api/ipad/patient-chart/route.ts](file:///app/api/ipad/patient-chart/route.ts#L55-L124) — Enhanced patient query with all GMH fields
+- [/public/ipad/app.js](file:///public/ipad/app.js#L6401-L6406) — Auto-filter schedule by provider
+
+**Testing**:
+1. Provider login → Schedule tab → Should only show their appointments (check console for `[Schedule] Provider detected - filtering by provider_id: 12093125`)
+2. Open patient chart → Network tab → Check `/api/ipad/patient-chart` response includes status, notes, dates, GHL, QB fields
+3. Verify documents/forms data in API response (UI rendering TODO)
+
+**Known Limitations**:
+- Provider can still click "All" tab to see other providers' schedules
+- Admins (non-providers) see all schedules by default
+- Patient chart UI doesn't render forms/documents yet (data is in API, need UI tabs)
+- Scribe patient auto-mapping still needs improvement (manual selection required)
+
+**Reference**: [SCHEDULE_AND_CHART_FIXES_MARCH_13.md](file:///home/ec2-user/SCHEDULE_AND_CHART_FIXES_MARCH_13.md)
+
+---
+
+### March 13, 2026 AM: 📱 iPad Patient Chart Complete Overhaul — Diagnosis System, Package Display, API Fixes
 
 **Problem**: User reported multiple critical issues with iPad patient chart functionality:
 - Adding allergies returned 500 errors

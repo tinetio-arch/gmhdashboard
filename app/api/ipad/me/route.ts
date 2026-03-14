@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
+import { query } from '@/lib/db';
 
 /**
  * GET /api/ipad/me
@@ -10,6 +11,18 @@ export async function GET(request: NextRequest) {
     try {
         const user = await requireApiUser(request, 'read');
 
+        // Fetch healthie_provider_id from users table if it exists
+        let healthieProviderId: string | null = null;
+        try {
+            const [userRow] = await query<{ healthie_provider_id: string | null }>(
+                `SELECT healthie_provider_id FROM users WHERE user_id = $1`,
+                [user.user_id]
+            );
+            healthieProviderId = userRow?.healthie_provider_id || null;
+        } catch (err) {
+            console.warn('[/api/ipad/me] Could not fetch healthie_provider_id:', err);
+        }
+
         return NextResponse.json({
             user_id: user.user_id,
             email: user.email,
@@ -18,6 +31,7 @@ export async function GET(request: NextRequest) {
             is_provider: user.is_provider,
             can_sign: user.can_sign,
             is_active: user.is_active,
+            healthie_provider_id: healthieProviderId, // ✅ Added for schedule filtering
             // Computed permissions for the iPad app
             permissions: {
                 can_view_ceo_dashboard: user.role === 'admin',

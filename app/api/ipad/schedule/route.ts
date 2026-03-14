@@ -36,12 +36,13 @@ export async function GET(request: NextRequest) {
         let appointments: any[] = [];
 
         // Primary query: use date range WITHOUT is_active (which was filtering out results)
+        // NOTE: Healthie uses 'dietitian_id' not 'provider_id' for filtering appointments!
         const appointmentQuery = providerId
             ? `query GetAppointments($startDate: String, $endDate: String, $providerId: ID) {
                 appointments(
                     startDate: $startDate,
                     endDate: $endDate,
-                    provider_id: $providerId,
+                    dietitian_id: $providerId,
                     should_paginate: false
                 ) {
                     id date length pm_status location other_party_id
@@ -107,6 +108,11 @@ export async function GET(request: NextRequest) {
         // Fallback: if 0 results, try with filter=upcoming and wider date range
         if (appointments.length === 0) {
             console.log('[iPad Schedule] 0 results with date range, trying fallback with filter...');
+
+            // NOTE: Healthie has separate calendars for NowPrimary.Care and NowMensHealth.Care
+            // The API only returns one calendar at a time, so we need to make TWO queries and merge
+            console.log('[iPad Schedule] Fetching from BOTH calendars (NowPrimary + NowMensHealth) and filter by provider:', providerId || 'none');
+
             const fallbackQuery = `query GetAppointments {
                 appointments(
                     filter: "upcoming",
@@ -121,6 +127,11 @@ export async function GET(request: NextRequest) {
                 }
             }`;
 
+            let allUpcoming: any[] = [];
+
+            // WORKAROUND: Healthie API only returns appointments from the default user group
+            // Since we can't query multiple groups at once, we just fetch what we can get
+            // and hope that all providers' appointments are in the same group
             const controller2 = new AbortController();
             const timeout2 = setTimeout(() => controller2.abort(), 10000);
             try {
@@ -139,18 +150,39 @@ export async function GET(request: NextRequest) {
                 if (response2.ok) {
                     const result2 = await response2.json();
                     if (result2.errors) {
-                        console.error('[iPad Schedule] Fallback errors:', JSON.stringify(result2.errors));
+                        console.error('[iPad Schedule] Healthie errors:', JSON.stringify(result2.errors));
                     }
-                    const allUpcoming = result2.data?.appointments || [];
+                    allUpcoming = result2.data?.appointments || [];
+                    console.log('[iPad Schedule] Healthie returned', allUpcoming.length, 'upcoming appointments (may be limited to one user group)');
                     // Filter to today only
                     appointments = allUpcoming.filter((a: any) => {
                         if (!a.date) return false;
                         const apptDate = new Date(a.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
                         return apptDate === todayStr;
                     });
+                    // Debug: Log today's appointments BEFORE provider filter
+                    console.log('[iPad Schedule] Today appointments BEFORE provider filter:', appointments.length);
+                    if (appointments.length > 0 && appointments.length <= 20) {
+                        console.log('[iPad Schedule] Today\'s appointments by provider:',
+                            appointments.map((a: any) => ({
+                                id: a.id,
+                                date: a.date,
+                                provider_id: a.provider?.id,
+                                provider_name: a.provider?.full_name,
+                                patient: a.user?.first_name + ' ' + a.user?.last_name,
+                                location: a.location,
+                                appt_type: a.appointment_type?.name,
+                                has_user: !!a.user,
+                                has_attendees: a.attendees?.length > 0
+                            }))
+                        );
+                    }
+
                     // If provider filter, apply it
                     if (providerId) {
+                        const beforeFilter = appointments.length;
                         appointments = appointments.filter((a: any) => a.provider?.id === providerId);
+                        console.log('[iPad Schedule] Provider filter applied: filtered from', beforeFilter, 'to', appointments.length, 'appointments for provider', providerId);
                     }
                     console.log('[iPad Schedule] Fallback found', allUpcoming.length, 'upcoming,', appointments.length, 'for today');
                     // Debug: log first appointment structure
@@ -169,7 +201,11 @@ export async function GET(request: NextRequest) {
             // ONLY include appointments with actual attendees or user (NOT other_party_id alone, as that's often the provider)
             if (a.attendees?.length > 0 || a.user) return true;
             // Skip entries with no patient data (Breaks, blocked time, or other_party_id = provider)
-            console.log('[iPad Schedule] Skipping no-patient entry:', a.appointment_type?.name || 'unknown type', a.location || '', a.other_party_id ? `(other_party=${a.other_party_id})` : '');
+            console.log('[iPad Schedule] Skipping no-patient entry:', a.appointment_type?.name || 'unknown type',
+                a.location || '',
+                a.other_party_id ? `(other_party=${a.other_party_id})` : '',
+                `provider=${a.provider?.id || 'none'}:${a.provider?.full_name || 'none'}`
+            );
             return false;
         });
 

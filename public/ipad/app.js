@@ -6361,9 +6361,13 @@ async function loadScheduleData(forceRefresh) {
         return;
     }
 
-    // Use already-loaded data from Today tab if available (same API endpoint)
-    if (!forceRefresh && healthieAppointments.length > 0) {
-        console.log('[Schedule] Using cached data from Today tab:', healthieAppointments.length, 'appointments');
+    // ✅ IMPORTANT: If user has a provider filter, ALWAYS fetch fresh data (don't use cache)
+    // The Today tab doesn't filter by provider, so cached data would show all providers
+    var hasProviderFilter = currentUser?.is_provider && currentUser?.healthie_provider_id;
+
+    // Use already-loaded data from Today tab ONLY if no provider filter is active
+    if (!forceRefresh && !hasProviderFilter && healthieAppointments.length > 0) {
+        console.log('[Schedule] Using cached data from Today tab:', healthieAppointments.length, 'appointments (no provider filter)');
         scheduleAllData = healthieAppointments.map(function(a) {
             return {
                 appointment_id: a.id || a.appointment_id || '',
@@ -6397,7 +6401,26 @@ async function loadScheduleData(forceRefresh) {
         }, 25000);
 
         var startTime = Date.now();
-        var resp = await fetch('/ops/api/ipad/schedule/', { credentials: 'include', signal: controller.signal });
+
+        // ✅ AUTO-FILTER: If logged-in user is a provider with healthie_provider_id, filter by their schedule
+        var url = '/ops/api/ipad/schedule/';
+        console.log('[Schedule] Current user:', JSON.stringify({
+            email: currentUser?.email,
+            is_provider: currentUser?.is_provider,
+            healthie_provider_id: currentUser?.healthie_provider_id
+        }));
+        if (currentUser?.is_provider && currentUser?.healthie_provider_id) {
+            url += '?provider_id=' + encodeURIComponent(currentUser.healthie_provider_id);
+            console.log('[Schedule] Provider detected - filtering by provider_id:', currentUser.healthie_provider_id);
+        } else if (currentUser?.healthie_provider_id) {
+            // Also filter for non-provider accounts that have a healthie_provider_id (like admin@nowoptimal.com mapped to Phil)
+            url += '?provider_id=' + encodeURIComponent(currentUser.healthie_provider_id);
+            console.log('[Schedule] Non-provider with healthie_provider_id - filtering by provider_id:', currentUser.healthie_provider_id);
+        } else {
+            console.log('[Schedule] No provider filter - showing all appointments');
+        }
+
+        var resp = await fetch(url, { credentials: 'include', signal: controller.signal });
         var elapsed = Date.now() - startTime;
         console.log('[Schedule] API response received in', elapsed, 'ms, status:', resp.status);
 

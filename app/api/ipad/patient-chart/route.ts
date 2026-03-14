@@ -52,15 +52,29 @@ export async function GET(request: NextRequest) {
                 });
         };
 
-        // 1. Look up patient in local DB
+        // 1. Look up patient in local DB with full GMH dashboard fields
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientId);
         let patient: any = null;
         if (isUuid) {
-            const rows = await query<any>('SELECT * FROM patients WHERE patient_id = $1::uuid', [patientId]);
+            const rows = await query<any>(`
+                SELECT
+                    p.*,
+                    psl.display_name as status_display
+                FROM patients p
+                LEFT JOIN patient_status_lookup psl ON p.status_key = psl.status_key
+                WHERE p.patient_id = $1::uuid
+            `, [patientId]);
             patient = rows?.[0] || null;
         }
         if (!patient) {
-            const rows = await query<any>('SELECT * FROM patients WHERE healthie_client_id = $1', [patientId]);
+            const rows = await query<any>(`
+                SELECT
+                    p.*,
+                    psl.display_name as status_display
+                FROM patients p
+                LEFT JOIN patient_status_lookup psl ON p.status_key = psl.status_key
+                WHERE p.healthie_client_id = $1
+            `, [patientId]);
             patient = rows?.[0] || null;
         }
 
@@ -74,7 +88,37 @@ export async function GET(request: NextRequest) {
             healthieId = hcRows?.[0]?.healthie_client_id || '';
         }
         if (!healthieId) healthieId = patientId; // last resort fallback
-        const localData: any = { demographics: patient || {} };
+
+        // ✅ Enhanced demographics with GMH dashboard fields
+        const localData: any = {
+            demographics: {
+                ...patient,
+                // Key GMH fields that iPad needs
+                status_key: patient?.status_key || null,
+                status_display: patient?.status_display || null,
+                patient_notes: patient?.patient_notes || null,
+                lab_notes: patient?.lab_notes || null,
+                last_supply_date: patient?.last_supply_date || null,
+                next_eligible_date: patient?.next_eligible_date || null,
+                last_lab_date: patient?.last_lab_date || null,
+                next_lab_date: patient?.next_lab_date || null,
+                lab_status: patient?.lab_status || null,
+                service_start_date: patient?.service_start_date || null,
+                contract_end_date: patient?.contract_end_date || null,
+                date_added: patient?.date_added || null,
+                added_by: patient?.added_by || null,
+                method_of_payment: patient?.method_of_payment || null,
+                // GHL sync status
+                ghl_contact_id: patient?.ghl_contact_id || null,
+                ghl_sync_status: patient?.ghl_sync_status || null,
+                ghl_last_synced_at: patient?.ghl_last_synced_at || null,
+                ghl_sync_error: patient?.ghl_sync_error || null,
+                ghl_tags: patient?.ghl_tags || null,
+                // QB mapping
+                qbo_customer_id: patient?.qbo_customer_id || null,
+                qb_display_name: patient?.qb_display_name || null,
+            }
+        };
 
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
