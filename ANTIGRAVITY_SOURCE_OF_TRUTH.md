@@ -383,7 +383,100 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 13, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 14, 2026)
+
+### March 14, 2026: 💳 Dual-Stripe Billing Implementation (iPad App) - COMPLETE
+
+**Feature**: Implemented dual-Stripe account billing in iPad App with **hybrid strategy** - Healthie for packages/subscriptions, Direct Stripe for retail/one-off purchases.
+
+**🎯 Hybrid Billing Strategy** (User Decision: March 14, 2026):
+- **Healthie Stripe** → For recurring packages & subscriptions managed in Healthie
+- **Direct Stripe (MindGravity)** → For retail items, supplements, peptides, and one-off purchases
+- **Why Hybrid**: Leverages strengths of both systems - Healthie's subscription management + MindGravity's retail flexibility
+
+**Implementation**:
+
+1. **Environment Configuration** ([.env.local](gmhdashboard/.env.local)):
+   - Added `STRIPE_PUBLISHABLE_KEY` - pk_live_51SVHOPPB2L4QIAwdvZjRY4k69EatIrhEpCD6nUatP8JGgYm6RTt6fjcXifQNp62qqdz56zSZhSPQ2IDgWW4LWHVS00BhY73GMD
+   - Added `STRIPE_SECRET_KEY` - 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
+   - Healthie's Stripe integration managed via Healthie API (Stripe Connect account)
+
+2. **Healthie Client Enhancement** ([lib/healthie.ts:1367-1428](gmhdashboard/lib/healthie.ts#L1367-L1428)):
+   - Added `createBillingItem()` mutation for immediate charges via Healthie Stripe
+   - Charges saved payment methods on file in Healthie
+   - Converts dollars to cents, validates payment methods exist
+   - Added `getPaymentMethods()` to retrieve Healthie `stripe_customer_detail` (read-only)
+
+3. **API Endpoints**:
+   - **Charging**: [app/api/ipad/billing/charge/route.ts](gmhdashboard/app/api/ipad/billing/charge/route.ts)
+     - `POST /api/ipad/billing/charge` with dual-Stripe routing
+     - `chargeViaHealthie()` - Uses Healthie GraphQL `createBillingItem` mutation ✅
+     - `chargeViaDirectStripe()` - Uses Stripe PaymentIntents API with auto-customer-creation ✅
+   - **Card Management**: [app/api/ipad/billing/add-card-dual/route.ts](gmhdashboard/app/api/ipad/billing/add-card-dual/route.ts)
+     - Saves cards to Direct Stripe via Stripe Elements ✅
+     - **CANNOT** save to Healthie programmatically (Healthie uses Stripe Connect - no API access)
+     - Returns both account statuses with explanation
+
+4. **Database Schema** ([migrations/20260314_payment_transactions.sql](gmhdashboard/migrations/20260314_payment_transactions.sql)):
+   - New `payment_transactions` table tracks all iPad billing activity
+   - Supports both `stripe_account` types: `'healthie'` | `'direct'`
+   - Stores Healthie billing item IDs and Stripe charge IDs separately
+   - Added `stripe_customer_id` column to `patients` table
+
+5. **iPad App UI** ([public/ipad/app.js:7650-7785](gmhdashboard/public/ipad/app.js#L7650-L7785)):
+
+   **Account Selector Modal**:
+   - 🏥 **Healthie Stripe** (green gradient) - "For packages & subscriptions"
+   - 🛍️ **Direct Stripe (MindGravity)** (pink gradient) - "For retail & one-off purchases"
+   - Pre-flight check: validates patient has payment method on file
+   - Prompts for amount and description
+
+   **Card Management** ([app.js:7511-7598](gmhdashboard/public/ipad/app.js#L7511-L7598)):
+   - Shows existing Healthie payment methods (card type, last 4, expiration, ZIP)
+   - **🏥 For Packages & Subscriptions** section:
+     - "Add Card to Healthie Stripe" → Opens Healthie billing page
+     - Use for recurring packages managed in Healthie
+   - **🛍️ For Retail & One-Off Purchases** section:
+     - "Add Card to Direct Stripe" → Opens Stripe Elements popup
+     - Use for supplements, peptides, retail items
+
+   **Stripe Elements Integration** ([public/ipad/add-card.html](gmhdashboard/public/ipad/add-card.html)):
+   - Beautiful, PCI-compliant card collection form
+   - Tokenizes cards on frontend (never touches server)
+   - Real-time validation and error handling
+   - Patient context displayed (name, email, patient ID)
+
+**Status**: ✅ **FULLY OPERATIONAL**
+- ✅ Healthie Stripe charging - LIVE
+- ✅ Direct Stripe charging - LIVE (with auto-customer creation)
+- ✅ Direct Stripe card saving - LIVE (via Stripe Elements)
+- ⚠️ Healthie card saving - Manual via Healthie billing page (architectural limitation)
+
+**Technical Limitation**:
+- **Cannot programmatically add cards to Healthie Stripe**: Healthie uses Stripe Connect where THEY are the platform. We only have READ access to `stripe_customer_detail`. Cards must be added via: `https://app.gethealthie.com/patients/{healthie_id}/billing`
+- **Stripe's cloning API** doesn't apply - it requires YOU to be the platform account with the destination as YOUR connected account
+
+**Package Installed**:
+- `npm install stripe` (Stripe SDK for Node.js)
+
+**Files Created**:
+- `/public/ipad/add-card.html` - Stripe Elements card collection page
+- `/app/api/ipad/billing/add-card-dual/route.ts` - Card saving API endpoint
+- `/migrations/20260314_payment_transactions.sql` - Transaction logging table
+
+**Files Modified**:
+- `/public/ipad/app.js` - Fixed patient ID bug, added hybrid billing UI with clear use-case labels
+- `/app/api/ipad/billing/charge/route.ts` - Implemented both Healthie and Direct Stripe charging
+- `/lib/healthie.ts` - Added `createBillingItem()` and `getPaymentMethods()`
+- `/.env.local` - Added Stripe credentials
+- Database - Added `stripe_customer_id` column to patients table
+
+**Testing**:
+- Test Healthie charges: iPad App → Patient Chart → Financial Tab → "💳 Charge Patient" → Select "Healthie Stripe"
+- Test Direct Stripe charges: Same flow → Select "Direct Stripe (MindGravity)"
+- Test card adding: "Manage Payment Methods" → Choose appropriate section based on use case
+
+---
 
 ### March 13, 2026 PM: 🔐 Provider Schedule Auto-Filter + GMH Patient Chart Data Integration
 
@@ -541,6 +634,7 @@ Financial Tab now shows:
 - 💳 **Payment Methods** — All credit cards on file (last 4, expiration, ZIP)
 - 📦 **Active Packages** — Current subscriptions (name, amount, frequency, next charge date)
 - 💸 **Recent Payments** — Last 4 payments
+- 🆕 **Charge Patient Button** — Dual-Stripe billing (Healthie or Direct Stripe) with account selector
 
 **Key Tables**:
 

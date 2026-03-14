@@ -1365,6 +1365,69 @@ export class HealthieClient {
   }
 
   /**
+   * Create a billing item (charge patient immediately using saved payment method)
+   * Requires patient to have a payment method on file in Healthie
+   */
+  async createBillingItem(input: {
+    client_id: string;
+    amount: number;
+    description?: string;
+    note?: string;
+  }): Promise<{ id: string; amount_paid: string; state: string }> {
+    const mutation = `
+      mutation CreateBillingItem($input: createBillingItemInput!) {
+        createBillingItem(input: $input) {
+          billingItem {
+            id
+            amount_paid
+            state
+            created_at
+            sender { id full_name }
+            recipient { id full_name }
+          }
+          messages {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    try {
+      const result = await this.graphql<{
+        createBillingItem: {
+          billingItem: {
+            id: string;
+            amount_paid: string;
+            state: string;
+            created_at: string;
+            sender: { id: string; full_name: string };
+            recipient: { id: string; full_name: string };
+          };
+          messages: Array<{ field: string; message: string }>;
+        };
+      }>(mutation, {
+        input: {
+          recipientId: input.client_id,
+          amountCents: Math.round(input.amount * 100), // Convert dollars to cents
+          note: input.note || input.description || 'Payment for services',
+        },
+      });
+
+      if (result.createBillingItem.messages && result.createBillingItem.messages.length > 0) {
+        const errorMsg = result.createBillingItem.messages.map(m => m.message).join(', ');
+        throw new Error(`Healthie billing error: ${errorMsg}`);
+      }
+
+      this.debugLog('Created billing item:', result.createBillingItem.billingItem.id);
+      return result.createBillingItem.billingItem;
+    } catch (error) {
+      this.debugLog('Error creating billing item:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get client invoices
    */
   async getClientInvoices(clientId: string): Promise<HealthieInvoice[]> {
@@ -1399,13 +1462,10 @@ export class HealthieClient {
    */
   async hasPaymentMethod(clientId: string): Promise<boolean> {
     const query = `
-      query GetClientPaymentMethods($clientId: ID!) {
-        client(id: $clientId) {
-          payment_methods {
-            id
-            type
+      query GetClientPaymentMethod($id: ID) {
+        user(id: $id) {
+          stripe_customer_detail {
             last_four
-            is_default
           }
         }
       }
@@ -1413,19 +1473,16 @@ export class HealthieClient {
 
     try {
       const result = await this.graphql<{
-        client: {
-          payment_methods: Array<{
-            id: string;
-            type: string;
-            last_four?: string;
-            is_default: boolean;
-          }>;
+        user: {
+          stripe_customer_detail?: {
+            last_four?: string | null;
+          } | null;
         };
-      }>(query, { clientId });
+      }>(query, { id: clientId });
 
-      return result.client.payment_methods && result.client.payment_methods.length > 0;
+      return !!(result.user?.stripe_customer_detail?.last_four);
     } catch (error) {
-      this.debugLog('Error checking payment methods:', error);
+      this.debugLog('Error checking payment method:', error);
       return false;
     }
   }

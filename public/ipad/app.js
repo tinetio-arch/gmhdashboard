@@ -1,14 +1,15 @@
+// VERSION: 2026-03-14-18:09 - Fixed patient_id bug in selectStripeAccount
 /* ============================================================
    GMH Ops v2.0 — iPad Companion App (LIVE DATA)
    Connects to /ops/api/* endpoints via same-origin cookies
-   VERSION: 2.1.0 - March 12, 2026 22:30 MST
-   FIXES: Close button, Combined revenue, Logout button
+   VERSION: 2.2.0 - March 14, 2026
+   NEW: Dual-Stripe billing (Healthie + Direct Stripe)
    ============================================================ */
 
 // Log version immediately so we can verify correct file is loaded
-console.log('%c📱 iPad App v2.1.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
-console.log('✅ Fixes: Close button, Combined revenue (Healthie + QuickBooks), Logout');
-console.log('🕒 Build time: March 12, 2026 22:30 MST');
+console.log('%c📱 iPad App v2.2.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
+console.log('✅ NEW: Dual-Stripe billing - charge patients via Healthie or Direct Stripe');
+console.log('🕒 Build time: March 14, 2026');
 
 // Show version in page (will be visible in bottom corner)
 window.addEventListener('DOMContentLoaded', () => {
@@ -25,7 +26,7 @@ window.addEventListener('DOMContentLoaded', () => {
             font-family: monospace;
             z-index: 9999;
             pointer-events: none;
-        ">v2.1.0</div>
+        ">v2.2.0</div>
     `);
 });
 
@@ -7508,48 +7509,293 @@ function startScribeFromProfile(patientId, patientName) {
 }
 
 // ==================== FINANCIAL MANAGEMENT FUNCTIONS ====================
-function updateBillingInfo() {
-    const healthieId = chartPanelData?.healthie_id;
-    if (!healthieId) {
-        showToast('No patient selected', 'error');
-        return;
-    }
-    
-    // Open Healthie billing page in new tab
-    window.open(`https://app.gethealthie.com/patients/${healthieId}/billing`, '_blank');
-    showToast('Opening Healthie billing page...', 'info');
-}
-
-function chargePatient() {
+async function updateBillingInfo() {
+    const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
     const healthieId = chartPanelData?.healthie_id;
     const patientName = chartPanelData?.demographics?.full_name || 'Patient';
-    
-    if (!healthieId) {
+    const patientEmail = chartPanelData?.demographics?.email || '';
+    const paymentMethods = chartPanelData?.payment_methods || [];
+
+    if (!patientId || !healthieId) {
         showToast('No patient selected', 'error');
         return;
     }
-    
+
+    // Show card management modal
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.8); z-index: 10000;
+        display: flex; align-items: center; justify-content: center;
+        padding: 20px;
+    `;
+    modal.innerHTML = `
+        <div style="background: #1a1a1a; border-radius: 12px; padding: 24px; max-width: 500px; width: 100%;">
+            <h3 style="margin: 0 0 16px; color: #fff; font-size: 18px;">💳 Manage Payment Methods</h3>
+            <div style="color: #999; font-size: 13px; margin-bottom: 20px;">
+                ${patientName}
+            </div>
+
+            ${paymentMethods.length > 0 ? `
+                <div style="margin-bottom: 20px;">
+                    <div style="font-size: 12px; font-weight: 600; color: #999; text-transform: uppercase; margin-bottom: 8px;">Cards on File (Healthie)</div>
+                    ${paymentMethods.map(pm => `
+                        <div style="background: #2a2a2a; padding: 12px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="color: #fff; font-size: 14px;">${pm.card_type_label || 'Card'} ****${pm.last_four || '****'}</div>
+                                <div style="color: #666; font-size: 12px;">Expires ${pm.expiration || 'N/A'} · ZIP ${pm.zip || 'N/A'}</div>
+                            </div>
+                            ${pm.is_default ? '<div style="background: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px;">Default</div>' : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            ` : ''}
+
+            <div style="margin-bottom: 20px;">
+                <div style="font-size: 12px; font-weight: 600; color: #10b981; text-transform: uppercase; margin-bottom: 8px;">
+                    🏥 For Packages & Subscriptions
+                </div>
+                <button onclick="addNewCard()" style="
+                    width: 100%; padding: 14px;
+                    background: linear-gradient(135deg, #10b981, #059669);
+                    color: white; border: none; border-radius: 8px;
+                    font-size: 14px; font-weight: 600; cursor: pointer;
+                ">
+                    ➕ Add Card to Healthie Stripe
+                </button>
+                <div style="font-size: 11px; color: #666; margin-top: 6px; padding: 0 4px;">
+                    Use this for recurring packages managed in Healthie
+                </div>
+            </div>
+
+            <div style="margin-bottom: 16px;">
+                <div style="font-size: 12px; font-weight: 600; color: #f093fb; text-transform: uppercase; margin-bottom: 8px;">
+                    🛍️ For Retail & One-Off Purchases
+                </div>
+                <button onclick="manageDualStripeCards()" style="
+                    width: 100%; padding: 14px;
+                    background: linear-gradient(135deg, #f093fb, #f5576c);
+                    color: white; border: none; border-radius: 8px;
+                    font-size: 14px; font-weight: 600; cursor: pointer;
+                ">
+                    ➕ Add Card to Direct Stripe
+                </button>
+                <div style="font-size: 11px; color: #666; margin-top: 6px; padding: 0 4px;">
+                    Use this for supplements, peptides, and retail items
+                </div>
+            </div>
+
+            <button onclick="closeBillingModal()" style="
+                width: 100%; padding: 12px;
+                background: transparent; color: #666; border: 1px solid #333;
+                border-radius: 8px; font-size: 13px; cursor: pointer;
+            ">Close</button>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    window._billingModal = modal;
+}
+
+function closeBillingModal() {
+    if (window._billingModal) {
+        window._billingModal.remove();
+        delete window._billingModal;
+    }
+}
+
+function addNewCard() {
+    const healthieId = chartPanelData?.healthie_id;
+    if (!healthieId) {
+        showToast('Error: No Healthie ID', 'error');
+        return;
+    }
+    closeBillingModal();
+    window.open(`https://app.gethealthie.com/patients/${healthieId}/billing`, '_blank');
+    showToast('Opening Healthie billing page to add card...', 'info');
+}
+
+async function manageDualStripeCards() {
+    closeBillingModal();
+
+    const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
+    const healthieId = chartPanelData?.healthie_id;
+    const patientName = chartPanelData?.demographics?.full_name || 'Patient';
+    const patientEmail = chartPanelData?.demographics?.email || '';
+
+    if (!patientId || !healthieId) {
+        showToast('Error: Missing patient information', 'error');
+        return;
+    }
+
+    // Open Stripe Elements card collection page in popup
+    const width = 550;
+    const height = 700;
+    const left = (window.screen.width - width) / 2;
+    const top = (window.screen.height - height) / 2;
+
+    const popup = window.open(
+        `/ops/ipad/add-card.html?patient_id=${encodeURIComponent(patientId)}&patient_name=${encodeURIComponent(patientName)}&patient_email=${encodeURIComponent(patientEmail)}&healthie_id=${encodeURIComponent(healthieId)}`,
+        'addCard',
+        `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+    );
+
+    if (!popup) {
+        showToast('Please allow popups to add cards', 'error');
+        return;
+    }
+
+    // Listen for success message from popup
+    window.addEventListener('message', async function handler(event) {
+        if (event.data.type === 'card_added' && event.data.success) {
+            window.removeEventListener('message', handler);
+            showToast('✅ Card added to Direct Stripe!', 'success');
+            // Reload patient chart
+            if (chartPanelData?.demographics?.patient_id) {
+                await loadPatientChart(chartPanelData.demographics.patient_id);
+            }
+        }
+    });
+}
+
+function closeCardModal() {
+    if (window._cardModal) {
+        window._cardModal.remove();
+        delete window._cardModal;
+    }
+}
+
+async function chargePatient() {
+    const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
+    const healthieId = chartPanelData?.healthie_id;
+    const patientName = chartPanelData?.demographics?.full_name || 'Patient';
+    const paymentMethods = chartPanelData?.payment_methods || [];
+
+    if (!patientId) {
+        showToast('No patient selected', 'error');
+        console.error('[chargePatient] Missing patient_id. chartPanelData:', chartPanelData, 'chartPanelPatientId:', chartPanelPatientId);
+        return;
+    }
+
+    // Step 1: Select Stripe account (removed payment method check - will validate per account type)
+    const stripeAccountModal = document.createElement('div');
+    stripeAccountModal.style.cssText = `
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.8); z-index: 10000;
+        display: flex; align-items: center; justify-content: center;
+        padding: 20px;
+    `;
+    stripeAccountModal.innerHTML = `
+        <div style="background: #1a1a1a; border-radius: 12px; padding: 24px; max-width: 400px; width: 100%;">
+            <h3 style="margin: 0 0 16px; color: #fff; font-size: 18px;">Select Stripe Account</h3>
+            <div style="color: #999; font-size: 13px; margin-bottom: 20px;">
+                Choose which Stripe account to charge ${patientName}:
+            </div>
+
+            <button onclick="selectStripeAccount('healthie')" style="
+                width: 100%; padding: 16px; margin-bottom: 12px;
+                background: linear-gradient(135deg, #10b981, #059669);
+                color: white; border: none; border-radius: 8px;
+                font-size: 14px; font-weight: 600; cursor: pointer;
+                text-align: left; display: flex; align-items: center; justify-content: space-between;
+            ">
+                <div>
+                    <div>🏥 Healthie Stripe</div>
+                    <div style="font-size: 11px; opacity: 0.8; margin-top: 4px;">For packages & subscriptions</div>
+                </div>
+                <div style="font-size: 18px;">→</div>
+            </button>
+
+            <button onclick="selectStripeAccount('direct')" style="
+                width: 100%; padding: 16px; margin-bottom: 16px;
+                background: linear-gradient(135deg, #f093fb, #f5576c);
+                color: white; border: none; border-radius: 8px;
+                font-size: 14px; font-weight: 600; cursor: pointer;
+                text-align: left; display: flex; align-items: center; justify-content: space-between;
+            ">
+                <div>
+                    <div>🛍️ Direct Stripe (MindGravity)</div>
+                    <div style="font-size: 11px; opacity: 0.8; margin-top: 4px;">For retail & one-off purchases</div>
+                </div>
+                <div style="font-size: 18px;">→</div>
+            </button>
+
+            <button onclick="closeStripeAccountModal()" style="
+                width: 100%; padding: 12px;
+                background: transparent; color: #666; border: 1px solid #333;
+                border-radius: 8px; font-size: 13px; cursor: pointer;
+            ">Cancel</button>
+        </div>
+    `;
+    document.body.appendChild(stripeAccountModal);
+
+    // Store modal reference for cleanup
+    window._stripeAccountModal = stripeAccountModal;
+}
+
+function closeStripeAccountModal() {
+    if (window._stripeAccountModal) {
+        window._stripeAccountModal.remove();
+        delete window._stripeAccountModal;
+    }
+}
+
+async function selectStripeAccount(account) {
+    closeStripeAccountModal();
+
+    const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
+    const patientName = chartPanelData?.demographics?.full_name || 'Patient';
+
+    if (!patientId) {
+        showToast('No patient selected', 'error');
+        console.error('[selectStripeAccount] Missing patient_id. chartPanelData:', chartPanelData, 'chartPanelPatientId:', chartPanelPatientId);
+        return;
+    }
+
+    // Step 2: Get amount and description
     const amount = prompt(`Enter amount to charge ${patientName}:`);
     if (!amount || isNaN(parseFloat(amount))) {
         if (amount !== null) showToast('Invalid amount', 'error');
         return;
     }
-    
+
     const description = prompt('Description/reason for charge:');
     if (!description) {
         showToast('Description required', 'error');
         return;
     }
-    
-    if (!confirm(`Charge ${patientName} $${parseFloat(amount).toFixed(2)} for: ${description}?`)) return;
-    
-    showToast('Charging patient...', 'info');
-    
-    // TODO: Implement Healthie charge API call
-    setTimeout(() => {
-        showToast('⚠️ Charge feature coming soon - please use Healthie dashboard', 'warning');
-        window.open(`https://app.gethealthie.com/patients/${healthieId}/billing`, '_blank');
-    }, 1000);
+
+    const amountNum = parseFloat(amount);
+    const accountLabel = account === 'healthie' ? 'Healthie Stripe' : 'Direct Stripe (MindGravity)';
+
+    if (!confirm(`Charge ${patientName} $${amountNum.toFixed(2)} via ${accountLabel}?\n\n"${description}"`)) {
+        return;
+    }
+
+    showToast('Processing charge...', 'info');
+
+    try {
+        const response = await apiFetch('/ops/api/ipad/billing/charge/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                patient_id: patientId,
+                amount: amountNum,
+                description,
+                stripe_account: account
+            })
+        });
+
+        if (response.success) {
+            showToast(`✅ ${response.message}`, 'success');
+            // Reload payment data
+            await loadPatientChart(patientId);
+        } else {
+            showToast(`❌ ${response.error}`, 'error');
+        }
+    } catch (error) {
+        console.error('[chargePatient]', error);
+        showToast(`❌ Failed to charge patient: ${error.message}`, 'error');
+    }
 }
 
 function sendInvoice() {
