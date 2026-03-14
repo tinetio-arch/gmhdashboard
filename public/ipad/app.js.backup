@@ -1,0 +1,3699 @@
+/* ============================================================
+   GMH Ops v2.0 — iPad Companion App (LIVE DATA)
+   Connects to /ops/api/* endpoints via same-origin cookies
+   VERSION: 2.1.0 - March 12, 2026 22:30 MST
+   FIXES: Close button, Combined revenue, Logout button
+   ============================================================ */
+
+// Log version immediately so we can verify correct file is loaded
+console.log('%c📱 iPad App v2.1.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
+console.log('✅ Fixes: Close button, Combined revenue (Healthie + QuickBooks), Logout');
+console.log('🕒 Build time: March 12, 2026 22:30 MST');
+
+// Show version in page (will be visible in bottom corner)
+window.addEventListener('DOMContentLoaded', () => {
+    document.body.insertAdjacentHTML('beforeend', `
+        <div style="
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #22d3ee;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-family: monospace;
+            z-index: 9999;
+            pointer-events: none;
+        ">v2.1.0</div>
+    `);
+});
+
+// ─── STATE ──────────────────────────────────────────────────
+let dashboardData = null;       // from /ops/api/ipad/dashboard
+let healthieAppointments = [];  // from /ops/api/cron/morning-prep
+let inventorySummary = null;    // from /ops/api/inventory/intelligence/summary
+let inventoryAlerts = [];       // from /ops/api/inventory/intelligence/alerts
+let vialList = [];              // individual vials from /ops/api/inventory/vials
+let labsQueue = [];             // from /ops/api/labs/review-queue
+let patient360Cache = {};       // patient_id -> 360 data
+let allPatients = [];            // from /ops/api/patients
+let scribeSessions = [];         // from /ops/api/scribe/sessions
+let activeScribeSession = null;  // currently selected session
+let isRecording = false;
+let isPaused = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingStartTime = null;
+let recordingTimer = null;
+let audioAnalyser = null;
+let audioContext = null;
+let pausedDuration = 0;
+let pauseStartTime = null;
+let autoPausedBySystem = false;  // true when auto-paused by visibilitychange (phone call, app switch)
+let scribeView = 'list';        // 'list' | 'new' | 'recording' | 'transcript' | 'note' | 'review'
+
+// ─── BACKGROUND TRANSCRIPTION POLLING SERVICE ───────────────
+// Survives tab navigation, page visibility changes, and user actions
+let activePolls = new Map(); // sessionId → { sessionId, attempts, maxAttempts, interval }
+
+function startBackgroundTranscriptionPoll(sessionId) {
+    if (activePolls.has(sessionId)) {
+        console.log(`[Background Poll] Already polling session ${sessionId}`);
+        return;
+    }
+
+    const pollInfo = {
+        sessionId,
+        attempts: 0,
+        maxAttempts: 60,
+        interval: null,
+    };
+
+    activePolls.set(sessionId, pollInfo);
+
+    pollInfo.interval = setInterval(async () => {
+        pollInfo.attempts++;
+
+        try {
+            const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+
+            if (data?.success && data.data?.status === 'transcribed') {
+                stopBackgroundPoll(sessionId);
+                scribeLoaded = false;
+                await loadScribeSessions();
+                const patientName = data.data.patient_name || scribeSessions.find(s => s.session_id === sessionId)?.patient_name || 'patient';
+                showToast(`✅ Transcription complete for ${patientName}`, 'success');
+                updateBadges();
+                if (currentTab === 'scribe') renderCurrentTab();
+            } else if (data?.data?.status === 'error') {
+                stopBackgroundPoll(sessionId);
+                showToast(`❌ Transcription failed`, 'error');
+                scribeLoaded = false;
+                await loadScribeSessions();
+                if (currentTab === 'scribe') renderCurrentTab();
+            } else if (pollInfo.attempts >= pollInfo.maxAttempts) {
+                stopBackgroundPoll(sessionId);
+                showToast(`⏱ Transcription timed out - check back later`, 'warning');
+            }
+        } catch (err) {
+            if (err.message === 'AUTH_EXPIRED') {
+                stopBackgroundPoll(sessionId);
+                throw err;
+            }
+            console.warn(`[Background Poll] Error for ${sessionId}:`, err);
+        }
+    }, 5000);
+
+    console.log(`[Background Poll] Started for session ${sessionId}`);
+}
+
+function stopBackgroundPoll(sessionId) {
+    const pollInfo = activePolls.get(sessionId);
+    if (pollInfo?.interval) {
+        clearInterval(pollInfo.interval);
+        activePolls.delete(sessionId);
+        console.log(`[Background Poll] Stopped for session ${sessionId}`);
+    }
+}
+
+function stopAllBackgroundPolls() {
+    for (const [sessionId] of activePolls) {
+        stopBackgroundPoll(sessionId);
+    }
+}
+
+async function checkForPendingTranscriptions() {
+    try {
+        const sessions = scribeSessions.filter(s => s.status === 'transcribing');
+        if (sessions.length === 0) return;
+
+        console.log(`[Scribe Recovery] Found ${sessions.length} sessions in 'transcribing' status`);
+
+        for (const session of sessions) {
+            const check = await apiFetch(`/ops/api/scribe/transcribe?session_id=${session.session_id}`);
+
+            if (check?.success && check.data?.status === 'transcribed') {
+                console.log(`[Scribe Recovery] ✅ Recovered completed transcription for ${session.patient_name}`);
+                scribeLoaded = false;
+                await loadScribeSessions();
+                showToast(`✅ Recovered completed transcription for ${session.patient_name}`, 'success');
+            } else if (check?.data?.status === 'transcribing') {
+                console.log(`[Scribe Recovery] Session ${session.session_id} still processing - starting background poll`);
+                startBackgroundTranscriptionPoll(session.session_id);
+            }
+        }
+    } catch (err) {
+        console.warn('[Scribe Recovery] Check failed:', err);
+    }
+}
+
+async function retryTranscription(sessionId) {
+    showToast('Checking transcription status...', 'info');
+    try {
+        const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+
+        if (data?.success && data.data?.status === 'transcribed') {
+            showToast('✅ Transcription complete!', 'success');
+            scribeLoaded = false;
+            await loadScribeSessions();
+            renderCurrentTab();
+        } else if (data?.data?.status === 'transcribing') {
+            showToast('Still processing... started background check', 'info');
+            startBackgroundTranscriptionPoll(sessionId);
+        } else if (data?.data?.status === 'error') {
+            showToast('❌ Transcription failed: ' + (data.data.error || 'Unknown error'), 'error');
+        } else {
+            showToast('Status: ' + (data?.data?.status || 'unknown'), 'info');
+        }
+    } catch (err) {
+        showToast('Status check failed: ' + err.message, 'error');
+    }
+}
+
+// ─── RECORDING INTERRUPTION PROTECTION ──────────────────────
+// Auto-pause recording when the page loses visibility (phone call, app switch, lock screen)
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden && isRecording && !isPaused && mediaRecorder && mediaRecorder.state === 'recording') {
+        console.log('[Scribe] Page hidden — auto-pausing recording to prevent data loss');
+        mediaRecorder.pause();
+        isPaused = true;
+        autoPausedBySystem = true;
+        pauseStartTime = Date.now();
+        // Timer keeps running so user sees elapsed time when they return
+    }
+    if (!document.hidden && autoPausedBySystem && isRecording) {
+        // Page visible again — show warning but DON'T auto-resume
+        console.log('[Scribe] Page visible again — recording still paused, awaiting manual resume');
+        showToast('⚠️ Recording was auto-paused (interruption detected). Tap Resume to continue.', 'warning', 5000);
+        renderCurrentTab();
+    }
+});
+
+// Emergency safety net — try to preserve chunks if page is closing
+window.addEventListener('beforeunload', (e) => {
+    if (isRecording && mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused')) {
+        console.warn('[Scribe] Page unloading during recording — attempting to stop and preserve audio');
+        try {
+            if (mediaRecorder.state === 'paused') mediaRecorder.resume();
+            mediaRecorder.stop();
+        } catch (err) {
+            console.error('[Scribe] Emergency stop failed:', err);
+        }
+    }
+});
+let scribePatientId = null;
+let scribePatientName = '';
+let scribeVisitType = 'follow_up';
+let currentTranscript = '';
+let currentNote = null;
+
+let currentTab = 'today';
+let selectedPatient = null;
+let activeLabFilter = 'pending';
+let activeInventoryTab = 'dea';
+let activeSupplyFilter = 'All';
+let isConnected = false;
+let isLoading = false;
+let scribeLoaded = false;       // prevent infinite reload
+let labsLoaded = false;         // prevent infinite reload
+let patientsLoaded = false;     // prevent infinite reload
+let currentUser = null;          // from /api/ipad/me — role, permissions
+
+// HTML sanitizer to prevent XSS
+function sanitize(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+        .replace(/\//g, '&#x2F;'); // Extra protection for URLs
+}
+
+// ─── INIT ───────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', async () => {
+    updateClock();
+    setInterval(updateClock, 30000);
+    setupTabBar();
+    setupPullToRefresh();
+
+    // Phase 1: RBAC — load current user before anything else
+    const authenticated = await loadCurrentUser();
+    if (!authenticated) {
+        showLoginOverlay();
+        return;
+    }
+
+    applyRolePermissions();
+    setupHashRouting();
+    loadAllData();
+
+    // ✅ AUTO-REFRESH: Schedule tab refreshes every 5 minutes
+    setInterval(async () => {
+        if (currentTab === 'schedule' && isConnected && !isLoading) {
+            console.log('[Auto-Refresh] Reloading schedule...');
+            try {
+                await loadHealthieAppointments();
+                if (currentTab === 'schedule') {
+                    renderCurrentTab();
+                }
+            } catch (e) {
+                console.warn('[Auto-Refresh] Failed:', e);
+            }
+        }
+    }, 300000); // 5 minutes
+});
+
+// ─── AUTH & RBAC ────────────────────────────────────────────
+async function loadCurrentUser() {
+    try {
+        const resp = await fetch('/ops/api/ipad/me/', { credentials: 'include' });
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        if (data.error) return false;
+        currentUser = data;
+
+        // Show logout button when logged in
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn) {
+            logoutBtn.style.display = 'inline-block';
+        }
+
+        // Update connection text to show username
+        const connText = document.getElementById('connectionText');
+        if (connText && data.email) {
+            connText.textContent = data.email.split('@')[0];
+        }
+
+        console.log('[Auth] Logged in as:', data.email, '| Role:', data.role, '| Permissions:', data.permissions);
+
+        return true;
+    } catch (e) {
+        console.warn('Auth check failed:', e);
+        return false;
+    }
+}
+
+// Logout handler
+async function handleLogout() {
+    if (!confirm('Are you sure you want to logout?')) return;
+
+    console.log('[Auth] Logging out...');
+
+    try {
+        await fetch('/ops/api/auth/logout', {
+            method: 'POST',
+            credentials: 'include'
+        });
+    } catch (e) {
+        console.warn('Logout API failed:', e);
+    }
+
+    // Clear local state
+    currentUser = null;
+    dashboardData = null;
+
+    // Hide logout button
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) logoutBtn.style.display = 'none';
+
+    // Reload page to show login
+    window.location.reload();
+}
+
+function showLoginOverlay() {
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="loginOverlay" style="
+            position:fixed; inset:0; z-index:9999;
+            background: linear-gradient(135deg, #0a0f1a 0%, #111827 50%, #0f172a 100%);
+            display:flex; align-items:center; justify-content:center;
+            font-family:'DM Sans', sans-serif;
+        ">
+            <div style="
+                width:380px; padding:40px; border-radius:16px;
+                background:rgba(30,41,59,0.7); border:1px solid rgba(100,200,255,0.15);
+                backdrop-filter:blur(20px); box-shadow:0 25px 50px rgba(0,0,0,0.5);
+            ">
+                <div style="text-align:center; margin-bottom:28px;">
+                    <span style="font-size:28px; font-weight:700; color:#fff;">GMH</span>
+                    <span style="font-size:28px; font-weight:300; color:#22d3ee;">Ops</span>
+                    <div style="font-size:12px; color:#94a3b8; margin-top:4px; letter-spacing:0.1em; text-transform:uppercase;">iPad Staff Dashboard</div>
+                </div>
+                <div id="loginError" style="display:none; padding:10px 14px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:16px;"></div>
+                <div style="margin-bottom:16px;">
+                    <label style="display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; font-weight:600;">Email</label>
+                    <input id="loginEmail" type="email" placeholder="you@nowoptimal.com" autocomplete="email" autofocus style="
+                        width:100%; padding:12px 16px; border-radius:8px; border:1px solid rgba(100,200,255,0.15);
+                        background:rgba(15,23,42,0.8); color:#fff; font-size:15px; font-family:inherit; outline:none;
+                        transition:border-color 0.2s;
+                    " onfocus="this.style.borderColor='#22d3ee'" onblur="this.style.borderColor='rgba(100,200,255,0.15)'">
+                </div>
+                <div style="margin-bottom:24px;">
+                    <label style="display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; font-weight:600;">Password</label>
+                    <input id="loginPassword" type="password" placeholder="••••••••" autocomplete="current-password" style="
+                        width:100%; padding:12px 16px; border-radius:8px; border:1px solid rgba(100,200,255,0.15);
+                        background:rgba(15,23,42,0.8); color:#fff; font-size:15px; font-family:inherit; outline:none;
+                        transition:border-color 0.2s;
+                    " onfocus="this.style.borderColor='#22d3ee'" onblur="this.style.borderColor='rgba(100,200,255,0.15)'"
+                    onkeydown="if(event.key==='Enter') handleLogin()">
+                </div>
+                <button onclick="handleLogin()" id="loginBtn" style="
+                    width:100%; padding:14px; border:none; border-radius:8px;
+                    background:linear-gradient(135deg, #22d3ee, #06b6d4); color:#0a0f1a;
+                    font-size:15px; font-weight:700; cursor:pointer; font-family:inherit;
+                    transition:all 0.2s; letter-spacing:0.02em;
+                ">Sign In</button>
+            </div>
+        </div>
+    `);
+}
+
+async function handleLogin() {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const errorEl = document.getElementById('loginError');
+    const btn = document.getElementById('loginBtn');
+
+    if (!email || !password) {
+        errorEl.textContent = 'Please enter email and password';
+        errorEl.style.display = 'block';
+        return;
+    }
+
+    btn.textContent = 'Signing in…';
+    btn.disabled = true;
+    errorEl.style.display = 'none';
+
+    try {
+        const resp = await fetch('/ops/api/auth/login', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+        const data = await resp.json();
+
+        if (resp.ok && data.success) {
+            // Reload user and boot app
+            const authed = await loadCurrentUser();
+            if (authed) {
+                document.getElementById('loginOverlay')?.remove();
+                applyRolePermissions();
+                setupHashRouting();
+                loadAllData();
+                return;
+            }
+        }
+        errorEl.textContent = data.error || 'Invalid credentials';
+        errorEl.style.display = 'block';
+    } catch (e) {
+        errorEl.textContent = 'Connection error — try again';
+        errorEl.style.display = 'block';
+    } finally {
+        btn.textContent = 'Sign In';
+        btn.disabled = false;
+    }
+}
+
+function applyRolePermissions() {
+    if (!currentUser) return;
+    const perms = currentUser.permissions || {};
+    const nav = document.querySelector('.tab-bar');
+
+    // Hide Scribe tab for non-provider/non-admin
+    const scribeTab = nav?.querySelector('[data-tab="scribe"]');
+    if (scribeTab && !perms.can_use_scribe) {
+        scribeTab.style.display = 'none';
+    }
+
+    // Add Schedule tab for providers/admins (prevent duplicates)
+    if ((perms.can_use_scribe || perms.can_view_ceo_dashboard) && nav && !nav.querySelector('[data-tab="schedule"]')) {
+        const scheduleTab = document.createElement('button');
+        scheduleTab.className = 'tab-item';
+        scheduleTab.dataset.tab = 'schedule';
+        scheduleTab.innerHTML = `
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+            <span class="tab-label">Schedule</span>
+        `;
+        scheduleTab.addEventListener('click', () => { window.location.hash = '#schedule'; });
+        // Insert after Labs tab
+        const labsTab = nav.querySelector('[data-tab="labs"]');
+        if (labsTab && labsTab.nextSibling) {
+            nav.insertBefore(scheduleTab, labsTab.nextSibling);
+        } else {
+            nav.appendChild(scheduleTab);
+        }
+    }
+
+    // Add CEO tab for admins (prevent duplicates)
+    if (perms.can_view_ceo_dashboard && nav && !nav.querySelector('[data-tab="ceo"]')) {
+        const ceoTab = document.createElement('button');
+        ceoTab.className = 'tab-item';
+        ceoTab.dataset.tab = 'ceo';
+        ceoTab.innerHTML = `
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>
+            </svg>
+            <span class="tab-label">CEO</span>
+        `;
+        ceoTab.addEventListener('click', () => { window.location.hash = '#ceo'; });
+        // Insert CEO tab before Patients (last tab)
+        const patientsTab = nav.querySelector('[data-tab="patients"]');
+        if (patientsTab) {
+            nav.insertBefore(ceoTab, patientsTab);
+        } else {
+            nav.appendChild(ceoTab);
+        }
+    }
+
+    // Render user badge in status bar
+    renderUserBadge();
+}
+
+function renderUserBadge() {
+    const statusRight = document.querySelector('.status-bar-right');
+    if (!statusRight || !currentUser) return;
+    const roleBadges = { admin: '👑', write: '🩺', read: '💉' };
+    const roleLabels = { admin: 'Admin', write: 'Provider', read: 'Staff' };
+    const badge = roleBadges[currentUser.role] || '👤';
+    const label = currentUser.display_name || currentUser.email?.split('@')[0] || 'User';
+    const roleLabel = roleLabels[currentUser.role] || currentUser.role;
+
+    // Insert before the clock
+    const clockEl = document.getElementById('statusTime');
+    const userBadge = document.createElement('span');
+    userBadge.className = 'user-badge';
+    userBadge.style.cssText = 'font-size:12px; color:var(--text-secondary); margin-right:12px; display:flex; align-items:center; gap:4px;';
+    userBadge.innerHTML = `${badge} <span style="color:var(--text-primary); font-weight:500;">${label}</span> <span style="font-size:10px; color:var(--text-tertiary);">${roleLabel}</span>`;
+    if (clockEl) {
+        statusRight.insertBefore(userBadge, clockEl);
+    } else {
+        statusRight.appendChild(userBadge);
+    }
+}
+
+function updateClock() {
+    const el = document.getElementById('statusTime');
+    if (el) {
+        const now = new Date();
+        el.textContent = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    }
+}
+
+// ─── TAB BAR ────────────────────────────────────────────────
+function setupTabBar() {
+    document.querySelectorAll('.tab-item').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tab = btn.dataset.tab;
+            window.location.hash = '#' + tab;
+        });
+    });
+}
+
+function setupHashRouting() {
+    window.addEventListener('hashchange', handleHash);
+    handleHash();
+}
+
+function handleHash() {
+    const hash = window.location.hash.replace('#', '') || 'today';
+    switchTab(hash);
+}
+
+function switchTab(tab) {
+    const validTabs = ['today', 'labs', 'scribe', 'inventory', 'patients', 'ceo', 'schedule'];
+    if (!validTabs.includes(tab)) tab = 'today';
+    // RBAC: prevent access to tabs user doesn't have permission for
+    if (currentUser?.permissions) {
+        if (tab === 'ceo' && !currentUser.permissions.can_view_ceo_dashboard) tab = 'today';
+        if (tab === 'scribe' && !currentUser.permissions.can_use_scribe) tab = 'today';
+        if (tab === 'schedule' && !currentUser.permissions.can_use_scribe) tab = 'today';
+    }
+    currentTab = tab;
+
+    document.querySelectorAll('.tab-item').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+
+    renderCurrentTab();
+}
+
+// ─── PULL TO REFRESH ────────────────────────────────────────
+function setupPullToRefresh() {
+    const main = document.getElementById('mainContent');
+    let startY = 0;
+    let pulling = false;
+
+    main.addEventListener('touchstart', e => {
+        if (main.scrollTop <= 0) {
+            startY = e.touches[0].clientY;
+            pulling = true;
+        }
+    }, { passive: true });
+
+    main.addEventListener('touchmove', e => {
+        if (!pulling) return;
+        const deltaY = e.touches[0].clientY - startY;
+        const pullEl = document.getElementById('pullRefresh');
+        if (deltaY > 60 && main.scrollTop <= 0) {
+            pullEl.classList.add('visible');
+        } else {
+            pullEl.classList.remove('visible');
+        }
+    }, { passive: true });
+
+    main.addEventListener('touchend', () => {
+        const pullEl = document.getElementById('pullRefresh');
+        if (pullEl.classList.contains('visible')) {
+            loadAllData();
+            setTimeout(() => pullEl.classList.remove('visible'), 1000);
+        }
+        pulling = false;
+    });
+}
+
+// ─── RENDERING ──────────────────────────────────────────────
+function renderCurrentTab() {
+    const main = document.getElementById('mainContent');
+    main.innerHTML = '';
+
+    const view = document.createElement('div');
+    view.className = 'tab-view active';
+    view.id = `view-${currentTab}`;
+
+    switch (currentTab) {
+        case 'today': renderTodayView(view); break;
+        case 'labs': renderLabsView(view); break;
+        case 'scribe': renderScribeView(view); break;
+        case 'inventory': renderInventoryView(view); break;
+        case 'patients': renderPatientsView(view); break;
+        case 'ceo': renderCEODashboard(view); break;
+        case 'schedule': renderScheduleView(view); break;
+    }
+
+    main.appendChild(view);
+    main.scrollTop = 0;
+}
+
+// ─── API LAYER ──────────────────────────────────────────────
+async function apiFetch(url, options = {}) {
+    const defaults = {
+        credentials: 'include',
+        headers: {
+            'Content-Type': 'application/json',
+            ...(options.headers || {})
+        }
+    };
+    const merged = { ...defaults, ...options, headers: { ...defaults.headers, ...(options.headers || {}) } };
+
+    try {
+        const resp = await fetch(url, merged);
+
+        if (resp.status === 401 || resp.status === 403) {
+            showAuthExpired();
+            throw new Error('AUTH_EXPIRED');
+        }
+
+        if (!resp.ok) {
+            // ✅ USER-FRIENDLY ERROR MESSAGES
+            const errorText = await resp.text().catch(() => '');
+            console.error(`[API Error] ${resp.status} ${url}:`, errorText.substring(0, 200));
+
+            if (resp.status >= 500) {
+                showToast('Server error - please try again', 'error');
+            } else if (resp.status === 404) {
+                showToast('Resource not found', 'error');
+            } else if (resp.status === 400) {
+                showToast('Invalid request', 'error');
+            } else {
+                showToast(`Request failed (${resp.status})`, 'error');
+            }
+
+            throw new Error(`HTTP ${resp.status}`);
+        }
+
+        return await resp.json();
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+
+        // ✅ NETWORK ERROR MESSAGES
+        if (e.name === 'TypeError' && e.message.includes('fetch')) {
+            showToast('Network error - check your connection', 'error');
+        }
+
+        console.warn(`API call failed: ${url}`, e);
+        throw e;
+    }
+}
+
+function showAuthExpired() {
+    // Hide the old static overlay if it's visible
+    const oldOverlay = document.getElementById('authOverlay');
+    if (oldOverlay) oldOverlay.classList.remove('visible');
+    // Show the login form (remove existing one first to prevent duplicates)
+    if (!document.getElementById('loginOverlay')) {
+        showLoginOverlay();
+    }
+    setConnectionStatus(false);
+}
+
+function setConnectionStatus(connected) {
+    isConnected = connected;
+    const dot = document.getElementById('connectionDot');
+    const text = document.getElementById('connectionText');
+    if (connected) {
+        dot.classList.remove('disconnected');
+        text.textContent = 'Connected';
+    } else {
+        dot.classList.add('disconnected');
+        text.textContent = 'Disconnected';
+    }
+}
+
+// ─── DATA LOADING ───────────────────────────────────────────
+async function loadAllData() {
+    isLoading = true;
+    scribeLoaded = false; // reset on full refresh
+    labsLoaded = false;
+    patientsLoaded = false;
+    patient360Cache = {}; // clear stale patient data on full refresh
+    renderCurrentTab(); // Show loading states
+
+    let anySuccess = false;
+
+    // Parallel fetch: dashboard + inventory + schedule + patients + labs
+    const results = await Promise.allSettled([
+        loadDashboard(),
+        loadInventoryAlerts(),
+        loadInventorySummary(),
+        loadHealthieAppointments(),
+        loadAllPatients(),
+        loadLabsQueue()
+    ]);
+
+    anySuccess = results.some(r => r.status === 'fulfilled' && r.value === true);
+
+    if (anySuccess) {
+        setConnectionStatus(true);
+        showToast('Data synced', 'success');
+    } else if (results.every(r => r.status === 'rejected' && r.reason?.message === 'AUTH_EXPIRED')) {
+        // Auth overlay already shown
+    } else {
+        setConnectionStatus(false);
+        showToast('Unable to load data — check connection', 'error');
+    }
+
+    isLoading = false;
+    renderCurrentTab();
+    updateBadges();
+
+    // Restore chart panel if it was open before the refresh
+    if (chartPanelOpen && chartPanelData && currentTab === 'scribe') {
+        const content = document.getElementById('chartPanelContent');
+        if (content) renderChartPanel(content);
+        const panel = document.getElementById('chartPanel');
+        if (panel) {
+            panel.classList.add('open');
+            if (chartPanelState === 'minimized') panel.classList.add('minimized');
+            if (chartPanelState === 'expanded') panel.classList.add('expanded');
+        }
+    }
+}
+
+async function loadDashboard() {
+    try {
+        const data = await apiFetch('/ops/api/ipad/dashboard/');
+        if (data.success && data.data) {
+            // Normalize snake_case API fields to camelCase used by frontend
+            const d = data.data;
+            dashboardData = {
+                stagedDoses: d.staged_doses || d.stagedDoses || [],
+                paymentIssues: d.payment_alerts || d.payment_issues || d.paymentIssues || [],
+                patients: (d.patients || []).map(p => ({
+                    ...p,
+                    id: p.patient_id || p.id,
+                    name: p.full_name || p.name || p.patient_name || '',
+                    status: p.status_key || p.status || 'Active',
+                })),
+                summary: d.summary || {},
+                revenue: d.revenue || {},
+                totalActivePatients: d.total_active_patients || d.totalActivePatients || 0,
+                patientsByType: d.patients_by_type || d.patientsByType || {},
+            };
+            return true;
+        }
+        dashboardData = data.data || data;
+        return true;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Dashboard load failed:', e);
+        return false;
+    }
+}
+
+async function loadHealthieAppointments() {
+    console.log("[iPad] Loading Healthie appointments...");
+    try {
+        // Use lightweight schedule endpoint (cookie-authenticated, no cron secret)
+        const data = await apiFetch('/ops/api/ipad/schedule/');
+        if (data?.success && Array.isArray(data.patients)) {
+            healthieAppointments = data.patients.map(p => ({
+                id: p.appointment_id || '',
+                patient_id: p.patient_id || p.healthie_id || '',
+                patient_name: p.full_name || p.patient_name || '',
+                appointment_type: p.appointment_type || '',
+                status: p.appointment_status || 'scheduled',
+                appointment_status: p.appointment_status || 'scheduled',
+                time: p.time || '',
+                provider: p.provider || '',
+                has_staged_dose: p.has_staged_dose || false,
+                has_payment_issue: p.has_payment_issue || false,
+                has_pending_lab: p.has_pending_lab || false,
+            }));
+        } else if (Array.isArray(data)) {
+            healthieAppointments = data;
+        }
+        return true;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Healthie appointments load failed:', e);
+        return false;
+    }
+}
+
+async function loadInventorySummary() {
+    try {
+        const data = await apiFetch('/ops/api/inventory/intelligence/summary/');
+        // API returns { success, data: { vials: {aggregate}, peptides: [...], supplies: [...] } }
+        if (data?.success && data?.data) {
+            inventorySummary = data.data;
+        } else {
+            inventorySummary = data;
+        }
+        // Also load individual vial list for DEA section
+        await loadVialList();
+        return true;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Inventory summary load failed:', e);
+        return false;
+    }
+}
+
+async function loadVialList() {
+    try {
+        // Fetch individual active vials for the DEA inventory view
+        const data = await apiFetch('/ops/api/inventory/vials/');
+        if (data?.success && Array.isArray(data.data)) {
+            vialList = data.data;
+        } else if (Array.isArray(data)) {
+            vialList = data;
+        } else if (data?.vials) {
+            vialList = data.vials;
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Vial list load failed:', e);
+    }
+}
+
+async function loadInventoryAlerts() {
+    try {
+        const data = await apiFetch('/ops/api/inventory/intelligence/alerts/');
+        // API returns { success, data: { alerts: [...], summary: {...} } }
+        if (data?.success && data?.data?.alerts) {
+            inventoryAlerts = data.data.alerts;
+        } else if (data?.alerts) {
+            inventoryAlerts = data.alerts;
+        } else if (Array.isArray(data)) {
+            inventoryAlerts = data;
+        } else if (data?.data && Array.isArray(data.data)) {
+            inventoryAlerts = data.data;
+        }
+        return true;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Inventory alerts load failed:', e);
+        return false;
+    }
+}
+
+async function loadLabsQueue() {
+    try {
+        // First load pending, then also load all for history
+        const data = await apiFetch('/ops/api/labs/review-queue/?status=all&limit=100');
+        // API returns { success, items: [...], counts: {...} }
+        if (data?.success && Array.isArray(data.items)) {
+            labsQueue = data.items;
+        } else if (Array.isArray(data)) {
+            labsQueue = data;
+        } else if (data?.data && Array.isArray(data.data)) {
+            labsQueue = data.data;
+        } else if (data?.labs) {
+            labsQueue = data.labs;
+        }
+        labsLoaded = true;
+        return true;
+    } catch (e) {
+        labsLoaded = true; // mark as attempted even on failure
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Labs queue load failed:', e);
+        return false;
+    }
+}
+
+async function loadAllPatients() {
+    try {
+        const data = await apiFetch('/ops/api/patients/');
+        // API returns { data: [...] }
+        if (data?.data && Array.isArray(data.data)) {
+            allPatients = data.data.map(p => ({
+                ...p,
+                id: p.patient_id || p.id,
+                name: p.full_name || p.name || p.patient_name || '',
+                status: p.status_key || p.status || 'Active',
+                healthie_client_id: p.healthie_client_id || p.healthie_id || '',
+                ghl_contact_id: p.ghl_contact_id || '',
+            }));
+        } else if (Array.isArray(data)) {
+            allPatients = data;
+        }
+        patientsLoaded = true;
+        return true;
+    } catch (e) {
+        patientsLoaded = true; // mark as attempted even on failure
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Patient list load failed:', e);
+        return false;
+    }
+}
+
+async function loadPatient360(patientId, forceRefresh = false) {
+    if (!forceRefresh && patient360Cache[patientId]) return patient360Cache[patientId];
+    try {
+        const data = await apiFetch(`/ops/api/ipad/patient/${patientId}/`);
+        // API returns { success, data: { demographics, recent_dispenses, recent_peptides, payment_issues, staged_doses, summary } }
+        const result = (data?.success && data?.data) ? data.data : data;
+        patient360Cache[patientId] = result;
+        return result;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn(`Patient 360 load failed for ${patientId}:`, e);
+        return null;
+    }
+}
+
+// Invalidate patient cache after mutations so next view shows fresh data
+function invalidatePatientCache(patientId) {
+    delete patient360Cache[patientId];
+}
+
+// ─── BADGE UPDATES ──────────────────────────────────────────
+function updateBadges() {
+    // Labs badge
+    const labsBadge = document.getElementById('labsBadge');
+    const labsPending = getLabsPending().length;
+    if (labsBadge) {
+        if (labsPending > 0) {
+            labsBadge.textContent = labsPending;
+            labsBadge.classList.remove('hidden');
+        } else {
+            labsBadge.classList.add('hidden');
+        }
+    }
+
+    // Inventory badge
+    const invBadge = document.getElementById('inventoryBadge');
+    const alertCount = inventoryAlerts.length;
+    if (invBadge) {
+        if (alertCount > 0) {
+            invBadge.textContent = alertCount;
+            invBadge.classList.remove('hidden');
+        } else {
+            invBadge.classList.add('hidden');
+        }
+    }
+
+    // Scribe badge — show active sessions count
+    const scribeBadge = document.getElementById('scribeBadge');
+    const activeSessions = scribeSessions.filter(s => s.status === 'transcribed' || s.status === 'note_generated').length;
+    if (scribeBadge) {
+        if (activeSessions > 0) {
+            scribeBadge.textContent = activeSessions;
+            scribeBadge.classList.remove('hidden');
+        } else {
+            scribeBadge.classList.add('hidden');
+        }
+    }
+}
+
+// ─── HELPERS ────────────────────────────────────────────────
+function getGreeting() {
+    const h = new Date().getHours();
+    if (h < 12) return 'Good Morning';
+    if (h < 17) return 'Good Afternoon';
+    return 'Good Evening';
+}
+
+function formatDate() {
+    return new Date().toLocaleDateString('en-US', {
+        weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+        timeZone: 'America/Phoenix'
+    });
+}
+
+function getInitials(name) {
+    if (!name) return '?';
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+}
+
+function getStagedDoses() {
+    return (dashboardData && dashboardData.stagedDoses) ? dashboardData.stagedDoses : [];
+}
+
+function getPaymentIssues() {
+    return (dashboardData && dashboardData.paymentIssues) ? dashboardData.paymentIssues : [];
+}
+
+function getPatients() {
+    // Prefer full patient list, fall back to dashboard-only patients
+    if (allPatients.length > 0) return allPatients;
+    return (dashboardData && dashboardData.patients) ? dashboardData.patients : [];
+}
+
+function getLabsPending() {
+    // Prefer dedicated labs queue, fall back to dashboard labs
+    if (labsQueue.length > 0) return labsQueue.filter(l => l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review');
+    return [];
+}
+
+// ─── TOAST ──────────────────────────────────────────────────
+function showToast(message, type = 'info', duration = 3000) {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    const icons = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
+    toast.innerHTML = `<span>${icons[type] || 'ℹ'}</span> ${message}`;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.style.animation = 'toast-out 0.3s ease-out forwards';
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+
+// ─── LOADING STATE ──────────────────────────────────────────
+function renderLoadingState() {
+    return `
+        <div class="loading-state">
+            <div class="loading-spinner"></div>
+            <span>Loading data…</span>
+        </div>
+    `;
+}
+
+function renderEmptyState(icon, title, subtitle) {
+    return `
+        <div class="empty-state">
+            <div class="empty-icon">${icon}</div>
+            <h3>${title}</h3>
+            <p>${subtitle || ''}</p>
+        </div>
+    `;
+}
+
+// ============================================================
+// TODAY VIEW
+// ============================================================
+function renderTodayView(container) {
+    if (isLoading && !dashboardData) {
+        container.innerHTML = renderLoadingState();
+        return;
+    }
+
+    const stagedDoses = getStagedDoses();
+    const paymentIssues = getPaymentIssues();
+    const patients = getPatients();
+    const revenue = dashboardData?.revenue || {};
+
+    // Compute stats
+    const activePatientCount = dashboardData?.totalActivePatients || allPatients.length || patients.length || 0;
+    const labsPendingCount = getLabsPending().length || 0;
+    const stagedCount = stagedDoses.length || 0;
+    const paymentIssueCount = paymentIssues.length || 0;
+    const appointmentCount = healthieAppointments.length;
+
+    // Build action items from live data
+    const actions = buildActionItems(labsPendingCount, paymentIssueCount, stagedCount);
+
+    // Greeting — personalized to logged-in user
+    const userName = currentUser?.display_name || currentUser?.email?.split('@')[0] || 'Team';
+
+    container.innerHTML = `
+        <div class="greeting">
+            <h1>${getGreeting()}, ${sanitize(userName)}</h1>
+            <div class="date">${formatDate()}</div>
+        </div>
+
+        <div class="stats-row stagger-in">
+            <div class="stat-card" onclick="window.location.hash='#schedule'">
+                <div class="stat-icon cyan">📅</div>
+                <div class="stat-value">${appointmentCount}</div>
+                <div class="stat-label">Today's Appts</div>
+            </div>
+            <div class="stat-card" onclick="window.location.hash='#patients'">
+                <div class="stat-icon purple">👥</div>
+                <div class="stat-value">${activePatientCount}</div>
+                <div class="stat-label">Active Patients</div>
+            </div>
+            <div class="stat-card" onclick="window.location.hash='#labs'">
+                <div class="stat-icon green">🧪</div>
+                <div class="stat-value">${labsPendingCount}</div>
+                <div class="stat-label">Labs Pending</div>
+            </div>
+            <div class="stat-card ${paymentIssueCount > 0 ? 'alert' : ''}" onclick="scrollToSection('paymentSection')">
+                <div class="stat-icon red">💳</div>
+                <div class="stat-value">${paymentIssueCount}</div>
+                <div class="stat-label">Payment Issues</div>
+            </div>
+        </div>
+
+        ${(currentUser?.permissions?.can_view_revenue && (revenue.today >= 0 || revenue.week >= 0 || revenue.month >= 0)) ? `
+            <div class="section-header">
+                <h2>Revenue</h2>
+            </div>
+            <div class="stats-row stagger-in" style="margin-bottom:12px;">
+                <div class="stat-card" style="flex:1; border-left:3px solid #22c55e;">
+                    <div class="stat-value" style="color:#22c55e;">$${(revenue.today || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                    <div class="stat-label">Today</div>
+                </div>
+                <div class="stat-card" style="flex:1; border-left:3px solid #3b82f6;">
+                    <div class="stat-value" style="color:#3b82f6;">$${(revenue.week || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                    <div class="stat-label">This Week</div>
+                </div>
+                <div class="stat-card" style="flex:1; border-left:3px solid #a855f7;">
+                    <div class="stat-value" style="color:#a855f7;">$${(revenue.month || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                    <div class="stat-label">This Month</div>
+                </div>
+            </div>
+        ` : ''}
+
+        ${actions.length > 0 ? `
+            <div class="section-header">
+                <h2>Action Queue</h2>
+                <button class="section-action" onclick="clearAllActions()">Clear All</button>
+            </div>
+            <div class="action-queue stagger-in" id="actionQueue">
+                ${actions.map((a, i) => renderActionCard(a, i)).join('')}
+            </div>
+        ` : ''}
+
+        <div class="section-header">
+            <h2>Today's Schedule</h2>
+            <button class="section-action" onclick="window.location.hash='#schedule'">${appointmentCount} appointments →</button>
+        </div>
+        ${appointmentCount > 0 ? `
+            <div class="stagger-in">
+                ${healthieAppointments.map(a => renderHealthieAppointment(a)).join('')}
+            </div>
+        ` : renderEmptyState('📅', 'No Appointments Today', 'No patients are scheduled for today')}
+
+        ${stagedDoses.length > 0 ? `
+            <div class="section-header" id="stagedDosesSection">
+                <h2>Staged Doses</h2>
+                <span class="section-action">${stagedCount} staged</span>
+            </div>
+            <div class="schedule-timeline stagger-in">
+                ${buildSchedule(stagedDoses).map(s => renderScheduleItem(s)).join('')}
+            </div>
+        ` : ''}
+
+        ${paymentIssues.length > 0 ? `
+            <div class="section-header" id="paymentSection">
+                <h2>Payment Issues</h2>
+                <span class="section-action">${paymentIssueCount} issues</span>
+            </div>
+            <div class="stagger-in">
+                ${paymentIssues.map(p => renderPaymentIssueCard(p)).join('')}
+            </div>
+        ` : ''}
+
+        ${renderTodayInventoryAlerts()}
+    `;
+
+    // Setup swipe gestures on action cards
+    setTimeout(() => setupSwipeGestures(), 100);
+}
+
+function renderTodayInventoryAlerts() {
+    // Build inventory overview from available data
+    const vialData = inventorySummary?.vials || {};
+    const peptides = inventorySummary?.peptides || [];
+    const supplies = supplyItems || inventorySummary?.supplies || [];
+
+    const activeVials = parseInt(vialData.active_count || '0');
+    const peptideCount = peptides.length;
+    const lowSupplies = supplies.filter(s => {
+        const qty = s.qty_on_hand ?? s.current_count ?? 0;
+        const par = s.par_level ?? null;
+        return par && qty <= par;
+    });
+
+    let html = '';
+
+    // Inventory Overview — compact stat cards
+    if (activeVials > 0 || peptideCount > 0 || supplies.length > 0) {
+        html += `
+            <div class="section-header" id="inventoryOverview">
+                <h2>Inventory Overview</h2>
+                <button class="section-action" onclick="window.location.hash='#inventory'">View All →</button>
+            </div>
+            <div class="stats-row stagger-in" style="margin-bottom:12px;">
+                <div class="stat-card" onclick="window.location.hash='#inventory'" style="flex:1;">
+                    <div class="stat-icon green">💉</div>
+                    <div class="stat-value">${activeVials}</div>
+                    <div class="stat-label">Active Vials</div>
+                </div>
+                <div class="stat-card" onclick="window.location.hash='#inventory'" style="flex:1;">
+                    <div class="stat-icon purple">💊</div>
+                    <div class="stat-value">${peptideCount}</div>
+                    <div class="stat-label">Peptide Products</div>
+                </div>
+                <div class="stat-card ${lowSupplies.length > 0 ? 'alert' : ''}" onclick="window.location.hash='#inventory'" style="flex:1;">
+                    <div class="stat-icon ${lowSupplies.length > 0 ? 'red' : 'cyan'}">📦</div>
+                    <div class="stat-value">${lowSupplies.length}</div>
+                    <div class="stat-label">${lowSupplies.length > 0 ? 'Low Supplies' : 'All Stocked'}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    // Low stock items list
+    if (lowSupplies.length > 0) {
+        html += `
+            <div class="stagger-in" style="margin-bottom:16px;">
+                ${lowSupplies.slice(0, 5).map(s => {
+            const qty = s.qty_on_hand ?? s.current_count ?? 0;
+            const par = s.par_level ?? 0;
+            const name = s.name || s.supply_name || '';
+            return `
+                        <div style="display:flex; align-items:center; padding:8px 14px; background:linear-gradient(135deg, rgba(239,68,68,0.08), rgba(239,68,68,0.03)); border-radius:8px; margin-bottom:4px; border-left:3px solid var(--red);">
+                            <span style="font-size:13px; flex:1; font-weight:500;">${name}</span>
+                            <span style="font-size:13px; color:var(--red); font-weight:600;">${qty}/${par}</span>
+                        </div>
+                    `;
+        }).join('')}
+                ${lowSupplies.length > 5 ? `<div style="text-align:center; padding:6px; color:var(--text-tertiary); font-size:12px;">+ ${lowSupplies.length - 5} more items below par</div>` : ''}
+            </div>
+        `;
+    }
+
+    return html;
+}
+
+function buildActionItems(labsCount, paymentsCount, stagedCount) {
+    const items = [];
+    if (labsCount > 0) {
+        items.push({ id: 'labs', text: `${labsCount} Lab Results Need Review`, icon: '🧪', tab_target: 'labs', item_type: 'labs' });
+    }
+    if (inventoryAlerts.length > 0) {
+        items.push({ id: 'inv', text: `${inventoryAlerts.length} Inventory Alert${inventoryAlerts.length > 1 ? 's' : ''}`, icon: '📦', tab_target: 'inventory', item_type: 'inventory' });
+    }
+    if (paymentsCount > 0) {
+        items.push({ id: 'pay', text: `${paymentsCount} Payment Issue${paymentsCount > 1 ? 's' : ''} to Resolve`, icon: '💳', tab_target: '', item_type: 'alert' });
+    }
+    return items;
+}
+
+function buildSchedule(stagedDoses) {
+    return stagedDoses.map(dose => ({
+        id: dose.id || dose.staged_dose_id,
+        patient_name: dose.patient_name || dose.patientName || 'Unknown',
+        time: dose.scheduled_time || dose.time || '',
+        type: dose.medication || dose.substance || dose.type || 'Dose',
+        dosage: dose.dosage || dose.amount || '',
+        vial_id: dose.vial_id || dose.vialId || '',
+        status: dose.status || 'staged',
+    }));
+}
+
+function scrollToSection(id) {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderActionCard(action, index) {
+    const hasTarget = action.tab_target && action.item_type !== 'alert';
+    const clickAction = hasTarget
+        ? `onclick="window.location.hash='#${action.tab_target}'"`
+        : '';
+
+    return `
+        <div class="action-card" data-id="${action.id}" ${clickAction}>
+            <div class="swipe-hint"></div>
+            <div class="action-icon">${action.icon}</div>
+            <div class="action-text">${action.text}</div>
+            <div class="action-arrow">›</div>
+        </div>
+    `;
+}
+
+function renderHealthieAppointment(appt) {
+    const name = appt.patient_name || appt.patientName || appt.name || appt.full_name || 'Unknown';
+    const time = appt.time || appt.scheduled_time || appt.start_time || '';
+    const type = appt.type || appt.appointment_type || appt.reason || '';
+    const provider = appt.provider || '';
+    const status = appt.status || appt.appointment_status || 'scheduled';
+    const patientId = appt.patient_id || appt.id || '';
+
+    let statusClass = 'scheduled';
+    let statusLabel = 'Scheduled';
+    if (status === 'checked_in' || status === 'Checked In') { statusClass = 'checked_in'; statusLabel = 'Checked In'; }
+    else if (status === 'in_progress' || status === 'In Progress') { statusClass = 'in_progress'; statusLabel = 'In Progress'; }
+    else if (status === 'completed' || status === 'Completed') { statusClass = 'completed'; statusLabel = 'Complete'; }
+    else if (status === 'Confirmed') { statusClass = 'checked_in'; statusLabel = 'Confirmed'; }
+    else if (status === 'No Show') { statusClass = 'completed'; statusLabel = 'No Show'; }
+
+    const displayTime = typeof time === 'string' && time.includes('T')
+        ? new Date(time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Phoenix' })
+        : time;
+
+    const apptId = appt.id || appt.healthie_id || '';
+    const canAdvance = statusClass !== 'completed' && apptId;
+
+    return `
+        <div class="healthie-appt-card" onclick="${patientId ? `navigateToPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}')` : ''}" style="cursor:${patientId ? 'pointer' : 'default'};">
+            <div class="healthie-appt-time">${displayTime || '—'}</div>
+            <div class="healthie-appt-info">
+                <div class="healthie-appt-name">${sanitize(name)}</div>
+                <div class="healthie-appt-type">${sanitize(type)}${provider ? ' · ' + sanitize(provider) : ''}</div>
+            </div>
+            <div class="healthie-appt-status sched-status ${statusClass}" ${canAdvance ? `onclick="event.stopPropagation(); handleHealthieClick('${apptId}', '${status}')" style="cursor:pointer;" title="Click to advance status"` : ''}>${statusLabel}</div>
+        </div>
+    `;
+}
+
+async function handleHealthieClick(id, currentStatus) {
+    // Map Healthie statuses to next status in workflow
+    const normalized = (currentStatus || '').toLowerCase().replace(/\s+/g, '_');
+    const nextStatusMap = {
+        'scheduled': 'Confirmed',
+        'confirmed': 'Checked In',
+        'checked_in': 'In Progress',
+        'in_progress': 'Completed',
+    };
+    const next = nextStatusMap[normalized];
+    if (!next || !id) return;
+
+    // Optimistic update — change local state immediately
+    // Try healthieAppointments (Today view)
+    let appt = healthieAppointments.find(a => String(a.id) === String(id));
+    const previousStatus = appt ? (appt.status || appt.appointment_status) : null;
+    if (appt) {
+        appt.status = next;
+        appt.appointment_status = next;
+    }
+    renderCurrentTab();
+    showToast(`Status → ${next}`, 'info');
+
+    // Persist to Healthie via backend API
+    try {
+        const resp = await apiFetch('/ops/api/ipad/appointment-status/', {
+            method: 'PATCH',
+            body: JSON.stringify({ appointment_id: id, status: next }),
+        });
+        if (resp.success) {
+            showToast(`✓ Status saved to Healthie`, 'success');
+            // Reload schedule data to reflect change (handles Schedule view)
+            if (currentTab === 'schedule') loadScheduleData();
+        } else {
+            throw new Error(resp.error || 'Unknown error');
+        }
+    } catch (e) {
+        console.error('[iPad] Status update failed:', e);
+        // Rollback to previous status (Today view)
+        if (appt && previousStatus) {
+            appt.status = previousStatus;
+            appt.appointment_status = previousStatus;
+        }
+        renderCurrentTab();
+        // If on schedule tab, reload from server to ensure consistent state
+        if (currentTab === 'schedule') loadScheduleData();
+        showToast(`Status update failed: ${e.message}`, 'error');
+    }
+}
+
+function renderScheduleItem(dose) {
+    const displayTime = dose.time || '—';
+    return `
+        <div class="schedule-item">
+            <div class="sched-time">${displayTime}</div>
+            <div class="sched-dot"></div>
+            <div class="sched-info">
+                <div class="sched-name">${dose.patient_name}</div>
+                <div class="sched-type">${dose.type}${dose.dosage ? ' · ' + dose.dosage : ''}</div>
+                ${dose.vial_id ? `<div class="dose-detail"><span>Vial: ${dose.vial_id}</span></div>` : ''}
+            </div>
+            <div class="sched-status ${dose.status}">${dose.status.replace('_', ' ')}</div>
+        </div>
+    `;
+}
+
+function renderPaymentIssueCard(issue) {
+    const name = issue.patient_name || issue.patientName || issue.name || 'Unknown';
+    const issueType = issue.issue_type || issue.issue || issue.reason || 'Payment issue';
+    const severity = issue.issue_severity || issue.severity || 'medium';
+    const amount = parseFloat(issue.amount_owed || issue.amount || issue.balance || 0);
+    const daysOverdue = issue.days_overdue || '';
+    const patientId = issue.patient_id || '';
+
+    const severityColors = { high: '#ef4444', critical: '#ef4444', medium: '#f59e0b', low: '#3b82f6' };
+    const severityColor = severityColors[severity] || '#f59e0b';
+    const severityLabels = { high: '🔴', critical: '🔴', medium: '🟡', low: '🔵' };
+
+    return `
+        <div class="payment-issue-card" onclick="${patientId ? `navigateToPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}')` : ''}" style="border-left:3px solid ${severityColor};">
+            <div class="payment-issue-icon">${severityLabels[severity] || '💳'}</div>
+            <div class="payment-issue-text">
+                <div class="payment-issue-name">${sanitize(name)}</div>
+                <div class="payment-issue-detail">${sanitize(issueType)}${daysOverdue ? ` · ${daysOverdue} days overdue` : ''}</div>
+            </div>
+            ${amount > 0 ? `<div class="payment-issue-amount" style="color:${severityColor};">$${amount.toFixed(2)}</div>` : ''}
+        </div>
+    `;
+}
+
+function setupSwipeGestures() {
+    document.querySelectorAll('.action-card').forEach(card => {
+        let startX = 0;
+        let deltaX = 0;
+        const hint = card.querySelector('.swipe-hint');
+
+        card.addEventListener('touchstart', e => {
+            startX = e.touches[0].clientX;
+            card.classList.add('swiping-right');
+        }, { passive: true });
+
+        card.addEventListener('touchmove', e => {
+            deltaX = e.touches[0].clientX - startX;
+            if (deltaX > 0 && hint) {
+                hint.style.width = Math.min(deltaX, card.offsetWidth) + 'px';
+                card.style.transform = `translateX(${Math.min(deltaX * 0.3, 60)}px)`;
+            }
+        }, { passive: true });
+
+        card.addEventListener('touchend', () => {
+            card.classList.remove('swiping-right');
+            if (deltaX > 120) {
+                card.classList.add('dismissed');
+                showToast('Dismissed', 'success');
+                setTimeout(() => card.remove(), 400);
+            } else {
+                if (hint) hint.style.width = '0';
+                card.style.transform = '';
+                card.style.transition = 'transform 0.2s ease-out';
+                setTimeout(() => card.style.transition = '', 200);
+            }
+            deltaX = 0;
+        });
+    });
+}
+
+function clearAllActions() {
+    const cards = document.querySelectorAll('.action-card');
+    cards.forEach((card, i) => {
+        setTimeout(() => {
+            card.classList.add('dismissed');
+            setTimeout(() => card.remove(), 400);
+        }, i * 80);
+    });
+}
+
+// ============================================================
+// LABS VIEW
+// ============================================================
+function renderLabsView(container) {
+    // Try loading labs if not loaded (with guard to prevent infinite loop)
+    if (labsQueue.length === 0 && !labsLoaded && !isLoading) {
+        container.innerHTML = renderLoadingState();
+        labsLoaded = true; // prevent re-entry
+        loadLabsQueue().then(success => {
+            if (currentTab === 'labs') {
+                renderCurrentTab();
+                updateBadges();
+            }
+        });
+        return;
+    }
+
+    const allLabs = labsQueue;
+    const pending = allLabs.filter(l => l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review');
+    const approved = allLabs.filter(l => l.status === 'approved' || l.status === 'reviewed');
+    const normalPending = pending.filter(l => !l.critical && !l.is_critical);
+
+    const filteredLabs = activeLabFilter === 'pending' ? pending
+        : activeLabFilter === 'approved' ? approved
+            : allLabs;
+
+    container.innerHTML = `
+        <h1 style="font-size:28px; margin-bottom:20px;">Lab Results</h1>
+        <div class="labs-header">
+            <button class="labs-header-tab ${activeLabFilter === 'pending' ? 'active' : ''}" 
+                    onclick="setLabFilter('pending')">Review Queue (${pending.length})</button>
+            <button class="labs-header-tab ${activeLabFilter === 'approved' ? 'active' : ''}" 
+                    onclick="setLabFilter('approved')">Approved (${approved.length})</button>
+            <button class="labs-header-tab ${activeLabFilter === 'all' ? 'active' : ''}" 
+                    onclick="setLabFilter('all')">History</button>
+            ${normalPending.length > 0 && activeLabFilter === 'pending' ? `
+                <button class="batch-approve-btn" onclick="batchApproveNormal()">
+                    ⚡ Batch Approve All Normal (${normalPending.length})
+                </button>
+            ` : ''}
+        </div>
+        <div class="stagger-in" id="labsList">
+            ${filteredLabs.map(l => renderLabCard(l)).join('')}
+            ${filteredLabs.length === 0 ? renderEmptyState('🧪',
+        activeLabFilter === 'pending' ? 'No labs pending review' : 'No lab results',
+        activeLabFilter === 'pending' ? 'All caught up!' : '') : ''}
+        </div>
+    `;
+}
+
+function setLabFilter(filter) {
+    activeLabFilter = filter;
+    renderCurrentTab();
+}
+
+function renderLabCard(lab) {
+    const isCritical = lab.critical || lab.is_critical;
+    const critClass = isCritical ? 'critical' : '';
+    const badgeClass = isCritical ? 'critical' : 'normal';
+    const badgeText = isCritical ? 'CRITICAL' : 'NORMAL';
+    const isApproved = lab.status === 'approved' || lab.status === 'reviewed';
+    const labId = lab.id || lab.lab_id;
+    const patientName = lab.patient_name || lab.patientName || 'Unknown';
+    const dob = lab.dob || lab.date_of_birth || '';
+    const testType = lab.test_type || lab.testType || lab.panel_name || 'Lab Panel';
+    const receivedDate = lab.received_date || lab.created_at || lab.date || '';
+    const summary = lab.summary || lab.ai_summary || '';
+
+    // Parse results
+    let results = {};
+    if (lab.results_json) {
+        try { results = typeof lab.results_json === 'string' ? JSON.parse(lab.results_json) : lab.results_json; } catch (e) { }
+    } else if (lab.results) {
+        results = typeof lab.results === 'string' ? JSON.parse(lab.results) : lab.results;
+    }
+
+    return `
+        <div class="lab-card ${critClass} ${isApproved ? 'approved' : ''}" id="lab-${labId}">
+            <div class="lab-card-header">
+                <div class="lab-patient-info">
+                    <div class="lab-patient-name">${patientName}</div>
+                    ${dob ? `<div class="lab-patient-dob">DOB: ${dob}</div>` : ''}
+                </div>
+                <span class="lab-badge ${badgeClass}">${badgeText}</span>
+            </div>
+            <div class="lab-test-row">
+                <span class="lab-test-type">${testType}</span>
+                <span class="lab-received">${receivedDate ? 'Received ' + receivedDate : ''}</span>
+            </div>
+            ${summary ? `
+                <div class="lab-summary" id="labSummary-${labId}" onclick="event.stopPropagation()">
+                    <div class="lab-summary-header">✨ AI Summary</div>
+                    <p>${summary}</p>
+                    ${Object.keys(results).length > 0 ? `
+                        <div class="lab-results-grid">
+                            ${Object.entries(results).map(([k, v]) => {
+        const val = String(v);
+        return `
+                                    <div class="lab-result-item">
+                                        <span class="result-key">${k}</span>
+                                        <span class="result-val ${val.includes('⚠') || val.includes('HIGH') || val.includes('LOW') ? 'flagged' : ''}">${val.replace('⚠️', '').trim()}</span>
+                                    </div>
+                                `;
+    }).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+                <div style="cursor:pointer; padding:8px 0; text-align:center; color:var(--text-tertiary); font-size:12px;"
+                     onclick="toggleLabSummary('${labId}')">
+                    <span id="labToggle-${labId}">▼ Tap to view AI summary</span>
+                </div>
+            ` : ''}
+            ${!isApproved ? `
+                <div class="lab-actions">
+                    <button class="btn-view-pdf" onclick="event.stopPropagation(); viewLabPdf('${labId}', '${patientName.replace(/'/g, "\\'")}')">
+                        📄 View PDF
+                    </button>
+                    <button class="btn-approve" onclick="event.stopPropagation(); approveLab('${labId}')">✓ APPROVE</button>
+                    <button class="btn-reject" onclick="event.stopPropagation(); rejectLab('${labId}')">Reject</button>
+                </div>
+            ` : `
+                <div class="lab-actions">
+                    <button class="btn-view-pdf" onclick="event.stopPropagation(); viewLabPdf('${labId}', '${patientName.replace(/'/g, "\\'")}')">
+                        📄 View PDF
+                    </button>
+                    <button class="btn-approve" disabled>✓ APPROVED</button>
+                </div>
+            `}
+        </div>
+    `;
+}
+
+function toggleLabSummary(id) {
+    const summary = document.getElementById(`labSummary-${id}`);
+    const toggle = document.getElementById(`labToggle-${id}`);
+    if (summary) {
+        const visible = summary.classList.toggle('visible');
+        if (toggle) toggle.textContent = visible ? '▲ Hide AI summary' : '▼ Tap to view AI summary';
+    }
+}
+
+async function approveLab(id) {
+    // Call the review-queue POST endpoint with approve action
+    try {
+        const result = await apiFetch('/ops/api/labs/review-queue/', {
+            method: 'POST',
+            body: JSON.stringify({ id: id, action: 'approve' })
+        });
+        if (result?.success) {
+            showToast('Lab result approved & uploaded to Healthie', 'success');
+        } else {
+            showToast(result?.error || 'Approve failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Lab approve failed:', e);
+    }
+    const lab = labsQueue.find(l => (l.id || l.lab_id) == id);
+    if (lab) lab.status = 'approved';
+    updateBadges();
+    renderCurrentTab();
+}
+
+async function rejectLab(id) {
+    try {
+        const result = await apiFetch('/ops/api/labs/review-queue/', {
+            method: 'POST',
+            body: JSON.stringify({ id: id, action: 'reject', rejection_reason: 'Rejected from iPad' })
+        });
+        if (result?.success) {
+            showToast('Lab result rejected', 'info');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Lab reject failed:', e);
+    }
+    const lab = labsQueue.find(l => (l.id || l.lab_id) == id);
+    if (lab) lab.status = 'rejected';
+    updateBadges();
+    renderCurrentTab();
+}
+
+async function batchApproveNormal() {
+    const normalPending = labsQueue.filter(l =>
+        !l.critical && !l.is_critical &&
+        (l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review')
+    );
+    let approved = 0;
+    for (const lab of normalPending) {
+        try {
+            await apiFetch('/ops/api/labs/review-queue', {
+                method: 'POST',
+                body: JSON.stringify({ id: lab.id || lab.lab_id, action: 'approve' })
+            });
+            lab.status = 'approved';
+            approved++;
+        } catch (e) {
+            if (e.message === 'AUTH_EXPIRED') throw e;
+            console.warn(`Batch approve failed for ${lab.id}:`, e);
+        }
+    }
+    updateBadges();
+    showToast(`${approved} normal labs approved`, 'success');
+    renderCurrentTab();
+}
+
+async function viewLabPdf(labId, patientName) {
+    const modal = document.getElementById('pdfViewerModal');
+    const iframe = document.getElementById('pdfViewerFrame');
+    const title = document.getElementById('pdfViewerTitle');
+    const actions = document.getElementById('pdfViewerActions');
+
+    if (!modal || !iframe) {
+        showToast('PDF viewer not available', 'error');
+        return;
+    }
+
+    title.textContent = `${patientName} — Lab Results`;
+    iframe.src = '';
+    modal.classList.add('visible');
+    iframe.style.display = 'none';
+    document.getElementById('pdfViewerLoading').style.display = 'flex';
+
+    // Show approve/reject buttons for pending labs
+    const lab = labsQueue.find(l => (l.id || l.lab_id) == labId);
+    const isPending = lab && (lab.status === 'pending_review' || lab.status === 'pending' || lab.status === 'needs_review');
+    actions.innerHTML = isPending ? `
+        <button class="btn-approve" onclick="approveLab('${labId}'); closeLabPdf();">✓ APPROVE</button>
+        <button class="btn-reject" onclick="rejectLab('${labId}'); closeLabPdf();">Reject</button>
+    ` : '';
+
+    try {
+        const data = await apiFetch(`/ops/api/labs/review-queue/${labId}/pdf/`);
+        if (data?.success && data.url) {
+            iframe.src = data.url;
+            iframe.style.display = 'block';
+            document.getElementById('pdfViewerLoading').style.display = 'none';
+        } else {
+            document.getElementById('pdfViewerLoading').innerHTML = `
+                <div class="empty-icon">📄</div>
+                <h3>No PDF Available</h3>
+                <p>${data?.error || 'This lab does not have a PDF attached.'}</p>
+            `;
+        }
+    } catch (e) {
+        document.getElementById('pdfViewerLoading').innerHTML = `
+            <div class="empty-icon">⚠️</div>
+            <h3>Error Loading PDF</h3>
+            <p>${e.message}</p>
+        `;
+    }
+}
+
+function closeLabPdf() {
+    const modal = document.getElementById('pdfViewerModal');
+    const iframe = document.getElementById('pdfViewerFrame');
+    if (modal) modal.classList.remove('visible');
+    if (iframe) iframe.src = '';
+}
+// ============================================================
+// SCRIBE VIEW — AI Medical Scribe
+// ============================================================
+async function loadScribeSessions() {
+    try {
+        const data = await apiFetch('/ops/api/scribe/sessions/?limit=30');
+        if (data?.success && Array.isArray(data.data)) {
+            scribeSessions = data.data;
+        }
+        scribeLoaded = true;
+
+        // ✅ AUTO-RECOVERY: Check for stuck transcriptions
+        await checkForPendingTranscriptions();
+    } catch (e) {
+        scribeLoaded = true; // mark as attempted even on failure
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Scribe sessions load failed:', e);
+    }
+}
+
+function renderScribeView(container) {
+    // Load sessions on first visit (with guard to prevent infinite loop)
+    if (!scribeLoaded && !isLoading) {
+        container.innerHTML = renderLoadingState();
+        scribeLoaded = true; // prevent re-entry
+        loadScribeSessions().then(() => {
+            if (currentTab === 'scribe') renderCurrentTab();
+            updateBadges();
+        });
+        return;
+    }
+
+    switch (scribeView) {
+        case 'list': renderScribeList(container); break;
+        case 'new': renderScribeNewSession(container); break;
+        case 'recording': renderScribeRecording(container); break;
+        case 'transcript': renderScribeTranscript(container); break;
+        case 'note': renderScribeNote(container); break;
+        case 'review': renderScribeReview(container); break;
+        default: renderScribeList(container);
+    }
+
+    // Restore chart panel content after re-render if patient data is loaded
+    if (chartPanelOpen && chartPanelData && (scribeView === 'recording' || scribeView === 'note' || scribeView === 'review')) {
+        const content = document.getElementById('chartPanelContent');
+        if (content) renderChartPanel(content);
+    }
+}
+
+function renderScribeList(container) {
+    const sessions = scribeSessions;
+    const inProgress = sessions.filter(s => s.status === 'transcribed' || s.status === 'note_generated');
+    const completed = sessions.filter(s => s.status === 'submitted' || s.status === 'signed');
+    const recent = sessions.filter(s => s.status === 'recording');
+
+    container.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
+            <h1 style="font-size:28px;">AI Scribe</h1>
+            <button class="btn-primary scribe-new-btn" onclick="startNewScribeSession()">
+                <span style="font-size:18px;">🎙</span> New Session
+            </button>
+        </div>
+
+        ${inProgress.length > 0 ? `
+            <div class="section-header" style="margin-top:0">
+                <h2>In Progress</h2>
+                <span class="section-action">${inProgress.length} active</span>
+            </div>
+            <div class="stagger-in">
+                ${inProgress.map(s => renderScribeSessionCard(s)).join('')}
+            </div>
+        ` : ''}
+
+        ${recent.length > 0 ? `
+            <div class="section-header">
+                <h2>Recording</h2>
+            </div>
+            <div class="stagger-in">
+                ${recent.map(s => renderScribeSessionCard(s)).join('')}
+            </div>
+        ` : ''}
+
+        ${completed.length > 0 ? `
+            <div class="section-header">
+                <h2>Completed</h2>
+                <span class="section-action">${completed.length} done</span>
+            </div>
+            <div class="stagger-in">
+                ${completed.map(s => renderScribeSessionCard(s)).join('')}
+            </div>
+        ` : ''}
+
+        ${sessions.length === 0 ? `
+            <div class="empty-state">
+                <div class="empty-icon">🎙</div>
+                <h3>No Scribe Sessions</h3>
+                <p>Tap <strong>New Session</strong> to start your first AI-powered visit note.</p>
+            </div>
+        ` : ''}
+    `;
+}
+
+function renderScribeSessionCard(session) {
+    const name = session.patient_name || 'Unknown Patient';
+    const visitType = (session.visit_type || 'follow_up').replace(/_/g, ' ');
+    const time = session.created_at ? new Date(session.created_at).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+    }) : '';
+    const status = session.status || 'recording';
+    const statusColors = {
+        recording: 'var(--red)', transcribed: 'var(--yellow)', transcribing: 'var(--cyan)',
+        note_generated: 'var(--cyan)', submitted: 'var(--green)', signed: 'var(--green)',
+    };
+    const statusLabels = {
+        recording: 'Recording', transcribed: 'Needs Note', transcribing: '⏳ Transcribing...',
+        note_generated: 'Review Note', submitted: 'Submitted', signed: 'Signed',
+    };
+    const nextAction = {
+        transcribed: () => `onclick="openScribeSession('${session.session_id}', 'note')"`,
+        note_generated: () => `onclick="openScribeSession('${session.session_id}', 'review')"`,
+        submitted: () => `onclick="openScribeSession('${session.session_id}', 'review')"`,
+        signed: () => `onclick="openScribeSession('${session.session_id}', 'review')"`,
+    };
+    const clickAttr = nextAction[status] ? nextAction[status]() : '';
+    const isUnknown = !session.patient_name || session.patient_name === 'Unknown Patient' || session.patient_name === 'Unknown';
+    const connectBtn = `<button onclick="event.stopPropagation(); connectPatientToSession('${session.session_id}')"
+        style="padding:4px 10px; font-size:12px; border:1px solid var(--cyan); color:var(--cyan); background:rgba(0,212,255,0.1);
+        border-radius:6px; cursor:pointer; margin-left:8px; white-space:nowrap;">
+        ${isUnknown ? '🔗 Connect Patient' : '🔄 Change'}
+    </button>`;
+
+    return `
+        <div class="scribe-session-card" ${clickAttr}>
+            <div class="scribe-session-header">
+                <div class="scribe-session-info">
+                    <div class="scribe-session-patient" style="display:flex; align-items:center;">
+                        ${name} ${connectBtn}
+                    </div>
+                    <div class="scribe-session-meta">${visitType} · ${time}</div>
+                </div>
+                <div class="scribe-status-badge" style="background:${statusColors[status] || 'var(--text-tertiary)'}20; color:${statusColors[status] || 'var(--text-tertiary)'}">
+                    ${statusLabels[status] || status}
+                </div>
+            </div>
+            ${status === 'transcribing' ? `
+                <button class="scribe-retry-btn" onclick="event.stopPropagation(); retryTranscription('${session.session_id}');"
+                        style="margin-top:8px; padding:8px 16px; background:var(--cyan); color:#000; border:none; border-radius:8px; font-weight:600; cursor:pointer;">
+                    🔄 Check Status
+                </button>
+            ` : ''}
+            ${session.transcript_length > 0 ? `
+                <div class="scribe-session-detail">
+                    <span>📝 ${session.transcript_length.toLocaleString()} chars transcribed</span>
+                    ${session.has_note ? '<span>📋 SOAP note generated</span>' : ''}
+                    ${session.healthie_note_id ? '<span>✅ In Healthie</span>' : ''}
+                </div>
+            ` : ''}
+        </div>
+    `;
+}
+
+// Connect or change the patient for a scribe session
+async function connectPatientToSession(sessionId) {
+    // Show a patient picker overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'patientPickerOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:#1a2332;border-radius:16px;padding:24px;width:90%;max-width:500px;max-height:70vh;display:flex;flex-direction:column;border:1px solid rgba(0,212,255,0.2);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h3 style="margin:0;color:#f0f4f8;font-size:18px;">🔗 Connect Patient</h3>
+                <button onclick="document.getElementById('patientPickerOverlay').remove()"
+                    style="background:none;border:none;color:#8899aa;font-size:20px;cursor:pointer;">✕</button>
+            </div>
+            <input id="patientPickerSearch" type="text" placeholder="Search any patient by name..."
+                style="padding:12px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#f0f4f8;font-size:15px;margin-bottom:12px;outline:none;"
+                oninput="debouncedPatientSearch(this.value)">
+            <div id="patientPickerList" style="flex:1;overflow-y:auto;"></div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    window._pickerSessionId = sessionId;
+    
+    // Default to today's scheduled patients
+    const patientPickerList = document.getElementById('patientPickerList');
+    const uniquePatients = [];
+    const seen = new Set();
+    (healthieAppointments || []).forEach(a => {
+        const id = a.healthie_id || a.patient_id || a.id;
+        const nm = a.patient_name || a.full_name;
+        if (id && nm && !seen.has(id)) {
+            seen.add(id);
+            uniquePatients.push({ id: id, first_name: nm, last_name: '' });
+        }
+    });
+
+    if (uniquePatients.length > 0) {
+        renderPatientPickerList(uniquePatients);
+    } else {
+        patientPickerList.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Type a name to search Healthie</div>';
+    }
+}
+
+let _pickerSearchTimeout = null;
+function debouncedPatientSearch(searchText) {
+    if (_pickerSearchTimeout) clearTimeout(_pickerSearchTimeout);
+    
+    const list = document.getElementById('patientPickerList');
+    if (!searchText || searchText.length < 2) {
+        // Revert to default schedule if empty
+        const uniquePatients = [];
+        const seen = new Set();
+        (healthieAppointments || []).forEach(a => {
+            const id = a.healthie_id || a.patient_id || a.id;
+            const nm = a.patient_name || a.full_name;
+            if (id && !seen.has(id)) { seen.add(id); uniquePatients.push({ id: id, first_name: nm, last_name: '' }); }
+        });
+        if (uniquePatients.length > 0) renderPatientPickerList(uniquePatients);
+        else list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Type a name to search Healthie</div>';
+        return;
+    }
+
+    list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Searching Healthie...</div>';
+    
+    _pickerSearchTimeout = setTimeout(async () => {
+        try {
+            const resp = await fetch(`/ops/api/patients/search/?q=${encodeURIComponent(searchText)}`);
+            const data = await resp.json();
+            if (data.success && data.patients && data.patients.length > 0) {
+                renderPatientPickerList(data.patients);
+            } else {
+                list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">No patients found matching "'+searchText+'"</div>';
+            }
+        } catch(e) {
+            list.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center;">Search failed</div>';
+        }
+    }, 400);
+}
+
+function renderPatientPickerList(patients) {
+    const list = document.getElementById('patientPickerList');
+    if (!list) return;
+    list.innerHTML = '<div style="font-size:11px;color:#8899aa;margin-bottom:8px;padding-left:8px;text-transform:uppercase;">Select Patient</div>' + patients.map(p => {
+        const name = p.full_name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown';
+        const hid = p.healthie_id || p.id || '';
+        return `
+            <div onclick="selectPatientForSession('${hid}', '${name.replace(/'/g, "\\'")}')"
+                style="padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;color:#f0f4f8;
+                display:flex;justify-content:space-between;align-items:center;transition:background 0.15s; border-radius:8px;"
+                onmouseover="this.style.background='rgba(0,212,255,0.08)'" onmouseout="this.style.background='none'">
+                <div>
+                    <div style="font-weight:600;font-size:15px;">${name}</div>
+                    <div style="font-size:12px;color:#8899aa;">Healthie ID: ${hid}</div>
+                </div>
+                <span style="color:var(--cyan);font-size:14px;">Select →</span>
+            </div>
+        `;
+    }).join('');
+}
+
+async function selectPatientForSession(healthieId, patientName) {
+    const sessionId = window._pickerSessionId;
+    if (!sessionId || !healthieId) return;
+
+    // Close the picker
+    const overlay = document.getElementById('patientPickerOverlay');
+    if (overlay) overlay.remove();
+
+    showToast(`Connecting ${patientName} to session…`, 'info');
+
+    try {
+        const resp = await fetch(`/ops/api/scribe/sessions/${sessionId}/change-patient/`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ healthie_patient_id: healthieId }),
+        });
+        const result = await resp.json();
+        if (result.success) {
+            showToast(`✅ Connected ${result.data.new_patient_name} to session`, 'success');
+            // Refresh the scribe list by invalidating memory cache
+            scribeLoaded = false;
+            scribeView = 'list';
+            renderCurrentTab();
+        } else {
+            showToast('Failed: ' + (result.error || 'Unknown error'), 'error');
+        }
+    } catch (e) {
+        showToast('Error connecting patient: ' + e.message, 'error');
+    }
+}
+
+function startNewScribeSession() {
+    scribeView = 'new';
+    renderCurrentTab();
+}
+
+function renderScribeNewSession(container) {
+    container.innerHTML = `
+        <div class="scribe-header-row">
+            <button class="scribe-back-btn" onclick="scribeView='list'; renderCurrentTab();">← Back</button>
+            <h1 style="font-size:24px;">New Scribe Session</h1>
+            ${getChartToggleBtn()}
+        </div>
+        ${getChartPanelHTML()}
+
+        <div class="scribe-form">
+            <div class="scribe-field">
+                <label>Patient (Healthie)</label>
+                <div class="patient-search-wrapper">
+                    <input type="text" id="scribePatientSearch" class="patient-search-input"
+                           placeholder="Type 2+ letters to search patients…"
+                           autocomplete="off" />
+                    <div id="scribePatientResults" class="patient-search-results"></div>
+                    <div id="scribePatientSelected" class="patient-selected-badge" style="display:none;"></div>
+                </div>
+            </div>
+            <div class="scribe-field">
+                <label>Visit Type</label>
+                <div class="scribe-visit-types">
+                    ${['follow_up', 'initial', 'urgent', 'telehealth', 'procedure'].map(vt => `
+                        <button class="visit-type-btn ${scribeVisitType === vt ? 'active' : ''}" 
+                                onclick="scribeVisitType='${vt}'; document.querySelectorAll('.visit-type-btn').forEach(b=>b.classList.remove('active')); this.classList.add('active');">
+                            ${vt.replace(/_/g, ' ')}
+                        </button>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="scribe-field">
+                <label>Input Method</label>
+                <div class="scribe-method-toggle">
+                    <button class="method-btn active" id="methodRecord" onclick="selectScribeMethod('record')">
+                        🎙 Record Audio
+                    </button>
+                    <button class="method-btn" id="methodType" onclick="selectScribeMethod('type')">
+                        ⌨️ Type Transcript
+                    </button>
+                </div>
+            </div>
+            <div id="scribeMethodContent">
+                <div class="scribe-record-prompt">
+                    <div class="record-icon-large">🎙</div>
+                    <p>Tap <strong>Start Recording</strong> to capture the visit conversation.</p>
+                    <p style="font-size:12px; color:var(--text-tertiary);">Audio is transcribed by AWS Transcribe Medical</p>
+                </div>
+            </div>
+            <button class="btn-primary scribe-start-btn" id="scribeStartBtn" onclick="beginScribeCapture()" disabled>
+                Start Recording
+            </button>
+        </div>
+    `;
+
+    // Wire up typeahead patient search
+    // NOTE: container is a detached DOM element at this point (appended to doc AFTER this fn returns)
+    // So we MUST use container.querySelector, NOT document.getElementById
+    let searchTimeout = null;
+    const input = container.querySelector('#scribePatientSearch');
+    const results = container.querySelector('#scribePatientResults');
+    const badge = container.querySelector('#scribePatientSelected');
+
+
+    // Ensure allPatients is loaded for local search — ALWAYS retry if empty
+    if (allPatients.length === 0) {
+        console.log('[Scribe] allPatients is empty, force loading…');
+        patientsLoaded = false; // reset so it retries
+        loadAllPatients().then(ok => {
+            console.log('[Scribe] Patient load result:', ok, 'count:', allPatients.length);
+        }).catch(e => console.warn('[Scribe] Pre-load patients failed:', e));
+    } else {
+        console.log('[Scribe] allPatients already loaded:', allPatients.length);
+    }
+
+    if (input) {
+        console.log('[Scribe] Patient search input wired up');
+        input.addEventListener('input', () => {
+            const q = input.value.trim();
+            console.log('[Scribe] Search input:', q, 'allPatients:', allPatients.length);
+            if (searchTimeout) clearTimeout(searchTimeout);
+            if (q.length < 2) {
+                results.innerHTML = '';
+                results.style.display = 'none';
+                return;
+            }
+            // Show searching indicator immediately
+            results.innerHTML = '<div class="patient-search-loading">Searching…</div>';
+            results.style.display = 'block';
+            searchTimeout = setTimeout(async () => {
+                // Instant local search from allPatients
+                const ql = q.toLowerCase();
+                const localMatches = allPatients.filter(p => {
+                    const nm = (p.name || p.full_name || p.patient_name || '').toLowerCase();
+                    return nm.includes(ql);
+                }).slice(0, 15).map(p => ({
+                    patient_id: p.id || p.patient_id || '',
+                    healthie_id: p.healthie_client_id || '',
+                    name: p.name || p.full_name || p.patient_name || 'Unknown',
+                    dob: p.dob || '',
+                    email: p.email || '',
+                    source: 'local',
+                }));
+
+                console.log('[Scribe] Local matches:', localMatches.length);
+
+                // Show local results immediately
+                if (localMatches.length > 0) {
+                    renderScribeSearchResults(localMatches, results);
+                }
+
+                // Also try Healthie search (async, graceful fallback)
+                try {
+                    const hData = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
+                    const hResults = (hData?.patients || []).map(p => ({
+                        patient_id: '',
+                        healthie_id: p.healthie_id || p.id || '',
+                        name: `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown',
+                        dob: p.dob || '',
+                        email: p.email || '',
+                        source: 'healthie',
+                    }));
+                    // Merge: keep local matches first, add unique Healthie results
+                    const seenNames = new Set(localMatches.map(p => p.name.toLowerCase()));
+                    const uniqueHealthie = hResults.filter(p => !seenNames.has(p.name.toLowerCase()));
+                    const combined = [...localMatches, ...uniqueHealthie].slice(0, 15);
+                    console.log('[Scribe] Combined results:', combined.length);
+                    if (combined.length > 0) {
+                        renderScribeSearchResults(combined, results);
+                    } else if (localMatches.length === 0) {
+                        results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
+                        results.style.display = 'block';
+                    }
+                } catch (he) {
+                    // Healthie search failed — just show local results
+                    console.warn('[Scribe] Healthie search failed:', he.message);
+                    if (localMatches.length === 0) {
+                        results.innerHTML = '<div class="patient-search-empty">No patients found — check connection</div>';
+                        results.style.display = 'block';
+                    }
+                }
+            }, 200);
+        });
+    } else {
+        console.error('[Scribe] Patient search input NOT found in DOM!');
+    }
+}
+
+function renderScribeSearchResults(patients, resultsEl) {
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = patients.map(p => {
+        const dob = p.dob ? ` · DOB: ${p.dob}` : '';
+        const src = p.source === 'healthie' ? ' <span style="font-size:9px; color:#22d3ee;">Healthie</span>' : '';
+        const pid = p.patient_id || p.healthie_id || '';
+        return `<div class="patient-search-item" onclick="selectScribePatient('${pid}', '${p.name.replace(/'/g, "\\'")}')">
+            <span class="patient-search-name">${p.name}${src}</span>
+            <span class="patient-search-detail">${p.email || ''}${dob}</span>
+        </div>`;
+    }).join('');
+}
+
+function selectScribePatient(healthieId, name) {
+    scribePatientId = healthieId;
+    scribePatientName = name;
+    const input = document.getElementById('scribePatientSearch');
+    const results = document.getElementById('scribePatientResults');
+    const badge = document.getElementById('scribePatientSelected');
+    const btn = document.getElementById('scribeStartBtn');
+
+    if (input) input.value = '';
+    if (results) { results.innerHTML = ''; results.style.display = 'none'; }
+    if (badge) {
+        badge.style.display = 'flex';
+        badge.innerHTML = `
+            <span>👤 ${name}</span>
+            <button onclick="clearScribePatient()" class="patient-clear-btn">✕</button>
+        `;
+    }
+    if (btn) btn.disabled = false;
+
+    // Auto-load chart into the global panel (visible from any view)
+    openChartForPatient(healthieId, name);
+
+    // Add chart button to header if not already present
+    const headerRow = document.querySelector('.scribe-header-row');
+    if (headerRow && !headerRow.querySelector('.chart-toggle-btn')) {
+        const chartBtn = document.createElement('button');
+        chartBtn.className = 'chart-toggle-btn';
+        chartBtn.textContent = '📋 Chart';
+        chartBtn.onclick = () => toggleChartPanel();
+        headerRow.appendChild(chartBtn);
+    }
+}
+
+function clearScribePatient() {
+    scribePatientId = null;
+    scribePatientName = '';
+    const badge = document.getElementById('scribePatientSelected');
+    const btn = document.getElementById('scribeStartBtn');
+    if (badge) { badge.style.display = 'none'; badge.innerHTML = ''; }
+    if (btn) btn.disabled = true;
+}
+
+async function discardScribeSession() {
+    if (!activeScribeSession) return;
+    if (!confirm('Discard this session? This cannot be undone.')) return;
+    try {
+        await fetch(`/ops/api/scribe/sessions/${activeScribeSession.session_id}/`, {
+            method: 'DELETE',
+            credentials: 'include',
+        });
+        showToast('Session discarded', 'info');
+    } catch (e) {
+        console.warn('Discard API failed:', e);
+    }
+    activeScribeSession = null;
+    currentNote = null;
+    scribeView = 'list';
+    await loadScribeSessions();
+    renderCurrentTab();
+    updateBadges();
+}
+
+function selectScribeMethod(method) {
+    document.getElementById('methodRecord').classList.toggle('active', method === 'record');
+    document.getElementById('methodType').classList.toggle('active', method === 'type');
+    const content = document.getElementById('scribeMethodContent');
+    const btn = document.getElementById('scribeStartBtn');
+
+    if (method === 'type') {
+        content.innerHTML = `
+            <div class="scribe-field">
+                <label>Paste or type the visit transcript</label>
+                <textarea id="scribeManualTranscript" class="scribe-textarea" rows="10" 
+                          placeholder="Enter the visit notes or transcript here…"></textarea>
+            </div>
+        `;
+        btn.textContent = 'Submit Transcript';
+        btn.onclick = submitManualTranscript;
+    } else {
+        content.innerHTML = `
+            <div class="scribe-record-prompt">
+                <div class="record-icon-large">🎙</div>
+                <p>Tap <strong>Start Recording</strong> to capture the visit conversation.</p>
+                <p style="font-size:12px; color:var(--text-tertiary);">Audio is transcribed by Deepgram Nova-2 Medical</p>
+            </div>
+        `;
+        btn.textContent = 'Start Recording';
+        btn.onclick = beginScribeCapture;
+    }
+}
+
+// Smart MIME type detection — iPad/Safari prefers mp4, Chrome/Firefox prefer webm
+function getRecordingMimeType() {
+    const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+        'audio/wav',
+    ];
+    for (const mt of candidates) {
+        try {
+            if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(mt)) {
+                console.log('[Scribe] Using MIME type:', mt);
+                return mt;
+            }
+        } catch (e) { /* skip */ }
+    }
+    console.warn('[Scribe] No preferred MIME type supported, using browser default');
+    return ''; // let browser pick
+}
+
+// Store detected MIME type globally so handleRecordingComplete can use it
+let recordingMimeType = '';
+
+async function beginScribeCapture() {
+    // ✅ Reset recording warning flag
+    window._recordingWarningShown = false;
+    if (!scribePatientId) {
+        showToast('Please select a patient first', 'error');
+        return;
+    }
+
+    // Check for MediaRecorder support (very old browsers)
+    if (typeof MediaRecorder === 'undefined') {
+        showToast('Recording not supported on this browser. Please update your iPad.', 'error');
+        return;
+    }
+
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (micErr) {
+        console.error('[Scribe] Microphone access error:', micErr);
+        if (micErr.name === 'NotAllowedError' || micErr.name === 'PermissionDeniedError') {
+            showToast('Microphone access denied. Please allow microphone access in Settings → Safari → Microphone.', 'error');
+        } else if (micErr.name === 'NotFoundError') {
+            showToast('No microphone found. Please check your device.', 'error');
+        } else {
+            showToast('Could not access microphone: ' + (micErr.message || micErr.name), 'error');
+        }
+        return;
+    }
+
+    try {
+        audioChunks = [];
+        recordingMimeType = getRecordingMimeType();
+        const recorderOptions = recordingMimeType ? { mimeType: recordingMimeType } : {};
+        mediaRecorder = new MediaRecorder(stream, recorderOptions);
+        // Update recordingMimeType to what the browser actually chose
+        recordingMimeType = mediaRecorder.mimeType || recordingMimeType;
+        console.log('[Scribe] MediaRecorder created with mimeType:', mediaRecorder.mimeType);
+
+        mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+        mediaRecorder.onstop = handleRecordingComplete;
+        mediaRecorder.onerror = (e) => {
+            console.error('[Scribe] MediaRecorder error:', e);
+            showToast('Recording error: ' + (e.error?.message || 'unknown'), 'error');
+            stopScribeRecording();
+        };
+        mediaRecorder.start(1000); // collect in 1-sec chunks
+        isRecording = true;
+        isPaused = false;
+        autoPausedBySystem = false;
+        pausedDuration = 0;
+        pauseStartTime = null;
+        // Set up AudioContext analyser for real audio level visualization
+        try {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(stream);
+            audioAnalyser = audioContext.createAnalyser();
+            audioAnalyser.fftSize = 128;
+            source.connect(audioAnalyser);
+        } catch (e) {
+            console.warn('AudioContext not available, using fallback waveform:', e);
+        }
+        recordingStartTime = Date.now();
+        scribeView = 'recording';
+        // Auto-open chart in global panel (persists across view changes)
+        chartPanelOpen = true;
+        renderCurrentTab();
+        const pid = scribePatientId || activeScribeSession?.patient_id;
+        const pname = scribePatientName || activeScribeSession?.patient_name || 'Patient';
+        if (pid) {
+            openChartForPatient(pid, pname);
+        }
+        // Start timer
+        recordingTimer = setInterval(updateRecordingTimer, 1000);
+        showToast('Recording started', 'success');
+    } catch (err) {
+        // Stop the mic stream if MediaRecorder fails
+        stream.getTracks().forEach(t => t.stop());
+        console.error('[Scribe] MediaRecorder creation error:', err);
+        showToast('Could not start recording: ' + (err.message || 'unsupported format'), 'error');
+    }
+}
+
+function renderScribeRecording(container) {
+    const pauseLabel = isPaused ? '▶ Resume' : '⏸ Pause';
+    const recordingState = isPaused ? 'paused' : 'active';
+
+    const autoPauseBanner = autoPausedBySystem ? `
+                <div class="auto-pause-banner" onclick="togglePauseRecording()">
+                    <div class="auto-pause-icon">⚠️</div>
+                    <div class="auto-pause-text">
+                        <strong>Recording auto-paused</strong>
+                        <span>Interrupted by phone call or app switch — tap here to resume</span>
+                    </div>
+                </div>
+            ` : '';
+
+    container.innerHTML = `
+        <div class="scribe-recording-view">
+            <div class="scribe-header-row">
+                <h1 style="font-size:24px;">${autoPausedBySystem ? '⚠️ Auto-Paused' : isPaused ? '⏸ Paused' : '🔴 Recording Visit'}</h1>
+                ${getChartToggleBtn()}
+            </div>
+            ${autoPauseBanner}
+            ${getChartPanelHTML()}
+            <div class="scribe-recording-center">
+                <div class="recording-pulse-ring ${isPaused ? 'recording-paused' : ''}">
+                    <div class="recording-pulse-dot"></div>
+                </div>
+                <div class="recording-timer" id="recordingTimer">00:00</div>
+                <div class="recording-patient">${getPatientNameById(scribePatientId)}</div>
+                <div class="recording-visit-type">${scribeVisitType.replace(/_/g, ' ')}</div>
+            </div>
+            <div class="recording-waveform" id="waveform">
+                ${Array.from({ length: 40 }, () => '<div class="wave-bar"></div>').join('')}
+            </div>
+            <div class="recording-controls" style="display:flex; gap:12px; justify-content:center;">
+                <button class="btn-pause-recording" onclick="togglePauseRecording()" style="
+                    padding:14px 28px; border-radius:12px; font-size:15px; font-weight:600;
+                    background:${isPaused ? 'rgba(34,197,94,0.15)' : 'rgba(251,191,36,0.15)'};
+                    color:${isPaused ? '#22c55e' : '#fbbf24'};
+                    border:1px solid ${isPaused ? 'rgba(34,197,94,0.3)' : 'rgba(251,191,36,0.3)'};
+                    cursor:pointer; font-family:inherit;
+                ">${pauseLabel}</button>
+                <button class="btn-stop-recording" onclick="stopScribeRecording()">
+                    <span class="stop-icon">◼</span> Stop Recording
+                </button>
+            </div>
+        </div>
+    `;
+    animateWaveform();
+}
+
+function updateRecordingTimer() {
+    const el = document.getElementById('recordingTimer');
+    if (!el || !recordingStartTime) return;
+    // Subtract paused time from elapsed
+    const currentPause = isPaused && pauseStartTime ? (Date.now() - pauseStartTime) : 0;
+    const elapsed = Math.floor((Date.now() - recordingStartTime - pausedDuration - currentPause) / 1000);
+
+    // ✅ AUTO-STOP AT 60 MINUTES
+    if (elapsed >= 3600 && isRecording) {
+        showToast('⚠️ Maximum recording length (1 hour) reached - stopping automatically', 'warning');
+        stopScribeRecording();
+        return;
+    }
+
+    // ✅ WARN AT 55 MINUTES
+    if (elapsed === 3300 && !window._recordingWarningShown) {
+        showToast('⚠️ Recording will auto-stop at 60 minutes (5 min remaining)', 'warning', 10000);
+        window._recordingWarningShown = true;
+    }
+    const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+    const s = (elapsed % 60).toString().padStart(2, '0');
+    el.textContent = `${m}:${s}`;
+}
+
+function animateWaveform() {
+    const bars = document.querySelectorAll('.wave-bar');
+    if (bars.length === 0 || !isRecording) return;
+
+    if (isPaused) {
+        // Show flat bars when paused
+        bars.forEach(bar => { bar.style.height = '8%'; });
+        if (isRecording) requestAnimationFrame(() => setTimeout(animateWaveform, 200));
+        return;
+    }
+
+    if (audioAnalyser) {
+        // Use real audio frequency data
+        const dataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+        audioAnalyser.getByteFrequencyData(dataArray);
+        const step = Math.max(1, Math.floor(dataArray.length / bars.length));
+        bars.forEach((bar, i) => {
+            const val = dataArray[Math.min(i * step, dataArray.length - 1)] || 0;
+            bar.style.height = Math.max(5, (val / 255) * 90) + '%';
+        });
+    } else {
+        // Fallback: random animation
+        bars.forEach(bar => {
+            bar.style.height = (Math.random() * 60 + 10) + '%';
+        });
+    }
+    if (isRecording) requestAnimationFrame(() => setTimeout(animateWaveform, 80));
+}
+
+function togglePauseRecording() {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+
+    if (isPaused) {
+        // Resume
+        mediaRecorder.resume();
+        isPaused = false;
+        autoPausedBySystem = false;
+        pausedDuration += (Date.now() - (pauseStartTime || Date.now()));
+        pauseStartTime = null;
+        showToast('Recording resumed', 'info');
+    } else {
+        // Pause
+        mediaRecorder.pause();
+        isPaused = true;
+        pauseStartTime = Date.now();
+        showToast('Recording paused', 'info');
+    }
+    renderCurrentTab();
+    // Restart timer update
+    if (recordingTimer) clearInterval(recordingTimer);
+    recordingTimer = setInterval(updateRecordingTimer, 1000);
+}
+
+function getPatientNameById(id) {
+    // Use scribePatientName if it matches the current scribe patient
+    if (scribePatientName && id === scribePatientId) return scribePatientName;
+    if (stageDosePatientName && id === stageDosePatientId) return stageDosePatientName;
+    const patients = getPatients();
+    const p = patients.find(p => String(p.id || p.patient_id) === String(id) || String(p.healthie_client_id) === String(id));
+    return p ? (p.name || p.patient_name || p.full_name || 'Unknown') : (scribePatientName || 'Unknown Patient');
+}
+
+function stopScribeRecording() {
+    if (mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused')) {
+        if (mediaRecorder.state === 'paused') mediaRecorder.resume(); // must resume before stop
+        mediaRecorder.stop();
+        mediaRecorder.stream.getTracks().forEach(t => t.stop());
+    }
+    isRecording = false;
+    isPaused = false;
+    autoPausedBySystem = false;
+    pausedDuration = 0;
+    pauseStartTime = null;
+    if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
+    // Clean up audio analyser
+    if (audioContext) { try { audioContext.close(); } catch (e) { } audioContext = null; }
+    audioAnalyser = null;
+}
+
+async function handleRecordingComplete() {
+    showToast('Uploading audio for transcription…', 'info');
+
+    // Use the actual MIME type that was recorded (detected in beginScribeCapture)
+    const mimeType = recordingMimeType || 'audio/webm';
+    const blob = new Blob(audioChunks, { type: mimeType });
+
+    // Determine file extension from MIME type
+    const extMap = {
+        'audio/webm;codecs=opus': 'webm',
+        'audio/webm': 'webm',
+        'audio/mp4;codecs=mp4a.40.2': 'mp4',
+        'audio/mp4': 'mp4',
+        'audio/ogg;codecs=opus': 'ogg',
+        'audio/wav': 'wav',
+        'audio/x-wav': 'wav',
+    };
+    const ext = extMap[mimeType] || (mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm');
+    const filename = `visit-recording.${ext}`;
+    console.log(`[Scribe] Uploading: ${filename} (${mimeType}, ${(blob.size / 1024).toFixed(1)}KB)`);
+
+    // CRITICAL: Save blob to global variable for retry on failure
+    window._pendingRecordingBlob = blob;
+    window._pendingRecordingMeta = {
+        filename, mimeType, ext,
+        patientId: scribePatientId,
+        patientName: scribePatientName || 'Unknown',
+        visitType: scribeVisitType,
+        savedAt: new Date().toISOString(),
+    };
+
+    // Also backup to IndexedDB so it survives page refresh
+    try {
+        const dbReq = indexedDB.open('scribe_backup', 1);
+        dbReq.onupgradeneeded = (e) => { e.target.result.createObjectStore('recordings', { keyPath: 'id' }); };
+        dbReq.onsuccess = (e) => {
+            const db = e.target.result;
+            const tx = db.transaction('recordings', 'readwrite');
+            tx.objectStore('recordings').put({
+                id: 'pending_' + Date.now(),
+                blob: blob,
+                meta: window._pendingRecordingMeta,
+            });
+        };
+    } catch (idbErr) { console.warn('[Scribe] IndexedDB backup failed:', idbErr); }
+
+    await attemptScribeUpload(blob, filename);
+}
+
+// Separate upload function so it can be retried
+async function attemptScribeUpload(blob, filename) {
+    const formData = new FormData();
+    formData.append('audio', blob, filename);
+    formData.append('patient_id', scribePatientId);
+    formData.append('visit_type', scribeVisitType);
+    formData.append('patient_name', scribePatientName || '');
+
+    try {
+        const resp = await fetch('/ops/api/scribe/transcribe/', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+        });
+
+        // Check response status BEFORE parsing JSON
+        if (!resp.ok) {
+            const errorText = await resp.text().catch(() => 'Unknown error');
+            console.error('[Scribe] Upload failed:', resp.status, errorText.substring(0, 200));
+            showUploadFailedRetryScreen(resp.status, errorText.substring(0, 100));
+            return;
+        }
+
+        // Safe JSON parse
+        let data;
+        try {
+            data = await resp.json();
+        } catch (parseErr) {
+            console.error('[Scribe] Response parse error:', parseErr);
+            showUploadFailedRetryScreen(0, 'Server returned invalid response');
+            return;
+        }
+
+        if (data.success) {
+            // Clear backup on success
+            window._pendingRecordingBlob = null;
+            window._pendingRecordingMeta = null;
+            try { indexedDB.deleteDatabase('scribe_backup'); } catch (e) {}
+
+            activeScribeSession = data.data;
+            // Check if transcription is async (AWS Transcribe) or already done
+            if (data.data.status === 'transcribing' || data.data.transcription_job_name) {
+                // ✅ NEW: Start background polling instead of blocking UI
+                startBackgroundTranscriptionPoll(data.data.session_id);
+                showToast('✅ Audio uploaded! Transcribing in background...', 'success');
+                // Return to list immediately
+                scribeView = 'list';
+                await loadScribeSessions();
+                renderCurrentTab();
+                updateBadges();
+                return;
+            } else if (data.data.status === 'transcribed') {
+                // Sync transcription already complete
+                showToast(`✅ Transcribed! ${data.data.transcript_length || 0} characters`, 'success');
+                await loadScribeSessions();
+                scribeView = 'note';
+                renderCurrentTab();
+                updateBadges();
+            } else {
+                showToast(`Transcribed! ${data.data.transcript_length || 0} characters`, 'success');
+                await loadScribeSessions();
+                scribeView = 'note';
+                renderCurrentTab();
+                updateBadges();
+            }
+        } else {
+            showUploadFailedRetryScreen(0, data.error || 'Transcription failed');
+        }
+    } catch (e) {
+        console.error('[Scribe] Transcription error:', e);
+        showUploadFailedRetryScreen(0, e.message || 'Network error');
+    }
+}
+
+// Show a retry screen instead of discarding the recording on failure
+function showUploadFailedRetryScreen(status, errorMsg) {
+    showToast('Upload failed — your recording is saved locally. You can retry.', 'error');
+    const container = document.getElementById('mainContent');
+    if (!container) return;
+    const meta = window._pendingRecordingMeta || {};
+    const blobSize = window._pendingRecordingBlob ? (window._pendingRecordingBlob.size / (1024 * 1024)).toFixed(1) + ' MB' : 'unknown';
+    container.innerHTML = `
+        <div style="text-align:center; padding:40px 20px; max-width:500px; margin:0 auto;">
+            <div style="font-size:48px; margin-bottom:16px;">⚠️</div>
+            <h2 style="color:#ef4444; margin-bottom:8px;">Upload Failed</h2>
+            <p style="color:var(--text-secondary); margin-bottom:20px;">
+                Error: ${errorMsg}${status ? ' (HTTP ' + status + ')' : ''}
+            </p>
+            <div style="background:var(--surface); border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:20px; text-align:left;">
+                <div style="font-size:13px; color:var(--text-secondary);">
+                    <strong>Patient:</strong> ${meta.patientName || 'Unknown'}<br>
+                    <strong>Audio size:</strong> ${blobSize}<br>
+                    <strong>Recorded at:</strong> ${meta.savedAt ? new Date(meta.savedAt).toLocaleTimeString() : 'Unknown'}
+                </div>
+            </div>
+            <p style="color:#22c55e; font-size:13px; margin-bottom:20px;">
+                ✅ Your recording is saved in browser memory. Do NOT close this tab.
+            </p>
+            <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                <button onclick="retryScribeUpload()" style="padding:12px 24px; border-radius:10px; background:var(--cyan); color:#000; font-weight:700; font-size:15px; border:none; cursor:pointer;">
+                    🔄 Retry Upload
+                </button>
+                <button onclick="downloadPendingRecording()" style="padding:12px 24px; border-radius:10px; background:var(--surface); color:var(--text-primary); font-weight:600; font-size:14px; border:1px solid var(--border-light); cursor:pointer;">
+                    💾 Download Audio
+                </button>
+                <button onclick="scribeView='list'; renderCurrentTab();" style="padding:12px 24px; border-radius:10px; background:transparent; color:var(--text-tertiary); font-weight:500; font-size:13px; border:1px solid var(--border-light); cursor:pointer;">
+                    Discard & Go Back
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function retryScribeUpload() {
+    if (!window._pendingRecordingBlob) {
+        showToast('No pending recording found', 'error');
+        return;
+    }
+    const meta = window._pendingRecordingMeta || {};
+    showToast('Retrying upload…', 'info');
+    attemptScribeUpload(window._pendingRecordingBlob, meta.filename || 'visit-recording.webm');
+}
+
+function downloadPendingRecording() {
+    if (!window._pendingRecordingBlob) {
+        showToast('No pending recording found', 'error');
+        return;
+    }
+    const meta = window._pendingRecordingMeta || {};
+    const url = URL.createObjectURL(window._pendingRecordingBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (meta.patientName || 'recording').replace(/[^a-zA-Z0-9]/g, '_') + '_' + new Date().toISOString().slice(0, 10) + '.' + (meta.ext || 'webm');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Audio file downloaded', 'success');
+}
+
+// ❌ DEPRECATED: Old blocking pollTranscription removed - now using background polling
+// See startBackgroundTranscriptionPoll() instead
+
+async function submitManualTranscript() {
+    const textarea = document.getElementById('scribeManualTranscript');
+    if (!textarea || !textarea.value.trim()) {
+        showToast('Please enter a transcript', 'error');
+        return;
+    }
+    if (!scribePatientId) {
+        showToast('Please select a patient', 'error');
+        return;
+    }
+
+    showToast('Submitting transcript…', 'info');
+    const formData = new FormData();
+    formData.append('patient_id', scribePatientId);
+    formData.append('visit_type', scribeVisitType);
+    formData.append('patient_name', scribePatientName || '');
+    formData.append('transcript', textarea.value.trim());
+
+    try {
+        const resp = await fetch('/ops/api/scribe/transcribe/', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+        });
+        const data = await resp.json();
+        if (data.success) {
+            activeScribeSession = data.data;
+            showToast('Transcript saved!', 'success');
+            await loadScribeSessions();
+            scribeView = 'note';
+            renderCurrentTab();
+            updateBadges();
+        } else {
+            showToast(data.error || 'Submission failed', 'error');
+        }
+    } catch (e) {
+        showToast('Submission failed', 'error');
+    }
+}
+
+function openScribeSession(sessionId, view) {
+    const session = scribeSessions.find(s => s.session_id === sessionId);
+    if (session) {
+        activeScribeSession = session;
+        scribeView = view || 'note';
+        scribePatientId = session.patient_id;
+
+        // ✅ FIX: If opening review and note exists, load it first (don't regenerate!)
+        if (view === 'review' && session.has_note) {
+            console.log('[Scribe] Loading existing note instead of regenerating...');
+            loadExistingScribeNote(sessionId).then(loaded => {
+                if (loaded) {
+                    console.log('[Scribe] ✅ Existing note loaded from cache');
+                } else {
+                    console.warn('[Scribe] Failed to load existing note - will need to regenerate');
+                }
+                renderCurrentTab();
+            });
+        } else {
+            renderCurrentTab();
+        }
+    }
+}
+
+// ✅ NEW: Load existing note from database (avoid CPU-heavy regeneration)
+async function loadExistingScribeNote(sessionId) {
+    try {
+        const resp = await fetch(`/ops/api/scribe/sessions/${sessionId}/note`, {
+            credentials: 'include'
+        });
+
+        if (resp.ok) {
+            const result = await resp.json();
+            if (result.success) {
+                currentNote = result.data;
+                console.log('[Scribe] Note loaded:', currentNote.note_id, '| Status:', currentNote.healthie_status);
+                return true;
+            }
+        } else if (resp.status === 404) {
+            console.log('[Scribe] No existing note found (will need to generate)');
+        } else {
+            console.warn('[Scribe] Failed to load note:', resp.status);
+        }
+    } catch (e) {
+        console.error('[Scribe] Exception loading note:', e);
+    }
+    return false;
+}
+
+function renderScribeNote(container) {
+    if (!activeScribeSession) { scribeView = 'list'; renderCurrentTab(); return; }
+
+    container.innerHTML = `
+        <div class="scribe-header-row">
+            <button class="scribe-back-btn" onclick="scribeView='list'; renderCurrentTab();">← Back</button>
+            <h1 style="font-size:24px;">Generate SOAP Note</h1>
+            ${getChartToggleBtn()}
+        </div>
+        ${getChartPanelHTML()}
+
+        <div class="scribe-session-summary">
+            <div class="scribe-session-patient">${activeScribeSession.patient_name || getPatientNameById(scribePatientId)}</div>
+            <div class="scribe-session-meta">${(activeScribeSession.visit_type || scribeVisitType).replace(/_/g, ' ')} · Session ${activeScribeSession.session_id?.slice(0, 8)}…</div>
+        </div>
+
+        <div class="scribe-action-card" onclick="generateSOAPNote()">
+            <div class="scribe-action-icon">🧠</div>
+            <div class="scribe-action-text">
+                <div class="scribe-action-title">Generate SOAP Note with AI</div>
+                <div class="scribe-action-desc">AI will analyze the transcript and patient context to generate a structured SOAP note with ICD-10 and CPT codes.</div>
+            </div>
+            <div class="action-arrow">›</div>
+        </div>
+
+        ${activeScribeSession.has_note ? `
+            <div class="scribe-action-card" onclick="openScribeSession('${activeScribeSession.session_id}', 'review')">
+                <div class="scribe-action-icon">📋</div>
+                <div class="scribe-action-text">
+                    <div class="scribe-action-title">View Existing Note</div>
+                    <div class="scribe-action-desc">Review the previously generated SOAP note.</div>
+                </div>
+                <div class="action-arrow">›</div>
+            </div>
+        ` : ''}
+
+        <div class="scribe-transcript-preview">
+            <h3>Transcript Preview</h3>
+            <div class="transcript-text-preview">
+                ${activeScribeSession.transcript_length > 0 ?
+            `<p style="color:var(--text-secondary); font-size:13px;">${activeScribeSession.transcript_length.toLocaleString()} characters transcribed</p>` :
+            '<p style="color:var(--text-tertiary);">No transcript available</p>'
+        }
+            </div>
+        </div>
+
+        <div style="margin-top:16px; text-align:center;">
+            <button onclick="discardScribeSession()" class="scribe-discard-btn" style="background:transparent; border:1px solid var(--error-color,#ef4444); color:var(--error-color,#ef4444); padding:10px 24px; border-radius:8px; font-size:14px; cursor:pointer;">
+                🗑 Discard Session
+            </button>
+        </div>
+    `;
+}
+
+async function generateSOAPNote(regen = false) {
+    if (!activeScribeSession) return;
+    showToast(regen ? 'Regenerating SOAP note with AI…' : 'Generating SOAP note with AI… this may take 30-60 seconds', 'info');
+
+    try {
+        // Use raw fetch to get full error details
+        const resp = await fetch('/ops/api/scribe/generate-note/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: activeScribeSession.session_id,
+                patient_id: scribePatientId || activeScribeSession.patient_id,
+                visit_type: scribeVisitType || activeScribeSession.visit_type,
+                patient_name: scribePatientName || activeScribeSession.patient_name || '',
+                regenerate: regen,
+            }),
+            credentials: 'include',
+        });
+        const result = await resp.json();
+
+        if (result?.success) {
+            // Flatten nested soap structure for consistent access
+            const noteData = result.data || {};
+            if (noteData.soap) {
+                noteData.soap_subjective = noteData.soap.subjective || '';
+                noteData.soap_objective = noteData.soap.objective || '';
+                noteData.soap_assessment = noteData.soap.assessment || '';
+                noteData.soap_plan = noteData.soap.plan || '';
+            }
+            currentNote = noteData;
+            showToast('SOAP note generated!', 'success');
+            await loadScribeSessions();
+            activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
+            scribeView = 'review';
+            renderCurrentTab();
+            updateBadges();
+        } else {
+            const errMsg = result?.error || 'Note generation failed';
+            console.error('[Scribe] Generate note error:', resp.status, errMsg);
+            // If note already exists (409), offer to view it
+            if (resp.status === 409) {
+                showToast('Note already exists for this session — opening review', 'info');
+                await loadScribeSessions();
+                activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
+                scribeView = 'review';
+                renderCurrentTab();
+            } else {
+                showToast(errMsg, 'error');
+            }
+        }
+    } catch (e) {
+        console.error('[Scribe] Generate note exception:', e);
+        showToast('Note generation failed: ' + (e.message || 'network error'), 'error');
+    }
+}
+
+function renderScribeReview(container) {
+    if (!activeScribeSession) { scribeView = 'list'; renderCurrentTab(); return; }
+
+    const note = currentNote || activeScribeSession;
+    const noteData = note?.note || note;
+    const isSubmitted = noteData?.healthie_status === 'submitted' || noteData?.healthie_status === 'locked' || noteData?.healthie_status === 'signed';
+
+    container.innerHTML = `
+        <div class="scribe-header-row">
+            <button class="scribe-back-btn" onclick="scribeView='list'; renderCurrentTab();">← Back</button>
+            <h1 style="font-size:24px;">SOAP Note Review</h1>
+            ${getChartToggleBtn()}
+        </div>
+        ${getChartPanelHTML()}
+
+        <div class="scribe-session-summary">
+            <div class="scribe-session-patient">${activeScribeSession.patient_name || getPatientNameById(scribePatientId)}</div>
+            <div class="scribe-session-meta">${(activeScribeSession.visit_type || '').replace(/_/g, ' ')} · ${isSubmitted ? '✅ Submitted to Healthie' : '📝 Draft'}</div>
+        </div>
+
+        <div class="soap-sections">
+            ${renderSOAPSection('S', 'Subjective', noteData?.soap_subjective || noteData?.subjective || 'Not yet generated')}
+            ${renderSOAPSection('O', 'Objective', noteData?.soap_objective || noteData?.objective || 'Not yet generated')}
+            ${renderSOAPSection('A', 'Assessment', noteData?.soap_assessment || noteData?.assessment || 'Not yet generated')}
+            ${renderSOAPSection('P', 'Plan', noteData?.soap_plan || noteData?.plan || 'Not yet generated')}
+        </div>
+
+        ${noteData?.icd10_codes?.length > 0 ? `
+            <div class="soap-codes-section">
+                <h3>ICD-10 Codes</h3>
+                <div class="code-chips">
+                    ${noteData.icd10_codes.map(c => `<span class="code-chip">[${c.code}] ${c.description || ''}</span>`).join('')}
+                </div>
+            </div>
+        ` : ''}
+
+        ${noteData?.cpt_codes?.length > 0 ? `
+            <div class="soap-codes-section">
+                <h3>CPT Codes</h3>
+                <div class="code-chips">
+                    ${noteData.cpt_codes.map(c => `<span class="code-chip cpt">${c.code}: ${c.description || ''}</span>`).join('')}
+                </div>
+            </div>
+        ` : ''}
+
+        <!-- AI Edit Bar -->
+        <div class="scribe-ai-edit" style="margin-top:16px; padding:12px; background:var(--surface-2); border-radius:12px; border:1px solid var(--border);">
+            <div style="display:flex; gap:8px;">
+                <input type="text" id="aiEditInput" placeholder="Tell AI what to change (e.g. 'add allergy to penicillin')…"
+                       style="flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-1); color:var(--text-primary); font-size:14px;" />
+                <button class="btn-primary" onclick="aiEditNote()" style="white-space:nowrap;">✨ AI Edit</button>
+            </div>
+        </div>
+
+        <!-- Supplementary Docs -->
+        <div style="margin-top:16px;">
+            <h3 style="font-size:14px; color:var(--text-secondary); margin-bottom:8px;">Generate Documents</h3>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <button class="btn-secondary" onclick="generateScribeDoc('work_note')">🏢 Work Note</button>
+                <button class="btn-secondary" onclick="generateScribeDoc('school_note')">🏫 School Note</button>
+                <button class="btn-secondary" onclick="generateScribeDoc('discharge_instructions')">📄 Discharge</button>
+                <button class="btn-secondary" onclick="generateScribeDoc('care_plan')">💊 Care Plan</button>
+            </div>
+            <div id="scribeDocsOutput" style="margin-top:12px;"></div>
+        </div>
+
+        ${!isSubmitted ? `
+            <div class="scribe-review-actions" style="margin-top:16px;">
+                <button class="btn-primary scribe-submit-btn" onclick="submitNoteToHealthie()">
+                    📤 Submit to Healthie
+                </button>
+                <button class="btn-secondary" onclick="previewSoapPdf()">
+                    📄 Preview PDF
+                </button>
+                <button class="btn-secondary" onclick="generateSOAPNote(true)">
+                    🔄 Regenerate Note
+                </button>
+                <button onclick="discardScribeSession()" style="background:transparent; border:1px solid var(--error-color,#ef4444); color:var(--error-color,#ef4444); padding:8px 16px; border-radius:8px; font-size:13px; cursor:pointer;">
+                    🗑 Discard
+                </button>
+            </div>
+        ` : `
+            <div class="scribe-submitted-banner">
+                <span>✅</span> Note submitted to Healthie${noteData?.healthie_note_id ? ` (ID: ${noteData.healthie_note_id})` : ''}
+                <button class="btn-secondary" onclick="previewSoapPdf()" style="margin-left:12px; font-size:12px; padding:4px 12px;">
+                    📄 Preview PDF
+                </button>
+            </div>
+            ${(currentUser?.role === 'admin' || currentUser?.is_provider) ? `
+                <div style="margin-top:12px; padding:12px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.3); border-radius:8px;">
+                    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;">
+                        ⚠️ This note is <strong>${noteData?.healthie_status || 'locked'}</strong>. To make corrections:
+                    </div>
+                    <button class="btn-secondary" onclick="unlockScribeNote()" style="background:rgba(251,191,36,0.2); border:1px solid rgba(251,191,36,0.4); color:#fbbf24; font-size:13px;">
+                        🔓 Unlock for Editing
+                    </button>
+                </div>
+            ` : ''}
+        `}
+    `;
+}
+
+function renderSOAPSection(letter, title, content) {
+    const colorMap = { S: 'var(--cyan)', O: 'var(--purple)', A: 'var(--yellow)', P: 'var(--green)' };
+    return `
+        <div class="soap-section">
+            <div class="soap-section-header">
+                <span class="soap-letter" style="background:${colorMap[letter]}20; color:${colorMap[letter]}">${letter}</span>
+                <span class="soap-title">${title}</span>
+            </div>
+            <div class="soap-content">${formatSOAPContent(content)}</div>
+        </div>
+    `;
+}
+
+function formatSOAPContent(text) {
+    if (!text || text === 'Not yet generated') return `<span style="color:var(--text-tertiary); font-style:italic;">${text}</span>`;
+    // Convert markdown-like formatting
+    return text
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n- /g, '<br>• ')
+        .replace(/\n/g, '<br>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\[([A-Z]\d{2}\.?\d*)\]/g, '<code class="icd-inline">$1</code>');
+}
+
+function previewSoapPdf() {
+    if (!activeScribeSession?.session_id) {
+        showToast('No active session', 'error');
+        return;
+    }
+    window.open(`/ops/api/scribe/soap-pdf/?session_id=${activeScribeSession.session_id}`, '_blank');
+}
+
+async function submitNoteToHealthie() {
+    if (!activeScribeSession?.note_id && !currentNote?.note_id) {
+        showToast('No note to submit — generate one first', 'error');
+        return;
+    }
+    const noteId = activeScribeSession?.note_id || currentNote?.note_id;
+
+    showToast('Submitting to Healthie…', 'info');
+    try {
+        const result = await apiFetch('/ops/api/scribe/submit-to-healthie/', {
+            method: 'POST',
+            body: JSON.stringify({ note_id: noteId })
+        });
+
+        if (result?.success) {
+            showToast('Note submitted to Healthie! ✅', 'success');
+            await loadScribeSessions();
+            activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
+            renderCurrentTab();
+            updateBadges();
+        } else {
+            showToast(result?.error || 'Submit failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Submit failed — check connection', 'error');
+    }
+}
+
+function renderScribeTranscript(container) {
+    // Fallback — redirect to note view
+    scribeView = 'note';
+    renderCurrentTab();
+}
+
+async function aiEditNote() {
+    const input = document.getElementById('aiEditInput');
+    const instruction = input?.value?.trim();
+    if (!instruction) { showToast('Enter an edit instruction', 'error'); return; }
+    const noteId = activeScribeSession?.note_id || currentNote?.note_id;
+    if (!noteId) { showToast('No note to edit', 'error'); return; }
+
+    showToast('Applying AI edit…', 'info');
+    try {
+        const result = await apiFetch(`/ops/api/scribe/notes/${noteId}/edit-ai/`, {
+            method: 'POST',
+            body: JSON.stringify({ edit_instruction: instruction })
+        });
+        if (result?.success) {
+            const n = result.data.updated_note;
+            if (currentNote) {
+                currentNote.soap_subjective = n.soap_subjective;
+                currentNote.soap_objective = n.soap_objective;
+                currentNote.soap_assessment = n.soap_assessment;
+                currentNote.soap_plan = n.soap_plan;
+            }
+            input.value = '';
+            showToast('AI edit applied!', 'success');
+            await loadScribeSessions();
+            activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession?.session_id) || activeScribeSession;
+            renderCurrentTab();
+        } else {
+            showToast(result?.error || 'AI edit failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('AI edit failed', 'error');
+    }
+}
+
+// ✅ NEW: Unlock a locked/signed note for editing
+async function unlockScribeNote() {
+    if (!currentNote?.note_id) {
+        showToast('No note to unlock', 'error');
+        return;
+    }
+
+    const status = currentNote.healthie_status;
+    if (!confirm(`Unlock this ${status} note for editing?\n\nThis will change status to Draft and allow modifications.`)) {
+        return;
+    }
+
+    console.log('[Scribe] Unlocking note:', currentNote.note_id);
+
+    try {
+        const resp = await fetch(`/ops/api/scribe/notes/${currentNote.note_id}/unlock`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+
+        const result = await resp.json();
+        if (result.success) {
+            showToast(`✅ Note unlocked (was: ${result.previous_status})`, 'success');
+            currentNote.healthie_status = 'draft';
+            // Reload to refresh UI with edit buttons
+            renderCurrentTab();
+        } else {
+            showToast(`Failed to unlock: ${result.error}`, 'error');
+        }
+    } catch (e) {
+        console.error('[Scribe] Unlock error:', e);
+        showToast('Error unlocking note', 'error');
+    }
+}
+
+async function generateScribeDoc(docType) {
+    if (!activeScribeSession?.session_id) { showToast('No active session', 'error'); return; }
+    const labels = {
+        work_note: 'Work Note', school_note: 'School Note',
+        discharge_instructions: 'Discharge Instructions', care_plan: 'Care Plan'
+    };
+
+    // Prompt for number of days for work/school notes
+    let numDays = null;
+    if (docType === 'work_note' || docType === 'school_note') {
+        const daysInput = prompt(`How many days should the patient be excused from ${docType === 'work_note' ? 'work' : 'school'}?`, '3');
+        if (daysInput === null) return; // User cancelled
+        numDays = parseInt(daysInput, 10);
+        if (isNaN(numDays) || numDays < 1) {
+            showToast('Please enter a valid number of days', 'error');
+            return;
+        }
+    }
+
+    showToast(`Generating ${labels[docType] || docType}…`, 'info');
+
+    try {
+        const body = {
+            session_id: activeScribeSession.session_id,
+            doc_type: docType,
+        };
+        if (numDays) body.num_days = numDays;
+
+        const result = await apiFetch('/ops/api/scribe/generate-doc/', {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+        if (result?.success) {
+            showToast(`${labels[docType]} generated!`, 'success');
+            const output = document.getElementById('scribeDocsOutput');
+            if (output) {
+                output.innerHTML += `
+                    <div style="background:var(--surface-1); border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:8px;">
+                        <h4 style="margin:0 0 8px; font-size:13px; color:var(--cyan);">${labels[docType] || docType}</h4>
+                        <div style="font-size:13px; color:var(--text-secondary); white-space:pre-wrap; line-height:1.5;">${formatSOAPContent(result.data?.content || '')}</div>
+                    </div>
+                `;
+            }
+        } else {
+            showToast(result?.error || 'Doc generation failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Doc generation failed', 'error');
+    }
+}
+
+// ============================================================
+// PATIENT CHART REVIEW PANEL (Slide-out during Scribe)
+// ============================================================
+let chartPanelData = null;
+let chartPanelOpen = false;
+let chartPanelPatientId = null;
+let chartPanelState = 'normal'; // 'normal' | 'minimized' | 'expanded'
+
+function toggleChartPanel() {
+    // Redirect to global chart panel
+    const pid = scribePatientId || activeScribeSession?.patient_id;
+    const pname = scribePatientName || activeScribeSession?.patient_name || 'Patient';
+    const globalPanel = document.getElementById('globalChartPanel');
+    if (globalPanel && globalPanel.classList.contains('open')) {
+        closeGlobalChart();
+    } else if (pid) {
+        openChartForPatient(pid, pname);
+    } else {
+        toggleGlobalChart();
+    }
+}
+
+function minimizeChartPanel() {
+    // Redirect to global chart panel
+    minimizeGlobalChart();
+}
+
+function expandChartPanel() {
+    // Redirect to global chart panel
+    expandGlobalChart();
+}
+
+// ==================== GLOBAL CHART PANEL ====================
+// Opens a patient chart from ANY view (schedule, patients, etc.)
+// Uses the global #globalChartPanel div in index.html
+let globalChartState = 'normal'; // 'normal' | 'minimized' | 'expanded'
+
+function openChartForPatient(patientId, patientName) {
+    if (!patientId) return;
+    let panel = document.getElementById('globalChartPanel');
+
+    // Dynamically create the chart panel if it doesn't exist in index.html (cache issue)
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'globalChartPanel';
+        panel.className = 'chart-panel';
+        panel.style.zIndex = '200';
+        panel.innerHTML = `
+            <div class="chart-panel-minimized-tab" onclick="toggleGlobalChart()" title="Restore chart panel">
+                <span>📋</span>
+                <span class="minimized-patient-name" id="globalChartPatientName"></span>
+            </div>
+            <div class="chart-panel-header">
+                <div class="chart-panel-title" id="globalChartTitle">📋 Patient Chart</div>
+                <div class="chart-panel-actions">
+                    <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
+                    <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
+                    <button class="chart-panel-close" onclick="closeGlobalChart()" style="background:rgba(239,68,68,0.8); color:white; font-size:18px; font-weight:bold;">✕</button>
+                </div>
+            </div>
+            <div id="globalChartContent" class="chart-panel-content">
+                <div class="chart-loading"><div class="spinner"></div> Loading…</div>
+            </div>
+        `;
+        document.body.appendChild(panel);
+    }
+
+    // ALWAYS ensure the header and close button exist dynamically (busts iPad HTML cache)
+    let header = panel.querySelector('.chart-panel-header');
+    if (!header) {
+        header = document.createElement('div');
+        header.className = 'chart-panel-header';
+        panel.insertBefore(header, panel.firstChild);
+    }
+
+    // Completely overwrite the header HTML every time to guarantee buttons exist
+    header.innerHTML = `
+        <div class="chart-panel-title" id="globalChartTitle">📋 Patient Chart</div>
+        <div class="chart-panel-actions">
+            <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
+            <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
+            <button class="chart-panel-close" onclick="closeGlobalChart()" style="background:rgba(239,68,68,0.8); color:white; font-size:18px; font-weight:bold;">✕</button>
+        </div>
+    `;
+
+    console.log('[openChartForPatient] Chart panel header created with BIG RED close buttons');
+
+    // Verify close button exists
+    const closeBtn = panel.querySelector('.chart-panel-close');
+    if (closeBtn) {
+        console.log('[openChartForPatient] ✅ Close button verified in DOM');
+    } else {
+        console.error('[openChartForPatient] ❌ Close button NOT FOUND in DOM!');
+    }
+
+    // Update header
+    const title = document.getElementById('globalChartTitle');
+    const nameEl = document.getElementById('globalChartPatientName');
+    if (title) title.textContent = '📋 ' + (patientName || 'Patient');
+    if (nameEl) nameEl.textContent = (patientName || 'Patient').split(' ')[0];
+
+    // Open panel - clear any inline styles and use CSS classes
+    panel.style.right = ''; // Clear inline style to use CSS .open class
+    panel.classList.add('open');
+    panel.classList.remove('minimized', 'expanded');
+    globalChartState = 'normal';
+
+    // Load data (reuses existing loadChartData which looks for globalChartContent)
+    chartPanelPatientId = patientId;
+    chartPanelOpen = true;
+    loadChartData(patientId);
+}
+
+function minimizeGlobalChart() {
+    const panel = document.getElementById('globalChartPanel');
+    if (!panel) return;
+    panel.classList.add('minimized');
+    panel.classList.remove('expanded');
+    globalChartState = 'minimized';
+}
+
+function expandGlobalChart() {
+    const panel = document.getElementById('globalChartPanel');
+    if (!panel) return;
+    if (globalChartState === 'expanded') {
+        panel.classList.remove('expanded');
+        globalChartState = 'normal';
+    } else {
+        panel.classList.add('expanded');
+        panel.classList.remove('minimized');
+        globalChartState = 'expanded';
+    }
+}
+
+function closeGlobalChart() {
+    console.log('[closeGlobalChart] Closing chart panel');
+    const panel = document.getElementById('globalChartPanel');
+    if (!panel) {
+        console.warn('[closeGlobalChart] Panel not found!');
+        return;
+    }
+    panel.classList.remove('open', 'minimized', 'expanded');
+    // Force slide out animation by ensuring no open class
+    panel.style.right = '-500px';
+    globalChartState = 'closed';
+    chartPanelOpen = false;
+    console.log('[closeGlobalChart] Chart panel closed');
+}
+
+function toggleGlobalChart() {
+    const panel = document.getElementById('globalChartPanel');
+    if (!panel) return;
+    if (panel.classList.contains('minimized')) {
+        panel.classList.remove('minimized');
+        globalChartState = 'normal';
+    } else {
+        panel.classList.add('open');
+        panel.classList.remove('minimized');
+        globalChartState = 'normal';
+    }
+}
+
+async function loadChartData(patientId) {
+    chartPanelPatientId = patientId;
+
+    // Find the correct chart panel content element:
+    // 1. If the global chart panel is open, use #globalChartContent
+    // 2. If scribe panel exists (still in DOM), use it
+    // 3. If NEITHER is open/present, silently return — don't auto-open
+    const globalPanel = document.getElementById('globalChartPanel');
+    const globalContent = document.getElementById('globalChartContent');
+    const scribeContent = document.getElementById('chartPanelContent');
+
+    var content;
+    if (globalPanel && globalPanel.classList.contains('open') && globalContent) {
+        content = globalContent;
+    } else if (scribeContent) {
+        content = scribeContent;
+    } else {
+        // No panel is open — don't force-open one, just return
+        return;
+    }
+    content.innerHTML = '<div class="chart-loading"><div class="spinner"></div> Loading chart…</div>';
+
+    // Helper: fetch with a hard 10s timeout (AbortController)
+    async function timedFetch(url) {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 10000);
+        try {
+            const resp = await fetch(url, { credentials: 'include', signal: controller.signal });
+            clearTimeout(tid);
+            if (resp.status === 401 || resp.status === 403) return null; // auth expired, handle gracefully
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            return data?.success ? data.data : null;
+        } catch (e) {
+            clearTimeout(tid);
+            return null; // timeout, network error, or abort - all return null
+        }
+    }
+
+    try {
+        // Fetch both local 360 and Healthie chart data in parallel (each with own timeout)
+        const [local360, healthieChart] = await Promise.all([
+            timedFetch(`/ops/api/patients/${patientId}/360/`),
+            timedFetch(`/ops/api/ipad/patient-chart/?patient_id=${patientId}`),
+        ]);
+
+        // Merge data — always succeeds even if both APIs returned null
+        chartPanelData = {
+            demographics: local360?.demographics || healthieChart?.demographics || {},
+            medications: local360?.medications || {},
+            labs: local360?.labs || {},
+            visits: local360?.visits || [],
+            alerts: local360?.alerts || [],
+            controlled_substances: local360?.controlled_substances || [],
+            healthie_meds: healthieChart?.medications || [],
+            healthie_allergies: healthieChart?.allergies || [],
+            healthie_chart_notes: healthieChart?.chart_notes || [],
+            healthie_documents: healthieChart?.documents || [],
+            healthie_vitals: healthieChart?.vitals || [],
+            healthie_appointments: healthieChart?.appointments || [],
+            scribe_history: healthieChart?.scribe_history || [],
+            avatar_url: healthieChart?.avatar_url || null,
+            healthie_id: healthieChart?.healthie_id || local360?.demographics?.healthie_client_id || '',
+            // Financial & dispense data
+            last_payments: healthieChart?.last_payments || [],
+            trt_dispenses: healthieChart?.trt_dispenses || [],
+            peptide_dispenses: healthieChart?.peptide_dispenses || [],
+            payment_methods: healthieChart?.payment_methods || [], // PLURAL - array of all cards
+            subscriptions: healthieChart?.subscriptions || [],
+            recurring_payment: healthieChart?.recurring_payment || null,
+        };
+        renderChartPanel(content);
+    } catch (e) {
+        console.error('Chart load error:', e);
+        // Absolute fallback — always render, never leave spinner stuck
+        chartPanelData = chartPanelData || {
+            demographics: {}, medications: {}, labs: {}, visits: [], alerts: [],
+            controlled_substances: [], healthie_meds: [], healthie_allergies: [],
+            healthie_chart_notes: [], healthie_documents: [], healthie_vitals: [],
+            healthie_appointments: [], scribe_history: [], avatar_url: null,
+        };
+        renderChartPanel(content);
+    }
+}
+
+function renderChartPanel(content) {
+    const d = chartPanelData;
+    if (!d) return;
+
+    // Default to charting tab
+    if (!window._chartTab) window._chartTab = 'charting';
+
+    const demo = d.demographics || {};
+    const hAllergies = d.healthie_allergies || [];
+    const hMeds = d.healthie_meds || [];
+    const hVitals = d.healthie_vitals || [];
+    const peptides = (d.medications || {}).peptides || d.peptides || [];
+    const trt = (d.medications || {}).trt || d.trt || [];
+
+    // ICD-10 code lookup (common men's health diagnoses)
+    const ICD10_LOOKUP = {
+        'E11.9': 'Type 2 Diabetes',
+        'E11.65': 'Type 2 Diabetes with Hyperglycemia',
+        'E78.5': 'Hyperlipidemia',
+        'E78.0': 'Pure Hypercholesterolemia',
+        'E66.9': 'Obesity',
+        'E66.01': 'Morbid Obesity',
+        'I10': 'Essential Hypertension',
+        'I25.10': 'Coronary Artery Disease',
+        'E29.1': 'Testicular Hypofunction',
+        'N52.9': 'Erectile Dysfunction',
+        'N40.0': 'Benign Prostatic Hyperplasia',
+        'F41.1': 'Generalized Anxiety Disorder',
+        'F32.9': 'Major Depressive Disorder',
+        'F33.9': 'Recurrent Depressive Disorder',
+        'F51.01': 'Insomnia',
+        'M79.3': 'Panniculitis',
+        'Z79.4': 'Long-term Testosterone Use',
+        'Z79.899': 'Long-term Medication Use',
+        'Z68.41': 'BMI 40.0-44.9 (Adult)',
+        'Z68.42': 'BMI 45.0-49.9 (Adult)',
+        'Z87.891': 'Personal History of Nicotine Dependence',
+        'J20.9': 'Acute Bronchitis',
+        'J06.9': 'Upper Respiratory Infection',
+        'J30.9': 'Allergic Rhinitis',
+        'R06.02': 'Shortness of Breath',
+        'R03.0': 'Elevated Blood Pressure',
+        'R73.03': 'Prediabetes',
+        'R50.9': 'Fever',
+        'I34.1': 'Mitral Valve Prolapse',
+        'G47.33': 'Obstructive Sleep Apnea',
+        'K21.9': 'GERD',
+        'M25.50': 'Joint Pain',
+        'R10.9': 'Abdominal Pain',
+        'R51': 'Headache'
+    };
+
+    // Extract working diagnoses (ICD-10 codes) from scribe history and SOAP notes
+    const workingDiagnoses = [];
+    const seenICD = new Set();
+
+    // From scribe history
+    (d.scribe_history || []).forEach(s => {
+        if (s.icd10_codes) {
+            const codes = Array.isArray(s.icd10_codes) ? s.icd10_codes : [s.icd10_codes];
+            codes.forEach(codeObj => {
+                // Handle both string format and object format
+                const codeStr = typeof codeObj === 'string' ? codeObj : (codeObj.code || String(codeObj));
+                const cleanCode = codeStr.trim();
+                if (cleanCode && !seenICD.has(cleanCode)) {
+                    seenICD.add(cleanCode);
+                    workingDiagnoses.push({
+                        code: cleanCode,
+                        description: ICD10_LOOKUP[cleanCode] || 'Unknown',
+                        date: s.created_at || s.visit_date
+                    });
+                }
+            });
+        }
+    });
+
+    // Sort by most recent first
+    workingDiagnoses.sort((a, b) => {
+        const dateA = a.date ? new Date(a.date).getTime() : 0;
+        const dateB = b.date ? new Date(b.date).getTime() : 0;
+        return dateB - dateA;
+    });
+
+    // Safe date formatter for vitals
+    function fmtVitalDate(dt) {
+        if (!dt) return '';
+        try {
+            const d = new Date(dt);
+            if (isNaN(d.getTime())) return '';
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Phoenix' });
+        } catch { return ''; }
+    }
+
+    // Get last 5 vitals (most recent)
+    const recentVitals = hVitals.slice(0, 5);
+
+    content.innerHTML = `
+        <!-- Patient Photo + Demographics -->
+        <div style="padding:0 4px; border-bottom:1px solid rgba(255,255,255,0.08); margin-bottom:0;">
+            <div style="display:flex; align-items:center; gap:12px; padding:10px 0 6px;">
+                ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border);">\ud83d\udc64</div>`}
+                <div style="flex:1;">
+                    <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${formatDateDisplay(demo.dob)}` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''}</div>
+                </div>
+                <button onclick="closeGlobalChart()" style="padding:4px 10px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer; margin-right:8px;" title="Close chart">✕ Close</button>
+                <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
+                ${demo.phone_primary ? `<div><span style="color:var(--text-tertiary);">Phone:</span> <span style="color:var(--text-secondary);">${demo.phone_primary}</span></div>` : ''}
+                ${demo.email ? `<div><span style="color:var(--text-tertiary);">Email:</span> <span style="color:var(--text-secondary);">${demo.email}</span></div>` : ''}
+                ${demo.height ? `<div><span style="color:var(--text-tertiary);">Height:</span> <span style="color:var(--text-secondary);">${demo.height}</span></div>` : ''}
+                ${demo.weight ? `<div><span style="color:var(--text-tertiary);">Weight:</span> <span style="color:var(--text-secondary);">${demo.weight}</span></div>` : ''}
+                ${demo.regimen ? `<div><span style="color:var(--text-tertiary);">Regimen:</span> <span style="color:var(--text-secondary);">${demo.regimen}</span></div>` : ''}
+                ${demo.client_type_key || demo.user_group ? `<div><span style="color:var(--text-tertiary);">Group:</span> <span style="color:var(--text-secondary);">${demo.user_group || demo.client_type_key}</span></div>` : ''}
+            </div>
+            ${demo.address_line1 || demo.city ? `
+            <div style="padding:2px 0 4px; font-size:11px;">
+                <span style="color:var(--text-tertiary);">Address:</span>
+                <span style="color:var(--text-secondary);">${demo.address_line1 || ''}${demo.address_line2 ? ', ' + demo.address_line2 : ''}${demo.city ? ', ' + demo.city : ''}${demo.state ? ', ' + demo.state : ''} ${demo.zip || ''}</span>
+            </div>` : ''}
+            ${demo.insurance ? `
+            <div style="padding:2px 0 4px; font-size:11px;">
+                <span style="color:var(--text-tertiary);">Insurance:</span>
+                <span style="color:var(--text-secondary);">${demo.insurance.payer_name || 'None'}${demo.insurance.plan_name ? ' — ' + demo.insurance.plan_name : ''}${demo.insurance.member_id ? ' (ID: ' + demo.insurance.member_id + ')' : ''}</span>
+            </div>` : ''}
+            ${demo.tags && demo.tags.length > 0 ? `
+            <div style="display:flex; flex-wrap:wrap; gap:3px; padding:2px 0 6px;">
+                ${demo.tags.map(t => `<span style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7;">${t.name}</span>`).join('')}
+            </div>` : ''}
+        </div>
+
+        <!-- ALLERGIES (always visible) -->
+        <div id="allergies-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>\ud83d\udea8 Allergies</span>
+                <button class="chart-add-btn" onclick="showPatientDataForm('allergy')" title="Add Allergy" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+            </div>
+            ${hAllergies.length > 0
+                ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${hAllergies.map(a => `<span style="font-size:11px; padding:2px 8px; border-radius:10px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.2);">${a.name || 'Unknown'}${a.severity ? ` (${a.severity})` : ''}</span>`).join('')}</div>`
+                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">NKDA</div>`}
+        </div>
+
+        <!-- WORKING DIAGNOSES (ICD-10 codes from chart notes) -->
+        <div id="diagnoses-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>\ud83c\udff7\ufe0f Working Diagnoses (${workingDiagnoses.length})</span>
+                <div style="display:flex; gap:4px; align-items:center;">
+                    ${workingDiagnoses.length > 3 ? `<button onclick="document.getElementById('diagnoses-expanded').classList.toggle('hidden'); this.textContent = this.textContent.includes('more') ? 'Show less' : 'Show ${workingDiagnoses.length - 3} more'" style="font-size:10px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">Show ${workingDiagnoses.length - 3} more</button>` : ''}
+                    <button class="chart-add-btn" onclick="showPatientDataForm('diagnosis')" title="Add Diagnosis" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+                </div>
+            </div>
+            ${workingDiagnoses.length > 0 ? `
+            <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                ${workingDiagnoses.slice(0, 3).map(dx => `<span style="font-size:11px; padding:3px 6px 3px 8px; border-radius:6px; background:rgba(168,85,247,0.15); color:#a855f7; border:1px solid rgba(168,85,247,0.2); line-height:1.4; display:inline-flex; align-items:center; gap:6px;"><span><span style="font-family:monospace; font-weight:600;">${dx.code}</span> — ${dx.description}</span><!-- <button onclick="removeDiagnosis('${dx.code}', '${dx.description.replace(/'/g, "\\'")}')" style="background:none; border:none; color:#a855f7; cursor:pointer; padding:0; font-size:14px; line-height:1; opacity:0.6; transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'" title="Remove">✕</button> --></span>`).join('')}
+            </div>
+            ${workingDiagnoses.length > 3 ? `
+            <div id="diagnoses-expanded" class="hidden" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; padding-top:4px; border-top:1px solid rgba(168,85,247,0.1);">
+                ${workingDiagnoses.slice(3).map(dx => `<span style="font-size:11px; padding:3px 6px 3px 8px; border-radius:6px; background:rgba(168,85,247,0.15); color:#a855f7; border:1px solid rgba(168,85,247,0.2); line-height:1.4; display:inline-flex; align-items:center; gap:6px;"><span><span style="font-family:monospace; font-weight:600;">${dx.code}</span> — ${dx.description}</span><!-- <button onclick="removeDiagnosis('${dx.code}', '${dx.description.replace(/'/g, "\\'")}')" style="background:none; border:none; color:#a855f7; cursor:pointer; padding:0; font-size:14px; line-height:1; opacity:0.6; transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'" title="Remove">✕</button> --></span>`).join('')}
+            </div>` : ''}` : '<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No working diagnoses</div>'}
+        </div>
+
+        <!-- MEDICATIONS (always visible) -->
+        <div id="medications-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>\ud83d\udc8a Medications (${hMeds.length + peptides.length + trt.length})</span>
+                <button class="chart-add-btn" onclick="showPatientDataForm('medication')" title="Add Medication" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+            </div>
+            ${hMeds.length + peptides.length + trt.length > 0
+                ? `<div style="font-size:11px; color:var(--text-secondary); line-height:1.5;">${[
+                    ...hMeds.map(m => `${m.name || '?'}${m.dosage ? ' ' + m.dosage : ''}`),
+                    ...peptides.map(m => m.medication_name || m.product_name || '?'),
+                    ...trt.map(m => m.medication_name || '?')
+                ].join(' · ')}</div>`
+                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No medications on file</div>`}
+        </div>
+
+        <!-- LAST VITALS (always visible) -->
+        <div style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.08);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>\ud83d\udcca Last Vitals</span>
+                <button class="chart-add-btn" onclick="showQuickVitalsForm()" title="Quick Vitals" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+            </div>
+            <div id="quickVitalsFormArea"></div>
+            ${recentVitals.length > 0
+                ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:4px;">${recentVitals.map(v => {
+                    const recordedBy = v.created_by?.full_name || v.created_by?.email || (v.description && v.description.includes('by ') ? v.description.split('by ').pop().split(')')[0] : '');
+                    return `<div style="font-size:11px; padding:4px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border);">
+                    <div style="color:var(--text-tertiary); font-size:9px; text-transform:uppercase;">${v.category || v.type || '?'}</div>
+                    <div style="color:var(--text-primary); font-weight:600;">${v.metric_stat || '—'}</div>
+                    <div style="color:var(--text-tertiary); font-size:8px;">${fmtVitalDate(v.created_at)}</div>
+                    ${recordedBy ? `<div style="color:var(--cyan); font-size:8px;">by ${recordedBy.split('@')[0]}</div>` : ''}
+                </div>`;
+                }).join('')}</div>`
+                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No vitals on file</div>`}
+        </div>
+
+        <!-- Tabs (Charting / Forms / Documents / Financial / Dispense Hx) -->
+        <div class="chart-tab-nav">
+            <button class="chart-tab-btn ${window._chartTab === 'charting' ? 'active' : ''}" onclick="switchChartTab('charting')">\ud83d\udccb Charting</button>
+            <button class="chart-tab-btn ${window._chartTab === 'forms' ? 'active' : ''}" onclick="switchChartTab('forms')">\ud83d\udcdd Forms</button>
+            <button class="chart-tab-btn ${window._chartTab === 'documents' ? 'active' : ''}" onclick="switchChartTab('documents')">\ud83d\udcc1 Documents</button>
+            <button class="chart-tab-btn ${window._chartTab === 'financial' ? 'active' : ''}" onclick="switchChartTab('financial')">\ud83d\udcb0 Financial</button>
+            <button class="chart-tab-btn ${window._chartTab === 'dispense' ? 'active' : ''}" onclick="switchChartTab('dispense')">\ud83d\udc89 Dispense Hx</button>
+        </div>
+        <div id="chartTabContent"></div>
+    `;
+
+    renderChartTabContent();
+}
+
+function switchChartTab(tab) {
+    window._chartTab = tab;
+    // Update button active states
+    document.querySelectorAll('.chart-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.textContent.includes(
+            tab === 'charting' ? 'Charting' :
+            tab === 'forms' ? 'Forms' :
+            tab === 'documents' ? 'Documents' :
+            tab === 'financial' ? 'Financial' :
+            tab === 'dispense' ? 'Dispense' : ''
+        ));
+    });
+    renderChartTabContent();
+}
+
+function renderChartTabContent() {
+    const container = document.getElementById('chartTabContent');
+    if (!container || !chartPanelData) return;
+    const d = chartPanelData;
+
+    if (window._chartTab === 'charting') {
+        renderChartingTab(container, d);
+    } else if (window._chartTab === 'forms') {
+        renderFormsTab(container, d);
+    } else if (window._chartTab === 'documents') {
+        renderDocumentsTab(container, d);
+    } else if (window._chartTab === 'financial') {
+        renderFinancialTab(container, d);
+    } else if (window._chartTab === 'dispense') {
+        renderDispenseTab(container, d);
+    }
+}
+
+// ==================== CHARTING TAB ====================
+// Shows: scribe notes, Healthie chart notes (expandable), appointments, controlled substances, alerts
+// NOTE: Allergies, Medications, and Vitals are now shown permanently above the tabs
+function renderChartingTab(container, d) {
+    const hAppts = d.healthie_appointments || [];
+    const controlled = d.controlled_substances || [];
+    const alerts = d.alerts || [];
+    const scribeHist = d.scribe_history || [];
+
+    // Safe date formatter
+    function fmtDate(dt) {
+        if (!dt) return '—';
+        try { const dd = new Date(dt); return isNaN(dd.getTime()) ? '—' : dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/Phoenix' }); } catch { return '—'; }
+    }
+
+    // Separate SOAP/chart notes from patient forms
+    const allChartNotes = d.healthie_chart_notes || [];
+    const soapNotes = allChartNotes.filter(n => {
+        const name = (n.name || '').toLowerCase();
+        return name.includes('soap') || name.includes('chart note') || name.includes('progress note') || name.includes('visit note') || name.includes('encounter');
+    });
+
+    container.innerHTML = `

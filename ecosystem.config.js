@@ -58,7 +58,10 @@ module.exports = {
             max_memory_restart: '1G',
             env: {
                 NODE_ENV: 'production',
-                PORT: 3011
+                PORT: 3011,
+                HEALTHIE_API_KEY: 'gh_live_SHmVYEL4hDX2o7grAgDDVvDkpvYgzRHzlZlgQOZ7WTp9KZgmAeEgJpOtB8HLMCVp',
+                HEALTHIE_API_URL: 'https://api.gethealthie.com/graphql',
+                GOOGLE_AI_API_KEY: 'AIzaSyCvqwmqxV50HWESOYNhhXl1PVYiDNYRzjg'
             }
         },
 

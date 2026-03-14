@@ -3370,7 +3370,7 @@ async function loadChartData(patientId) {
     // Helper: fetch with a hard 10s timeout (AbortController)
     async function timedFetch(url) {
         const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort(), 10000);
+        const tid = setTimeout(() => controller.abort(), 45000);
         try {
             const resp = await fetch(url, { credentials: 'include', signal: controller.signal });
             clearTimeout(tid);
@@ -3727,7 +3727,39 @@ function renderChartingTab(container, d) {
             </div>
         </div>` : '<div class="chart-section"><div class="chart-empty" style="padding:12px;">No previous SOAP notes found</div></div>'}
 
-        <!-- Appointments -->
+        
+        <!-- Scribe SOAP Notes (GMH Dashboard) -->
+        ${scribeHist.length > 0 ? `
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>🎙️ Scribe SOAP Notes (${scribeHist.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${scribeHist.map((s, i) => `
+                    <div class="chart-lab-card" style="cursor:pointer;" onclick="this.classList.toggle('chart-note-expanded')">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div class="chart-lab-name">${s.visit_type || 'Scribe Note'} - ${s.status || 'Completed'}</div>
+                            <div class="chart-lab-detail">${fmtDate(s.created_at)}</div>
+                        </div>
+                        <div class="chart-note-preview" style="margin-top:4px;">
+                            <div class="chart-med-detail">
+                                ${s.soap_subjective ? 'S: ' + s.soap_subjective.substring(0, 80) + '...' : 'Click to expand'}
+                            </div>
+                        </div>
+                        <div class="chart-note-full" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
+                            ${s.soap_subjective ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">SUBJECTIVE</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${s.soap_subjective}</div></div>` : ''}
+                            ${s.soap_objective ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">OBJECTIVE</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${s.soap_objective}</div></div>` : ''}
+                            ${s.soap_assessment ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">ASSESSMENT</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${s.soap_assessment}</div></div>` : ''}
+                            ${s.soap_plan ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">PLAN</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${s.soap_plan}</div></div>` : ''}
+                            ${s.icd10_codes ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">ICD-10 CODES</div><div style="font-size:12px; color:var(--text-secondary);">${JSON.stringify(s.icd10_codes)}</div></div>` : ''}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+        ` : ''}
+<!-- Appointments -->
         ${hAppts.length > 0 ? `
         <div class="chart-section collapsed">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
@@ -3747,25 +3779,6 @@ function renderChartingTab(container, d) {
             </div>
         </div>
         ` : ''}
-
-        <!-- Controlled Substances -->
-        ${controlled.length > 0 ? `
-        <div class="chart-section collapsed">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>\ud83d\udd10 Controlled Substances (${controlled.length})</span>
-                <span class="chart-chevron">\u203a</span>
-            </div>
-            <div class="chart-section-body">
-                ${controlled.map(c => `
-                    <div class="chart-med-card">
-                        <div class="chart-med-name">${c.medication_name || 'Unknown'}</div>
-                        <div class="chart-med-detail">${c.dose_ml ? `${c.dose_ml}mL` : ''} \u00b7 Dispensed: ${fmtDate(c.dispensed_date)}</div>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-        ` : ''}
-
         <!-- Alerts -->
         ${alerts.length > 0 ? `
         <div class="chart-section collapsed">
@@ -4490,6 +4503,7 @@ function renderFinancialTab(container, d) {
 function renderDispenseTab(container, d) {
     const trtDispenses = d.trt_dispenses || [];
     const peptideDispenses = d.peptide_dispenses || [];
+    const controlled = d.controlled_substances || [];
 
     const formatDate = (dateStr) => {
         try {
@@ -4516,21 +4530,27 @@ function renderDispenseTab(container, d) {
                     <div class="chart-lab-card">
                         <div style="display:flex; justify-content:space-between; align-items:start;">
                             <div style="flex:1;">
-                                <div class="chart-lab-name">${dispense.dea_drug_name || 'Testosterone'} ${dispense.concentration ? `(${dispense.concentration}mg/mL)` : ''}</div>
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <div class="chart-lab-name">${dispense.dea_drug_name || 'Testosterone Cypionate'}</div>
+                                    <div style="font-size:16px; font-weight:700; color:var(--cyan);">${dispense.total_dispensed_ml}mL</div>
+                                </div>
                                 <div class="chart-lab-detail">
                                     ${formatDate(dispense.dispense_date)} ·
-                                    ${dispense.dose_per_syringe_ml}mL × ${dispense.syringe_count} syringe${dispense.syringe_count > 1 ? 's' : ''} =
-                                    ${dispense.total_dispensed_ml}mL total
+                                    ${dispense.dose_per_syringe_ml}mL × ${dispense.syringe_count} syringe${dispense.syringe_count > 1 ? 's' : ''}
                                     ${dispense.waste_ml > 0 ? ` (+${dispense.waste_ml}mL waste)` : ''}
                                 </div>
-                                ${dispense.prescriber ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">Prescriber: ${dispense.prescriber}</div>` : ''}
+                                <div style="font-size:11px; color:var(--text-secondary); margin-top:4px; font-weight:600;">
+                                    📦 ${dispense.vial_source || 'Unknown Source'}
+                                </div>
+                                <div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">
+                                    Rx: ${dispense.prescriber || 'N/A'}${dispense.signature_status ? ` · ${dispense.signature_status}` : ''}
+                                </div>
                                 ${dispense.notes ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${dispense.notes}</div>` : ''}
                             </div>
                         </div>
                     </div>
                 `).join('') : '<div class="chart-empty">No TRT dispense history</div>'}
-            </div>
-        </div>
+            
 
         <!-- Peptide Dispenses -->
         <div class="chart-section${peptideDispenses.length === 0 ? ' collapsed' : ''}">
@@ -4714,8 +4734,8 @@ function renderDEASection() {
         </button>
 
         <!-- Dispense Now Button -->
-        <button class="btn-dispense" style="background:linear-gradient(135deg, #059669 0%, #10b981 100%); margin-top:8px;" onclick="openQuickDispenseModal()">
-            ✅ Dispense Now (Record Administration)
+        <button class="btn-dispense" style="background:linear-gradient(135deg, #059669 0%, #10b981 100%); margin-top:8px;" onclick="openQuickDispenseModalWrapper()">
+            ✅ DISPENSE NOW - NEW VERSION
         </button>
 
         <!-- Stage Dose Modal -->
@@ -7034,23 +7054,42 @@ async function submitControlledDispense(patientId, patientName) {
     }
 }
 // ─── QUICK DISPENSE MODAL (from Inventory tab) ─────────────
+async function openQuickDispenseModalWrapper() {
+    console.log('[QuickDispense] Wrapper called');
+    try {
+        await openQuickDispenseModal();
+        console.log('[QuickDispense] Modal opened successfully');
+    } catch(err) {
+        alert('Error opening modal: ' + err.message);
+        console.error('[QuickDispense] Error:', err);
+    }
+}
+
 async function openQuickDispenseModal() {
+    console.log('[QuickDispense] Opening modal...');
     const existing = document.getElementById('quickDispenseModal');
     if (existing) existing.remove();
 
     // Load available vials
     let vials = [];
     try {
-        const data = await apiFetch('/ops/api/inventory/vials?status=active');
+        console.log('[QuickDispense] Fetching vials...');
+        const data = await apiFetch('/ops/api/inventory/vials?status=Active');
         vials = data?.data || data?.vials || data || [];
         if (!Array.isArray(vials)) vials = [];
-    } catch { vials = []; }
+        console.log('[QuickDispense] Loaded vials:', vials.length);
+    } catch (err) {
+        console.error('[QuickDispense] Failed to load vials:', err);
+        vials = [];
+    }
 
     const deaVials = vials.filter(v => v.dea_schedule || v.dea_drug_name);
+    console.log('[QuickDispense] DEA vials filtered:', deaVials.length);
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
 
+    console.log('[QuickDispense] About to insert modal HTML...');
     document.body.insertAdjacentHTML('beforeend', `
-        <div id="quickDispenseModal" class="modal-overlay" style="display:flex;">
+        <div id="quickDispenseModal" class="modal-overlay visible" style="display:flex;">
             <div class="modal modal-large" style="max-width:540px;">
                 <div class="modal-header">
                     <h2 style="font-size:18px; margin:0;">✅ Record Controlled Dispense</h2>
@@ -7132,9 +7171,13 @@ async function openQuickDispenseModal() {
         });
     }
 
+    console.log('[QuickDispense] Modal HTML inserted, setting up event listeners...');
+
     // Store patient selection on window for the submit function
     window._qdPatientId = null;
     window._qdPatientName = '';
+
+    console.log('[QuickDispense] Setup complete, modal should be visible');
 }
 
 function selectQuickDispensePatient(patientId, patientName) {

@@ -1,8 +1,8 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: March 13, 2026
+**Last Updated**: March 14, 2026
 **Primary AI Assistant**: Claude Code (Anthropic)
-**Sprint Period**: December 25, 2025 - March 13, 2026
+**Sprint Period**: December 25, 2025 - March 14, 2026
 
 
 > **Purpose**: This is the MASTER reference document for all AI assistants working on the GMH Dashboard system. When in doubt, refer to this file first. All critical system information, recent changes, and operational procedures are documented here.
@@ -22,8 +22,8 @@
 | 7 | [Previous Changes (Dec 2025)](#-previous-major-changes-dec-25-30-2025) | 1405–2103 | When understanding foundational features or GHL/Scribe/Email systems |
 | 8 | [Alert & Notification System](#-alert--notification-system) | 2104–2322 | When working with email triage, lab monitoring, health checks |
 | 9 | [Operational Procedures](#-operational-procedures) | 2323–2506 | When deploying, configuring Nginx, managing PM2, or changing env vars |
-| 10 | [Critical Code Patterns](#-critical-code-patterns) | 2507–2685 | When writing code — base path, hydration, formatting patterns |
-| 11 | [Troubleshooting](#-troubleshooting) | 2686–2860 | When debugging dashboard, OAuth, redirects, disk, scribe, or Snowflake |
+| 10 | [Critical Code Patterns](#-critical-code-patterns) | 3225–3462 | When writing code — base path, hydration, Healthie GraphQL performance |
+| 11 | [Troubleshooting](#-troubleshooting) | 3463–3640 | When debugging dashboard, OAuth, redirects, disk, scribe, or Snowflake |
 | 12 | [File Locations](#-reference-file-locations) | 2861–2906 | When looking for specific config, source, or script files |
 | 13 | [Development Guidelines](#-development-guidelines) | 2907–2940 | When writing new code — style, commits, testing checklist |
 | 14 | [Quick Commands](#-quick-commands-reference) | 2941–2996 | Copy-paste deployment, status, log, and cleanup commands |
@@ -3399,6 +3399,65 @@ for (const item of items) {
 | `lib/healthieApi.ts` | Shared `healthieGraphQL()` wrapper (auth + rate limit + errors) |
 | `lib/healthie.ts` | `HealthieClient.graphql()` — integrated with rate limiter |
 
+### Healthie GraphQL Performance Optimization (CRITICAL — March 13, 2026)
+
+> [!CAUTION]
+> **ALWAYS filter large datasets at the GraphQL query level, NOT client-side. Fetching all records and filtering in JavaScript causes massive performance issues.**
+
+**Incident (March 13, 2026)**: iPad schedule API was timing out after 45 seconds because it fetched ALL 4,970 appointments from Healthie (29.3s response time), then filtered client-side for the provider's appointments.
+
+**The Problem:**
+```typescript
+// ❌ WRONG — Fetches 4,970 appointments in 29 seconds, then filters client-side
+const query = `query {
+  appointments(filter: "all", should_paginate: false) {
+    id date provider { id full_name } user { id first_name last_name }
+  }
+}`;
+const response = await fetch(HEALTHIE_API_URL, { body: JSON.stringify({ query }) });
+const allAppointments = response.data.appointments;
+const filtered = allAppointments.filter(a => a.provider?.id === providerId); // Client-side filtering
+```
+
+**The Solution:**
+```typescript
+// ✅ CORRECT — Fetches only 379 provider appointments in 3.3 seconds
+const query = `query GetAppointments($providerId: ID!) {
+  appointments(
+    filter: "all",
+    provider_id: $providerId,
+    should_paginate: false
+  ) {
+    id date provider { id full_name } user { id first_name last_name }
+  }
+}`;
+const variables = { providerId };
+const response = await fetch(HEALTHIE_API_URL, {
+  body: JSON.stringify({ query, variables })
+});
+// No client-side filtering needed!
+```
+
+**Performance Impact:**
+| Method | Records Fetched | Response Time | Speed Improvement |
+|--------|----------------|---------------|-------------------|
+| ❌ Client-side filter | 4,970 appointments | 29.3 seconds | Baseline |
+| ✅ GraphQL `provider_id` filter | 379 appointments | 3.3 seconds | **9x faster** |
+
+**GraphQL Parameters That Support Filtering:**
+- `appointments`: `provider_id`, `user_id`, `filter` (all/upcoming/past), date ranges
+- `users`: `include_all_organizations`, `active_status`, `dietitian_id`
+- `form_answer_groups`: `custom_module_form_id`, `finished`, `user_id`
+- `metric_entries`: `user_id`, `category`, date ranges
+
+**Golden Rule**: If Healthie API docs show a filter parameter exists, ALWAYS use it in the query rather than fetching everything.
+
+**Key Files:**
+| File | What Was Fixed |
+|------|----------------|
+| `app/api/ipad/schedule/route.ts` | Added `provider_id` GraphQL variable, removed client-side filtering |
+| `HEALTHIE_API_COMPLETE_REFERENCE.md` | Documents all supported Healthie GraphQL parameters |
+
 ---
 
 ## 🔍 TROUBLESHOOTING
@@ -3790,7 +3849,9 @@ cd /home/ec2-user/scripts/scribe && python3 scribe_orchestrator.py test.m4a
 - **GraphQL Docs**: https://docs.gethealthie.com/reference/2024-06-01
 - **Webhooks**: https://docs.gethealthie.com/docs/webhooks
 
-#### Healthie API Behavior Notes (Updated Feb 19, 2026)
+#### Healthie API Behavior Notes (Updated March 14, 2026)
+
+**COMPLETE API REFERENCE**: `/home/ec2-user/HEALTHIE_API_COMPLETE_REFERENCE.md` (comprehensive 700-line guide with verified queries and mutations)
 
 **Rate Limits** (CRITICAL):
 - **General API**: 250 requests/second (official), but 39+ burst requests trigger 30-60 min lockout
@@ -3813,6 +3874,41 @@ cd /home/ec2-user/scripts/scribe && python3 scribe_orchestrator.py test.m4a
 - `mergeClients` mutation exists but consistently returns "Object not found" error
 - **Workaround**: Use `updateClient(active: false)` to deactivate duplicates instead
 - Keep patient with group assignment, deactivate ungrouped duplicate
+
+**Appointments Query - CRITICAL PARAMETERS** (March 14, 2026):
+```graphql
+# ✅ CORRECT - These work:
+appointments(
+  provider_id: "12093125"        # ✅ Filters by provider
+  user_id: "12742276"            # ✅ Filters by patient
+  filter: "all"                  # ✅ "all", "upcoming", "past"
+  is_active: true                # ✅ Active only
+  should_paginate: false         # ✅ Get all results
+  startDate: "2026-03-01"        # ✅ Date range start
+  endDate: "2026-03-31"          # ✅ Date range end
+) {
+  id
+  date
+  pm_status   # ✅ CORRECT field (NOT "status")
+  provider { id full_name }
+  user { id first_name last_name }
+}
+
+# ❌ WRONG - These cause GraphQL errors:
+appointments(
+  dietitian_id: "..."   # ❌ NOT SUPPORTED - use provider_id
+  client_id: "..."      # ❌ NOT SUPPORTED - use user_id
+  user_group_id: "..."  # ❌ NOT SUPPORTED
+  date_from: "..."      # ❌ NOT SUPPORTED - use startDate
+  date_to: "..."        # ❌ NOT SUPPORTED - use endDate
+)
+```
+
+**Field Name Corrections**:
+- `pm_status` (NOT `status`) for appointment status
+- `user_id` (NOT `client_id`) for appointments query argument
+- `client_id` for entries/documents queries (String type, NOT ID)
+- `created_at` (NOT `date_received`) for lab orders
 
 **Patient Sync Script**: `/home/ec2-user/scripts/scribe/sync_jane_to_systems.py`
 - Syncs patient data from Jane EMR import → Healthie, GHL, GMH Dashboard

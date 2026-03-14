@@ -32,17 +32,21 @@ export async function GET(request: NextRequest) {
 
         const todayStr = dateOverride || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
 
+        // DIAGNOSTIC: Log environment
+        console.log('[iPad Schedule] HEALTHIE_API_KEY present:', !!HEALTHIE_API_KEY, 'length:', HEALTHIE_API_KEY?.length || 0);
+        console.log('[iPad Schedule] HEALTHIE_API_URL:', HEALTHIE_API_URL);
+
         // Build GraphQL query — try multiple approaches to find today's appointments
         let appointments: any[] = [];
 
-        // Primary query: use date range WITHOUT is_active (which was filtering out results)
-        // NOTE: Healthie uses 'dietitian_id' not 'provider_id' for filtering appointments!
+        // CRITICAL OPTIMIZATION: Filter by provider_id at API level to avoid fetching all 4970 appointments (29s response time)
+        // The appointments query DOES support provider_id filtering!
+        // Build query dynamically based on whether we have a provider_id
         const appointmentQuery = providerId
-            ? `query GetAppointments($startDate: String, $endDate: String, $providerId: ID) {
+            ? `query GetAppointments($providerId: ID!) {
                 appointments(
-                    startDate: $startDate,
-                    endDate: $endDate,
-                    dietitian_id: $providerId,
+                    filter: "all",
+                    provider_id: $providerId,
                     should_paginate: false
                 ) {
                     id date length pm_status location other_party_id
@@ -53,10 +57,9 @@ export async function GET(request: NextRequest) {
                     contact_type
                 }
             }`
-            : `query GetAppointments($startDate: String, $endDate: String) {
+            : `query GetAppointments {
                 appointments(
-                    startDate: $startDate,
-                    endDate: $endDate,
+                    filter: "all",
                     should_paginate: false
                 ) {
                     id date length pm_status location other_party_id
@@ -68,12 +71,12 @@ export async function GET(request: NextRequest) {
                 }
             }`;
 
-        const variables: Record<string, string> = { startDate: todayStr, endDate: todayStr };
-        if (providerId) variables.providerId = providerId;
+        const variables: Record<string, string> = providerId ? { providerId } : {};
 
         // Direct fetch with AbortController
+        // INCREASED: Healthie API can be slow (10s was timing out constantly)
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
+        const timeout = setTimeout(() => controller.abort(), 30000);
 
         try {
             const response = await fetch(HEALTHIE_API_URL, {
@@ -94,8 +97,41 @@ export async function GET(request: NextRequest) {
                 if (result.errors) {
                     console.error('[iPad Schedule] Healthie errors:', JSON.stringify(result.errors));
                 }
-                appointments = result.data?.appointments || [];
-                console.log('[iPad Schedule] Fetched', appointments.length, 'appointments for', todayStr, providerId ? `(provider: ${providerId})` : '(all)');
+                let allUpcoming = result.data?.appointments || [];
+                console.log('[iPad Schedule] Fetched', allUpcoming.length, 'upcoming appointments from Healthie');
+
+                // DEBUG: Log first 5 appointment dates to see format
+                if (allUpcoming.length > 0) {
+                    console.log('[iPad Schedule] First 5 appointment dates:', allUpcoming.slice(0, 5).map((a: any) => ({
+                        raw: a.date,
+                        parsed: new Date(a.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }),
+                        provider: a.provider?.full_name
+                    })));
+                }
+
+                // Filter to TODAY ONLY (backend date filtering)
+                appointments = allUpcoming.filter((a: any) => {
+                    if (!a.date) return false;
+                    const apptDate = new Date(a.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+                    return apptDate === todayStr;
+                });
+                console.log('[iPad Schedule] Filtered to', appointments.length, 'appointments for TODAY:', todayStr, '(from', allUpcoming.length, 'total)');
+
+                // Log appointments after filtering (provider filtering now happens at GraphQL level)
+                if (appointments.length > 0 && appointments.length <= 30) {
+                    console.log('[iPad Schedule] TODAY appointments by provider:',
+                        appointments.map((a: any) => ({
+                            provider_id: a.provider?.id,
+                            provider_name: a.provider?.full_name,
+                            patient: (a.user?.first_name || '') + ' ' + (a.user?.last_name || ''),
+                            location: a.location,
+                            appt_type: a.appointment_type?.name
+                        }))
+                    );
+                }
+
+                // Provider filtering is now done at GraphQL level (see query above) for performance
+                console.log(`[iPad Schedule] ${providerId ? 'Provider-filtered' : 'All-provider'} appointments: ${appointments.length}`);
             } else {
                 console.warn('[iPad Schedule] HTTP', response.status);
             }
@@ -103,97 +139,6 @@ export async function GET(request: NextRequest) {
             clearTimeout(timeout);
             console.warn('[iPad Schedule] Fetch error:', err.name === 'AbortError' ? 'timeout' : err.message);
             return NextResponse.json({ success: true, patients: [], error: 'Could not reach Healthie — try again' });
-        }
-
-        // Fallback: if 0 results, try with filter=upcoming and wider date range
-        if (appointments.length === 0) {
-            console.log('[iPad Schedule] 0 results with date range, trying fallback with filter...');
-
-            // NOTE: Healthie has separate calendars for NowPrimary.Care and NowMensHealth.Care
-            // The API only returns one calendar at a time, so we need to make TWO queries and merge
-            console.log('[iPad Schedule] Fetching from BOTH calendars (NowPrimary + NowMensHealth) and filter by provider:', providerId || 'none');
-
-            const fallbackQuery = `query GetAppointments {
-                appointments(
-                    filter: "upcoming",
-                    should_paginate: false
-                ) {
-                    id date length pm_status location other_party_id
-                    appointment_type { name }
-                    provider { id full_name }
-                    attendees { id first_name last_name }
-                    user { id first_name last_name }
-                    contact_type
-                }
-            }`;
-
-            let allUpcoming: any[] = [];
-
-            // WORKAROUND: Healthie API only returns appointments from the default user group
-            // Since we can't query multiple groups at once, we just fetch what we can get
-            // and hope that all providers' appointments are in the same group
-            const controller2 = new AbortController();
-            const timeout2 = setTimeout(() => controller2.abort(), 10000);
-            try {
-                const response2 = await fetch(HEALTHIE_API_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Basic ${HEALTHIE_API_KEY}`,
-                        'AuthorizationSource': 'API',
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ query: fallbackQuery }),
-                    signal: controller2.signal,
-                });
-                clearTimeout(timeout2);
-
-                if (response2.ok) {
-                    const result2 = await response2.json();
-                    if (result2.errors) {
-                        console.error('[iPad Schedule] Healthie errors:', JSON.stringify(result2.errors));
-                    }
-                    allUpcoming = result2.data?.appointments || [];
-                    console.log('[iPad Schedule] Healthie returned', allUpcoming.length, 'upcoming appointments (may be limited to one user group)');
-                    // Filter to today only
-                    appointments = allUpcoming.filter((a: any) => {
-                        if (!a.date) return false;
-                        const apptDate = new Date(a.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
-                        return apptDate === todayStr;
-                    });
-                    // Debug: Log today's appointments BEFORE provider filter
-                    console.log('[iPad Schedule] Today appointments BEFORE provider filter:', appointments.length);
-                    if (appointments.length > 0 && appointments.length <= 20) {
-                        console.log('[iPad Schedule] Today\'s appointments by provider:',
-                            appointments.map((a: any) => ({
-                                id: a.id,
-                                date: a.date,
-                                provider_id: a.provider?.id,
-                                provider_name: a.provider?.full_name,
-                                patient: a.user?.first_name + ' ' + a.user?.last_name,
-                                location: a.location,
-                                appt_type: a.appointment_type?.name,
-                                has_user: !!a.user,
-                                has_attendees: a.attendees?.length > 0
-                            }))
-                        );
-                    }
-
-                    // If provider filter, apply it
-                    if (providerId) {
-                        const beforeFilter = appointments.length;
-                        appointments = appointments.filter((a: any) => a.provider?.id === providerId);
-                        console.log('[iPad Schedule] Provider filter applied: filtered from', beforeFilter, 'to', appointments.length, 'appointments for provider', providerId);
-                    }
-                    console.log('[iPad Schedule] Fallback found', allUpcoming.length, 'upcoming,', appointments.length, 'for today');
-                    // Debug: log first appointment structure
-                    if (appointments.length > 0) {
-                        console.log('[iPad Schedule] Sample appt:', JSON.stringify(appointments[0]));
-                    }
-                }
-            } catch (err: any) {
-                clearTimeout(timeout2);
-                console.warn('[iPad Schedule] Fallback error:', err.name === 'AbortError' ? 'timeout' : err.message);
-            }
         }
 
         // Filter out entries with no patient (Breaks, holds, blocked time, etc.)

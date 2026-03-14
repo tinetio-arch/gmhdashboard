@@ -118,11 +118,23 @@ export async function GET(
         ORDER BY sd.staged_for_date ASC
       `, [localPatientId]),
 
-            // 10. Controlled substance history (may not exist yet)
+            // 10. Controlled substance history - JOIN vials for drug name
             safeQuery('dea', `
-        SELECT * FROM dispenses
-        WHERE patient_id = $1
-        ORDER BY dispense_date DESC LIMIT 20
+        SELECT
+            d.dispense_id,
+            d.dispense_date as dispensed_date,
+            d.dose_per_syringe_ml as dose_ml,
+            d.syringe_count,
+            d.total_dispensed_ml,
+            d.prescriber,
+            d.signature_status,
+            v.dea_drug_name as medication_name,
+            v.size_ml,
+            v.external_id as vial_label
+        FROM dispenses d
+        LEFT JOIN vials v ON d.vial_id = v.vial_id
+        WHERE d.patient_id = $1
+        ORDER BY d.dispense_date DESC LIMIT 20
       `, [localPatientId]),
         ]);
 
@@ -134,20 +146,21 @@ export async function GET(
         if (healthieId) {
             try {
                 // Fetch appointments from Healthie GraphQL
+                // NOTE: Healthie appointments only support user_id (not client_id), and status field is pm_status
                 const appointmentData = await healthieGraphQL<{
                     appointments: Array<{
                         id: string;
                         date: string;
                         appointment_type?: { name?: string } | null;
                         provider?: { full_name?: string } | null;
-                        status?: string | null;
+                        pm_status?: string | null;
                         location?: string | null;
                         notes?: string | null;
                     }>;
                 }>(`
-          query GetPatientAppointments($clientId: ID, $offset: Int) {
+          query GetPatientAppointments($userId: ID, $offset: Int) {
             appointments(
-              client_id: $clientId,
+              user_id: $userId,
               offset: $offset,
               should_paginate: true,
               filter: "all"
@@ -160,12 +173,12 @@ export async function GET(
               provider {
                 full_name
               }
-              status
+              pm_status
               location
               notes
             }
           }
-        `, { clientId: healthieId, offset: 0 });
+        `, { userId: healthieId, offset: 0 });
 
                 healthieVisits = appointmentData.appointments || [];
             } catch (visitErr) {
@@ -174,28 +187,39 @@ export async function GET(
             }
 
             // Optional: fetch lab orders from Healthie if needed
+            // NOTE: Healthie labOrders doesn't accept patient_id filter, date_received doesn't exist - use created_at
+            // Query all and filter client-side
             try {
                 const labData = await healthieGraphQL<{
                     labOrders: Array<{
                         id: string;
-                        patient_id: string;
-                        date_received: string;
+                        patient?: { id: string } | null;
+                        created_at: string;
                         lab_company?: string | null;
                         status?: string | null;
                     }>;
                 }>(`
-          query GetPatientLabOrders($clientId: ID) {
-            labOrders(patient_id: $clientId) {
+          query GetPatientLabOrders {
+            labOrders {
               id
-              patient_id
-              date_received
+              patient {
+                id
+              }
+              created_at
               lab_company
               status
             }
           }
-        `, { clientId: healthieId });
+        `);
 
-                healthieLabs = labData.labOrders || [];
+                // Filter to this patient's labs
+                healthieLabs = (labData.labOrders || [])
+                    .filter(lab => lab.patient?.id === healthieId)
+                    .map(lab => ({
+                        ...lab,
+                        patient_id: lab.patient?.id,
+                        date_received: lab.created_at, // Map created_at to date_received for backwards compat
+                    }));
             } catch (labErr) {
                 console.error(`[Patient360] Healthie labs failed for ${healthieId}:`, labErr instanceof Error ? labErr.message : labErr);
                 // Gracefully continue with empty labs

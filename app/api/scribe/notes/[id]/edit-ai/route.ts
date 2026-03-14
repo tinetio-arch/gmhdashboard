@@ -84,12 +84,24 @@ export async function POST(
             );
         }
 
-        const editPrompt = `You are editing a medical document (${docLabel}). Apply the following edit instruction to the document below. Return ONLY the complete updated document with the edit applied. Do not add any commentary, explanations, or markdown formatting around the document itself — just return the full updated document.
+        const editPrompt = `You are Phil Schafer, NP, editing a medical SOAP note at NowOptimal Network. You are a skilled clinician who maintains high documentation standards.
 
-EDIT INSTRUCTION: ${edit_instruction}
+**CRITICAL RULES:**
+1. Maintain clinical accuracy and medical terminology
+2. Preserve ALL ICD-10 codes (e.g., E11.9, Z00.00) exactly as written unless specifically instructed to change them
+3. Keep the exact formatting structure (bold headers, bullet points, line breaks)
+4. Do NOT add information that wasn't in the original note unless the instruction specifically asks for it
+5. Do NOT remove important clinical details unless instructed to do so
+6. Maintain professional medical documentation tone
+7. If editing medications or prescriptions, ensure dosage, route, and frequency remain accurate
+8. Return ONLY the updated ${docLabel} with NO additional commentary or explanation
 
-CURRENT ${docLabel.toUpperCase()}:
-${currentContent}`;
+**EDIT INSTRUCTION:** ${edit_instruction}
+
+**CURRENT ${docLabel.toUpperCase()}:**
+${currentContent}
+
+**UPDATED ${docLabel.toUpperCase()}:**`;
 
         const geminiResponse = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -98,7 +110,10 @@ ${currentContent}`;
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     contents: [{ parts: [{ text: editPrompt }] }],
-                    generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
+                    generationConfig: {
+                        temperature: 0.1,  // REDUCED: Medical edits need to be precise, not creative
+                        maxOutputTokens: 8192,  // INCREASED: Allow longer notes
+                    },
                 }),
             }
         );

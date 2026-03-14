@@ -12,6 +12,20 @@ const execAsync = promisify(exec);
 // Restricted codes that require approval
 const RESTRICTED_CODES = ['L509', '202'];
 
+// Test code to name mapping (matches frontend STANDARD_PANELS and ADD_ONS)
+const TEST_CODE_NAMES: Record<string, string> = {
+    // Standard Panels
+    '9757': 'Male - Pre-Required',
+    '9761': 'Male - Post',
+    '9756': 'Female Pre-Required',
+    '9760': 'Female - Post',
+    // Add-Ons
+    '146': 'PSA (Total)',
+    'L509': 'Lipid Panel',
+    '202': 'HBA1C',
+    // Add more as needed
+};
+
 // GET: List orders
 export async function GET(req: NextRequest) {
     try {
@@ -24,21 +38,53 @@ export async function GET(req: NextRequest) {
         // Check for filters
         const { searchParams } = new URL(req.url);
         const status = searchParams.get("status");
+        const patientId = searchParams.get("patient_id");
 
         const client = await getPool().connect();
         try {
             let query = `SELECT * FROM lab_orders`;
-            const values = [];
+            const values: any[] = [];
+            const conditions: string[] = [];
 
             if (status) {
-                query += ` WHERE status = $1`;
+                conditions.push(`status = $${conditions.length + 1}`);
                 values.push(status);
+            }
+
+            if (patientId) {
+                conditions.push(`patient_id = $${conditions.length + 1}`);
+                values.push(patientId);
+            }
+
+            if (conditions.length > 0) {
+                query += ` WHERE ${conditions.join(' AND ')}`;
             }
 
             query += ` ORDER BY created_at DESC LIMIT 100`;
 
             const result = await client.query(query, values);
-            return NextResponse.json(result.rows);
+
+            // Enrich results with test names
+            const enrichedRows = result.rows.map(row => {
+                let testNames = 'Lab Panel'; // Default fallback
+
+                if (row.test_codes && Array.isArray(row.test_codes)) {
+                    const names = row.test_codes
+                        .map((code: string) => TEST_CODE_NAMES[code] || code)
+                        .filter((name: string) => name);
+
+                    if (names.length > 0) {
+                        testNames = names.join(', ');
+                    }
+                }
+
+                return {
+                    ...row,
+                    test_names: testNames
+                };
+            });
+
+            return NextResponse.json(enrichedRows);
         } finally {
             client.release();
         }

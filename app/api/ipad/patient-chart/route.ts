@@ -302,14 +302,15 @@ export async function GET(request: NextRequest) {
         const localPatientId = patient?.patient_id;
         if (localPatientId) {
             scribeHistory = await query<any>(`
-                SELECT 
+                SELECT
                     ss.session_id, ss.visit_type, ss.status, ss.created_at,
-                    sn.soap_subjective, sn.soap_assessment, sn.icd10_codes
+                    sn.soap_subjective, sn.soap_objective, sn.soap_assessment, sn.soap_plan,
+                    sn.icd10_codes, sn.cpt_codes, sn.full_note_text
                 FROM scribe_sessions ss
                 LEFT JOIN scribe_notes sn ON ss.session_id = sn.session_id
                 WHERE ss.patient_id = $1
                 ORDER BY ss.created_at DESC
-                LIMIT 10
+                LIMIT 20
             `, [localPatientId]);
         }
 
@@ -364,25 +365,27 @@ export async function GET(request: NextRequest) {
         }
 
         // Query financial data - last Healthie payments
+        // NOTE: healthie_payments table doesn't exist yet - would need to be populated from Healthie GraphQL or QuickBooks
         let lastPayments: any[] = [];
-        try {
-            lastPayments = await query<any>(`
-                SELECT
-                    payment_date,
-                    amount,
-                    payment_type,
-                    status,
-                    description
-                FROM healthie_payments
-                WHERE patient_id = $1
-                ORDER BY payment_date DESC
-                LIMIT 5
-            `, [localPatientId]);
-            console.log(`[Patient Chart] Found ${lastPayments.length} payments for patient ${localPatientId}`);
-        } catch (err) {
-            console.warn(`[Patient Chart] Failed to query payments:`, err instanceof Error ? err.message : err);
-            lastPayments = [];
-        }
+        // TODO: Re-enable when healthie_payments table is created and populated
+        // try {
+        //     lastPayments = await query<any>(`
+        //         SELECT
+        //             payment_date,
+        //             amount,
+        //             payment_type,
+        //             status,
+        //             description
+        //         FROM healthie_payments
+        //         WHERE patient_id = $1
+        //         ORDER BY payment_date DESC
+        //         LIMIT 5
+        //     `, [localPatientId]);
+        //     console.log(`[Patient Chart] Found ${lastPayments.length} payments for patient ${localPatientId}`);
+        // } catch (err) {
+        //     console.warn(`[Patient Chart] Failed to query payments:`, err instanceof Error ? err.message : err);
+        //     lastPayments = [];
+        // }
 
         // Query testosterone dispenses
         let trtDispenses: any[] = [];
@@ -397,9 +400,11 @@ export async function GET(request: NextRequest) {
                     d.waste_ml,
                     d.notes,
                     d.prescriber,
+                    d.signature_status,
                     v.dea_drug_name,
-                    v.concentration,
-                    v.total_volume_ml
+                    v.external_id as vial_source,
+                    v.size_ml,
+                    v.remaining_volume_ml
                 FROM dispenses d
                 LEFT JOIN vials v ON d.vial_id = v.vial_id
                 WHERE d.patient_id = $1
@@ -426,9 +431,7 @@ export async function GET(request: NextRequest) {
                     pd.amount_charged,
                     pd.status,
                     pd.notes,
-                    pp.product_name,
-                    pp.dosage_mg,
-                    pp.vial_size_ml
+                    pp.name as product_name
                 FROM peptide_dispenses pd
                 LEFT JOIN peptide_products pp ON pd.product_id = pp.product_id
                 WHERE pd.healthie_client_id = $1

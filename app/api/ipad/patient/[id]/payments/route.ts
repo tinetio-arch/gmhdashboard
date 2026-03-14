@@ -19,8 +19,8 @@ export async function GET(
         const rows = await query(
             `SELECT hc.healthie_client_id, p.full_name
              FROM patients p
-             LEFT JOIN healthie_clients hc ON p.patient_id = hc.patient_id AND hc.is_active = true
-             WHERE p.patient_id = $1
+             LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true
+             WHERE p.patient_id = $1::uuid
              LIMIT 1`,
             [patientId]
         );

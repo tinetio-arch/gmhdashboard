@@ -56,37 +56,40 @@ Documentation Standards:
 
 7. The assistant should capture the conversational, thorough documentation style demonstrated in Phil Schafer's notes, including patient quotes when clinically relevant, detailed symptom descriptions, and comprehensive patient counseling documentation.
 
-Physical Exam Template (use this exact structure and language, modifying only when abnormal findings are documented):
+Physical Exam Guidelines:
+- Document only relevant systems based on the visit type and chief complaint
+- For routine follow-ups or simple visits, a focused exam is appropriate
+- For comprehensive exams or complex cases, document all systems
+- Use standard medical terminology for findings
+- Replace normal findings with specific abnormal findings when documented in transcript
 
+Standard Physical Exam Template (adapt based on visit complexity):
+
+**For Focused/Follow-up Visits:**
+General: Alert and oriented, in no acute distress. Well-developed and well-nourished.
+Vitals: [As documented]
+[Document only relevant systems based on chief complaint]
+
+**For Comprehensive Exams:**
 General: Alert and oriented, in no acute distress. Well-developed, hydrated, and nourished. Appears stated age.
 
-Skin: Warm, dry, and intact. No rashes, lesions, or ulcers.
+HEENT: Normocephalic, atraumatic. PERRLA, EOMI. TMs intact bilaterally. Oropharynx clear without erythema.
 
-Head: Normocephalic and atraumatic. No tenderness to palpation.
+Neck: Supple, no lymphadenopathy or thyromegaly.
 
-Eyes: Sclerae are non-icteric. Conjunctivae are pink and moist. Pupils are equal, round, and reactive to light and accommodation (PERRLA). Extraocular movements are intact (EOMI). Visual acuity grossly normal.
+Cardiovascular: Regular rate and rhythm. No murmurs, gallops, or rubs.
 
-Ears: External ear canals are clear. Tympanic membranes are intact without erythema, bulging, or effusion.
+Respiratory: Clear to auscultation bilaterally. No wheezes or rales.
 
-Nose: Nasal mucosa is pink and moist. No discharge or septal deviation noted.
+Abdomen: Soft, non-tender, non-distended. Normoactive bowel sounds.
 
-Throat/Mouth: Oral mucosa is pink and moist. Dentition is intact. Oropharynx is normal in appearance with no erythema, exudates, or swelling.
+Extremities: No edema, cyanosis, or clubbing. Pulses 2+ bilaterally.
 
-Neck: Supple with full range of motion. No lymphadenopathy, masses, or thyromegaly. Trachea is midline.
+Musculoskeletal: Normal range of motion. 5/5 strength throughout.
 
-Heart: Regular rate and rhythm. No murmurs, gallops, or rubs. Normal S1 and S2.
+Neurological: Cranial nerves II-XII intact. Sensation intact. DTRs 2+ bilaterally. Steady gait.
 
-Lungs: Clear to auscultation bilaterally. No wheezes, rales, or rhonchi. Normal respiratory effort without accessory muscle use.
-
-Abdomen: Soft, non-tender, and non-distended. No masses, hepatomegaly, or splenomegaly. Bowel sounds are normoactive in all four quadrants.
-
-Extremities: No edema, cyanosis, or clubbing. Peripheral pulses are 2+ and equal bilaterally. Capillary refill is normal.
-
-Musculoskeletal: Normal range of motion in all extremities. 5/5 motor strength bilaterally in upper and lower extremities.
-
-Neurological: Cranial nerves II-XII are intact. Sensation intact to light touch and pinprick. Deep tendon reflexes 2+ bilaterally. Steady gait noted. No tremors or focal deficits.
-
-Psychiatric: Appropriate mood and affect. Good judgment and insight. Normal thought process. No visual or auditory hallucinations. No suicidal or homicidal ideation.
+Psychiatric: Appropriate mood and affect. No suicidal or homicidal ideation.
 
 Required Output Structure (Strictly follow this order):
 
@@ -226,6 +229,9 @@ export async function POST(request: NextRequest) {
         const resolvedPatientId = patient?.patient_id || patient_id;
 
         // Fetch recent medications in parallel (safe — returns empty arrays if patient not in DB)
+        // REFRESH CONTEXT: Always fetch fresh data, especially on regenerate
+        console.log(`[Scribe:GenerateNote] ${regenerate ? 'Regenerating' : 'Generating'} note for ${patientName} (${resolvedPatientId})`);
+
         const [recentMeds, recentTrt, recentLabs] = await Promise.all([
             patient ? query<any>(`
         SELECT pp.name, pd.sale_date FROM peptide_dispenses pd
@@ -248,6 +254,8 @@ export async function POST(request: NextRequest) {
         ORDER BY created_at DESC LIMIT 5
       `, [healthieId]) : Promise.resolve([]),
         ]);
+
+        console.log(`[Scribe:GenerateNote] Context loaded: ${recentMeds.length} peptides, ${recentTrt.length} TRT dispenses, ${recentLabs.length} labs`);
 
         // 3. Build prompt
         const medications = [
@@ -284,7 +292,7 @@ export async function POST(request: NextRequest) {
                 contents: [{ parts: [{ text: prompt }] }],
                 generationConfig: {
                     maxOutputTokens: 8192,
-                    temperature: 0.3,
+                    temperature: 0.2,  // REDUCED: More consistent medical documentation
                 },
             }),
         });
