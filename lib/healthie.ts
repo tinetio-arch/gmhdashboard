@@ -1408,8 +1408,9 @@ export class HealthieClient {
         };
       }>(mutation, {
         input: {
-          recipientId: input.client_id,
-          amountCents: Math.round(input.amount * 100), // Convert dollars to cents
+          recipient_id: input.client_id,
+          amount_paid: input.amount.toFixed(2), // String format: "10.00"
+          should_charge: true, // Immediately charge the card on file
           note: input.note || input.description || 'Payment for services',
         },
       });
