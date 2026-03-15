@@ -1,0 +1,62 @@
+# ===========================================
+# .claudeignore — Keep AntiGravity's Context Clean
+# ===========================================
+# Every file Claude reads eats context tokens.
+# This file keeps the big, irrelevant stuff OUT so you stay sharp longer.
+
+# --- Massive files that will nuke your context ---
+snowflake.log
+*.log
+build_error.log
+build_log.txt
+nohup.out
+tsconfig.tsbuildinfo
+package-lock.json
+
+# --- Node modules (obvious) ---
+node_modules/
+.next/
+
+# --- Processed data files ---
+.processed-billing-items.json
+output.json
+current_peptides.json
+
+# --- Large reports (read via grep if needed, never in full) ---
+comprehensive_duplicates_report.md
+active_duplicates_report.md
+safe_to_merge_report.md
+merge_execution_output.txt
+merge_execution_log.md
+
+# --- Binary & generated ---
+*.tsbuildinfo
+*.pickle
+certs/
+backups/
+
+# --- Git internals ---
+.git/
+
+# --- Temp files ---
+.tmp/
+
+# --- Large source-of-truth docs (use grep, don't read whole) ---
+# ANTIGRAVITY_SOURCE_OF_TRUTH.md is 213KB — NEVER read fully
+# ANTIGRAVITY_SOURCE_OF_TRUTH_V2.md is 30KB — read sections via grep
+
+# --- Config that rarely changes ---
+postcss.config.mjs
+.eslintrc.json
+eslint.config.mjs
+next-env.d.ts
+
+# --- Public assets (images, iPad static files) ---
+public/ipad/
+public/*.png
+public/*.jpg
+public/*.ico
+public/*.svg
+
+# --- GitHub workflows (not relevant to code tasks) ---
+.github/
