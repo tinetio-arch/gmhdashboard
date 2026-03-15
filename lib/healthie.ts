@@ -1373,6 +1373,7 @@ export class HealthieClient {
     amount: number;
     description?: string;
     note?: string;
+    sender_id?: string;
   }): Promise<{ id: string; amount_paid: string; state: string }> {
     const mutation = `
       mutation CreateBillingItem($input: createBillingItemInput!) {
@@ -1409,6 +1410,7 @@ export class HealthieClient {
       }>(mutation, {
         input: {
           recipient_id: input.client_id,
+          sender_id: input.sender_id || '12093125', // Default to Aaron Whitten
           amount_paid: input.amount.toFixed(2), // String format: "10.00"
           should_charge: true, // Immediately charge the card on file
           note: input.note || input.description || 'Payment for services',
