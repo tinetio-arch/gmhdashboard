@@ -5006,12 +5006,9 @@ function renderFinancialTab(container, d) {
         </div>
 
         <!-- Actions -->
-        <div style="padding:16px; border-top:1px solid rgba(255,255,255,0.06);">
-            <button onclick="chargePatient()" style="width:100%; padding:12px; background:linear-gradient(135deg, #10b981, #059669); color:white; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; margin-bottom:8px;">
+        <div style="padding:16px 16px 80px 16px; border-top:1px solid rgba(255,255,255,0.06);">
+            <button onclick="chargePatient()" style="width:100%; padding:14px; background:linear-gradient(135deg, #10b981, #059669); color:white; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;">
                 💳 Charge Patient
-            </button>
-            <button onclick="sendInvoice()" style="width:100%; padding:12px; background:rgba(100,200,255,0.15); color:var(--cyan); border:1px solid var(--cyan); border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;">
-                📧 Send Invoice
             </button>
         </div>
     `;
@@ -8663,22 +8660,4 @@ async function selectStripeAccount(account) {
     }
 }
 
-function sendInvoice() {
-    const healthieId = chartPanelData?.healthie_id;
-    const patientName = chartPanelData?.demographics?.full_name || 'Patient';
-    
-    if (!healthieId) {
-        showToast('No patient selected', 'error');
-        return;
-    }
-    
-    if (!confirm(`Send invoice to ${patientName}?`)) return;
-    
-    showToast('Preparing invoice...', 'info');
-    
-    // TODO: Implement Healthie invoice API call
-    setTimeout(() => {
-        showToast('⚠️ Invoice feature coming soon - please use Healthie dashboard', 'warning');
-        window.open(`https://app.gethealthie.com/patients/${healthieId}/billing`, '_blank');
-    }, 1000);
-}
+// sendInvoice() removed per admin request
