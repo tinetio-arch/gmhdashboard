@@ -1158,18 +1158,18 @@ export class HealthieClient {
   }
 
   /**
-   * Get all packages
+   * Get all packages (offerings in Healthie API)
+   * NOTE: The root query is 'offerings', NOT 'packages' (which does not exist)
    */
   async getPackages(): Promise<HealthiePackage[]> {
     const query = `
-      query GetPackages {
-        packages {
+      query GetOfferings {
+        offerings(offset: 0, page_size: 100, show_only_visible: true) {
           id
           name
           description
           price
           billing_frequency
-          number_of_sessions
           created_at
           updated_at
         }
@@ -1177,10 +1177,10 @@ export class HealthieClient {
     `;
 
     const result = await this.graphql<{
-      packages: HealthiePackage[];
+      offerings: HealthiePackage[];
     }>(query);
 
-    return result.packages || [];
+    return result.offerings || [];
   }
 
   /**
@@ -1256,21 +1256,31 @@ export class HealthieClient {
  * Get client subscriptions
  */
   async getClientSubscriptions(clientId: string): Promise<HealthieSubscription[]> {
+    // NOTE: User.recurring_payments does NOT exist in this Healthie API version.
+    // Instead, we extract subscription info from billingItems which have
+    // offering + recurring_payment sub-objects.
     const query = `
-  query GetClientSubscriptions($id: ID) {
-    user(id: $id) {
-      recurring_payments {
+  query GetClientBillingItems($clientId: ID) {
+    billingItems(client_id: $clientId, offset: 0) {
+      id
+      amount_paid_string
+      state
+      created_at
+      is_recurring
+      shown_description
+      offering {
+        id
+        name
+        price
+        billing_frequency
+      }
+      recurring_payment {
         id
         is_canceled
         is_paused
         start_at
         amount_to_pay
         next_payment_date
-        offering_name
-        billing_frequency
-        billing_items_count
-        created_at
-        updated_at
       }
     }
   }
@@ -1278,42 +1288,58 @@ export class HealthieClient {
 
     try {
       const result = await this.graphql<{
-        user: {
-          recurring_payments: Array<{
+        billingItems: Array<{
+          id: string;
+          amount_paid_string?: string;
+          state?: string;
+          created_at?: string;
+          is_recurring?: boolean;
+          shown_description?: string;
+          offering?: {
+            id: string;
+            name: string;
+            price?: string;
+            billing_frequency?: string;
+          };
+          recurring_payment?: {
             id: string;
             is_canceled?: boolean;
             is_paused?: boolean;
             start_at?: string;
             amount_to_pay?: string;
             next_payment_date?: string;
-            offering_name?: string;
-            billing_frequency?: string;
-            billing_items_count?: number;
-            created_at?: string;
-            updated_at?: string;
-          }>;
-        };
-      }>(query, { id: clientId });
+          };
+        }>;
+      }>(query, { clientId });
 
-      return (result.user?.recurring_payments || []).map((rp) => {
-        // Map real API fields to our interface for backward compatibility
+      // Deduplicate by recurring_payment ID to get unique subscriptions
+      const seenRpIds = new Set<string>();
+      const subscriptions: HealthieSubscription[] = [];
+
+      for (const item of result.billingItems || []) {
+        const rp = item.recurring_payment;
+        if (!rp) continue;
+        if (seenRpIds.has(rp.id)) continue;
+        seenRpIds.add(rp.id);
+
         const status: 'active' | 'cancelled' | 'paused' | undefined =
           rp.is_canceled ? 'cancelled' : rp.is_paused ? 'paused' : 'active';
-        return {
+
+        subscriptions.push({
           id: rp.id,
           client_id: clientId,
-          package_id: rp.offering_name ?? '',
+          package_id: item.offering?.name ?? '',
           status,
           start_date: rp.start_at,
           next_charge_date: rp.next_payment_date,
           amount: rp.amount_to_pay ? parseFloat(rp.amount_to_pay) : undefined,
-          offering_name: rp.offering_name,
-          billing_frequency: rp.billing_frequency,
-          billing_items_count: rp.billing_items_count,
-          created_at: rp.created_at,
-          updated_at: rp.updated_at,
-        };
-      });
+          offering_name: item.offering?.name ?? null,
+          billing_frequency: item.offering?.billing_frequency,
+          created_at: item.created_at,
+        });
+      }
+
+      return subscriptions;
     } catch (error) {
       this.debugLog('Error fetching subscriptions:', error);
       return [];
