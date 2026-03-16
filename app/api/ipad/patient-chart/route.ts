@@ -123,7 +123,7 @@ export async function GET(request: NextRequest) {
 
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
-        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, recurringPayments, billingItems] = await Promise.all([
+        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, recurringPayments, billingItems, packageSelections] = await Promise.all([
             // Chart notes (form answer groups) - NOTE: sort_by is NOT supported by Healthie API
             safeHealthieQuery<any>('chartNotes', `
                 query GetChartNotes($userId: String) {
@@ -326,6 +326,31 @@ export async function GET(request: NextRequest) {
                     }
                 }
             `, { clientId: healthieId }),
+
+            // User package selections (all assigned packages — covers one-time AND recurring)
+            safeHealthieQuery<any>('packageSelections', `
+                query GetUserPackageSelections($userId: ID) {
+                    userPackageSelections(user_id: $userId) {
+                        id
+                        created_at
+                        offering {
+                            id
+                            name
+                            price
+                            billing_frequency
+                            description
+                        }
+                        recurring_payment {
+                            id
+                            is_canceled
+                            is_paused
+                            amount_to_pay
+                            next_payment_date
+                            start_at
+                        }
+                    }
+                }
+            `, { userId: healthieId }),
         ]);
 
         // 3. Fetch local scribe history — only if we have a valid uuid patient_id
@@ -432,25 +457,54 @@ export async function GET(request: NextRequest) {
             }
         }
 
-        // Merge Healthie recurring payments with local packages
+        // Build active packages from userPackageSelections (primary) + recurring_payments (fallback) + local DB
         let activePackages: any[] = [];
+        const seenPackageIds = new Set<string>();
 
-        // Add Healthie subscriptions (primary source)
+        // PRIMARY: userPackageSelections — covers ALL assigned packages (one-time + recurring)
+        const selections = packageSelections?.userPackageSelections || [];
+        for (const sel of selections) {
+            const rp = sel.recurring_payment;
+            // Skip cancelled/paused recurring packages
+            if (rp && (rp.is_canceled || rp.is_paused)) continue;
+
+            const offering = sel.offering;
+            activePackages.push({
+                package_name: offering?.name || 'Package',
+                description: offering?.description || '',
+                amount: rp?.amount_to_pay || offering?.price || '',
+                frequency: offering?.billing_frequency || 'one_time',
+                billing_frequency: offering?.billing_frequency || 'one_time',
+                next_charge_date: rp?.next_payment_date || null,
+                start_date: rp?.start_at || sel.created_at || null,
+                source: 'healthie',
+                healthie_id: sel.id,
+                offering_id: offering?.id || null,
+            });
+            if (offering?.id) seenPackageIds.add(offering.id);
+        }
+
+        // FALLBACK: recurring_payments for any subscriptions not linked via userPackageSelections
         const healthieSubscriptions = recurringPayments?.user?.recurring_payments || [];
-        const activeHealthieSubscriptions = healthieSubscriptions
-            .filter((rp: any) => !rp.is_canceled && !rp.is_paused)
-            .map((rp: any) => ({
+        for (const rp of healthieSubscriptions) {
+            if (rp.is_canceled || rp.is_paused) continue;
+            // Avoid duplicates — skip if we already found this via packageSelections
+            if (seenPackageIds.has(rp.id)) continue;
+            activePackages.push({
                 package_name: rp.offering_name || 'Subscription',
                 amount: rp.amount_to_pay || '',
                 frequency: rp.billing_frequency || '',
+                billing_frequency: rp.billing_frequency || '',
                 next_charge_date: rp.next_payment_date || null,
                 start_date: rp.start_at || null,
                 source: 'healthie',
                 healthie_id: rp.id
-            }));
+            });
+        }
 
-        activePackages = [...activeHealthieSubscriptions, ...localPackages];
-        console.log(`[Patient Chart] Merged ${activeHealthieSubscriptions.length} Healthie subscriptions + ${localPackages.length} local packages = ${activePackages.length} total`);
+        // LOCAL DB fallback
+        activePackages = [...activePackages, ...localPackages];
+        console.log(`[Patient Chart] Found ${selections.length} package selections, ${healthieSubscriptions.length} recurring payments, ${localPackages.length} local packages => ${activePackages.length} total active`);
 
         // Map Healthie billing items to payment history
         let lastPayments: any[] = [];
