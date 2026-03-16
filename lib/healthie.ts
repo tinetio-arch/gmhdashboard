@@ -1367,6 +1367,7 @@ export class HealthieClient {
   /**
    * Create a billing item (charge patient immediately using saved payment method)
    * Requires patient to have a payment method on file in Healthie
+   * Uses the "Other" offering (ID from HEALTHIE_OTHER_OFFERING_ID) for one-time charges
    */
   async createBillingItem(input: {
     client_id: string;
@@ -1383,8 +1384,9 @@ export class HealthieClient {
             amount_paid
             state
             created_at
-            sender { id full_name }
+            note
             recipient { id full_name }
+            offering { id name }
           }
           messages {
             field
@@ -1394,7 +1396,14 @@ export class HealthieClient {
       }
     `;
 
+    const offeringId = process.env.HEALTHIE_OTHER_OFFERING_ID;
+    if (!offeringId) {
+      throw new Error('HEALTHIE_OTHER_OFFERING_ID not configured. Please set this in .env.local');
+    }
+
     try {
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+
       const result = await this.graphql<{
         createBillingItem: {
           billingItem: {
@@ -1402,18 +1411,21 @@ export class HealthieClient {
             amount_paid: string;
             state: string;
             created_at: string;
-            sender: { id: string; full_name: string };
+            note: string;
             recipient: { id: string; full_name: string };
+            offering: { id: string; name: string };
           };
-          messages: Array<{ field: string; message: string }>;
+          messages: Array<{ field: string; message: string }> | null;
         };
       }>(mutation, {
         input: {
           recipient_id: input.client_id,
-          sender_id: input.sender_id || '12093125', // Default to Aaron Whitten
+          offering_id: offeringId,
           amount_paid: input.amount.toFixed(2), // String format: "10.00"
-          should_charge: true, // Immediately charge the card on file
+          should_charge: true, // Charge immediately
+          payment_due_date: today, // Today's date for immediate charge
           note: input.note || input.description || 'Payment for services',
+          sender_id: input.sender_id || process.env.HEALTHIE_PRIMARY_CARE_PROVIDER_ID,
         },
       });
 
@@ -1423,7 +1435,12 @@ export class HealthieClient {
       }
 
       this.debugLog('Created billing item:', result.createBillingItem.billingItem.id);
-      return result.createBillingItem.billingItem;
+
+      return {
+        id: result.createBillingItem.billingItem.id,
+        amount_paid: result.createBillingItem.billingItem.amount_paid,
+        state: result.createBillingItem.billingItem.state
+      };
     } catch (error) {
       this.debugLog('Error creating billing item:', error);
       throw error;

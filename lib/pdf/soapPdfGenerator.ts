@@ -70,7 +70,7 @@ export async function generateSoapPdf(params: SoapPdfParams): Promise<Buffer> {
     const doc = new PDFDocument({
         size: 'LETTER',
         margins: { top: 50, left: 60, right: 60, bottom: 60 },
-        bufferPages: true,
+        autoFirstPage: true,
     });
 
     const buffers: Buffer[] = [];
@@ -131,10 +131,9 @@ export async function generateSoapPdf(params: SoapPdfParams): Promise<Buffer> {
     ];
 
     for (const section of sections) {
-        const y = doc.y;
-
-        // Only break page if header won't fit (need ~40px for header + some content)
-        if (y > 710) {
+        // Only add page if we're within 80pt of bottom margin (need space for section header + some content)
+        // Letter page is 792pt tall, with 60pt bottom margin = 732pt usable
+        if (doc.y > 652) {
             doc.addPage();
         }
 
@@ -157,7 +156,8 @@ export async function generateSoapPdf(params: SoapPdfParams): Promise<Buffer> {
 
     // ─── ICD-10 & CPT CODES ───
     if ((icd10Codes && icd10Codes.length > 0) || (cptCodes && cptCodes.length > 0)) {
-        if (doc.y > 710) doc.addPage();
+        // Only page break if within 60pt of bottom
+        if (doc.y > 672) doc.addPage();
 
         doc.moveDown(0.5);
         doc.moveTo(60, doc.y).lineTo(552, doc.y).lineWidth(0.5).strokeColor('#cccccc').stroke();
@@ -179,7 +179,8 @@ export async function generateSoapPdf(params: SoapPdfParams): Promise<Buffer> {
     }
 
     // ─── SIGNATURE LINE ───
-    if (doc.y > 700) doc.addPage();
+    // Only add page if signature won't fit (need ~40pt for signature block)
+    if (doc.y > 692) doc.addPage();
     doc.moveDown(1.5);
     const sigY = doc.y;
     doc.moveTo(60, sigY).lineTo(250, sigY).lineWidth(0.5).strokeColor('#999999').stroke();
@@ -188,13 +189,14 @@ export async function generateSoapPdf(params: SoapPdfParams): Promise<Buffer> {
         .text(`Date: ${visitDate}`);
 
     // ─── FOOTER on every page ───
-    const pages = doc.bufferedPageRange();
-    for (let i = 0; i < pages.count; i++) {
+    const range = doc.bufferedPageRange();
+    for (let i = 0; i < range.count; i++) {
         doc.switchToPage(i);
+        // Footer at bottom of page (792 - 50 = 742, minus a bit for text height)
         doc.fontSize(7).font('Helvetica').fillColor('#999999')
             .text(
-                `NowOptimal Network — CONFIDENTIAL — Page ${i + 1} of ${pages.count}`,
-                60, 740,
+                `NowOptimal Network — CONFIDENTIAL — Page ${i + 1} of ${range.count}`,
+                60, 750,
                 { width: pageWidth, align: 'center' }
             );
     }

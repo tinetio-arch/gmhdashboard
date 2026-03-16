@@ -600,6 +600,38 @@ function renderCurrentTab() {
     main.scrollTop = 0;
 }
 
+// ─── SESSION AUTO-REFRESH ───────────────────────────────────
+// FIX(2026-03-15): Silent session refresh for long clinic days (10-hour interval)
+let _sessionRefreshInterval = null;
+let _isRefreshingSession = false;
+let _refreshPromise = null;
+
+async function attemptSessionRefresh() {
+    try {
+        const resp = await fetch('/ops/api/auth/refresh/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        return resp.ok;
+    } catch {
+        return false;
+    }
+}
+
+function startSessionAutoRefresh() {
+    if (_sessionRefreshInterval) clearInterval(_sessionRefreshInterval);
+    // Refresh every 10 hours (36,000,000 ms) — session TTL is 12 hours
+    _sessionRefreshInterval = setInterval(async () => {
+        console.log('[Auth] Auto-refreshing session...');
+        const ok = await attemptSessionRefresh();
+        if (!ok) console.warn('[Auth] Auto-refresh failed — session may expire soon');
+    }, 10 * 60 * 60 * 1000);
+}
+
+// Start auto-refresh on load
+startSessionAutoRefresh();
+
 // ─── API LAYER ──────────────────────────────────────────────
 async function apiFetch(url, options = {}) {
     const defaults = {
@@ -613,6 +645,41 @@ async function apiFetch(url, options = {}) {
 
     try {
         const resp = await fetch(url, merged);
+
+        if ((resp.status === 401 || resp.status === 403) && !_isRefreshingSession) {
+            // Attempt one silent refresh before showing login overlay
+            _isRefreshingSession = true;
+            try {
+                if (!_refreshPromise) _refreshPromise = attemptSessionRefresh();
+                const refreshed = await _refreshPromise;
+                _refreshPromise = null;
+                _isRefreshingSession = false;
+
+                if (refreshed) {
+                    // Retry the original request once
+                    const retryResp = await fetch(url, merged);
+                    if (retryResp.status === 401 || retryResp.status === 403) {
+                        showAuthExpired();
+                        throw new Error('AUTH_EXPIRED');
+                    }
+                    if (!retryResp.ok) {
+                        const errorText = await retryResp.text().catch(() => '');
+                        console.error(`[API Error] ${retryResp.status} ${url}:`, errorText.substring(0, 200));
+                        throw new Error(`HTTP ${retryResp.status}`);
+                    }
+                    return await retryResp.json();
+                } else {
+                    showAuthExpired();
+                    throw new Error('AUTH_EXPIRED');
+                }
+            } catch (err) {
+                _isRefreshingSession = false;
+                _refreshPromise = null;
+                if (err.message === 'AUTH_EXPIRED') throw err;
+                showAuthExpired();
+                throw new Error('AUTH_EXPIRED');
+            }
+        }
 
         if (resp.status === 401 || resp.status === 403) {
             showAuthExpired();
@@ -1347,18 +1414,22 @@ async function handleHealthieClick(id, currentStatus) {
     }
 }
 
+// FIX(2026-03-15): Added fallback defaults to prevent undefined button labels
 function renderScheduleItem(dose) {
     const displayTime = dose.time || '—';
+    const patientName = dose.patient_name || 'Unknown';
+    const doseType = dose.type || 'Dose';
+    const doseStatus = dose.status || 'staged';
     return `
         <div class="schedule-item">
             <div class="sched-time">${displayTime}</div>
             <div class="sched-dot"></div>
             <div class="sched-info">
-                <div class="sched-name">${dose.patient_name}</div>
-                <div class="sched-type">${dose.type}${dose.dosage ? ' · ' + dose.dosage : ''}</div>
+                <div class="sched-name">${patientName}</div>
+                <div class="sched-type">${doseType}${dose.dosage ? ' · ' + dose.dosage : ''}</div>
                 ${dose.vial_id ? `<div class="dose-detail"><span>Vial: ${dose.vial_id}</span></div>` : ''}
             </div>
-            <div class="sched-status ${dose.status}">${dose.status.replace('_', ' ')}</div>
+            <div class="sched-status ${doseStatus}">${doseStatus.replace('_', ' ')}</div>
         </div>
     `;
 }
@@ -1623,7 +1694,8 @@ async function batchApproveNormal() {
     let approved = 0;
     for (const lab of normalPending) {
         try {
-            await apiFetch('/ops/api/labs/review-queue', {
+            // FIX(2026-03-15): Added trailing slash to prevent 404/redirect
+            await apiFetch('/ops/api/labs/review-queue/', {
                 method: 'POST',
                 body: JSON.stringify({ id: lab.id || lab.lab_id, action: 'approve' })
             });
@@ -3634,6 +3706,7 @@ function renderChartPanel(content) {
             <button class="chart-tab-btn ${window._chartTab === 'forms' ? 'active' : ''}" onclick="switchChartTab('forms')">\ud83d\udcdd Forms</button>
             <button class="chart-tab-btn ${window._chartTab === 'documents' ? 'active' : ''}" onclick="switchChartTab('documents')">\ud83d\udcc1 Documents</button>
             <button class="chart-tab-btn ${window._chartTab === 'financial' ? 'active' : ''}" onclick="switchChartTab('financial')">\ud83d\udcb0 Financial</button>
+            <button class="chart-tab-btn ${window._chartTab === 'prescriptions' ? 'active' : ''}" onclick="switchChartTab('prescriptions')">\ud83d\udc8a Rx</button>
             <button class="chart-tab-btn ${window._chartTab === 'dispense' ? 'active' : ''}" onclick="switchChartTab('dispense')">\ud83d\udc89 Dispense Hx</button>
         </div>
         <div id="chartTabContent"></div>
@@ -3651,6 +3724,7 @@ function switchChartTab(tab) {
             tab === 'forms' ? 'Forms' :
             tab === 'documents' ? 'Documents' :
             tab === 'financial' ? 'Financial' :
+            tab === 'prescriptions' ? 'Rx' :
             tab === 'dispense' ? 'Dispense' : ''
         ));
     });
@@ -3670,9 +3744,211 @@ function renderChartTabContent() {
         renderDocumentsTab(container, d);
     } else if (window._chartTab === 'financial') {
         renderFinancialTab(container, d);
+    } else if (window._chartTab === 'prescriptions') {
+        renderPrescriptionsTab(container, d);
     } else if (window._chartTab === 'dispense') {
         renderDispenseTab(container, d);
     }
+}
+
+// ==================== PRESCRIPTIONS TAB ====================
+function renderPrescriptionsTab(container, d) {
+    const rxData = d.prescriptions || {};
+    const active = rxData.active || rxData.categorized?.active || [];
+    const controlled = rxData.controlled || rxData.categorized?.controlled_active || [];
+    const errors = rxData.categorized?.errors || [];
+    const all = rxData.all || rxData.categorized?.all || [];
+    const healthieId = d.healthie_id || '';
+
+    let html = '';
+
+    // Controlled Substance Alert Banner
+    if (controlled.length > 0) {
+        const schedules = [...new Set(controlled.map(p => p.schedule))].sort();
+        html += `
+            <div class="rx-alert-banner">
+                ⚠️ <strong>${controlled.length} Controlled Substance${controlled.length > 1 ? 's' : ''}</strong>
+                — Schedule ${schedules.join(', ')}
+            </div>`;
+    }
+
+    // Error Banner
+    if (errors.length > 0) {
+        html += `
+            <div class="rx-error-banner">
+                🔴 <strong>${errors.length} Prescription Error${errors.length > 1 ? 's' : ''}</strong>
+                — Review in DoseSpot
+            </div>`;
+    }
+
+    // Toolbar
+    html += `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+            <div style="font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:600;color:var(--text-primary);">
+                Active Prescriptions (${active.length})
+            </div>
+            <div style="display:flex;gap:8px;">
+                <button onclick="refreshPrescriptions('${healthieId}')"
+                    class="rx-toolbar-btn">
+                    ↻ Refresh
+                </button>
+                <button onclick="togglePrescriptionHistory()"
+                    class="rx-toolbar-btn" id="rx-history-toggle">
+                    View Full History
+                </button>
+            </div>
+        </div>`;
+
+    // Active Prescriptions List
+    if (active.length === 0) {
+        html += `
+            <div style="text-align:center;padding:40px 20px;color:var(--text-tertiary);font-size:14px;">
+                No active prescriptions found
+            </div>`;
+    } else {
+        html += '<div class="rx-list" id="rx-active-list">';
+        for (const rx of active) {
+            html += renderPrescriptionCard(rx);
+        }
+        html += '</div>';
+    }
+
+    // Full History (hidden by default)
+    const inactive = all.filter(p => p.normalized_status !== 'active');
+    html += `
+        <div id="rx-history-section" style="display:none;margin-top:20px;">
+            <div style="font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;">
+                Prescription History (${inactive.length})
+            </div>
+            <div class="rx-list">
+                ${inactive.length === 0
+                    ? '<div style="padding:20px;color:var(--text-tertiary);font-size:13px;">No history</div>'
+                    : inactive.map(rx => renderPrescriptionCard(rx, true)).join('')}
+            </div>
+        </div>`;
+
+    container.innerHTML = html;
+}
+
+function renderPrescriptionCard(rx, isHistory = false) {
+    const scheduleClass = rx.schedule ? `rx-controlled-${rx.schedule.toLowerCase()}` : '';
+    const statusClass = rx.normalized_status === 'active' ? 'rx-active'
+        : rx.normalized_status === 'error' ? 'rx-error'
+        : 'rx-inactive';
+
+    const scheduleBadgeColors = {
+        'II': { bg: 'rgba(239,68,68,0.15)', text: '#ef4444' },
+        'III': { bg: 'rgba(249,115,22,0.15)', text: '#f97316' },
+        'IV': { bg: 'rgba(234,179,8,0.15)', text: '#eab308' },
+        'V': { bg: 'rgba(34,197,94,0.15)', text: '#22c55e' },
+    };
+
+    const scheduleBadge = rx.schedule && scheduleBadgeColors[rx.schedule]
+        ? `<span style="background:${scheduleBadgeColors[rx.schedule].bg};color:${scheduleBadgeColors[rx.schedule].text};font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;margin-left:6px;">
+            C-${rx.schedule}
+          </span>`
+        : '';
+
+    const statusBadgeColors = {
+        'active': { bg: 'rgba(34,211,238,0.15)', text: 'var(--cyan)' },
+        'pending': { bg: 'rgba(234,179,8,0.15)', text: '#eab308' },
+        'inactive': { bg: 'rgba(156,163,175,0.15)', text: '#9ca3af' },
+        'error': { bg: 'rgba(239,68,68,0.15)', text: '#ef4444' },
+        'hidden': { bg: 'rgba(156,163,175,0.1)', text: '#6b7280' },
+    };
+    const statusColors = statusBadgeColors[rx.normalized_status] || statusBadgeColors.inactive;
+    const statusBadge = `<span style="background:${statusColors.bg};color:${statusColors.text};font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;text-transform:uppercase;">
+        ${rx.normalized_status}
+    </span>`;
+
+    return `
+        <div class="rx-card ${scheduleClass} ${statusClass}" style="
+            background:var(--surface);
+            border:1px solid var(--border);
+            border-radius:12px;
+            padding:14px 16px;
+            margin-bottom:8px;
+            ${isHistory ? 'opacity:0.65;' : ''}
+        ">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
+                <div style="font-family:'DM Sans',sans-serif;font-weight:600;font-size:14px;color:var(--text-primary);flex:1;">
+                    ${rx.product_name || rx.display_name || 'Unknown Medication'}
+                    ${scheduleBadge}
+                </div>
+                <div style="display:flex;gap:4px;align-items:center;">
+                    ${statusBadge}
+                </div>
+            </div>
+
+            ${rx.dosage || rx.dose_form
+                ? `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">
+                    ${[rx.dosage, rx.dose_form].filter(Boolean).join(' · ')}
+                  </div>`
+                : ''}
+
+            ${rx.directions
+                ? `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;font-style:italic;">
+                    Sig: ${rx.directions}
+                  </div>`
+                : ''}
+
+            <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--text-tertiary);">
+                ${rx.prescriber_name ? `<span>✍️ ${rx.prescriber_name}</span>` : ''}
+                ${rx.date_written ? `<span>📅 Written ${formatRxDate(rx.date_written)}</span>` : ''}
+                ${rx.last_fill_date ? `<span>💊 Filled ${formatRxDate(rx.last_fill_date)}</span>` : ''}
+                ${rx.quantity ? `<span>Qty: ${rx.quantity}${rx.unit ? ' ' + rx.unit : ''}</span>` : ''}
+                ${rx.refills != null ? `<span>Refills: ${rx.refills}</span>` : ''}
+                ${rx.days_supply ? `<span>${rx.days_supply}d supply</span>` : ''}
+            </div>
+
+            ${rx.pharmacy_name
+                ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">
+                    🏥 ${rx.pharmacy_name}${rx.pharmacy_city ? ', ' + rx.pharmacy_city : ''}${rx.pharmacy_state ? ' ' + rx.pharmacy_state : ''}
+                  </div>`
+                : ''}
+        </div>`;
+}
+
+function formatRxDate(dateStr) {
+    if (!dateStr) return '';
+    try {
+        const d = new Date(dateStr);
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch {
+        return dateStr;
+    }
+}
+
+async function refreshPrescriptions(healthieId) {
+    if (!healthieId) {
+        showToast('No Healthie ID available', 'error');
+        return;
+    }
+    try {
+        showToast('Refreshing prescriptions...', 'info');
+        const data = await apiFetch(`/ops/api/prescriptions/${healthieId}/`);
+        if (chartPanelData) {
+            chartPanelData.prescriptions = data;
+        }
+        if (window._chartTab === 'prescriptions') {
+            renderChartTabContent();
+        }
+        showToast('Prescriptions updated', 'success');
+    } catch (err) {
+        console.error('[Rx] Failed to refresh prescriptions:', err);
+        if (err.message !== 'AUTH_EXPIRED') {
+            showToast('Failed to refresh prescriptions', 'error');
+        }
+    }
+}
+
+function togglePrescriptionHistory() {
+    const section = document.getElementById('rx-history-section');
+    const toggle = document.getElementById('rx-history-toggle');
+    if (!section) return;
+    const isHidden = section.style.display === 'none';
+    section.style.display = isHidden ? 'block' : 'none';
+    if (toggle) toggle.textContent = isHidden ? 'Hide History' : 'View Full History';
 }
 
 // ==================== CHARTING TAB ====================
@@ -4736,7 +5012,7 @@ function renderDEASection() {
 
         <!-- Dispense Now Button -->
         <button class="btn-dispense" style="background:linear-gradient(135deg, #059669 0%, #10b981 100%); margin-top:8px;" onclick="openQuickDispenseModalWrapper()">
-            ✅ DISPENSE NOW - NEW VERSION
+            ✅ Quick Dispense
         </button>
 
         <!-- Stage Dose Modal -->
@@ -4955,7 +5231,31 @@ async function submitDEACheck() {
     }
 }
 
-function closeModal(id) { document.getElementById(id)?.classList?.remove('visible'); }
+// FIX(2026-03-15): Enhanced closeModal + added backdrop click-to-dismiss for static modals
+function closeModal(id) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.classList.remove('visible');
+        el.style.display = '';
+    }
+}
+
+// Dismiss static modals (deaCheckModal, stageDoseModal) when clicking the overlay backdrop
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('modal-overlay') && e.target.classList.contains('visible')) {
+        e.target.classList.remove('visible');
+    }
+});
+
+// FIX(2026-03-15): Close visible modal overlays on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        const visibleOverlay = document.querySelector('.modal-overlay.visible');
+        if (visibleOverlay) {
+            visibleOverlay.classList.remove('visible');
+        }
+    }
+});
 
 function extractVials() {
     if (vialList.length > 0) return vialList.map(v => ({
@@ -5231,7 +5531,8 @@ async function submitSupplyCounts() {
     if (entries.length === 0) { showToast('No entries to save'); return; }
 
     try {
-        await apiFetch('/ops/api/supplies/count', {
+        // FIX(2026-03-15): Added trailing slash to prevent 404/redirect
+        await apiFetch('/ops/api/supplies/count/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ entries, recorded_by: 'iPad User' }),
@@ -5288,7 +5589,7 @@ function renderPatientsView(container) {
         <div class="patient-search">
             <span class="patient-search-icon">🔍</span>
             <input type="text" placeholder="Search patients..." id="patientSearchInput"
-                oninput="handlePatientSearch(this.value)">
+                oninput="debouncedHandlePatientSearch(this.value)">
         </div>
 
         ${recent.length > 0 ? `
@@ -5392,10 +5693,18 @@ function renderPatientListItem(p) {
     `;
 }
 
+// FIX(2026-03-15): Debounce patient search to avoid re-rendering on every keystroke
+let _patientSearchTimeout = null;
+function debouncedHandlePatientSearch(query) {
+    if (_patientSearchTimeout) clearTimeout(_patientSearchTimeout);
+    _patientSearchTimeout = setTimeout(() => handlePatientSearch(query), 250);
+}
+
 function handlePatientSearch(query) {
     const patients = getPatients();
     const q = query.toLowerCase().trim();
-    const filtered = q
+    // FIX(2026-03-15): Only filter after 2+ characters to avoid unnecessary re-renders
+    const filtered = (q && q.length >= 2)
         ? patients.filter(p => {
             const name = (p.name || p.patient_name || ((p.first_name || '') + ' ' + (p.last_name || ''))).toLowerCase();
             return name.includes(q);
@@ -6761,7 +7070,7 @@ async function loadPatientLabData(patientId) {
         // Also check review queue for lab results
         let reviewItems = [];
         try {
-            const qData = await apiFetch('/ops/api/labs/review-queue');
+            const qData = await apiFetch('/ops/api/labs/review-queue/');
             const allItems = qData?.queue || qData?.data || qData || [];
             if (Array.isArray(allItems)) {
                 reviewItems = allItems.filter(item => {
@@ -6814,7 +7123,7 @@ async function loadPatientLabData(patientId) {
                                 <div class="med-dose">${resultDate} · ${r.lab_provider || 'Access Medical'}</div>
                             </div>
                             <div style="display:flex; align-items:center; gap:8px;">
-                                ${r.id ? `<button class="btn-sm btn-secondary" onclick="window.open('/ops/api/labs/review-queue/${r.id}/pdf', '_blank')" style="font-size:11px; padding:3px 8px;">📄 View PDF</button>` : ''}
+                                ${r.id ? `<button class="btn-sm btn-secondary" onclick="window.open('/ops/api/labs/review-queue/${r.id}/pdf/', '_blank')" style="font-size:11px; padding:3px 8px;">📄 View PDF</button>` : ''}
                                 <span style="font-size:11px; padding:2px 8px; border-radius:4px; background:rgba(59,130,246,0.12); color:#3b82f6;">🔬 Needs Review</span>
                             </div>
                         </div>
@@ -6942,7 +7251,8 @@ async function openControlledDispenseModal(patientId, patientName) {
     // Load available vials from inventory
     let vials = [];
     try {
-        const data = await apiFetch('/ops/api/inventory/vials?status=active');
+        // FIX(2026-03-15): Added trailing slash before query params to prevent 404/redirect
+        const data = await apiFetch('/ops/api/inventory/vials/?status=active');
         vials = data?.data || data?.vials || data || [];
         if (!Array.isArray(vials)) vials = [];
     } catch { vials = []; }
@@ -7075,7 +7385,7 @@ async function openQuickDispenseModal() {
     let vials = [];
     try {
         console.log('[QuickDispense] Fetching vials...');
-        const data = await apiFetch('/ops/api/inventory/vials?status=Active');
+        const data = await apiFetch('/ops/api/inventory/vials/?status=Active');
         vials = data?.data || data?.vials || data || [];
         if (!Array.isArray(vials)) vials = [];
         console.log('[QuickDispense] Loaded vials:', vials.length);
@@ -7410,7 +7720,7 @@ async function searchICD10(query) {
 
     icd10SearchTimeout = setTimeout(async () => {
         try {
-            const resp = await fetch(`/ops/api/ipad/icd10-search?q=${encodeURIComponent(query)}`);
+            const resp = await fetch(`/ops/api/ipad/icd10-search/?q=${encodeURIComponent(query)}`);
             const data = await resp.json();
 
             if (!data.success || !data.results || data.results.length === 0) {
@@ -7538,16 +7848,24 @@ async function updateBillingInfo() {
 
             ${paymentMethods.length > 0 ? `
                 <div style="margin-bottom: 20px;">
-                    <div style="font-size: 12px; font-weight: 600; color: #999; text-transform: uppercase; margin-bottom: 8px;">Cards on File (Healthie)</div>
-                    ${paymentMethods.map(pm => `
-                        <div style="background: #2a2a2a; padding: 12px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                            <div>
+                    <div style="font-size: 12px; font-weight: 600; color: #999; text-transform: uppercase; margin-bottom: 8px;">Cards on File</div>
+                    ${paymentMethods.map(pm => {
+                        const isDirectStripe = pm.source_type === 'direct_stripe' || pm.id?.startsWith('direct_pm_');
+                        const bgColor = isDirectStripe ? '#2a1a2a' : '#1a2a2a';
+                        const borderColor = isDirectStripe ? 'rgba(240,147,251,0.3)' : 'rgba(16,185,129,0.3)';
+                        return `
+                        <div style="background: ${bgColor}; border: 1px solid ${borderColor}; padding: 12px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;">
                                 <div style="color: #fff; font-size: 14px;">${pm.card_type_label || 'Card'} ****${pm.last_four || '****'}</div>
                                 <div style="color: #666; font-size: 12px;">Expires ${pm.expiration || 'N/A'} · ZIP ${pm.zip || 'N/A'}</div>
                             </div>
-                            ${pm.is_default ? '<div style="background: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px;">Default</div>' : ''}
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                ${pm.is_default ? '<div style="background: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px;">Default</div>' : ''}
+                                ${isDirectStripe ? `<button onclick="deletePaymentMethod('${pm.id.replace('direct_', '')}')" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 600;">🗑️ Delete</button>` : ''}
+                            </div>
                         </div>
-                    `).join('')}
+                    `;
+                    }).join('')}
                 </div>
             ` : ''}
 
@@ -7570,7 +7888,7 @@ async function updateBillingInfo() {
 
             <div style="margin-bottom: 16px;">
                 <div style="font-size: 12px; font-weight: 600; color: #f093fb; text-transform: uppercase; margin-bottom: 8px;">
-                    🛍️ For Retail & One-Off Purchases
+                    💳 Bill Patient for Product/Service
                 </div>
                 <button onclick="manageDualStripeCards()" style="
                     width: 100%; padding: 14px;
@@ -7578,10 +7896,10 @@ async function updateBillingInfo() {
                     color: white; border: none; border-radius: 8px;
                     font-size: 14px; font-weight: 600; cursor: pointer;
                 ">
-                    ➕ Add Card to Direct Stripe
+                    ➕ Add Card for Billing
                 </button>
                 <div style="font-size: 11px; color: #666; margin-top: 6px; padding: 0 4px;">
-                    Use this for supplements, peptides, and retail items
+                    For today's visit, supplements, peptides, or any product/service
                 </div>
             </div>
 
@@ -7612,6 +7930,34 @@ function addNewCard() {
     closeBillingModal();
     window.open(`https://app.gethealthie.com/patients/${healthieId}/billing`, '_blank');
     showToast('Opening Healthie billing page to add card...', 'info');
+}
+
+async function deletePaymentMethod(paymentMethodId) {
+    const patientName = chartPanelData?.demographics?.full_name || 'this patient';
+
+    if (!confirm(`Are you sure you want to delete this payment method?\n\nThis cannot be undone.`)) {
+        return;
+    }
+
+    try {
+        const response = await apiFetch(`/ops/api/ipad/billing/delete-card?payment_method_id=${encodeURIComponent(paymentMethodId)}`, {
+            method: 'DELETE'
+        });
+
+        if (response.success) {
+            showToast('✅ Payment method deleted successfully', 'success');
+            closeBillingModal();
+            // Reload patient chart to reflect changes
+            if (chartPanelData?.demographics?.patient_id) {
+                await loadChartData(chartPanelData.demographics.patient_id);
+            }
+        } else {
+            throw new Error(response.error || 'Failed to delete payment method');
+        }
+    } catch (error) {
+        console.error('[deletePaymentMethod]', error);
+        showToast(`❌ Error: ${error.message || 'Failed to delete card'}`, 'error');
+    }
 }
 
 async function manageDualStripeCards() {
@@ -7651,7 +7997,7 @@ async function manageDualStripeCards() {
             showToast('✅ Card added to Direct Stripe!', 'success');
             // Reload patient chart
             if (chartPanelData?.demographics?.patient_id) {
-                await loadPatientChart(chartPanelData.demographics.patient_id);
+                await loadChartData(chartPanelData.demographics.patient_id);
             }
         }
     });
@@ -7713,8 +8059,8 @@ async function chargePatient() {
                 text-align: left; display: flex; align-items: center; justify-content: space-between;
             ">
                 <div>
-                    <div>🛍️ Direct Stripe (MindGravity)</div>
-                    <div style="font-size: 11px; opacity: 0.8; margin-top: 4px;">For retail & one-off purchases</div>
+                    <div>💳 Bill Patient for Product/Service</div>
+                    <div style="font-size: 11px; opacity: 0.8; margin-top: 4px;">For today's visit, products, or services</div>
                 </div>
                 <div style="font-size: 18px;">→</div>
             </button>
@@ -7765,7 +8111,7 @@ async function selectStripeAccount(account) {
     }
 
     const amountNum = parseFloat(amount);
-    const accountLabel = account === 'healthie' ? 'Healthie Stripe' : 'Direct Stripe (MindGravity)';
+    const accountLabel = account === 'healthie' ? 'Healthie (Packages/Subscriptions)' : 'Bill for Product/Service';
 
     if (!confirm(`Charge ${patientName} $${amountNum.toFixed(2)} via ${accountLabel}?\n\n"${description}"`)) {
         return;
@@ -7788,7 +8134,7 @@ async function selectStripeAccount(account) {
         if (response.success) {
             showToast(`✅ ${response.message}`, 'success');
             // Reload payment data
-            await loadPatientChart(patientId);
+            await loadChartData(patientId);
         } else {
             showToast(`❌ ${response.error}`, 'error');
         }

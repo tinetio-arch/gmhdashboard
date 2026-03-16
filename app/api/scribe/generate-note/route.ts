@@ -1,12 +1,72 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120; // Gemini generation can take time
+export const maxDuration = 120; // Claude generation can take time
 
-const GEMINI_API_KEY = process.env.GOOGLE_AI_API_KEY || '';
-const GEMINI_MODEL = 'gemini-2.0-flash';
+// Use Claude 3 Haiku via AWS Bedrock (us-east-2)
+const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
+const CLAUDE_MODEL_ID = 'us.anthropic.claude-3-haiku-20240307-v1:0';
+
+console.log('[Scribe:GenerateNote] AI client initialized with Claude 3 Haiku (Bedrock)');
+
+// ==================== MEDICATION CLASSIFICATION ====================
+// FDA-approved medications that don't need disclaimer
+const FDA_APPROVED_MEDS = new Set([
+    'testosterone', 'metformin', 'lisinopril', 'atorvastatin', 'levothyroxine',
+    'amlodipine', 'losartan', 'gabapentin', 'omeprazole', 'sertraline',
+    'escitalopram', 'fluoxetine', 'duloxetine', 'tadalafil', 'sildenafil',
+    'finasteride', 'dutasteride', 'anastrozole', 'tamoxifen', 'clomiphene',
+    'hcg', 'human chorionic gonadotropin', // HCG is FDA-approved
+]);
+
+// Compounded peptides that need "Non-FDA approved, user-reported peptide" disclaimer
+const COMPOUNDED_PEPTIDES = new Set([
+    'semaglutide', 'tirzepatide', 'retatrutide', 'bpc-157', 'bpc 157',
+    'tb-500', 'tb 500', 'thymosin', 'cjc-1295', 'cjc 1295', 'ipamorelin',
+    'tesamorelin', 'sermorelin', 'ghrp-2', 'ghrp-6', 'aod 9604', 'aod-9604',
+    'ghk-cu', 'ghk cu', 'pt-141', 'pt 141', 'gonadorelin', 'kisspeptin',
+    'semax', 'selank', 'epithalon', 'mgf', 'mechano growth factor',
+]);
+
+function isFDAApproved(medicationName: string): boolean {
+    const normalized = medicationName.toLowerCase().trim();
+    // Check if any FDA-approved keyword is in the medication name
+    for (const approved of FDA_APPROVED_MEDS) {
+        if (normalized.includes(approved)) return true;
+    }
+    return false;
+}
+
+function isCompoundedPeptide(medicationName: string): boolean {
+    const normalized = medicationName.toLowerCase().trim();
+    // Check if any peptide keyword is in the medication name
+    for (const peptide of COMPOUNDED_PEPTIDES) {
+        if (normalized.includes(peptide)) return true;
+    }
+    return false;
+}
+
+function formatMedication(med: any): string {
+    const name = med.name || 'Unknown medication';
+    const dosage = med.dosage || '';
+    const frequency = med.frequency || '';
+    const route = med.route || '';
+
+    let medLine = `* ${name}`;
+    if (dosage) medLine += ` ${dosage}`;
+    if (route) medLine += ` ${route}`;
+    if (frequency) medLine += ` ${frequency}`;
+
+    // Add disclaimer if it's a compounded peptide
+    if (isCompoundedPeptide(name)) {
+        medLine += ' (Non-FDA approved, user-reported peptide)';
+    }
+
+    return medLine;
+}
 
 // ==================== SOAP PROMPT BUILDER ====================
 // Uses the EXACT same template as the Python scribe (prompts_config.yaml → standard_soap)
@@ -14,22 +74,26 @@ function buildSoapPrompt(ctx: {
     patient_name: string;
     dob: string | null;
     medications: string;
+    allergies?: string;
     recent_labs: string;
     last_visit_summary: string;
     diagnoses: string;
     transcript: string;
     visit_type: string;
+    provider_name?: string;
 }): string {
     const currentDate = new Date().toLocaleDateString('en-US', {
         year: 'numeric', month: 'long', day: 'numeric'
     });
 
+    const providerName = ctx.provider_name || 'Phil Schafer, NP';
+
     // This is the EXACT standard_soap template from prompts_config.yaml
     const soapPrompt = `**Situation**
-You are Phil Schafer, NP at NowOptimal Network in Prescott, Arizona. You are documenting a patient encounter that has just concluded. The documentation must meet clinical standards for medical records, ensure compliance with healthcare regulations, and serve as a legal record of the patient visit. This SOAP note will be used for continuity of care, billing purposes, and potential legal review.
+You are ${providerName} at NowOptimal Network in Prescott, Arizona. You are documenting a patient encounter that has just concluded. The documentation must meet clinical standards for medical records, ensure compliance with healthcare regulations, and serve as a legal record of the patient visit. This SOAP note will be used for continuity of care, billing purposes, and potential legal review.
 
 **Task**
-Generate a comprehensive SOAP (Subjective, Objective, Assessment, and Plan) note from the provided patient visit transcript. The assistant should transform the conversational transcript into a structured clinical document that captures all relevant medical information in standardized medical terminology and format, matching Phil Schafer's established documentation style and level of detail.
+Generate a comprehensive SOAP (Subjective, Objective, Assessment, and Plan) note from the provided patient visit transcript. The assistant should transform the conversational transcript into a structured clinical document that captures all relevant medical information in standardized medical terminology and format, matching ${providerName}'s established documentation style and level of detail.
 
 **Objective**
 Create a complete, clinically accurate, and legally defensible medical record that documents the patient encounter thoroughly, supports appropriate billing and coding, provides clear guidance for follow-up care and treatment continuity, and includes complete prescription and pharmacy information for all medications ordered.
@@ -40,6 +104,20 @@ Patient Information Required:
 - Patient Name: ${ctx.patient_name}
 - Visit Date: ${currentDate}
 - Clinical Transcript: ${ctx.transcript}
+
+**PATIENT MEDICAL HISTORY (from EMR):**
+Use this context to enrich the SOAP note. Include these medications in the "Current Medications" section of Subjective, and include these allergies in the "Allergies" section.
+
+**Current Medications on File:**
+${ctx.medications}
+
+**Allergies on File:**
+${ctx.allergies || '* No known drug allergies'}
+
+**Recent Labs:**
+${ctx.recent_labs}
+
+**IMPORTANT:** For any compounded peptides in the medication list, ALWAYS include the disclaimer "(Non-FDA approved, user-reported peptide)" exactly as shown above.
 
 Documentation Standards:
 1. The assistant should document ALL physical exam body systems listed in the template, even if not explicitly mentioned in the transcript. When findings are not stated, document normal exam findings using standard medical terminology.
@@ -54,42 +132,48 @@ Documentation Standards:
 
 6. The assistant should maintain the exact format structure provided, including bold section headers. Use bullet points or numbered lists freely within sections to break up text and make the note "beautiful" and easy to read.
 
-7. The assistant should capture the conversational, thorough documentation style demonstrated in Phil Schafer's notes, including patient quotes when clinically relevant, detailed symptom descriptions, and comprehensive patient counseling documentation.
+7. The assistant should capture the conversational, thorough documentation style including patient quotes when clinically relevant, detailed symptom descriptions, and comprehensive patient counseling documentation.
 
-Physical Exam Guidelines:
-- Document only relevant systems based on the visit type and chief complaint
-- For routine follow-ups or simple visits, a focused exam is appropriate
-- For comprehensive exams or complex cases, document all systems
-- Use standard medical terminology for findings
-- Replace normal findings with specific abnormal findings when documented in transcript
+8. **CRITICAL - PLAN DETAIL REQUIREMENTS**: Each diagnosis in the Plan section MUST include:
+   - Specific intervention performed or prescribed (with exact dosages, routes, frequencies)
+   - Rationale for the intervention (why this treatment was chosen)
+   - Patient counseling provided (what was explained to the patient)
+   - Monitoring plan (what will be checked and when)
+   - Follow-up timeline (specific dates or timeframes)
+   - Patient response or concerns (if mentioned in transcript)
+   Even for brief visits, expand the Plan with clinical reasoning and standard-of-care details.
 
-Standard Physical Exam Template (adapt based on visit complexity):
+Physical Exam Template (use this exact structure and language, modifying only when abnormal findings are documented):
 
-**For Focused/Follow-up Visits:**
-General: Alert and oriented, in no acute distress. Well-developed and well-nourished.
-Vitals: [As documented]
-[Document only relevant systems based on chief complaint]
-
-**For Comprehensive Exams:**
 General: Alert and oriented, in no acute distress. Well-developed, hydrated, and nourished. Appears stated age.
 
-HEENT: Normocephalic, atraumatic. PERRLA, EOMI. TMs intact bilaterally. Oropharynx clear without erythema.
+Skin: Warm, dry, and intact. No rashes, lesions, or ulcers.
 
-Neck: Supple, no lymphadenopathy or thyromegaly.
+Head: Normocephalic and atraumatic. No tenderness to palpation.
 
-Cardiovascular: Regular rate and rhythm. No murmurs, gallops, or rubs.
+Eyes: Sclerae are non-icteric. Conjunctivae are pink and moist. Pupils are equal, round, and reactive to light and accommodation (PERRLA). Extraocular movements are intact (EOMI). Visual acuity grossly normal.
 
-Respiratory: Clear to auscultation bilaterally. No wheezes or rales.
+Ears: External ear canals are clear. Tympanic membranes are intact without erythema, bulging, or effusion.
 
-Abdomen: Soft, non-tender, non-distended. Normoactive bowel sounds.
+Nose: Nasal mucosa is pink and moist. No discharge or septal deviation noted.
 
-Extremities: No edema, cyanosis, or clubbing. Pulses 2+ bilaterally.
+Throat/Mouth: Oral mucosa is pink and moist. Dentition is intact. Oropharynx is normal in appearance with no erythema, exudates, or swelling.
 
-Musculoskeletal: Normal range of motion. 5/5 strength throughout.
+Neck: Supple with full range of motion. No lymphadenopathy, masses, or thyromegaly. Trachea is midline.
 
-Neurological: Cranial nerves II-XII intact. Sensation intact. DTRs 2+ bilaterally. Steady gait.
+Heart: Regular rate and rhythm. No murmurs, gallops, or rubs. Normal S1 and S2.
 
-Psychiatric: Appropriate mood and affect. No suicidal or homicidal ideation.
+Lungs: Clear to auscultation bilaterally. No wheezes, rales, or rhonchi. Normal respiratory effort without accessory muscle use.
+
+Abdomen: Soft, non-tender, and non-distended. No masses, hepatomegaly, or splenomegaly. Bowel sounds are normoactive in all four quadrants.
+
+Extremities: No edema, cyanosis, or clubbing. Peripheral pulses are 2+ and equal bilaterally. Capillary refill is normal.
+
+Musculoskeletal: Normal range of motion in all extremities. 5/5 motor strength bilaterally in upper and lower extremities.
+
+Neurological: Cranial nerves II-XII are intact. Sensation intact to light touch and pinprick. Deep tendon reflexes 2+ bilaterally. Steady gait noted. No tremors or focal deficits.
+
+Psychiatric: Appropriate mood and affect. Good judgment and insight. Normal thought process. No visual or auditory hallucinations. No suicidal or homicidal ideation.
 
 Required Output Structure (Strictly follow this order):
 
@@ -137,7 +221,7 @@ FOLLOW-UP
 [Text]
 
 ---
-Electronically signed by Phil Schafer, NP
+Electronically signed by ${providerName}
 NowOptimal Network
 ${currentDate}
 
@@ -194,9 +278,12 @@ export async function POST(request: NextRequest) {
             console.log(`[Scribe:GenerateNote] Deleted old note ${existingNote.note_id} for regeneration`);
         }
 
-        // 1. Fetch session transcript
+        // 1. Fetch session transcript + provider info
         const [session] = await query<any>(
-            'SELECT * FROM scribe_sessions WHERE session_id = $1',
+            `SELECT ss.*, u.display_name as provider_name
+             FROM scribe_sessions ss
+             LEFT JOIN users u ON ss.created_by = u.user_id
+             WHERE ss.session_id = $1`,
             [session_id]
         );
         if (!session?.transcript) {
@@ -228,6 +315,61 @@ export async function POST(request: NextRequest) {
         const healthieId = patient?.healthie_client_id || patient_id;
         const resolvedPatientId = patient?.patient_id || patient_id;
 
+        // Fetch Healthie medical history if available
+        let healthieMeds: any[] = [];
+        let healthieAllergies: string[] = [];
+        let healthieConditions: any[] = [];
+
+        if (healthieId && process.env.HEALTHIE_API_KEY) {
+            try {
+                // Query Healthie GraphQL for medications
+                const medsResponse = await fetch('https://api.gethealthie.com/graphql', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Basic ${process.env.HEALTHIE_API_KEY}`,
+                        'AuthorizationSource': 'API',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: `query {
+                            medications(patient_id: "${healthieId}", active: true) {
+                                id
+                                name
+                                dosage
+                                frequency
+                                route
+                                directions
+                            }
+                            user(id: "${healthieId}") {
+                                id
+                                allergies
+                            }
+                        }`
+                    })
+                });
+
+                const healthieData = await medsResponse.json();
+
+                if (healthieData?.data?.medications) {
+                    healthieMeds = healthieData.data.medications;
+                    console.log(`[Scribe:GenerateNote] Fetched ${healthieMeds.length} medications from Healthie`);
+                }
+
+                if (healthieData?.data?.user?.allergies) {
+                    // Healthies stores allergies as a string or array
+                    const allergyData = healthieData.data.user.allergies;
+                    if (typeof allergyData === 'string') {
+                        healthieAllergies = allergyData.split(',').map((a: string) => a.trim()).filter(Boolean);
+                    } else if (Array.isArray(allergyData)) {
+                        healthieAllergies = allergyData;
+                    }
+                    console.log(`[Scribe:GenerateNote] Fetched ${healthieAllergies.length} allergies from Healthie`);
+                }
+            } catch (error) {
+                console.error('[Scribe:GenerateNote] Healthie API error (non-fatal):', error);
+            }
+        }
+
         // Fetch recent medications in parallel (safe — returns empty arrays if patient not in DB)
         // REFRESH CONTEXT: Always fetch fresh data, especially on regenerate
         console.log(`[Scribe:GenerateNote] ${regenerate ? 'Regenerating' : 'Generating'} note for ${patientName} (${resolvedPatientId})`);
@@ -255,13 +397,39 @@ export async function POST(request: NextRequest) {
       `, [healthieId]) : Promise.resolve([]),
         ]);
 
-        console.log(`[Scribe:GenerateNote] Context loaded: ${recentMeds.length} peptides, ${recentTrt.length} TRT dispenses, ${recentLabs.length} labs`);
+        console.log(`[Scribe:GenerateNote] Context loaded: ${recentMeds.length} peptides, ${recentTrt.length} TRT dispenses, ${recentLabs.length} labs, ${healthieMeds.length} Healthie meds`);
 
-        // 3. Build prompt
-        const medications = [
-            ...recentMeds.map((m: any) => m.name),
-            ...recentTrt.map((t: any) => `${t.dea_drug_name} ${t.dose_ml}mL`),
-        ].join(', ') || 'None on file';
+        // 3. Build medications list with FDA/peptide classification
+        const medicationsList: string[] = [];
+
+        // Add Healthie medications (properly formatted with peptide disclaimer)
+        for (const med of healthieMeds) {
+            medicationsList.push(formatMedication(med));
+        }
+
+        // Add recent peptide dispenses from our system (with disclaimer)
+        for (const peptide of recentMeds) {
+            const formatted = formatMedication({ name: peptide.name });
+            if (!medicationsList.includes(formatted)) {
+                medicationsList.push(formatted);
+            }
+        }
+
+        // Add recent TRT dispenses
+        for (const trt of recentTrt) {
+            const formatted = `* ${trt.dea_drug_name} ${trt.dose_ml}mL`;
+            if (!medicationsList.includes(formatted)) {
+                medicationsList.push(formatted);
+            }
+        }
+
+        const medications = medicationsList.length > 0
+            ? medicationsList.join('\n')
+            : '* None on file';
+
+        const allergies = healthieAllergies.length > 0
+            ? healthieAllergies.map(a => `* ${a}`).join('\n')
+            : '* No known drug allergies';
 
         const labSummary = recentLabs.length > 0
             ? recentLabs.map((l: any) => `${l.lab_company || 'Lab'} (${l.status}) ${new Date(l.created_at).toLocaleDateString()}`).join('; ')
@@ -271,54 +439,105 @@ export async function POST(request: NextRequest) {
             patient_name: patientName,
             dob: patientDob,
             medications,
+            allergies,
             recent_labs: labSummary,
             last_visit_summary: 'See visit history',
             diagnoses: 'Per transcript',
             transcript: session.transcript,
             visit_type: visit_type || session.visit_type,
+            provider_name: session.provider_name || 'Phil Schafer, NP',
         });
 
-        // 4. Call Gemini Flash
-        const modelId = GEMINI_MODEL;
-        if (!GEMINI_API_KEY) {
-            return NextResponse.json({ success: false, error: 'GOOGLE_AI_API_KEY not configured' }, { status: 500 });
-        }
+        // 4. Call Claude 3 Haiku via Bedrock
+        console.log(`[Scribe:GenerateNote] Invoking Claude for patient ${patientName}...`);
 
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${GEMINI_API_KEY}`;
-        const geminiResponse = await fetch(geminiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: {
-                    maxOutputTokens: 8192,
-                    temperature: 0.2,  // REDUCED: More consistent medical documentation
-                },
-            }),
+        const claudeRequest = {
+            anthropic_version: 'bedrock-2023-05-31',
+            max_tokens: 8000,
+            temperature: 0.3, // Medical accuracy
+            messages: [
+                {
+                    role: 'user',
+                    content: prompt
+                }
+            ]
+        };
+
+        const command = new InvokeModelCommand({
+            modelId: CLAUDE_MODEL_ID,
+            contentType: 'application/json',
+            accept: 'application/json',
+            body: JSON.stringify(claudeRequest)
         });
 
-        if (!geminiResponse.ok) {
-            const errText = await geminiResponse.text();
-            console.error('[Scribe:GenerateNote] Gemini error:', geminiResponse.status, errText);
-            return NextResponse.json({ success: false, error: `Gemini API error: ${geminiResponse.status}` }, { status: 500 });
-        }
+        let aiText = '';
+        try {
+            const response = await bedrock.send(command);
+            const responseBody = JSON.parse(new TextDecoder().decode(response.body));
 
-        const geminiResult = await geminiResponse.json();
-        const aiText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            if (!responseBody.content || responseBody.content.length === 0) {
+                console.error('[Scribe:GenerateNote] Invalid Claude response:', responseBody);
+                return NextResponse.json({ success: false, error: 'Invalid AI response structure' }, { status: 500 });
+            }
+
+            aiText = responseBody.content[0].text;
+            console.log(`[Scribe:GenerateNote] Claude generated ${aiText.length} chars`);
+        } catch (error: any) {
+            console.error('[Scribe:GenerateNote] Claude error:', error);
+            return NextResponse.json({ success: false, error: `Claude API error: ${error.message}` }, { status: 500 });
+        }
 
         // 5. Parse SOAP sections from text output (matching Python scribe's parse_soap_sections)
         // The prompt outputs section headers like SUBJECTIVE, OBJECTIVE, ASSESSMENT, PLAN
+        // IMPORTANT: Section headers MUST be at start of line (^) to avoid matching lowercase words like "plan" in HPI
         const parseSoapSections = (text: string) => {
-            const subMatch = text.match(/SUBJECTIVE[\s\S]*?(?=OBJECTIVE|$)/i);
-            const objMatch = text.match(/OBJECTIVE[\s\S]*?(?=ASSESSMENT|$)/i);
-            const assMatch = text.match(/ASSESSMENT[\s\S]*?(?=PLAN(?!\s*:)|$)/i);
-            const planMatch = text.match(/PLAN[\s\S]*?(?=PRESCRIPTIONS|PATIENT INSTRUCTIONS|FOLLOW-UP|---\s*\nElectronically|$)/i);
+            // Claude adds trailing spaces to every line, so we need to match ^\s*SECTION not ^SECTION
+            // Split on section boundaries (allowing leading/trailing whitespace)
+            const sections = text.split(/^\s*(SUBJECTIVE|OBJECTIVE|ASSESSMENT|PLAN|PRESCRIPTIONS|PATIENT INSTRUCTIONS|FOLLOW-UP)\s*$/gmi);
+
+            const result = {
+                subjective: '',
+                objective: '',
+                assessment: '',
+                plan: ''
+            };
+
+            let currentSection = '';
+            for (let i = 0; i < sections.length; i++) {
+                const part = sections[i];
+                if (!part) continue;
+
+                const upper = part.trim().toUpperCase();
+                if (upper === 'SUBJECTIVE') {
+                    currentSection = 'subjective';
+                } else if (upper === 'OBJECTIVE') {
+                    currentSection = 'objective';
+                } else if (upper === 'ASSESSMENT') {
+                    currentSection = 'assessment';
+                } else if (upper === 'PLAN') {
+                    currentSection = 'plan';
+                } else if (upper === 'PRESCRIPTIONS' || upper === 'PATIENT INSTRUCTIONS' || upper === 'FOLLOW-UP') {
+                    // These go into plan
+                    if (currentSection === 'plan') {
+                        result.plan += '\n\n**' + part.trim() + '**\n';
+                    }
+                    currentSection = 'plan';
+                } else if (currentSection) {
+                    // Content for current section
+                    result[currentSection] += part;
+                }
+            }
+
+            // Clean up - remove signature blocks from plan
+            if (result.plan) {
+                result.plan = result.plan.replace(/---\s*\nElectronically signed by[\s\S]*$/i, '').trim();
+            }
 
             return {
-                subjective: subMatch ? subMatch[0].replace(/^SUBJECTIVE\s*/i, '').trim() : '',
-                objective: objMatch ? objMatch[0].replace(/^OBJECTIVE\s*/i, '').trim() : '',
-                assessment: assMatch ? assMatch[0].replace(/^ASSESSMENT\s*/i, '').trim() : '',
-                plan: planMatch ? planMatch[0].replace(/^PLAN\s*/i, '').trim() : '',
+                subjective: result.subjective.trim(),
+                objective: result.objective.trim(),
+                assessment: result.assessment.trim(),
+                plan: result.plan.trim(),
             };
         };
 
@@ -359,8 +578,8 @@ export async function POST(request: NextRequest) {
             JSON.stringify(icd10Codes),
             JSON.stringify(cptCodes),
             fullNote,
-            modelId,
-            'v1',
+            CLAUDE_MODEL_ID,
+            'v2-claude',
         ]);
 
         // 7. Update session status
@@ -382,7 +601,7 @@ export async function POST(request: NextRequest) {
                 },
                 icd10_codes: icd10Codes,
                 cpt_codes: cptCodes,
-                ai_model: modelId,
+                ai_model: CLAUDE_MODEL_ID,
             },
         });
     } catch (error) {

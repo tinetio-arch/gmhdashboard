@@ -6,6 +6,12 @@ npm-debug.log*
 # environment & secrets
 .env*
 *.pem
+credentials.json
+token.json
+
+# documentation with potential secrets
+**/ANTIGRAVITY_SOURCE_OF_TRUTH.md
+**/SOURCE_OF_TRUTH.md
 
 # macOS artifacts
 .DS_Store

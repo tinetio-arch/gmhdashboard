@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+
+// Use Claude 3 Haiku for AI editing (fast and accurate)
+const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
+const CLAUDE_MODEL_ID = 'us.anthropic.claude-3-haiku-20240307-v1:0';
 
 // POST: AI-powered note editing
 // Matches Telegram bot's "Edit via AI" mode (L2067-2168)
@@ -75,15 +80,7 @@ export async function POST(
             );
         }
 
-        // Call Gemini API for intelligent editing (matching Telegram bot)
-        const GEMINI_API_KEY = process.env.GOOGLE_AI_API_KEY;
-        if (!GEMINI_API_KEY) {
-            return NextResponse.json(
-                { success: false, error: 'GOOGLE_AI_API_KEY not configured' },
-                { status: 500 }
-            );
-        }
-
+        // Call Claude 3 Haiku for intelligent editing
         const editPrompt = `You are Phil Schafer, NP, editing a medical SOAP note at NowOptimal Network. You are a skilled clinician who maintains high documentation standards.
 
 **CRITICAL RULES:**
@@ -103,28 +100,44 @@ ${currentContent}
 
 **UPDATED ${docLabel.toUpperCase()}:**`;
 
-        const geminiResponse = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text: editPrompt }] }],
-                    generationConfig: {
-                        temperature: 0.1,  // REDUCED: Medical edits need to be precise, not creative
-                        maxOutputTokens: 8192,  // INCREASED: Allow longer notes
-                    },
-                }),
+        let updatedContent: string;
+        try {
+            const claudeRequest = {
+                anthropic_version: 'bedrock-2023-05-31',
+                max_tokens: 8000,
+                temperature: 0.1,  // Medical edits need to be precise
+                messages: [
+                    {
+                        role: 'user',
+                        content: editPrompt
+                    }
+                ]
+            };
+
+            const command = new InvokeModelCommand({
+                modelId: CLAUDE_MODEL_ID,
+                contentType: 'application/json',
+                accept: 'application/json',
+                body: JSON.stringify(claudeRequest)
+            });
+
+            const response = await bedrock.send(command);
+            const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+            if (!responseBody.content || responseBody.content.length === 0) {
+                console.error('[Scribe:AI-Edit] Invalid Claude response:', responseBody);
+                return NextResponse.json(
+                    { success: false, error: 'AI editing failed — invalid response from Claude' },
+                    { status: 502 }
+                );
             }
-        );
 
-        const geminiResult: any = await geminiResponse.json();
-        const updatedContent = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        if (!updatedContent) {
-            console.error('[Scribe:AI-Edit] Gemini response:', JSON.stringify(geminiResult).substring(0, 500));
+            updatedContent = responseBody.content[0].text;
+            console.log(`[Scribe:AI-Edit] Claude edited ${docLabel}: ${updatedContent.length} chars`);
+        } catch (error: any) {
+            console.error('[Scribe:AI-Edit] Claude error:', error);
             return NextResponse.json(
-                { success: false, error: 'AI editing failed — no content returned from Gemini' },
+                { success: false, error: `AI editing failed: ${error.message}` },
                 { status: 502 }
             );
         }
@@ -137,10 +150,44 @@ ${currentContent}
             );
         } else {
             // Parse updated full SOAP back into sections
-            const subMatch = updatedContent.match(/SUBJECTIVE[\s\S]*?(?=OBJECTIVE|$)/i);
-            const objMatch = updatedContent.match(/OBJECTIVE[\s\S]*?(?=ASSESSMENT|$)/i);
-            const assMatch = updatedContent.match(/ASSESSMENT[\s\S]*?(?=PLAN|$)/i);
-            const planMatch = updatedContent.match(/PLAN[\s\S]*/i);
+            // IMPORTANT: Use same parsing logic as generate-note to handle leading/trailing spaces
+            const sections = updatedContent.split(/^\s*(SUBJECTIVE|OBJECTIVE|ASSESSMENT|PLAN|PRESCRIPTIONS|PATIENT INSTRUCTIONS|FOLLOW-UP)\s*$/gmi);
+
+            const result = {
+                subjective: '',
+                objective: '',
+                assessment: '',
+                plan: ''
+            };
+
+            let currentSection = '';
+            for (let i = 0; i < sections.length; i++) {
+                const part = sections[i];
+                if (!part) continue;
+
+                const upper = part.trim().toUpperCase();
+                if (upper === 'SUBJECTIVE') {
+                    currentSection = 'subjective';
+                } else if (upper === 'OBJECTIVE') {
+                    currentSection = 'objective';
+                } else if (upper === 'ASSESSMENT') {
+                    currentSection = 'assessment';
+                } else if (upper === 'PLAN') {
+                    currentSection = 'plan';
+                } else if (upper === 'PRESCRIPTIONS' || upper === 'PATIENT INSTRUCTIONS' || upper === 'FOLLOW-UP') {
+                    if (currentSection === 'plan') {
+                        result.plan += '\n\n**' + part.trim() + '**\n';
+                    }
+                    currentSection = 'plan';
+                } else if (currentSection) {
+                    result[currentSection] += part;
+                }
+            }
+
+            // Clean up - remove signature blocks from plan
+            if (result.plan) {
+                result.plan = result.plan.replace(/---\s*\nElectronically signed by[\s\S]*$/i, '').trim();
+            }
 
             await query(`
                 UPDATE scribe_notes SET
@@ -152,10 +199,10 @@ ${currentContent}
                     updated_at = NOW()
                 WHERE note_id = $6
             `, [
-                subMatch ? subMatch[0].replace(/^SUBJECTIVE\s*/i, '').trim() : note.soap_subjective,
-                objMatch ? objMatch[0].replace(/^OBJECTIVE\s*/i, '').trim() : note.soap_objective,
-                assMatch ? assMatch[0].replace(/^ASSESSMENT\s*/i, '').trim() : note.soap_assessment,
-                planMatch ? planMatch[0].replace(/^PLAN\s*/i, '').trim() : note.soap_plan,
+                result.subjective.trim() || note.soap_subjective,
+                result.objective.trim() || note.soap_objective,
+                result.assessment.trim() || note.soap_assessment,
+                result.plan.trim() || note.soap_plan,
                 updatedContent,
                 noteId,
             ]);

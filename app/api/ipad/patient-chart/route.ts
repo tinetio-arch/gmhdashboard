@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+import Stripe from 'stripe';
 
 export const dynamic = 'force-dynamic';
 
@@ -314,6 +315,43 @@ export async function GET(request: NextRequest) {
             `, [localPatientId]);
         }
 
+        // 4. Fetch Direct Stripe payment methods for this patient
+        let directStripeCards: any[] = [];
+        if (localPatientId && process.env.STRIPE_SECRET_KEY) {
+            try {
+                const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' });
+
+                // Check if patient has a Stripe customer ID
+                const stripeCustomerResult = await query<any>(`
+                    SELECT stripe_customer_id FROM patients WHERE patient_id = $1
+                `, [localPatientId]);
+
+                const stripeCustomerId = stripeCustomerResult[0]?.stripe_customer_id;
+
+                if (stripeCustomerId) {
+                    const paymentMethods = await stripe.paymentMethods.list({
+                        customer: stripeCustomerId,
+                        type: 'card',
+                    });
+
+                    // Format Direct Stripe cards to match Healthie format
+                    directStripeCards = paymentMethods.data.map(pm => ({
+                        id: `direct_${pm.id}`,
+                        card_type: pm.card?.brand || 'card',
+                        card_type_label: `${pm.card?.brand?.toUpperCase() || 'Card'} (Direct)`,
+                        last_four: pm.card?.last4 || '****',
+                        expiration: `${String(pm.card?.exp_month).padStart(2, '0')}/${pm.card?.exp_year}`,
+                        source_status: 'active',
+                        source_type: 'direct_stripe',
+                        zip: pm.billing_details?.address?.postal_code || '',
+                    }));
+                }
+            } catch (error) {
+                console.error('[Patient Chart] Error fetching Direct Stripe payment methods:', error);
+                // Don't fail the whole request if Stripe fetch fails
+            }
+        }
+
         // Query local patient metrics (vitals) - these may not have synced to Healthie yet
         let localVitals: any[] = [];
         try {
@@ -496,7 +534,10 @@ export async function GET(request: NextRequest) {
                 last_payments: lastPayments || [],
                 trt_dispenses: trtDispenses || [],
                 peptide_dispenses: peptideDispenses || [],
-                payment_methods: paymentMethods?.user?.stripe_customer_details || [], // PLURAL - array of all cards
+                payment_methods: [
+                    ...(paymentMethods?.user?.stripe_customer_details || []),
+                    ...directStripeCards
+                ], // Healthie Stripe cards + Direct Stripe cards
                 active_packages: activePackages || [], // Packages from healthie_package_mapping table
                 subscriptions: [], // Legacy field - packages are now in active_packages
                 recurring_payment: null, // Legacy field - replaced by active_packages

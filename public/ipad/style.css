@@ -4228,3 +4228,227 @@ select.chart-data-input {
     cursor: wait;
     transform: none;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   PRESCRIPTIONS & CONTROLLED SUBSTANCE STYLES
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Controlled substance left-border indicators */
+.rx-controlled-ii {
+  border-left: 4px solid #ef4444 !important;
+}
+.rx-controlled-iii {
+  border-left: 4px solid #f97316 !important;
+}
+.rx-controlled-iv {
+  border-left: 4px solid #eab308 !important;
+}
+.rx-controlled-v {
+  border-left: 4px solid #22c55e !important;
+}
+
+/* Status opacity */
+.rx-active {
+  opacity: 1;
+}
+.rx-inactive {
+  opacity: 0.5;
+}
+.rx-error {
+  background: rgba(239, 68, 68, 0.08) !important;
+  border-left: 4px solid #ef4444 !important;
+}
+
+/* Controlled substance alert banner */
+.rx-alert-banner {
+  background: linear-gradient(135deg, rgba(254, 243, 199, 0.15), rgba(253, 230, 138, 0.15));
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Pulsing animation for Schedule II alerts */
+@keyframes rx-pulse {
+  0%, 100% {
+    border-color: rgba(239, 68, 68, 0.3);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+  50% {
+    border-color: rgba(239, 68, 68, 0.6);
+    box-shadow: 0 0 8px 2px rgba(239, 68, 68, 0.15);
+  }
+}
+
+/* Prescription card base */
+.rx-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.rx-card:active {
+  transform: scale(0.98);
+}
+
+/* Prescription list container */
+.rx-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Prescription error banner */
+.rx-error-banner {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Prescriptions tab toolbar buttons */
+.rx-toolbar-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  color: var(--text-secondary);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.rx-toolbar-btn:active {
+  background: var(--border);
+}
+
+/* Medication chip (inline patient view & chart panel) */
+.rx-med-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  margin: 2px 4px 2px 0;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* Schedule badge (small inline label) */
+.rx-schedule-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+.rx-schedule-badge-ii {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.rx-schedule-badge-iii {
+  background: rgba(249, 115, 22, 0.15);
+  color: #f97316;
+}
+.rx-schedule-badge-iv {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+.rx-schedule-badge-v {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+/* Status badges */
+.rx-status-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.rx-status-active {
+  background: rgba(34, 211, 238, 0.15);
+  color: var(--cyan);
+}
+.rx-status-pending {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+.rx-status-inactive {
+  background: rgba(156, 163, 175, 0.15);
+  color: #9ca3af;
+}
+.rx-status-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+/* Allergy badges */
+.allergy-nkda {
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.allergy-alert {
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.allergy-chip {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* Diagnosis chips */
+.dx-chip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   AUTH OVERLAY POLISH
+   ═══════════════════════════════════════════════════════════════════ */
+
+#loginOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+#loginOverlay .login-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px;
+  width: 360px;
+  max-width: 90vw;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+}

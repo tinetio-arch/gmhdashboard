@@ -397,8 +397,8 @@ pm2 save
 **Implementation**:
 
 1. **Environment Configuration** ([.env.local](gmhdashboard/.env.local)):
-   - Added `STRIPE_PUBLISHABLE_KEY` - pk_live_51SVHOPPB2L4QIAwdvZjRY4k69EatIrhEpCD6nUatP8JGgYm6RTt6fjcXifQNp62qqdz56zSZhSPQ2IDgWW4LWHVS00BhY73GMD
-   - Added `STRIPE_SECRET_KEY` - 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
+   - Added `STRIPE_PUBLISHABLE_KEY` - Stored in .env.local (never commit to git)
+   - Added `STRIPE_SECRET_KEY` - Stored in .env.local (never commit to git)
    - Healthie's Stripe integration managed via Healthie API (Stripe Connect account)
 
 2. **Healthie Client Enhancement** ([lib/healthie.ts:1367-1428](gmhdashboard/lib/healthie.ts#L1367-L1428)):

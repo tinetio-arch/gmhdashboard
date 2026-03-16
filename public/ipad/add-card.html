@@ -201,7 +201,7 @@
 <body>
     <div class="container">
         <h1>💳 Add Payment Method</h1>
-        <p class="subtitle">Card will be saved to both Stripe accounts</p>
+        <p class="subtitle">For Direct Stripe billing (products/services)</p>
 
         <div class="patient-info">
             <div class="patient-name" id="patientName">Loading...</div>
@@ -209,8 +209,11 @@
         </div>
 
         <div class="accounts-badge">
-            <div class="badge badge-healthie">Healthie Stripe</div>
-            <div class="badge badge-direct">Direct Stripe</div>
+            <div class="badge badge-direct">Direct Stripe Only</div>
+        </div>
+
+        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 13px; color: #856404;">
+            <strong>ℹ️ Note:</strong> For Healthie packages/subscriptions, add cards at <a href="https://app.gethealthie.com" target="_blank" style="color: #856404; text-decoration: underline;">app.gethealthie.com</a>
         </div>
 
         <div id="statusMessage"></div>
@@ -220,7 +223,7 @@
             <div id="card-errors"></div>
 
             <button type="submit" class="submit-btn" id="submitBtn">
-                <span id="buttonText">Add Card to Both Accounts</span>
+                <span id="buttonText">Add Card to Direct Stripe</span>
             </button>
 
             <button type="button" class="cancel-btn" onclick="window.close()">Cancel</button>
@@ -311,7 +314,7 @@
                     throw new Error(error.message);
                 }
 
-                showStatus('processing', 'Saving to both Stripe accounts...');
+                showStatus('processing', 'Saving to Direct Stripe...');
 
                 // Send payment method to backend to save to both Stripe accounts
                 const response = await fetch('/ops/api/ipad/billing/add-card-dual', {
@@ -340,7 +343,7 @@
                 }
 
                 // Success!
-                showStatus('success', `✅ Card added successfully to both accounts! (${paymentMethod.card.brand.toUpperCase()} ****${paymentMethod.card.last4})`);
+                showStatus('success', `✅ Card added to Direct Stripe! (${paymentMethod.card.brand.toUpperCase()} ****${paymentMethod.card.last4})`);
                 buttonText.textContent = 'Card Added Successfully!';
 
                 // Close window after 2 seconds
