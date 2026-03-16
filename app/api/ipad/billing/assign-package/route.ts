@@ -8,10 +8,11 @@ import { createHealthieClient } from '@/lib/healthie';
  */
 export async function GET(request: NextRequest) {
     try {
-        await requireApiUser(request, 'write');
+        await requireApiUser(request, 'read');
 
         const healthieClient = createHealthieClient();
         if (!healthieClient) {
+            console.error('[assign-package GET] Healthie client not configured — check HEALTHIE_API_KEY env');
             return NextResponse.json({
                 success: false,
                 error: 'Healthie client not configured'
