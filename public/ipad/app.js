@@ -4978,6 +4978,9 @@ function renderFinancialTab(container, d) {
                         ${pkg.description ? `<div class="chart-lab-notes" style="font-size:11px; color:var(--text-tertiary); margin-top:4px;">${pkg.description}</div>` : ''}
                     </div>
                 `).join('') : '<div class="chart-empty">No active packages</div>'}
+                <button onclick="showAssignPackageModal()" style="width:100%; margin:8px 0; padding:12px; background:rgba(124,58,237,0.15); color:var(--purple); border:1px solid var(--purple); border-radius:8px; font-size:13px; font-weight:600; cursor:pointer;">
+                    📦 Assign Healthie Package
+                </button>
             </div>
         </div>
 
@@ -8419,6 +8422,110 @@ function closeCardModal() {
     if (window._cardModal) {
         window._cardModal.remove();
         delete window._cardModal;
+    }
+}
+
+// ==================== ASSIGN PACKAGE MODAL ====================
+async function showAssignPackageModal() {
+    const healthieId = chartPanelData?.healthie_id;
+    if (!healthieId) {
+        showToast('Cannot assign package — patient not linked to Healthie', 'error');
+        return;
+    }
+
+    // Create overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'assignPackageOverlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:10000; display:flex; align-items:center; justify-content:center;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:var(--card); border:1px solid var(--border); border-radius:12px; width:90%; max-width:480px; max-height:80vh; overflow-y:auto; padding:20px;';
+
+    modal.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h3 style="margin:0; color:var(--text-primary); font-size:16px;">📦 Assign Healthie Package</h3>
+            <button onclick="document.getElementById('assignPackageOverlay').remove()" style="background:none; border:none; color:var(--text-secondary); font-size:20px; cursor:pointer;">&times;</button>
+        </div>
+        <div id="assignPackageList" style="color:var(--text-secondary); font-size:13px; text-align:center; padding:24px 0;">Loading packages...</div>
+    `;
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    // Fetch packages
+    try {
+        const resp = await fetch('/ops/api/ipad/billing/assign-package/', { credentials: 'include' });
+        const data = await resp.json();
+
+        if (!data.success || !data.packages?.length) {
+            document.getElementById('assignPackageList').innerHTML = '<div style="color:var(--text-tertiary);">No packages available in Healthie</div>';
+            return;
+        }
+
+        const formatFreq = (f) => {
+            const map = { one_time: 'One-time', weekly: 'Weekly', biweekly: 'Bi-weekly', monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly' };
+            return map[f] || f || '';
+        };
+
+        const listHtml = data.packages.map(pkg => `
+            <div style="background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:8px;">
+                <div style="display:flex; justify-content:space-between; align-items:start;">
+                    <div style="flex:1;">
+                        <div style="font-weight:600; color:var(--text-primary); font-size:13px;">${pkg.name}</div>
+                        <div style="color:var(--text-secondary); font-size:11px; margin-top:2px;">
+                            ${pkg.price ? '$' + parseFloat(pkg.price).toFixed(2) : ''} ${formatFreq(pkg.billing_frequency)}
+                        </div>
+                        ${pkg.description ? `<div style="color:var(--text-tertiary); font-size:10px; margin-top:4px;">${pkg.description}</div>` : ''}
+                    </div>
+                    <button onclick="assignPackageToPatient('${pkg.id}', '${pkg.name.replace(/'/g, "\\'")}')" style="padding:6px 14px; background:var(--purple); color:white; border:none; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; margin-left:8px;">
+                        Assign
+                    </button>
+                </div>
+            </div>
+        `).join('');
+
+        document.getElementById('assignPackageList').innerHTML = listHtml;
+    } catch (err) {
+        console.error('[showAssignPackageModal] Failed to load packages:', err);
+        document.getElementById('assignPackageList').innerHTML = '<div style="color:var(--red);">Failed to load packages</div>';
+    }
+}
+
+async function assignPackageToPatient(packageId, packageName) {
+    const healthieId = chartPanelData?.healthie_id;
+    if (!healthieId) {
+        showToast('Patient not linked to Healthie', 'error');
+        return;
+    }
+
+    try {
+        const resp = await fetch('/ops/api/ipad/billing/assign-package/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ healthie_id: healthieId, package_id: packageId }),
+        });
+        const data = await resp.json();
+
+        if (!data.success) {
+            showToast(data.error || 'Failed to assign package', 'error');
+            return;
+        }
+
+        showToast(`Assigned "${packageName}" successfully`, 'success');
+
+        // Close modal
+        const overlay = document.getElementById('assignPackageOverlay');
+        if (overlay) overlay.remove();
+
+        // Reload chart data to reflect the new package
+        if (chartPanelPatientId) {
+            loadChartPanelData(chartPanelPatientId);
+        }
+    } catch (err) {
+        console.error('[assignPackageToPatient] Error:', err);
+        showToast('Failed to assign package', 'error');
     }
 }
 
