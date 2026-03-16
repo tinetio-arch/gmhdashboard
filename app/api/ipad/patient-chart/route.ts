@@ -123,7 +123,7 @@ export async function GET(request: NextRequest) {
 
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
-        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, recurringPayments, billingItems, packageSelections] = await Promise.all([
+        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, billingItems] = await Promise.all([
             // Chart notes (form answer groups) - NOTE: sort_by is NOT supported by Healthie API
             safeHealthieQuery<any>('chartNotes', `
                 query GetChartNotes($userId: String) {
@@ -294,63 +294,42 @@ export async function GET(request: NextRequest) {
                 }
             `, { userId: healthieId }),
 
-            // Recurring payments (subscriptions) from Healthie
-            safeHealthieQuery<any>('recurringPayments', `
-                query GetSubscriptions($id: ID) {
-                    user(id: $id) {
-                        recurring_payments {
-                            id
-                            is_canceled
-                            is_paused
-                            amount_to_pay
-                            next_payment_date
-                            offering_name
-                            billing_frequency
-                            start_at
-                        }
-                    }
-                }
-            `, { id: healthieId }),
-
-            // Billing items (payment history) from Healthie
+            // Billing items (payment history + package info) from Healthie
+            // NOTE: User.recurring_payments does NOT exist in this Healthie API version.
+            // Package/offering info is embedded in billingItems via offering + recurring_payment sub-objects.
             safeHealthieQuery<any>('billingItems', `
                 query GetBillingItems($clientId: ID) {
                     billingItems(client_id: $clientId, offset: 0) {
                         id
-                        amount_display
+                        amount_paid_string
+                        state
                         created_at
-                        description
-                        offering {
-                            name
-                        }
-                    }
-                }
-            `, { clientId: healthieId }),
-
-            // User package selections (all assigned packages — covers one-time AND recurring)
-            safeHealthieQuery<any>('packageSelections', `
-                query GetUserPackageSelections($userId: ID) {
-                    userPackageSelections(user_id: $userId) {
-                        id
-                        created_at
+                        is_recurring
+                        shown_description
                         offering {
                             id
                             name
                             price
                             billing_frequency
-                            description
                         }
                         recurring_payment {
                             id
                             is_canceled
                             is_paused
-                            amount_to_pay
                             next_payment_date
+                            amount_to_pay
                             start_at
+                        }
+                        user_package_selection {
+                            id
+                            offering {
+                                id
+                                name
+                            }
                         }
                     }
                 }
-            `, { userId: healthieId }),
+            `, { clientId: healthieId }),
         ]);
 
         // 3. Fetch local scribe history — only if we have a valid uuid patient_id
@@ -457,68 +436,51 @@ export async function GET(request: NextRequest) {
             }
         }
 
-        // Build active packages from userPackageSelections (primary) + recurring_payments (fallback) + local DB
+        // Extract active packages from billing items' recurring_payment + offering data
+        // In this Healthie API version, User.recurring_payments does NOT exist.
+        // Instead, package info is embedded in billingItems.
         let activePackages: any[] = [];
-        const seenPackageIds = new Set<string>();
+        const seenRecurringPaymentIds = new Set<string>();
 
-        // PRIMARY: userPackageSelections — covers ALL assigned packages (one-time + recurring)
-        const selections = packageSelections?.userPackageSelections || [];
-        for (const sel of selections) {
-            const rp = sel.recurring_payment;
-            // Skip cancelled/paused recurring packages
-            if (rp && (rp.is_canceled || rp.is_paused)) continue;
-
-            const offering = sel.offering;
-            activePackages.push({
-                package_name: offering?.name || 'Package',
-                description: offering?.description || '',
-                amount: rp?.amount_to_pay || offering?.price || '',
-                frequency: offering?.billing_frequency || 'one_time',
-                billing_frequency: offering?.billing_frequency || 'one_time',
-                next_charge_date: rp?.next_payment_date || null,
-                start_date: rp?.start_at || sel.created_at || null,
-                source: 'healthie',
-                healthie_id: sel.id,
-                offering_id: offering?.id || null,
-            });
-            if (offering?.id) seenPackageIds.add(offering.id);
-        }
-
-        // FALLBACK: recurring_payments for any subscriptions not linked via userPackageSelections
-        const healthieSubscriptions = recurringPayments?.user?.recurring_payments || [];
-        for (const rp of healthieSubscriptions) {
+        const allBillingItems = billingItems?.billingItems || [];
+        for (const item of allBillingItems) {
+            const rp = item.recurring_payment;
+            if (!rp) continue; // No recurring payment = one-time charge, not an active package
             if (rp.is_canceled || rp.is_paused) continue;
-            // Avoid duplicates — skip if we already found this via packageSelections
-            if (seenPackageIds.has(rp.id)) continue;
+            if (seenRecurringPaymentIds.has(rp.id)) continue; // Deduplicate — multiple billing items share the same recurring_payment
+            seenRecurringPaymentIds.add(rp.id);
+
+            const offering = item.offering || item.user_package_selection?.offering;
             activePackages.push({
-                package_name: rp.offering_name || 'Subscription',
-                amount: rp.amount_to_pay || '',
-                frequency: rp.billing_frequency || '',
-                billing_frequency: rp.billing_frequency || '',
+                package_name: offering?.name || item.shown_description || 'Package',
+                description: item.shown_description || '',
+                amount: rp.amount_to_pay || item.amount_paid_string || '',
+                frequency: offering?.billing_frequency || 'Monthly',
+                billing_frequency: offering?.billing_frequency || 'Monthly',
                 next_charge_date: rp.next_payment_date || null,
                 start_date: rp.start_at || null,
                 source: 'healthie',
-                healthie_id: rp.id
+                healthie_id: rp.id,
+                offering_id: offering?.id || null,
             });
         }
 
         // LOCAL DB fallback
         activePackages = [...activePackages, ...localPackages];
-        console.log(`[Patient Chart] Found ${selections.length} package selections, ${healthieSubscriptions.length} recurring payments, ${localPackages.length} local packages => ${activePackages.length} total active`);
+        console.log(`[Patient Chart] Extracted ${seenRecurringPaymentIds.size} active packages from ${allBillingItems.length} billing items + ${localPackages.length} local packages`);
 
         // Map Healthie billing items to payment history
         let lastPayments: any[] = [];
-        const healthieBillingItems = billingItems?.billingItems || [];
-        lastPayments = healthieBillingItems
+        lastPayments = allBillingItems
             .map((item: any) => ({
-                amount: item.amount_display || '$0.00',
+                amount: item.amount_paid_string ? `$${item.amount_paid_string}` : '$0.00',
                 payment_date: item.created_at || '',
                 payment_type: item.offering?.name || 'Charge',
-                description: item.description || '',
-                status: 'completed',
+                description: item.shown_description || '',
+                status: item.state || 'completed',
                 healthie_id: item.id
             }))
-            .slice(0, 5); // Latest 5 payments
+            .slice(0, 10); // Latest 10 payments
         console.log(`[Patient Chart] Found ${lastPayments.length} billing items from Healthie`);
 
         // Query testosterone dispenses
