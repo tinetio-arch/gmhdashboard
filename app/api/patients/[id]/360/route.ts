@@ -14,6 +14,13 @@ interface Patient360 {
     visits: any[];
     alerts: any[];
     controlled_substances: any[];
+    prescriptions: {
+        active: any[];
+        controlled: any[];
+        recent: any[];
+        alerts: { has_controlled: boolean; has_errors: boolean; controlled_schedules: string[] };
+        all: any[];
+    };
 }
 
 export async function GET(
@@ -138,9 +145,10 @@ export async function GET(
       `, [localPatientId]),
         ]);
 
-        // Healthie data (visits + labs) — graceful fallback on failure
+        // Healthie data (visits + labs + prescriptions) — graceful fallback on failure
         let healthieVisits: any[] = [];
         let healthieLabs: any[] = [];
+        let healthiePrescriptions: any[] = [];
 
         const healthieId = patient.healthie_client_id;
         if (healthieId) {
@@ -224,6 +232,60 @@ export async function GET(
                 console.error(`[Patient360] Healthie labs failed for ${healthieId}:`, labErr instanceof Error ? labErr.message : labErr);
                 // Gracefully continue with empty labs
             }
+
+            // Fetch prescriptions from Healthie/DoseSpot
+            try {
+                const prescriptionData = await healthieGraphQL<{
+                    prescriptions: Array<{
+                        id: string;
+                        product_name?: string | null;
+                        display_name?: string | null;
+                        dosage?: string | null;
+                        dose_form?: string | null;
+                        directions?: string | null;
+                        quantity?: string | null;
+                        unit?: string | null;
+                        refills?: number | null;
+                        days_supply?: number | null;
+                        normalized_status?: string | null;
+                        schedule?: string | null;
+                        date_written?: string | null;
+                        last_fill_date?: string | null;
+                        prescriber_name?: string | null;
+                        pharmacy?: { name?: string; city?: string; state?: string } | null;
+                    }>;
+                }>(`
+          query GetPatientPrescriptions($patient_id: ID!) {
+            prescriptions(patient_id: $patient_id, current_only: true) {
+              id
+              product_name
+              display_name
+              dosage
+              dose_form
+              directions
+              quantity
+              unit
+              refills
+              days_supply
+              normalized_status
+              schedule
+              date_written
+              last_fill_date
+              prescriber_name
+              pharmacy {
+                name
+                city
+                state
+              }
+            }
+          }
+        `, { patient_id: healthieId });
+
+                healthiePrescriptions = prescriptionData.prescriptions || [];
+            } catch (rxErr) {
+                console.error(`[Patient360] Healthie prescriptions failed for ${healthieId}:`, rxErr instanceof Error ? rxErr.message : rxErr);
+                // Gracefully continue with empty prescriptions
+            }
         }
 
         // Build alerts from aggregated sources
@@ -304,6 +366,23 @@ export async function GET(
             visits: healthieVisits,
             alerts,
             controlled_substances: deaTransactions,
+            prescriptions: {
+                active: healthiePrescriptions.filter((p: any) => p.normalized_status === 'active'),
+                controlled: healthiePrescriptions.filter((p: any) => p.schedule != null && p.normalized_status === 'active'),
+                recent: [...healthiePrescriptions]
+                    .sort((a: any, b: any) => (b.date_written || '').localeCompare(a.date_written || ''))
+                    .slice(0, 5),
+                alerts: {
+                    has_controlled: healthiePrescriptions.some((p: any) => p.schedule != null && p.normalized_status === 'active'),
+                    has_errors: healthiePrescriptions.some((p: any) => p.normalized_status === 'error'),
+                    controlled_schedules: [...new Set(
+                        healthiePrescriptions
+                            .filter((p: any) => p.schedule != null && p.normalized_status === 'active')
+                            .map((p: any) => p.schedule)
+                    )],
+                },
+                all: healthiePrescriptions,
+            },
         };
 
         return NextResponse.json({ success: true, data: result });
