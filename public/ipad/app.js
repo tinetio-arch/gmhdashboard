@@ -4550,14 +4550,19 @@ async function saveEditedDemographics() {
 // ==================== PATIENT DATA ENTRY ====================
 
 function showPatientDataForm(type, clickedElement) {
+    console.log('[showPatientDataForm] + button clicked, type:', type, 'clickedElement:', clickedElement);
     const healthieId = chartPanelData?.healthie_id;
+    console.log('[showPatientDataForm] healthie_id:', healthieId);
     if (!healthieId) {
-        showToast('No Healthie ID — cannot add data for unmapped patients', 'error');
+        showToast('Cannot add ' + type + ' — this patient is not linked to Healthie. Connect them first via the Patients tab.', 'error');
         return;
     }
 
     const container = document.getElementById('chartTabContent');
-    if (!container) return;
+    if (!container) {
+        console.warn('[showPatientDataForm] chartTabContent container not found');
+        return;
+    }
 
     // Close any existing form first
     closePatientDataForm();
@@ -4686,14 +4691,26 @@ function showPatientDataForm(type, clickedElement) {
     formDiv.style.margin = '8px 0';
 
     // Find the section element and insert after it
-    const section = document.getElementById(sectionId);
+    let section = document.getElementById(sectionId);
+    if (!section) {
+        console.warn('[showPatientDataForm] Section not found by getElementById, trying fallbacks for:', sectionId);
+        section = document.querySelector('#globalChartContent #' + sectionId)
+            || document.querySelector('[id="' + sectionId + '"]');
+    }
+    console.log('[showPatientDataForm] section found:', !!section, section);
+
     if (section && section.nextSibling) {
         section.parentNode.insertBefore(formDiv, section.nextSibling);
+        console.log('[showPatientDataForm] Inserted form after section.nextSibling');
     } else if (section) {
         section.parentNode.appendChild(formDiv);
+        console.log('[showPatientDataForm] Appended form to section.parentNode');
     } else {
-        // Fallback: prepend to container if section not found
-        container.prepend(formDiv);
+        // Fallback: insert into globalChartContent or chartTabContent
+        const globalChart = document.getElementById('globalChartContent');
+        const fallbackTarget = globalChart?.firstElementChild || globalChart || container;
+        console.warn('[showPatientDataForm] No section found, using fallback target:', fallbackTarget);
+        fallbackTarget.prepend(formDiv);
     }
 
     // Focus first input and scroll to form
@@ -4701,7 +4718,8 @@ function showPatientDataForm(type, clickedElement) {
         const firstInput = formDiv.querySelector('input[type="text"], select');
         if (firstInput) {
             firstInput.focus();
-            formDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            formDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            console.log('[showPatientDataForm] Form scrolled into view and focused');
         }
     }, 100);
 }
