@@ -1932,14 +1932,14 @@ async function connectPatientToSession(sessionId) {
     overlay.id = 'patientPickerOverlay';
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
     overlay.innerHTML = `
-        <div style="background:#1a2332;border-radius:16px;padding:24px;width:90%;max-width:500px;max-height:70vh;display:flex;flex-direction:column;border:1px solid rgba(0,212,255,0.2);">
+        <div style="background:var(--card);border-radius:16px;padding:24px;width:90%;max-width:500px;max-height:70vh;display:flex;flex-direction:column;border:1px solid rgba(0,212,255,0.2);">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                <h3 style="margin:0;color:#f0f4f8;font-size:18px;">🔗 Connect Patient</h3>
+                <h3 style="margin:0;color:var(--text-primary);font-size:18px;">🔗 Connect Patient</h3>
                 <button onclick="document.getElementById('patientPickerOverlay').remove()"
-                    style="background:none;border:none;color:#8899aa;font-size:20px;cursor:pointer;">✕</button>
+                    style="background:none;border:none;color:var(--text-secondary);font-size:20px;cursor:pointer;">✕</button>
             </div>
             <input id="patientPickerSearch" type="text" placeholder="Search any patient by name..."
-                style="padding:12px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#f0f4f8;font-size:15px;margin-bottom:12px;outline:none;"
+                style="padding:12px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--text-primary);font-size:15px;margin-bottom:12px;outline:none;"
                 oninput="debouncedPatientSearch(this.value)">
             <div id="patientPickerList" style="flex:1;overflow-y:auto;"></div>
         </div>
@@ -1964,7 +1964,7 @@ async function connectPatientToSession(sessionId) {
     if (uniquePatients.length > 0) {
         renderPatientPickerList(uniquePatients);
     } else {
-        patientPickerList.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Type a name to search Healthie</div>';
+        patientPickerList.innerHTML = '<div style="color:var(--text-secondary);padding:20px;text-align:center;">Type a name to search Healthie</div>';
     }
 }
 
@@ -1983,11 +1983,11 @@ function debouncedPatientSearch(searchText) {
             if (id && !seen.has(id)) { seen.add(id); uniquePatients.push({ id: id, first_name: nm, last_name: '' }); }
         });
         if (uniquePatients.length > 0) renderPatientPickerList(uniquePatients);
-        else list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Type a name to search Healthie</div>';
+        else list.innerHTML = '<div style="color:var(--text-secondary);padding:20px;text-align:center;">Type a name to search Healthie</div>';
         return;
     }
 
-    list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">Searching Healthie...</div>';
+    list.innerHTML = '<div style="color:var(--text-secondary);padding:20px;text-align:center;">Searching Healthie...</div>';
     
     _pickerSearchTimeout = setTimeout(async () => {
         try {
@@ -1996,7 +1996,7 @@ function debouncedPatientSearch(searchText) {
             if (data.success && data.patients && data.patients.length > 0) {
                 renderPatientPickerList(data.patients);
             } else {
-                list.innerHTML = '<div style="color:#8899aa;padding:20px;text-align:center;">No patients found matching "'+searchText+'"</div>';
+                list.innerHTML = '<div style="color:var(--text-secondary);padding:20px;text-align:center;">No patients found matching "'+searchText+'"</div>';
             }
         } catch(e) {
             list.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center;">Search failed</div>';
@@ -2007,17 +2007,17 @@ function debouncedPatientSearch(searchText) {
 function renderPatientPickerList(patients) {
     const list = document.getElementById('patientPickerList');
     if (!list) return;
-    list.innerHTML = '<div style="font-size:11px;color:#8899aa;margin-bottom:8px;padding-left:8px;text-transform:uppercase;">Select Patient</div>' + patients.map(p => {
+    list.innerHTML = '<div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;padding-left:8px;text-transform:uppercase;">Select Patient</div>' + patients.map(p => {
         const name = p.full_name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown';
         const hid = p.healthie_id || p.id || '';
         return `
             <div onclick="selectPatientForSession('${hid}', '${name.replace(/'/g, "\\'")}')"
-                style="padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;color:#f0f4f8;
+                style="padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;color:var(--text-primary);
                 display:flex;justify-content:space-between;align-items:center;transition:background 0.15s; border-radius:8px;"
                 onmouseover="this.style.background='rgba(0,212,255,0.08)'" onmouseout="this.style.background='none'">
                 <div>
                     <div style="font-weight:600;font-size:15px;">${name}</div>
-                    <div style="font-size:12px;color:#8899aa;">Healthie ID: ${hid}</div>
+                    <div style="font-size:12px;color:var(--text-secondary);">Healthie ID: ${hid}</div>
                 </div>
                 <span style="color:var(--cyan);font-size:14px;">Select →</span>
             </div>
@@ -3700,13 +3700,13 @@ function renderChartPanel(content) {
             </div>
             <div id="quickVitalsFormArea"></div>
             ${recentVitals.length > 0
-                ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:4px;">${recentVitals.map(v => {
+                ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:6px;">${recentVitals.map(v => {
                     const recordedBy = v.created_by?.full_name || v.created_by?.email || (v.description && v.description.includes('by ') ? v.description.split('by ').pop().split(')')[0] : '');
                     return `<div style="font-size:11px; padding:4px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border);">
                     <div style="color:var(--text-tertiary); font-size:9px; text-transform:uppercase;">${v.category || v.type || '?'}</div>
                     <div style="color:var(--text-primary); font-weight:600;">${v.metric_stat || '—'}</div>
-                    <div style="color:var(--text-tertiary); font-size:8px;">${fmtVitalDate(v.created_at)}</div>
-                    ${recordedBy ? `<div style="color:var(--cyan); font-size:8px;">by ${recordedBy.split('@')[0]}</div>` : ''}
+                    <div style="color:var(--text-tertiary); font-size:9px;">${fmtVitalDate(v.created_at)}</div>
+                    ${recordedBy ? `<div style="color:var(--cyan); font-size:9px;">by ${recordedBy.split('@')[0]}</div>` : ''}
                 </div>`;
                 }).join('')}</div>`
                 : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No vitals on file</div>`}
@@ -3717,13 +3717,13 @@ function renderChartPanel(content) {
 
         <!-- Tabs (Charting / Forms / Documents / Financial / Dispense Hx) -->
         <div class="chart-tab-nav">
-            <button class="chart-tab-btn ${window._chartTab === 'charting' ? 'active' : ''}" onclick="switchChartTab('charting')">\ud83d\udccb Charting</button>
-            <button class="chart-tab-btn ${window._chartTab === 'forms' ? 'active' : ''}" onclick="switchChartTab('forms')">\ud83d\udcdd Forms</button>
-            <button class="chart-tab-btn ${window._chartTab === 'documents' ? 'active' : ''}" onclick="switchChartTab('documents')">\ud83d\udcc1 Documents</button>
-            <button class="chart-tab-btn ${window._chartTab === 'financial' ? 'active' : ''}" onclick="switchChartTab('financial')">\ud83d\udcb0 Financial</button>
-            <button class="chart-tab-btn ${window._chartTab === 'prescriptions' ? 'active' : ''}" onclick="switchChartTab('prescriptions')">\ud83d\udc8a Rx</button>
-            <button class="chart-tab-btn ${window._chartTab === 'erx' ? 'active' : ''}" onclick="switchChartTab('erx')">\ud83d\udc8a E-Rx</button>
-            <button class="chart-tab-btn ${window._chartTab === 'dispense' ? 'active' : ''}" onclick="switchChartTab('dispense')">\ud83d\udc89 Dispense Hx</button>
+            <button class="chart-tab-btn ${window._chartTab === 'charting' ? 'active' : ''}" data-tab="charting" onclick="switchChartTab('charting')">\ud83d\udccb Charting</button>
+            <button class="chart-tab-btn ${window._chartTab === 'forms' ? 'active' : ''}" data-tab="forms" onclick="switchChartTab('forms')">\ud83d\udcdd Forms</button>
+            <button class="chart-tab-btn ${window._chartTab === 'documents' ? 'active' : ''}" data-tab="documents" onclick="switchChartTab('documents')">\ud83d\udcc1 Documents</button>
+            <button class="chart-tab-btn ${window._chartTab === 'financial' ? 'active' : ''}" data-tab="financial" onclick="switchChartTab('financial')">\ud83d\udcb0 Financial</button>
+            <button class="chart-tab-btn ${window._chartTab === 'prescriptions' ? 'active' : ''}" data-tab="prescriptions" onclick="switchChartTab('prescriptions')">\ud83d\udc8a Rx</button>
+            <button class="chart-tab-btn ${window._chartTab === 'erx' ? 'active' : ''}" data-tab="erx" onclick="switchChartTab('erx')">\ud83d\udccb E-Rx</button>
+            <button class="chart-tab-btn ${window._chartTab === 'dispense' ? 'active' : ''}" data-tab="dispense" onclick="switchChartTab('dispense')">\ud83d\udc89 Dispense Hx</button>
         </div>
         <div id="chartTabContent"></div>
     `;
@@ -3735,15 +3735,7 @@ function switchChartTab(tab) {
     window._chartTab = tab;
     // Update button active states
     document.querySelectorAll('.chart-tab-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.textContent.includes(
-            tab === 'charting' ? 'Charting' :
-            tab === 'forms' ? 'Forms' :
-            tab === 'documents' ? 'Documents' :
-            tab === 'financial' ? 'Financial' :
-            tab === 'prescriptions' ? 'Rx' :
-            tab === 'erx' ? 'E-Rx' :
-            tab === 'dispense' ? 'Dispense' : ''
-        ));
+        btn.classList.toggle('active', btn.dataset.tab === tab);
     });
     renderChartTabContent();
 }
@@ -8209,24 +8201,24 @@ async function updateBillingInfo() {
         padding: 20px;
     `;
     modal.innerHTML = `
-        <div style="background: #1a1a1a; border-radius: 12px; padding: 24px; max-width: 500px; width: 100%;">
-            <h3 style="margin: 0 0 16px; color: #fff; font-size: 18px;">💳 Manage Payment Methods</h3>
-            <div style="color: #999; font-size: 13px; margin-bottom: 20px;">
+        <div style="background: var(--card); border-radius: 12px; padding: 24px; max-width: 500px; width: 100%;">
+            <h3 style="margin: 0 0 16px; color: var(--text-primary); font-size: 18px;">💳 Manage Payment Methods</h3>
+            <div style="color: var(--text-secondary); font-size: 13px; margin-bottom: 20px;">
                 ${patientName}
             </div>
 
             ${paymentMethods.length > 0 ? `
                 <div style="margin-bottom: 20px;">
-                    <div style="font-size: 12px; font-weight: 600; color: #999; text-transform: uppercase; margin-bottom: 8px;">Cards on File</div>
+                    <div style="font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 8px;">Cards on File</div>
                     ${paymentMethods.map(pm => {
                         const isDirectStripe = pm.source_type === 'direct_stripe' || pm.id?.startsWith('direct_pm_');
-                        const bgColor = isDirectStripe ? '#2a1a2a' : '#1a2a2a';
+                        const bgColor = isDirectStripe ? 'rgba(240,147,251,0.08)' : 'rgba(16,185,129,0.08)';
                         const borderColor = isDirectStripe ? 'rgba(240,147,251,0.3)' : 'rgba(16,185,129,0.3)';
                         return `
                         <div style="background: ${bgColor}; border: 1px solid ${borderColor}; padding: 12px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                             <div style="flex: 1;">
-                                <div style="color: #fff; font-size: 14px;">${pm.card_type_label || 'Card'} ****${pm.last_four || '****'}</div>
-                                <div style="color: #666; font-size: 12px;">Expires ${pm.expiration || 'N/A'} · ZIP ${pm.zip || 'N/A'}</div>
+                                <div style="color: var(--text-primary); font-size: 14px;">${pm.card_type_label || 'Card'} ****${pm.last_four || '****'}</div>
+                                <div style="color: var(--text-tertiary); font-size: 12px;">Expires ${pm.expiration || 'N/A'} · ZIP ${pm.zip || 'N/A'}</div>
                             </div>
                             <div style="display: flex; gap: 8px; align-items: center;">
                                 ${pm.is_default ? '<div style="background: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px;">Default</div>' : ''}
@@ -8250,7 +8242,7 @@ async function updateBillingInfo() {
                 ">
                     ➕ Add Card to Healthie Stripe
                 </button>
-                <div style="font-size: 11px; color: #666; margin-top: 6px; padding: 0 4px;">
+                <div style="font-size: 11px; color: var(--text-tertiary); margin-top: 6px; padding: 0 4px;">
                     Use this for recurring packages managed in Healthie
                 </div>
             </div>
@@ -8267,14 +8259,14 @@ async function updateBillingInfo() {
                 ">
                     ➕ Add Card for Billing
                 </button>
-                <div style="font-size: 11px; color: #666; margin-top: 6px; padding: 0 4px;">
+                <div style="font-size: 11px; color: var(--text-tertiary); margin-top: 6px; padding: 0 4px;">
                     For today's visit, supplements, peptides, or any product/service
                 </div>
             </div>
 
             <button onclick="closeBillingModal()" style="
                 width: 100%; padding: 12px;
-                background: transparent; color: #666; border: 1px solid #333;
+                background: transparent; color: var(--text-tertiary); border: 1px solid var(--border-light);
                 border-radius: 8px; font-size: 13px; cursor: pointer;
             ">Close</button>
         </div>
@@ -8400,9 +8392,9 @@ async function chargePatient() {
         padding: 20px;
     `;
     stripeAccountModal.innerHTML = `
-        <div style="background: #1a1a1a; border-radius: 12px; padding: 24px; max-width: 400px; width: 100%;">
-            <h3 style="margin: 0 0 16px; color: #fff; font-size: 18px;">Select Stripe Account</h3>
-            <div style="color: #999; font-size: 13px; margin-bottom: 20px;">
+        <div style="background: var(--card); border-radius: 12px; padding: 24px; max-width: 400px; width: 100%;">
+            <h3 style="margin: 0 0 16px; color: var(--text-primary); font-size: 18px;">Select Stripe Account</h3>
+            <div style="color: var(--text-secondary); font-size: 13px; margin-bottom: 20px;">
                 Choose which Stripe account to charge ${patientName}:
             </div>
 
@@ -8436,7 +8428,7 @@ async function chargePatient() {
 
             <button onclick="closeStripeAccountModal()" style="
                 width: 100%; padding: 12px;
-                background: transparent; color: #666; border: 1px solid #333;
+                background: transparent; color: var(--text-tertiary); border: 1px solid var(--border-light);
                 border-radius: 8px; font-size: 13px; cursor: pointer;
             ">Cancel</button>
         </div>
