@@ -251,7 +251,7 @@ export async function POST(request: NextRequest) {
         throw error;
     }
 
-    const { session_id, patient_id, visit_type, patient_name, regenerate } = await request.json();
+    const { session_id, patient_id, visit_type, patient_name, regenerate, current_medications } = await request.json();
 
     if (!session_id) {
         return NextResponse.json({ success: false, error: 'session_id is required' }, { status: 400 });
@@ -421,6 +421,28 @@ export async function POST(request: NextRequest) {
             if (!medicationsList.includes(formatted)) {
                 medicationsList.push(formatted);
             }
+        }
+
+        // Add DoseSpot prescription data sent from the iPad frontend
+        if (current_medications && Array.isArray(current_medications)) {
+            for (const med of current_medications) {
+                const formatted = formatMedication({
+                    name: med.name || med.product_name || med.display_name,
+                    dosage: med.dosage,
+                    frequency: med.directions,
+                    route: med.route,
+                });
+                if (formatted && !medicationsList.includes(formatted)) {
+                    // Add controlled substance schedule note if present
+                    const withSchedule = med.schedule
+                        ? `${formatted} [Schedule ${med.schedule} Controlled]`
+                        : formatted;
+                    if (!medicationsList.includes(withSchedule) && !medicationsList.includes(formatted)) {
+                        medicationsList.push(withSchedule);
+                    }
+                }
+            }
+            console.log(`[Scribe:GenerateNote] Added ${current_medications.length} DoseSpot medications from frontend`);
         }
 
         const medications = medicationsList.length > 0
