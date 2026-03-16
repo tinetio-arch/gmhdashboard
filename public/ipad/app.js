@@ -2914,16 +2914,38 @@ async function generateSOAPNote(regen = false) {
     showToast(regen ? 'Regenerating SOAP note with AI…' : 'Generating SOAP note with AI… this may take 30-60 seconds', 'info');
 
     try {
+        // Fetch current medications from DoseSpot/prescriptions for SOAP context
+        let currentMedications = [];
+        const healthieId = scribePatientId || activeScribeSession.patient_id;
+        if (healthieId) {
+            try {
+                const rxData = await apiFetch(`/ops/api/prescriptions/${healthieId}/`);
+                const rxList = rxData?.prescriptions || rxData?.active || rxData?.categorized?.active || [];
+                currentMedications = rxList.map(rx => ({
+                    name: rx.product_name || rx.display_name,
+                    dosage: rx.dosage,
+                    directions: rx.directions,
+                    schedule: rx.schedule,
+                    prescriber: rx.prescriber_name,
+                    date_written: rx.date_written,
+                    route: rx.route,
+                }));
+            } catch (err) {
+                console.warn('[Scribe] Failed to fetch medications for SOAP context (non-blocking):', err);
+            }
+        }
+
         // Use raw fetch to get full error details
         const resp = await fetch('/ops/api/scribe/generate-note/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 session_id: activeScribeSession.session_id,
-                patient_id: scribePatientId || activeScribeSession.patient_id,
+                patient_id: healthieId,
                 visit_type: scribeVisitType || activeScribeSession.visit_type,
                 patient_name: scribePatientName || activeScribeSession.patient_name || '',
                 regenerate: regen,
+                current_medications: currentMedications,
             }),
             credentials: 'include',
         });
@@ -3665,19 +3687,9 @@ function renderChartPanel(content) {
             </div>` : ''}` : '<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No working diagnoses</div>'}
         </div>
 
-        <!-- MEDICATIONS (always visible) -->
+        <!-- MEDICATIONS (always visible — upgraded with prescriptions + controlled substance badges) -->
         <div id="medications-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
-            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
-                <span>\ud83d\udc8a Medications (${hMeds.length + peptides.length + trt.length})</span>
-                <button class="chart-add-btn" onclick="showPatientDataForm('medication')" title="Add Medication" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
-            </div>
-            ${hMeds.length + peptides.length + trt.length > 0
-                ? `<div style="font-size:11px; color:var(--text-secondary); line-height:1.5;">${[
-                    ...hMeds.map(m => `${m.name || '?'}${m.dosage ? ' ' + m.dosage : ''}`),
-                    ...peptides.map(m => m.medication_name || m.product_name || '?'),
-                    ...trt.map(m => m.medication_name || '?')
-                ].join(' · ')}</div>`
-                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No medications on file</div>`}
+            ${renderMedicationsSection(d, hMeds, peptides, trt)}
         </div>
 
         <!-- LAST VITALS (always visible) -->
@@ -3700,6 +3712,9 @@ function renderChartPanel(content) {
                 : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No vitals on file</div>`}
         </div>
 
+        <!-- Controlled Substance Alert (if any) -->
+        ${renderControlledSubstanceAlert(d)}
+
         <!-- Tabs (Charting / Forms / Documents / Financial / Dispense Hx) -->
         <div class="chart-tab-nav">
             <button class="chart-tab-btn ${window._chartTab === 'charting' ? 'active' : ''}" onclick="switchChartTab('charting')">\ud83d\udccb Charting</button>
@@ -3707,6 +3722,7 @@ function renderChartPanel(content) {
             <button class="chart-tab-btn ${window._chartTab === 'documents' ? 'active' : ''}" onclick="switchChartTab('documents')">\ud83d\udcc1 Documents</button>
             <button class="chart-tab-btn ${window._chartTab === 'financial' ? 'active' : ''}" onclick="switchChartTab('financial')">\ud83d\udcb0 Financial</button>
             <button class="chart-tab-btn ${window._chartTab === 'prescriptions' ? 'active' : ''}" onclick="switchChartTab('prescriptions')">\ud83d\udc8a Rx</button>
+            <button class="chart-tab-btn ${window._chartTab === 'erx' ? 'active' : ''}" onclick="switchChartTab('erx')">\ud83d\udc8a E-Rx</button>
             <button class="chart-tab-btn ${window._chartTab === 'dispense' ? 'active' : ''}" onclick="switchChartTab('dispense')">\ud83d\udc89 Dispense Hx</button>
         </div>
         <div id="chartTabContent"></div>
@@ -3725,6 +3741,7 @@ function switchChartTab(tab) {
             tab === 'documents' ? 'Documents' :
             tab === 'financial' ? 'Financial' :
             tab === 'prescriptions' ? 'Rx' :
+            tab === 'erx' ? 'E-Rx' :
             tab === 'dispense' ? 'Dispense' : ''
         ));
     });
@@ -3746,12 +3763,89 @@ function renderChartTabContent() {
         renderFinancialTab(container, d);
     } else if (window._chartTab === 'prescriptions') {
         renderPrescriptionsTab(container, d);
+    } else if (window._chartTab === 'erx') {
+        renderERxTab(container, d);
     } else if (window._chartTab === 'dispense') {
         renderDispenseTab(container, d);
     }
 }
 
 // ==================== PRESCRIPTIONS TAB ====================
+// ─── UPGRADED MEDICATIONS SECTION (chart panel, always visible) ────────
+function renderMedicationsSection(d, hMeds, peptides, trt) {
+    const rxActive = d.prescriptions?.active || [];
+    const rxControlled = rxActive.filter(p => p.schedule != null);
+    const totalCount = hMeds.length + peptides.length + trt.length + rxActive.length;
+
+    let html = `
+        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+            <span>💊 Medications (${totalCount})${rxControlled.length > 0
+                ? ` <span style="color:var(--orange);font-size:9px;margin-left:4px;">⚠️ ${rxControlled.length} Controlled</span>`
+                : ''}</span>
+            <button class="chart-add-btn" onclick="showPatientDataForm('medication')" title="Add Medication" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+        </div>`;
+
+    // DoseSpot active prescriptions (shown first with controlled substance indicators)
+    if (rxActive.length > 0) {
+        html += '<div style="margin-bottom:4px;">';
+        for (const rx of rxActive) {
+            const borderColor = rx.schedule === 'II' ? 'var(--red)'
+                : rx.schedule === 'III' ? 'var(--orange)'
+                : rx.schedule === 'IV' ? 'var(--yellow)'
+                : rx.schedule === 'V' ? 'var(--green)'
+                : 'transparent';
+            const hasBorder = rx.schedule != null;
+            html += `
+                <div class="rx-med-chip" style="${hasBorder ? `border-left:3px solid ${borderColor};` : ''}">
+                    ${rx.product_name || rx.display_name || '?'}
+                    ${rx.dosage ? `<span style="color:var(--text-tertiary);font-size:11px;">${rx.dosage}</span>` : ''}
+                    ${rx.schedule ? `<span class="rx-schedule-badge rx-schedule-badge-${rx.schedule.toLowerCase()}">C-${rx.schedule}</span>` : ''}
+                    ${rx.last_fill_date ? `<span style="color:var(--text-tertiary);font-size:9px;">filled ${formatRxDate(rx.last_fill_date)}</span>` : ''}
+                </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Existing hMeds, peptides, TRT (as secondary items)
+    const otherMeds = [
+        ...hMeds.map(m => `${m.name || '?'}${m.dosage ? ' ' + m.dosage : ''}`),
+        ...peptides.map(m => m.medication_name || m.product_name || '?'),
+        ...trt.map(m => m.medication_name || '?'),
+    ].filter(Boolean);
+
+    if (otherMeds.length > 0) {
+        html += `<div style="font-size:11px; color:var(--text-secondary); line-height:1.5;">${otherMeds.join(' · ')}</div>`;
+    }
+
+    if (totalCount === 0) {
+        html += '<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No medications on file</div>';
+    }
+
+    return html;
+}
+
+// ─── CONTROLLED SUBSTANCE ALERT BANNER (above chart tabs) ─────────────
+function renderControlledSubstanceAlert(d) {
+    const rxActive = d.prescriptions?.active || [];
+    const controlled = rxActive.filter(p => p.schedule != null);
+    if (controlled.length === 0) return '';
+
+    const hasScheduleII = controlled.some(p => p.schedule === 'II');
+    const schedules = [...new Set(controlled.map(p => p.schedule))].sort();
+    const lastFill = controlled
+        .map(p => p.last_fill_date)
+        .filter(Boolean)
+        .sort()
+        .reverse()[0];
+
+    return `
+        <div class="rx-alert-banner" style="margin:4px 8px 8px;${hasScheduleII ? 'animation:rx-pulse 2s ease-in-out infinite;' : ''}">
+            ⚠️ <strong>${controlled.length} Active Controlled Substance${controlled.length > 1 ? 's' : ''}</strong>
+            — Schedule ${schedules.join(', ')}
+            ${lastFill ? `<span style="color:var(--text-tertiary);font-size:12px;margin-left:8px;">Last fill: ${formatRxDate(lastFill)}</span>` : ''}
+        </div>`;
+}
+
 function renderPrescriptionsTab(container, d) {
     const rxData = d.prescriptions || {};
     const active = rxData.active || rxData.categorized?.active || [];
@@ -3949,6 +4043,140 @@ function togglePrescriptionHistory() {
     const isHidden = section.style.display === 'none';
     section.style.display = isHidden ? 'block' : 'none';
     if (toggle) toggle.textContent = isHidden ? 'Hide History' : 'View Full History';
+}
+
+// ==================== E-RX (DOSESPOT IFRAME) TAB ====================
+function renderERxTab(container, d) {
+    const healthieId = d?.healthie_id || d?.demographics?.healthie_client_id || '';
+
+    if (!healthieId) {
+        container.innerHTML = `
+            <div style="padding:40px 20px; text-align:center;">
+                <div style="font-size:36px; margin-bottom:12px;">⚠️</div>
+                <div style="font-size:14px; font-weight:600; color:var(--text-primary); margin-bottom:6px;">Patient Not Linked to Healthie</div>
+                <div style="font-size:12px; color:var(--text-tertiary);">This patient needs a Healthie account to use e-prescribing.</div>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = `
+        <div id="erxLoadingState" style="padding:40px 20px; text-align:center;">
+            <div class="loading-spinner" style="margin:0 auto 16px;"></div>
+            <div style="font-size:13px; color:var(--text-secondary);">Loading DoseSpot prescribing interface…</div>
+        </div>
+        <div id="erxIframeContainer" style="display:none; width:100%; height:calc(100vh - 280px); min-height:500px;"></div>
+        <div id="erxErrorState" style="display:none; padding:40px 20px; text-align:center;"></div>
+    `;
+
+    loadDoseSpotIframe(healthieId);
+}
+
+async function loadDoseSpotIframe(healthiePatientId) {
+    const loadingEl = document.getElementById('erxLoadingState');
+    const iframeContainer = document.getElementById('erxIframeContainer');
+    const errorEl = document.getElementById('erxErrorState');
+
+    try {
+        const result = await apiFetch(`/ops/api/prescriptions/${healthiePatientId}/iframe-url/`);
+
+        if (result?.success && result?.data?.iframe_url) {
+            if (loadingEl) loadingEl.style.display = 'none';
+            if (iframeContainer) {
+                iframeContainer.style.display = 'block';
+                iframeContainer.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:var(--surface); border-radius:8px 8px 0 0; border:1px solid var(--border); border-bottom:none;">
+                        <span style="font-size:11px; color:var(--text-tertiary);">💊 DoseSpot E-Prescribing</span>
+                        <div style="display:flex; gap:6px;">
+                            <button onclick="loadDoseSpotIframe('${healthiePatientId}')" style="font-size:10px; padding:3px 8px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); cursor:pointer; font-family:inherit;">🔄 Reload</button>
+                            <button onclick="openDoseSpotFullscreen('${healthiePatientId}')" style="font-size:10px; padding:3px 8px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); cursor:pointer; font-family:inherit;">⊞ Fullscreen</button>
+                        </div>
+                    </div>
+                    <iframe
+                        src="${result.data.iframe_url}"
+                        style="width:100%; height:calc(100% - 32px); border:1px solid var(--border); border-radius:0 0 8px 8px; background:#fff;"
+                        allow="clipboard-write"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+                    ></iframe>
+                `;
+            }
+        } else {
+            throw new Error(result?.error || 'Failed to load DoseSpot');
+        }
+    } catch (err) {
+        console.error('[E-Rx] Failed to load DoseSpot iframe:', err);
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (errorEl) {
+            errorEl.style.display = 'block';
+            errorEl.innerHTML = `
+                <div style="font-size:36px; margin-bottom:12px;">❌</div>
+                <div style="font-size:14px; font-weight:600; color:var(--text-primary); margin-bottom:6px;">Could Not Load E-Prescribing</div>
+                <div style="font-size:12px; color:var(--text-tertiary); margin-bottom:16px;">${err.message || 'Unknown error. Check that this patient has complete demographics in Healthie (phone, DOB, address).'}</div>
+                <button onclick="loadDoseSpotIframe('${healthiePatientId}')" style="padding:10px 20px; border-radius:8px; background:var(--cyan); color:#0a0f1a; border:none; font-weight:600; font-size:13px; cursor:pointer; font-family:inherit;">Retry</button>
+            `;
+        }
+    }
+}
+
+// ==================== FULLSCREEN DOSESPOT MODAL ====================
+function openDoseSpotFullscreen(healthiePatientId) {
+    const existing = document.getElementById('doseSpotFullscreenModal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'doseSpotFullscreenModal';
+    modal.className = 'dosespot-fullscreen-modal';
+    modal.innerHTML = `
+        <div class="dosespot-fullscreen-header">
+            <span style="font-size:14px; font-weight:600; color:#fff;">💊 DoseSpot E-Prescribing</span>
+            <button onclick="closeDoseSpotFullscreen()" class="dosespot-fullscreen-close">✕ Close</button>
+        </div>
+        <div class="dosespot-fullscreen-body">
+            <div id="doseSpotFullscreenLoading" style="display:flex; align-items:center; justify-content:center; height:100%;">
+                <div class="loading-spinner" style="margin-right:12px;"></div>
+                <span style="color:var(--text-secondary);">Loading DoseSpot…</span>
+            </div>
+            <iframe id="doseSpotFullscreenIframe" style="display:none; width:100%; height:100%; border:none; background:#fff;"
+                    allow="clipboard-write"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    requestAnimationFrame(() => modal.classList.add('visible'));
+
+    apiFetch(`/ops/api/prescriptions/${healthiePatientId}/iframe-url/`)
+        .then(result => {
+            if (result?.success && result?.data?.iframe_url) {
+                const loading = document.getElementById('doseSpotFullscreenLoading');
+                const iframe = document.getElementById('doseSpotFullscreenIframe');
+                if (loading) loading.style.display = 'none';
+                if (iframe) {
+                    iframe.src = result.data.iframe_url;
+                    iframe.style.display = 'block';
+                }
+            } else {
+                throw new Error(result?.error || 'Failed to load');
+            }
+        })
+        .catch(err => {
+            const loading = document.getElementById('doseSpotFullscreenLoading');
+            if (loading) loading.innerHTML = `
+                <div style="text-align:center;">
+                    <div style="font-size:36px; margin-bottom:12px;">❌</div>
+                    <div style="color:var(--text-primary); font-weight:600; margin-bottom:8px;">Could Not Load DoseSpot</div>
+                    <div style="color:var(--text-tertiary); font-size:13px;">${err.message}</div>
+                </div>
+            `;
+        });
+}
+
+function closeDoseSpotFullscreen() {
+    const modal = document.getElementById('doseSpotFullscreenModal');
+    if (modal) {
+        modal.classList.remove('visible');
+        setTimeout(() => modal.remove(), 300);
+    }
 }
 
 // ==================== CHARTING TAB ====================
@@ -5779,6 +6007,141 @@ function formatDateDisplay(dateStr) {
     } catch { return dateStr; }
 }
 
+// ─── INLINE COLLAPSIBLE SECTIONS (Patient 360 view) ─────────────────
+
+function renderInlineAllergiesSection(data) {
+    const allergies = data.healthie_allergies || data.allergies || [];
+    if (allergies.length === 0) {
+        return `
+            <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;">
+                <span style="font-size:13px;color:var(--green);font-weight:600;">✓ NKDA</span>
+                <span style="font-size:11px;color:var(--text-tertiary);margin-left:8px;">No Known Drug Allergies</span>
+            </div>`;
+    }
+    return `
+        <div style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;cursor:pointer;" onclick="this.querySelector('.inline-collapse-body').classList.toggle('hidden')">
+            <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+                <span>⚠️ ALLERGIES (${allergies.length})</span>
+                <span style="font-size:10px;color:var(--text-tertiary);">tap to toggle</span>
+            </div>
+            <div class="inline-collapse-body" style="display:flex;flex-wrap:wrap;gap:6px;">
+                ${allergies.map(a => `
+                    <span style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);border-radius:var(--radius-xs);padding:3px 8px;font-size:12px;color:var(--text-primary);">
+                        ${a.name || a.allergen || a}${a.severity ? ` (${a.severity})` : ''}
+                    </span>
+                `).join('')}
+            </div>
+        </div>`;
+}
+
+function renderInlineDiagnosesSection(data, demo) {
+    const diagnoses = data.working_diagnoses || data.diagnoses || demo.diagnoses || [];
+    if (diagnoses.length === 0) return '';
+
+    return `
+        <div style="margin-bottom:12px;cursor:pointer;" onclick="this.querySelector('.inline-collapse-body').classList.toggle('hidden')">
+            <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+                <span>🏷️ Working Diagnoses (${diagnoses.length})</span>
+                <span style="font-size:10px;color:var(--text-tertiary);">tap to toggle</span>
+            </div>
+            <div class="inline-collapse-body" style="display:flex;flex-wrap:wrap;gap:6px;">
+                ${diagnoses.map(dx => {
+                    const code = dx.icd10 || dx.code || '';
+                    const desc = dx.description || dx.name || (typeof dx === 'string' ? dx : '');
+                    return `
+                        <span style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-xs);padding:3px 8px;font-size:12px;color:var(--text-primary);">
+                            ${code ? `<span style="color:var(--purple);font-weight:600;margin-right:4px;">${code}</span>` : ''}${desc}
+                        </span>`;
+                }).join('')}
+            </div>
+        </div>`;
+}
+
+function renderInlineMedicationsSection(data, peptides, trt) {
+    const rxActive = data.prescriptions?.active || [];
+    const rxControlled = rxActive.filter(p => p.schedule != null);
+    const totalCount = rxActive.length + peptides.length + trt.length;
+
+    if (totalCount === 0) return '';
+
+    return `
+        <div style="margin-bottom:12px;cursor:pointer;" onclick="this.querySelector('.inline-collapse-body').classList.toggle('hidden')">
+            <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+                <span>💊 Medications (${totalCount})${rxControlled.length > 0
+                    ? ` <span style="color:var(--orange);font-size:10px;margin-left:4px;">⚠️ ${rxControlled.length} Controlled</span>` : ''}</span>
+                <span style="font-size:10px;color:var(--text-tertiary);">tap to toggle</span>
+            </div>
+            <div class="inline-collapse-body">
+                ${rxActive.length > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;">
+                    ${rxActive.map(rx => {
+                        const borderColor = rx.schedule === 'II' ? 'var(--red)'
+                            : rx.schedule === 'III' ? 'var(--orange)'
+                            : rx.schedule === 'IV' ? 'var(--yellow)'
+                            : rx.schedule === 'V' ? 'var(--green)'
+                            : 'transparent';
+                        return `<span class="rx-med-chip" style="${rx.schedule ? `border-left:3px solid ${borderColor};` : ''}">
+                            ${rx.product_name || rx.display_name || '?'}
+                            ${rx.dosage ? `<span style="color:var(--text-tertiary);font-size:11px;">${rx.dosage}</span>` : ''}
+                            ${rx.schedule ? `<span class="rx-schedule-badge rx-schedule-badge-${rx.schedule.toLowerCase()}">C-${rx.schedule}</span>` : ''}
+                        </span>`;
+                    }).join('')}
+                </div>` : ''}
+                ${peptides.length + trt.length > 0 ? `<div style="font-size:11px;color:var(--text-tertiary);line-height:1.5;">
+                    ${[
+                        ...peptides.map(m => m.medication_name || m.product_name || '?'),
+                        ...trt.map(m => m.medication_name || '?'),
+                    ].filter(Boolean).join(' · ')}
+                </div>` : ''}
+            </div>
+        </div>`;
+}
+
+function renderInlinePrescriptionsSummary(data) {
+    const rxData = data.prescriptions || {};
+    const active = rxData.active || [];
+    const controlled = active.filter(p => p.schedule != null);
+
+    if (active.length === 0) return '';
+
+    return `
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:12px;cursor:pointer;" onclick="this.querySelector('.inline-collapse-body').classList.toggle('hidden')">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="font-size:13px;font-weight:600;color:var(--text-primary);">
+                    💊 Active Prescriptions
+                </span>
+                <span style="font-size:12px;color:var(--text-tertiary);">
+                    ${active.length} active${controlled.length > 0 ? ` · ${controlled.length} controlled` : ''}
+                </span>
+            </div>
+            ${controlled.length > 0
+                ? `<div class="rx-alert-banner" style="margin-bottom:8px;padding:8px 12px;font-size:12px;">
+                    ⚠️ ${controlled.length} Controlled: ${[...new Set(controlled.map(p => 'C-' + p.schedule))].join(', ')}
+                  </div>`
+                : ''}
+            <div class="inline-collapse-body" style="display:flex;flex-direction:column;gap:4px;">
+                ${active.slice(0, 5).map(rx => {
+                    const borderColor = rx.schedule === 'II' ? 'var(--red)'
+                        : rx.schedule === 'III' ? 'var(--orange)'
+                        : rx.schedule === 'IV' ? 'var(--yellow)'
+                        : rx.schedule === 'V' ? 'var(--green)'
+                        : 'var(--border)';
+                    return `
+                        <div style="border-left:3px solid ${borderColor};padding:4px 10px;font-size:12px;">
+                            <span style="color:var(--text-primary);font-weight:500;">${rx.product_name || rx.display_name || 'Unknown'}</span>
+                            ${rx.dosage ? `<span style="color:var(--text-tertiary);margin-left:4px;">${rx.dosage}</span>` : ''}
+                            ${rx.last_fill_date ? `<span style="color:var(--text-tertiary);font-size:10px;margin-left:6px;">filled ${formatRxDate(rx.last_fill_date)}</span>` : ''}
+                            ${rx.refills != null ? `<span style="color:var(--text-tertiary);font-size:10px;margin-left:6px;">${rx.refills} refills</span>` : ''}
+                        </div>`;
+                }).join('')}
+                ${active.length > 5
+                    ? `<div style="font-size:11px;color:var(--text-tertiary);padding-left:13px;">
+                        + ${active.length - 5} more...
+                      </div>`
+                    : ''}
+            </div>
+        </div>`;
+}
+
 function renderPatient360(data, patient, patientId) {
     const container = document.getElementById('patient360Data');
     if (!container) return;
@@ -5878,6 +6241,12 @@ function renderPatient360(data, patient, patientId) {
             </div>
         </div>
     `;
+
+    // ─── Inline Clinical Sections (collapsible) ───
+    html += renderInlineAllergiesSection(data);
+    html += renderInlineDiagnosesSection(data, demo);
+    html += renderInlineMedicationsSection(data, peptides, trt);
+    html += renderInlinePrescriptionsSummary(data);
 
     // ─── Lab Dates ───
     const lastLab = patient?.last_lab || demo.last_lab;

@@ -4368,6 +4368,12 @@ select.chart-data-input {
   color: #22c55e;
 }
 
+/* Controlled med chip border variants (for medications section) */
+.rx-med-chip.rx-med-controlled-ii { border-left: 3px solid var(--red); }
+.rx-med-chip.rx-med-controlled-iii { border-left: 3px solid var(--orange); }
+.rx-med-chip.rx-med-controlled-iv { border-left: 3px solid var(--yellow); }
+.rx-med-chip.rx-med-controlled-v { border-left: 3px solid var(--green); }
+
 /* Status badges */
 .rx-status-badge {
   font-size: 10px;
@@ -4451,4 +4457,66 @@ select.chart-data-input {
   width: 360px;
   max-width: 90vw;
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DOSESPOT FULLSCREEN MODAL
+   ═══════════════════════════════════════════════════════════════════ */
+
+.dosespot-fullscreen-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10000;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transform: scale(0.97);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+
+.dosespot-fullscreen-modal.visible {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: all;
+}
+
+.dosespot-fullscreen-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.dosespot-fullscreen-close {
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s ease;
+}
+
+.dosespot-fullscreen-close:active {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+.dosespot-fullscreen-body {
+  flex: 1;
+  overflow: hidden;
+}
+
+.dosespot-fullscreen-body iframe {
+  -webkit-overflow-scrolling: touch;
 }
