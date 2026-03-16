@@ -123,7 +123,7 @@ export async function GET(request: NextRequest) {
 
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
-        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, subscriptions] = await Promise.all([
+        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, recurringPayments, billingItems] = await Promise.all([
             // Chart notes (form answer groups) - NOTE: sort_by is NOT supported by Healthie API
             safeHealthieQuery<any>('chartNotes', `
                 query GetChartNotes($userId: String) {
@@ -294,8 +294,38 @@ export async function GET(request: NextRequest) {
                 }
             `, { userId: healthieId }),
 
-            // Active subscriptions/offerings - query from our database, not Healthie
-            // Packages are stored in healthie_packages and mapped to QB customers via healthie_package_mapping
+            // Recurring payments (subscriptions) from Healthie
+            safeHealthieQuery<any>('recurringPayments', `
+                query GetSubscriptions($id: ID) {
+                    user(id: $id) {
+                        recurring_payments {
+                            id
+                            is_canceled
+                            is_paused
+                            amount_to_pay
+                            next_payment_date
+                            offering_name
+                            billing_frequency
+                            start_at
+                        }
+                    }
+                }
+            `, { id: healthieId }),
+
+            // Billing items (payment history) from Healthie
+            safeHealthieQuery<any>('billingItems', `
+                query GetBillingItems($clientId: ID) {
+                    billingItems(client_id: $clientId, offset: 0) {
+                        id
+                        amount_display
+                        created_at
+                        description
+                        offering {
+                            name
+                        }
+                    }
+                }
+            `, { clientId: healthieId }),
         ]);
 
         // 3. Fetch local scribe history — only if we have a valid uuid patient_id
@@ -375,11 +405,11 @@ export async function GET(request: NextRequest) {
             localVitals = [];
         }
 
-        // Query active packages/subscriptions - join through QB customer ID
-        let activePackages: any[] = [];
+        // Query active packages/subscriptions - join through QB customer ID (fallback)
+        let localPackages: any[] = [];
         if (patient?.qbo_customer_id) {
             try {
-                activePackages = await query<any>(`
+                localPackages = await query<any>(`
                     SELECT
                         hp.name as package_name,
                         hp.description,
@@ -395,35 +425,47 @@ export async function GET(request: NextRequest) {
                         AND hp.is_active = TRUE
                     ORDER BY hpm.created_at DESC
                 `, [patient.qbo_customer_id]);
-                console.log(`[Patient Chart] Found ${activePackages.length} active packages for customer ${patient.qbo_customer_id}`);
+                console.log(`[Patient Chart] Found ${localPackages.length} local packages for customer ${patient.qbo_customer_id}`);
             } catch (err) {
                 console.warn(`[Patient Chart] Failed to query packages:`, err instanceof Error ? err.message : err);
-                activePackages = [];
+                localPackages = [];
             }
         }
 
-        // Query financial data - last Healthie payments
-        // NOTE: healthie_payments table doesn't exist yet - would need to be populated from Healthie GraphQL or QuickBooks
+        // Merge Healthie recurring payments with local packages
+        let activePackages: any[] = [];
+
+        // Add Healthie subscriptions (primary source)
+        const healthieSubscriptions = recurringPayments?.user?.recurring_payments || [];
+        const activeHealthieSubscriptions = healthieSubscriptions
+            .filter((rp: any) => !rp.is_canceled && !rp.is_paused)
+            .map((rp: any) => ({
+                package_name: rp.offering_name || 'Subscription',
+                amount: rp.amount_to_pay || '',
+                frequency: rp.billing_frequency || '',
+                next_charge_date: rp.next_payment_date || null,
+                start_date: rp.start_at || null,
+                source: 'healthie',
+                healthie_id: rp.id
+            }));
+
+        activePackages = [...activeHealthieSubscriptions, ...localPackages];
+        console.log(`[Patient Chart] Merged ${activeHealthieSubscriptions.length} Healthie subscriptions + ${localPackages.length} local packages = ${activePackages.length} total`);
+
+        // Map Healthie billing items to payment history
         let lastPayments: any[] = [];
-        // TODO: Re-enable when healthie_payments table is created and populated
-        // try {
-        //     lastPayments = await query<any>(`
-        //         SELECT
-        //             payment_date,
-        //             amount,
-        //             payment_type,
-        //             status,
-        //             description
-        //         FROM healthie_payments
-        //         WHERE patient_id = $1
-        //         ORDER BY payment_date DESC
-        //         LIMIT 5
-        //     `, [localPatientId]);
-        //     console.log(`[Patient Chart] Found ${lastPayments.length} payments for patient ${localPatientId}`);
-        // } catch (err) {
-        //     console.warn(`[Patient Chart] Failed to query payments:`, err instanceof Error ? err.message : err);
-        //     lastPayments = [];
-        // }
+        const healthieBillingItems = billingItems?.billingItems || [];
+        lastPayments = healthieBillingItems
+            .map((item: any) => ({
+                amount: item.amount_display || '$0.00',
+                payment_date: item.created_at || '',
+                payment_type: item.offering?.name || 'Charge',
+                description: item.description || '',
+                status: 'completed',
+                healthie_id: item.id
+            }))
+            .slice(0, 5); // Latest 5 payments
+        console.log(`[Patient Chart] Found ${lastPayments.length} billing items from Healthie`);
 
         // Query testosterone dispenses
         let trtDispenses: any[] = [];
@@ -538,7 +580,7 @@ export async function GET(request: NextRequest) {
                     ...(paymentMethods?.user?.stripe_customer_details || []),
                     ...directStripeCards
                 ], // Healthie Stripe cards + Direct Stripe cards
-                active_packages: activePackages || [], // Packages from healthie_package_mapping table
+                active_packages: activePackages || [], // Merged from Healthie recurring_payments + local healthie_package_mapping
                 subscriptions: [], // Legacy field - packages are now in active_packages
                 recurring_payment: null, // Legacy field - replaced by active_packages
             },
