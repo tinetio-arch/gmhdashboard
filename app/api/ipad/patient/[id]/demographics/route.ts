@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
+import { createHealthieClient } from '@/lib/healthie';
 
 /**
  * PUT /api/ipad/patient/[id]/demographics
@@ -90,6 +91,27 @@ export async function PUT(
                     preferred_name: preferred_name || undefined,
                 });
                 healthieSynced = true;
+
+                // FIX(2026-03-16): Sync address via upsertClientLocation — updateClient ignores location fields
+                const hasAddress = address_line_1 || city || state || zip;
+                if (hasAddress) {
+                    try {
+                        const healthieClient = createHealthieClient();
+                        if (healthieClient) {
+                            await healthieClient.upsertClientLocation(healthieClientId, {
+                                name: 'Primary',
+                                line1: address_line_1 || undefined,
+                                line2: address_line_2 || undefined,
+                                city: city || undefined,
+                                state: state || undefined,
+                                zip: zip || undefined,
+                                country: 'US',
+                            });
+                        }
+                    } catch (locErr) {
+                        console.warn('[demographics] Healthie location sync failed:', locErr);
+                    }
+                }
             }
         } catch (healthieErr) {
             console.warn('[demographics] Healthie sync failed:', healthieErr);
