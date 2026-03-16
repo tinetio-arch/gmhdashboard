@@ -7404,13 +7404,46 @@ async function submitAllVitals(patientId) {
                     method: 'POST',
                     body: JSON.stringify(v)
                 });
-                if (resp.error) { failed++; } else { saved++; }
+                if (resp.error) { failed++; } else {
+                    saved++;
+                    // Fire-and-forget sync to Healthie
+                    var hid = chartPanelData && chartPanelData.healthie_id;
+                    if (hid) {
+                        var categoryMap = {
+                            blood_pressure: 'Blood Pressure',
+                            heart_rate: 'Heart Rate',
+                            respiration_rate: 'Respiration Rate',
+                            temperature: 'Temperature',
+                            oxygen_saturation: 'SpO2',
+                            height: 'Height',
+                            weight: 'Weight',
+                            bmi: 'BMI'
+                        };
+                        var cat = categoryMap[v.metric_type];
+                        if (cat) {
+                            try {
+                                apiFetch('/ops/api/ipad/patient-data/', {
+                                    method: 'POST',
+                                    body: JSON.stringify({
+                                        action: 'add_vital',
+                                        healthie_id: hid,
+                                        category: cat,
+                                        value: v.value
+                                    })
+                                }).catch(function(err) { console.error('[Vitals] Healthie sync error:', err); });
+                            } catch (syncErr) {
+                                console.error('[Vitals] Healthie sync error:', syncErr);
+                            }
+                        }
+                    }
+                }
             } catch (e) {
                 failed++;
             }
         }
         var msg = saved + ' vital(s) saved';
         if (failed > 0) msg += ', ' + failed + ' failed';
+        if (chartPanelData && chartPanelData.healthie_id) msg += ' (synced to Healthie)';
         successEl.textContent = msg + ' ✅';
         successEl.style.display = 'block';
         btn.textContent = 'Saved!';
