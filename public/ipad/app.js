@@ -1,14 +1,14 @@
-// VERSION: 2026-03-18-10:30 - Fixed broken HTML + fast patient chart loading (lazy 360)
+// VERSION: 2026-03-18-14:00 - Timeout fixes, permission restrictions, print labels, split-vial dispensing
 /* ============================================================
    GMH Ops v2.0 — iPad Companion App (LIVE DATA)
    Connects to /ops/api/* endpoints via same-origin cookies
-   VERSION: 2.3.1 - March 18, 2026
-   NEW: Dual-Stripe billing (Healthie + Direct Stripe)
+   VERSION: 2.4.0 - March 18, 2026
+   NEW: Patient timeout fix, CEO tab restrictions, print labels, split-vial dispensing
    ============================================================ */
 
 // Log version immediately so we can verify correct file is loaded
-console.log('%c📱 iPad App v2.3.1 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
-console.log('✅ NEW: Dual-Stripe billing - charge patients via Healthie or Direct Stripe');
+console.log('%c📱 iPad App v2.4.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
+console.log('✅ v2.4.0: Timeout fixes, CEO restrictions, print labels, split-vial dispense');
 console.log('🕒 Build time: March 18, 2026');
 
 // Show version in page (will be visible in bottom corner)
@@ -26,7 +26,7 @@ window.addEventListener('DOMContentLoaded', () => {
             font-family: monospace;
             z-index: 9999;
             pointer-events: none;
-        ">v2.3.1</div>
+        ">v2.4.0</div>
     `);
 });
 
@@ -450,8 +450,11 @@ function applyRolePermissions() {
         }
     }
 
-    // Add CEO tab for admins (prevent duplicates)
-    if (perms.can_view_ceo_dashboard && nav && !nav.querySelector('[data-tab="ceo"]')) {
+    // Add CEO tab for providers and admin emails only (prevent duplicates)
+    const isProviderOrAdmin = currentUser.is_provider === true
+        || currentUser.email === 'admin@granitemountainhealth.com'
+        || currentUser.email === 'admin@nowoptimal.com';
+    if (perms.can_view_ceo_dashboard && isProviderOrAdmin && nav && !nav.querySelector('[data-tab="ceo"]')) {
         const ceoTab = document.createElement('button');
         ceoTab.className = 'tab-item';
         ceoTab.dataset.tab = 'ceo';
@@ -530,7 +533,11 @@ function switchTab(tab) {
     if (!validTabs.includes(tab)) tab = 'today';
     // RBAC: prevent access to tabs user doesn't have permission for
     if (currentUser?.permissions) {
-        if (tab === 'ceo' && !currentUser.permissions.can_view_ceo_dashboard) tab = 'today';
+        const ceoAllowed = currentUser.permissions.can_view_ceo_dashboard
+            && (currentUser.is_provider === true
+                || currentUser.email === 'admin@granitemountainhealth.com'
+                || currentUser.email === 'admin@nowoptimal.com');
+        if (tab === 'ceo' && !ceoAllowed) tab = 'today';
         if (tab === 'scribe' && !currentUser.permissions.can_use_scribe) tab = 'today';
         if (tab === 'schedule' && !currentUser.permissions.can_use_scribe) tab = 'today';
     }
@@ -634,6 +641,7 @@ startSessionAutoRefresh();
 
 // ─── API LAYER ──────────────────────────────────────────────
 async function apiFetch(url, options = {}) {
+    const timeoutMs = options._timeout || 15000; // default 15s timeout
     const defaults = {
         credentials: 'include',
         headers: {
@@ -642,6 +650,12 @@ async function apiFetch(url, options = {}) {
         }
     };
     const merged = { ...defaults, ...options, headers: { ...defaults.headers, ...(options.headers || {}) } };
+    delete merged._timeout;
+
+    // Add AbortController timeout to prevent hanging requests
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    if (!merged.signal) merged.signal = controller.signal;
 
     try {
         const resp = await fetch(url, merged);
@@ -704,9 +718,17 @@ async function apiFetch(url, options = {}) {
             throw new Error(`HTTP ${resp.status}`);
         }
 
+        clearTimeout(timeoutId);
         return await resp.json();
     } catch (e) {
+        clearTimeout(timeoutId);
         if (e.message === 'AUTH_EXPIRED') throw e;
+
+        // Handle timeout (AbortError)
+        if (e.name === 'AbortError') {
+            console.warn(`[API Timeout] ${url} did not respond within ${timeoutMs}ms`);
+            throw new Error('REQUEST_TIMEOUT');
+        }
 
         // ✅ NETWORK ERROR MESSAGES
         if (e.name === 'TypeError' && e.message.includes('fetch')) {
@@ -963,13 +985,17 @@ async function loadAllPatients() {
 async function loadPatient360(patientId, forceRefresh = false) {
     if (!forceRefresh && patient360Cache[patientId]) return patient360Cache[patientId];
     try {
-        const data = await apiFetch(`/ops/api/ipad/patient/${patientId}/`);
+        const data = await apiFetch(`/ops/api/ipad/patient/${patientId}/`, { _timeout: 10000 });
         // API returns { success, data: { demographics, recent_dispenses, recent_peptides, payment_issues, staged_doses, summary } }
         const result = (data?.success && data?.data) ? data.data : data;
         patient360Cache[patientId] = result;
         return result;
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
+        if (e.message === 'REQUEST_TIMEOUT') {
+            console.warn(`Patient 360 timed out for ${patientId} — showing partial data`);
+            return null; // triggers "Extended patient data not available" message
+        }
         console.warn(`Patient 360 load failed for ${patientId}:`, e);
         return null;
     }
@@ -7986,13 +8012,29 @@ function updateDispenseSummary() {
     const summaryEl = document.getElementById('qdSummary');
     if (summaryEl) {
         if (exceedsVial && remaining > 0) {
+            // Split-vial preview: show how it will be split across vials
+            const shortfall = Number((totalRemoval - remaining).toFixed(2));
+            const vialLabel = vialSelect?.selectedOptions[0]?.textContent?.split(' — ')[0]?.trim() || 'Current vial';
+            // Find next available vial from the select options
+            const allOptions = Array.from(vialSelect.options);
+            const currentIdx = vialSelect.selectedIndex;
+            let nextVialLabel = 'next vial';
+            for (let i = 0; i < allOptions.length; i++) {
+                if (i !== currentIdx && allOptions[i].value && parseFloat(allOptions[i].dataset?.remaining || 0) > 0) {
+                    nextVialLabel = allOptions[i].textContent?.split(' — ')[0]?.trim() || 'next vial';
+                    break;
+                }
+            }
             summaryEl.innerHTML = `
-                <div style="color:#f87171; font-weight:600;">⚠️ Exceeds vial volume!</div>
+                <div style="color:#f59e0b; font-weight:600;">🔀 Split-vial dispense will be used</div>
                 <div style="margin-top:4px;">💉 Dose: ${totalDose.toFixed(2)} mL (${doseMl} × ${syringes}) + 🗑️ Waste: ${totalWaste.toFixed(2)} mL = <strong>${totalRemoval.toFixed(2)} mL total</strong></div>
-                <div>Vial has only <strong>${remaining.toFixed(2)} mL</strong>. Need ${(totalRemoval - remaining).toFixed(2)} mL more from another vial.</div>
+                <div style="margin-top:6px; padding:6px 10px; background:rgba(245,158,11,0.1); border-radius:6px; font-size:12px;">
+                    <div><strong>${vialLabel}:</strong> ${remaining.toFixed(2)} mL (use all remaining)</div>
+                    <div><strong>${nextVialLabel}:</strong> ${shortfall.toFixed(2)} mL (continue here)</div>
+                </div>
             `;
-            summaryEl.style.borderColor = 'rgba(239,68,68,0.3)';
-            summaryEl.style.background = 'rgba(239,68,68,0.08)';
+            summaryEl.style.borderColor = 'rgba(245,158,11,0.3)';
+            summaryEl.style.background = 'rgba(245,158,11,0.06)';
         } else if (!vialSelect?.value) {
             summaryEl.innerHTML = `<div>💉 Dose: ${totalDose.toFixed(2)} mL + 🗑️ Waste: ${totalWaste.toFixed(2)} mL = <strong>${totalRemoval.toFixed(2)} mL</strong></div><div style="color:var(--text-tertiary);">Select a vial to see remaining volume</div>`;
             summaryEl.style.borderColor = 'rgba(0,212,255,0.12)';
@@ -8064,50 +8106,182 @@ async function submitQuickDispense() {
     const totalDose = Number((dosePerSyringe * syringes).toFixed(3));
     const totalWaste = Number((syringes * WASTE_PER_SYRINGE).toFixed(3));
     const totalRemoval = Number((totalDose + totalWaste).toFixed(3));
+    const perSyringeRemoval = Number((dosePerSyringe + WASTE_PER_SYRINGE).toFixed(3));
 
     errorEl.style.display = 'none';
     if (!patientId) { errorEl.textContent = 'Please select a patient'; errorEl.style.display = 'block'; return; }
     if (!vialExternalId) { errorEl.textContent = 'Please select a vial'; errorEl.style.display = 'block'; return; }
     if (dosePerSyringe <= 0) { errorEl.textContent = 'Dose per syringe must be greater than 0'; errorEl.style.display = 'block'; return; }
-    if (totalRemoval > vialRemaining + 0.001) {
-        errorEl.textContent = `Total ${totalRemoval.toFixed(2)} mL exceeds vial remaining ${vialRemaining.toFixed(2)} mL. Use GMH Dashboard for split-vial dispensing.`;
-        errorEl.style.display = 'block';
-        return;
-    }
+
+    const needsSplit = totalRemoval > vialRemaining + 0.001;
 
     btn.textContent = 'Dispensing…';
     btn.disabled = true;
 
     try {
         const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
-        const resp = await apiFetch('/ops/api/ipad/quick-dispense/', {
-            method: 'POST',
-            body: JSON.stringify({
-                vialExternalId,
-                patientId,
-                patientName,
-                dispenseDate: today,
-                syringeCount: syringes,
-                dosePerSyringeMl: dosePerSyringe,
-                totalDispensedMl: totalDose,
-                wasteMl: totalWaste,
-                totalAmount: totalRemoval,
-                transactionType: 'dispense',
-                notes: notes || `iPad dispense: ${syringes} syringe(s) @ ${dosePerSyringe}mL + ${totalWaste}mL waste`,
-                deaDrugName: drugName,
-            })
-        });
 
-        if (resp.error) throw new Error(resp.error);
+        if (!needsSplit) {
+            // ─── SINGLE VIAL DISPENSE (unchanged logic) ───
+            const resp = await apiFetch('/ops/api/ipad/quick-dispense/', {
+                method: 'POST',
+                body: JSON.stringify({
+                    vialExternalId,
+                    patientId,
+                    patientName,
+                    dispenseDate: today,
+                    syringeCount: syringes,
+                    dosePerSyringeMl: dosePerSyringe,
+                    totalDispensedMl: totalDose,
+                    wasteMl: totalWaste,
+                    totalAmount: totalRemoval,
+                    transactionType: 'dispense',
+                    notes: notes || `iPad dispense: ${syringes} syringe(s) @ ${dosePerSyringe}mL + ${totalWaste}mL waste`,
+                    deaDrugName: drugName,
+                })
+            });
 
-        successEl.textContent = `✅ ${drugName} dispensed to ${patientName}: ${totalDose}mL dose + ${totalWaste}mL waste (${syringes} syringe${syringes > 1 ? 's' : ''})`;
-        successEl.style.display = 'block';
+            if (resp.error) throw new Error(resp.error);
 
-        btn.textContent = '✅ Done';
-        setTimeout(() => {
-            document.getElementById('quickDispenseModal')?.remove();
-            loadInventorySummary().then(() => { if (currentTab === 'inventory') renderCurrentTab(); });
-        }, 1500);
+            successEl.textContent = `✅ ${drugName} dispensed to ${patientName}: ${totalDose}mL dose + ${totalWaste}mL waste (${syringes} syringe${syringes > 1 ? 's' : ''})`;
+            successEl.style.display = 'block';
+
+            btn.textContent = '✅ Done';
+
+            // Prompt to print dispense label
+            promptPrintLabel({
+                patientName, drugName, dosePerSyringe, syringes,
+                totalDose, totalWaste, totalRemoval, vialExternalId,
+                date: today
+            });
+
+            setTimeout(() => {
+                document.getElementById('quickDispenseModal')?.remove();
+                loadInventorySummary().then(() => { if (currentTab === 'inventory') renderCurrentTab(); });
+            }, 1500);
+        } else {
+            // ─── SPLIT-VIAL DISPENSE ───
+            // Find the next available vial from the select dropdown (FIFO order)
+            const allOptions = Array.from(vialSelect.options);
+            const currentIdx = vialSelect.selectedIndex;
+            let nextVialOption = null;
+            for (let i = 0; i < allOptions.length; i++) {
+                if (i !== currentIdx && allOptions[i].value && parseFloat(allOptions[i].dataset?.remaining || 0) > 0) {
+                    nextVialOption = allOptions[i];
+                    break;
+                }
+            }
+
+            if (!nextVialOption) {
+                errorEl.textContent = `Total ${totalRemoval.toFixed(2)} mL exceeds vial remaining ${vialRemaining.toFixed(2)} mL and no other vials are available.`;
+                errorEl.style.display = 'block';
+                btn.textContent = '✅ Record Dispense';
+                btn.disabled = false;
+                return;
+            }
+
+            const nextVialExternalId = nextVialOption.value;
+            const nextDrugName = nextVialOption.dataset?.drug || drugName;
+            const nextVialRemaining = parseFloat(nextVialOption.dataset?.remaining || 0);
+            const nextVialLabel = nextVialOption.textContent?.split(' — ')[0]?.trim() || nextVialExternalId;
+
+            // Calculate split — mirror TransactionForm.tsx logic
+            // How many full syringes fit in the current vial?
+            const syringesFromCurrent = Math.min(syringes, Math.max(1, Math.floor(vialRemaining / perSyringeRemoval)));
+            let doseCurrent = Number((syringesFromCurrent * dosePerSyringe).toFixed(3));
+            let wasteCurrent = Number((syringesFromCurrent * WASTE_PER_SYRINGE).toFixed(3));
+
+            // Adjust to fit exactly within current vial remaining
+            const currentTotal = doseCurrent + wasteCurrent;
+            if (currentTotal > vialRemaining) {
+                // Scale down proportionally
+                const ratio = vialRemaining / currentTotal;
+                doseCurrent = Number((doseCurrent * ratio).toFixed(3));
+                wasteCurrent = Number(Math.max(vialRemaining - doseCurrent, 0).toFixed(3));
+            }
+            // If vial has surplus beyond whole syringes, add to waste (finish the vial)
+            const delta = Number((vialRemaining - (doseCurrent + wasteCurrent)).toFixed(3));
+            if (delta > 0) {
+                wasteCurrent = Number((wasteCurrent + delta).toFixed(3));
+            }
+            const removalCurrent = Number(Math.min(doseCurrent + wasteCurrent, vialRemaining).toFixed(3));
+
+            // Remainder goes to next vial
+            const remainingRemoval = Number((totalRemoval - removalCurrent).toFixed(3));
+            const remainingSyringes = Math.max(syringes - syringesFromCurrent, 0);
+            const wasteNext = Number((remainingSyringes > 0 ? remainingSyringes * WASTE_PER_SYRINGE : 0).toFixed(3));
+            const doseNext = Number(Math.max(remainingRemoval - wasteNext, 0).toFixed(3));
+
+            // Validate next vial has enough
+            if (remainingRemoval > nextVialRemaining + 0.001) {
+                errorEl.textContent = `Split needs ${remainingRemoval.toFixed(2)} mL from ${nextVialLabel} but it only has ${nextVialRemaining.toFixed(2)} mL. Reduce dose or syringes.`;
+                errorEl.style.display = 'block';
+                btn.textContent = '✅ Record Dispense';
+                btn.disabled = false;
+                return;
+            }
+
+            // Submit first vial dispense
+            const resp1 = await apiFetch('/ops/api/ipad/quick-dispense/', {
+                method: 'POST',
+                body: JSON.stringify({
+                    vialExternalId,
+                    patientId,
+                    patientName,
+                    dispenseDate: today,
+                    syringeCount: syringesFromCurrent,
+                    dosePerSyringeMl: dosePerSyringe,
+                    totalDispensedMl: doseCurrent,
+                    wasteMl: wasteCurrent,
+                    totalAmount: removalCurrent,
+                    transactionType: 'dispense',
+                    notes: (notes || `iPad split-vial dispense (vial 1 of 2): ${syringesFromCurrent} syringe(s) @ ${dosePerSyringe}mL`) + ` [split: vial 1/2]`,
+                    deaDrugName: drugName,
+                })
+            });
+            if (resp1.error) throw new Error(resp1.error);
+
+            // Submit second vial dispense (only if there's remaining removal)
+            if (remainingRemoval > 0.01) {
+                const resp2 = await apiFetch('/ops/api/ipad/quick-dispense/', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        vialExternalId: nextVialExternalId,
+                        patientId,
+                        patientName,
+                        dispenseDate: today,
+                        syringeCount: remainingSyringes > 0 ? remainingSyringes : null,
+                        dosePerSyringeMl: dosePerSyringe,
+                        totalDispensedMl: doseNext,
+                        wasteMl: wasteNext,
+                        totalAmount: remainingRemoval,
+                        transactionType: 'dispense',
+                        notes: (notes || `iPad split-vial dispense (vial 2 of 2): continuation`) + ` [split: vial 2/2]`,
+                        deaDrugName: nextDrugName,
+                    })
+                });
+                if (resp2.error) throw new Error(resp2.error);
+            }
+
+            const vialLabel = vialSelect?.selectedOptions[0]?.textContent?.split(' — ')[0]?.trim() || vialExternalId;
+            successEl.innerHTML = `✅ Split across 2 vials:<br><strong>${vialLabel}</strong>: ${removalCurrent.toFixed(2)} mL (${doseCurrent.toFixed(2)} dose + ${wasteCurrent.toFixed(2)} waste)<br><strong>${nextVialLabel}</strong>: ${remainingRemoval.toFixed(2)} mL (${doseNext.toFixed(2)} dose + ${wasteNext.toFixed(2)} waste)`;
+            successEl.style.display = 'block';
+
+            btn.textContent = '✅ Done';
+
+            // Prompt to print dispense label (combined info)
+            promptPrintLabel({
+                patientName, drugName, dosePerSyringe, syringes,
+                totalDose, totalWaste, totalRemoval,
+                vialExternalId: `${vialExternalId} + ${nextVialExternalId} (split)`,
+                date: today
+            });
+
+            setTimeout(() => {
+                document.getElementById('quickDispenseModal')?.remove();
+                loadInventorySummary().then(() => { if (currentTab === 'inventory') renderCurrentTab(); });
+            }, 2500); // Slightly longer to read split summary
+        }
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         errorEl.textContent = e.message || 'Dispense failed';
@@ -8117,6 +8291,77 @@ async function submitQuickDispense() {
     }
 }
 
+
+// ─── PRINT LABEL AFTER DISPENSE ─────────────────────────────
+function promptPrintLabel(info) {
+    // Show a small prompt after dispense success
+    const existing = document.getElementById('printLabelPrompt');
+    if (existing) existing.remove();
+
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="printLabelPrompt" class="modal-overlay visible" style="display:flex; z-index:10001;">
+            <div class="modal" style="max-width:400px; padding:20px;">
+                <div style="text-align:center; margin-bottom:16px;">
+                    <div style="font-size:24px; margin-bottom:8px;">🏷️</div>
+                    <div style="font-size:16px; font-weight:600; color:var(--text-primary);">Print label for this dispense?</div>
+                    <div style="font-size:13px; color:var(--text-secondary); margin-top:6px;">
+                        ${sanitize(info.patientName)} — ${info.totalDose}mL ${sanitize(info.drugName)}
+                    </div>
+                </div>
+                <div style="display:flex; gap:10px; justify-content:center;">
+                    <button onclick="document.getElementById('printLabelPrompt').remove()" class="btn-cancel" style="flex:1;">No Thanks</button>
+                    <button onclick="openPrintLabelWindow(window._lastDispenseInfo); document.getElementById('printLabelPrompt').remove();" class="btn-primary" style="flex:1; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);">🖨️ Print Label</button>
+                </div>
+            </div>
+        </div>
+    `);
+    window._lastDispenseInfo = info;
+
+    // Auto-dismiss after 15 seconds
+    setTimeout(() => {
+        document.getElementById('printLabelPrompt')?.remove();
+    }, 15000);
+}
+
+function openPrintLabelWindow(info) {
+    if (!info) return;
+    const printWindow = window.open('', '_blank', 'width=400,height=350');
+    if (!printWindow) {
+        showToast('Pop-up blocked — allow pop-ups for this site to print labels', 'warning');
+        return;
+    }
+    const html = `<!DOCTYPE html>
+<html><head><title>Dispense Label</title>
+<style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 16px; }
+    .label { border: 2px solid #000; padding: 16px; max-width: 350px; margin: 0 auto; }
+    .label h2 { margin: 0 0 8px; font-size: 16px; text-align: center; border-bottom: 1px solid #000; padding-bottom: 6px; }
+    .row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
+    .row .lbl { font-weight: 700; }
+    .footer { margin-top: 10px; font-size: 10px; color: #666; text-align: center; border-top: 1px solid #ccc; padding-top: 6px; }
+    @media print { body { margin: 0; padding: 4px; } .no-print { display: none; } }
+</style></head><body>
+<div class="label">
+    <h2>GMH Controlled Substance Dispense</h2>
+    <div class="row"><span class="lbl">Patient:</span><span>${info.patientName}</span></div>
+    <div class="row"><span class="lbl">Medication:</span><span>${info.drugName}</span></div>
+    <div class="row"><span class="lbl">Dose:</span><span>${info.dosePerSyringe} mL × ${info.syringes} syringe${info.syringes > 1 ? 's' : ''}</span></div>
+    <div class="row"><span class="lbl">Total Dispensed:</span><span>${info.totalDose} mL</span></div>
+    <div class="row"><span class="lbl">Waste:</span><span>${info.totalWaste} mL</span></div>
+    <div class="row"><span class="lbl">Total Removal:</span><span>${info.totalRemoval} mL</span></div>
+    <div class="row"><span class="lbl">Vial ID:</span><span>${info.vialExternalId}</span></div>
+    <div class="row"><span class="lbl">Date:</span><span>${info.date}</span></div>
+    <div class="footer">Granite Mountain Health — DEA Controlled Substance Record</div>
+</div>
+<div class="no-print" style="text-align:center; margin-top:12px;">
+    <button onclick="window.print()" style="padding:8px 24px; font-size:14px; cursor:pointer;">🖨️ Print</button>
+</div>
+</body></html>`;
+    printWindow.document.write(html);
+    printWindow.document.close();
+    // Auto-trigger print dialog
+    printWindow.onload = () => { printWindow.print(); };
+}
 
 // ─── DEMOGRAPHICS EDITING MODAL ─────────────────────────────
 function openEditDemographicsModal(patientId) {

@@ -3,6 +3,7 @@ import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 10;
 
 export async function GET(
     request: NextRequest,
@@ -107,36 +108,7 @@ export async function GET(
       `, [patientId]),
         ]);
 
-        // Fetch Healthie avatar if we have a healthie_client_id
-        let healthieAvatarUrl: string | null = null;
-        if (patient.healthie_client_id) {
-            try {
-                const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
-                const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 5000);
-                const resp = await fetch(HEALTHIE_API_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Basic ${HEALTHIE_API_KEY}`,
-                        'AuthorizationSource': 'API',
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        query: `query GetAvatar($id: ID) { user(id: $id) { avatar_url } }`,
-                        variables: { id: patient.healthie_client_id },
-                    }),
-                    signal: controller.signal,
-                });
-                clearTimeout(timeout);
-                if (resp.ok) {
-                    const result = await resp.json();
-                    healthieAvatarUrl = result?.data?.user?.avatar_url || null;
-                }
-            } catch (e) {
-                // Avatar fetch is non-critical — swallow errors
-            }
-        }
+        // Avatar removed from this route — fetched by patient-chart if needed (saves 1-5s per request)
 
         // Helper: PostgreSQL date columns serialize as "2026-03-28T00:00:00.000Z" via pg driver.
         // The iPhone interprets UTC midnight in Arizona (UTC-7) as the PREVIOUS day.
@@ -179,7 +151,7 @@ export async function GET(
                     last_lab: toDateOnly(patient.last_lab),
                     next_lab: toDateOnly(patient.next_lab),
                     lab_status: patient.lab_status,
-                    healthie_avatar_url: healthieAvatarUrl,
+                    healthie_avatar_url: null, // avatar fetched by patient-chart route if needed
                 },
                 recent_dispenses: recentDispenses,
                 recent_peptides: recentPeptides,
