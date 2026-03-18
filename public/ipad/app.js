@@ -1,15 +1,15 @@
-// VERSION: 2026-03-14-18:09 - Fixed patient_id bug in selectStripeAccount
+// VERSION: 2026-03-18-10:25 - Fixed broken HTML tag in appointment cards + all iPad fixes
 /* ============================================================
    GMH Ops v2.0 — iPad Companion App (LIVE DATA)
    Connects to /ops/api/* endpoints via same-origin cookies
-   VERSION: 2.2.0 - March 14, 2026
+   VERSION: 2.3.0 - March 18, 2026
    NEW: Dual-Stripe billing (Healthie + Direct Stripe)
    ============================================================ */
 
 // Log version immediately so we can verify correct file is loaded
-console.log('%c📱 iPad App v2.2.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
+console.log('%c📱 iPad App v2.3.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
 console.log('✅ NEW: Dual-Stripe billing - charge patients via Healthie or Direct Stripe');
-console.log('🕒 Build time: March 14, 2026');
+console.log('🕒 Build time: March 18, 2026');
 
 // Show version in page (will be visible in bottom corner)
 window.addEventListener('DOMContentLoaded', () => {
@@ -26,7 +26,7 @@ window.addEventListener('DOMContentLoaded', () => {
             font-family: monospace;
             z-index: 9999;
             pointer-events: none;
-        ">v2.2.0</div>
+        ">v2.3.0</div>
     `);
 });
 
@@ -1356,7 +1356,7 @@ function renderHealthieAppointment(appt) {
     return `
         <div class="healthie-appt-card" style="cursor:default;">
             <div class="healthie-appt-time">${displayTime || '—'}</div>
-            <div class="healthie-appt-info" ${patientId ? `onclick="openChartForPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}');" style="cursor:pointer; flex:1;"` : 'style="flex:1;"'}
+            <div class="healthie-appt-info" ${patientId ? `onclick="openChartForPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}');" style="cursor:pointer; flex:1;"` : 'style="flex:1;"'}>
                 <div class="healthie-appt-name">${sanitize(name)}</div>
                 <div class="healthie-appt-type">${sanitize(type)}${provider ? ' · ' + sanitize(provider) : ''}</div>
             </div>
