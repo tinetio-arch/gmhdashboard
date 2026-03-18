@@ -1,13 +1,13 @@
-// VERSION: 2026-03-18-10:25 - Fixed broken HTML tag in appointment cards + all iPad fixes
+// VERSION: 2026-03-18-10:30 - Fixed broken HTML + fast patient chart loading (lazy 360)
 /* ============================================================
    GMH Ops v2.0 — iPad Companion App (LIVE DATA)
    Connects to /ops/api/* endpoints via same-origin cookies
-   VERSION: 2.3.0 - March 18, 2026
+   VERSION: 2.3.1 - March 18, 2026
    NEW: Dual-Stripe billing (Healthie + Direct Stripe)
    ============================================================ */
 
 // Log version immediately so we can verify correct file is loaded
-console.log('%c📱 iPad App v2.3.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
+console.log('%c📱 iPad App v2.3.1 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
 console.log('✅ NEW: Dual-Stripe billing - charge patients via Healthie or Direct Stripe');
 console.log('🕒 Build time: March 18, 2026');
 
@@ -26,7 +26,7 @@ window.addEventListener('DOMContentLoaded', () => {
             font-family: monospace;
             z-index: 9999;
             pointer-events: none;
-        ">v2.3.0</div>
+        ">v2.3.1</div>
     `);
 });
 
@@ -3466,38 +3466,36 @@ async function loadChartData(patientId) {
     }
     content.innerHTML = '<div class="chart-loading"><div class="spinner"></div> Loading chart…</div>';
 
-    // Helper: fetch with a hard 10s timeout (AbortController)
-    async function timedFetch(url) {
+    // Helper: fetch with a hard timeout (AbortController)
+    async function timedFetch(url, timeoutMs) {
         const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort(), 45000);
+        const tid = setTimeout(() => controller.abort(), timeoutMs || 15000);
         try {
             const resp = await fetch(url, { credentials: 'include', signal: controller.signal });
             clearTimeout(tid);
-            if (resp.status === 401 || resp.status === 403) return null; // auth expired, handle gracefully
+            if (resp.status === 401 || resp.status === 403) return null;
             if (!resp.ok) return null;
             const data = await resp.json();
             return data?.success ? data.data : null;
         } catch (e) {
             clearTimeout(tid);
-            return null; // timeout, network error, or abort - all return null
+            return null;
         }
     }
 
     try {
-        // Fetch both local 360 and Healthie chart data in parallel (each with own timeout)
-        const [local360, healthieChart] = await Promise.all([
-            timedFetch(`/ops/api/patients/${patientId}/360/`),
-            timedFetch(`/ops/api/ipad/patient-chart/?patient_id=${patientId}`),
-        ]);
+        // FAST PATH: Load patient-chart first (has everything for initial render)
+        // Then lazy-load 360 data in background for labs/visits/alerts
+        const healthieChart = await timedFetch(`/ops/api/ipad/patient-chart/?patient_id=${patientId}`, 20000);
 
-        // Merge data — always succeeds even if both APIs returned null
+        // Render immediately with patient-chart data
         chartPanelData = {
-            demographics: local360?.demographics || healthieChart?.demographics || {},
-            medications: local360?.medications || {},
-            labs: local360?.labs || {},
-            visits: local360?.visits || [],
-            alerts: local360?.alerts || [],
-            controlled_substances: local360?.controlled_substances || [],
+            demographics: healthieChart?.demographics || {},
+            medications: {},
+            labs: {},
+            visits: [],
+            alerts: [],
+            controlled_substances: [],
             healthie_meds: healthieChart?.medications || [],
             healthie_allergies: healthieChart?.allergies || [],
             healthie_chart_notes: healthieChart?.chart_notes || [],
@@ -3506,16 +3504,32 @@ async function loadChartData(patientId) {
             healthie_appointments: healthieChart?.appointments || [],
             scribe_history: healthieChart?.scribe_history || [],
             avatar_url: healthieChart?.avatar_url || null,
-            healthie_id: healthieChart?.healthie_id || local360?.demographics?.healthie_client_id || '',
+            healthie_id: healthieChart?.healthie_id || '',
             // Financial & dispense data
             last_payments: healthieChart?.last_payments || [],
             trt_dispenses: healthieChart?.trt_dispenses || [],
             peptide_dispenses: healthieChart?.peptide_dispenses || [],
-            payment_methods: healthieChart?.payment_methods || [], // PLURAL - array of all cards
+            payment_methods: healthieChart?.payment_methods || [],
             subscriptions: healthieChart?.subscriptions || [],
             recurring_payment: healthieChart?.recurring_payment || null,
         };
         renderChartPanel(content);
+
+        // BACKGROUND: Load 360 data for labs/visits/alerts (non-blocking)
+        timedFetch(`/ops/api/patients/${patientId}/360/`, 20000).then(local360 => {
+            if (local360 && chartPanelPatientId === patientId) {
+                chartPanelData.demographics = local360.demographics || chartPanelData.demographics;
+                chartPanelData.medications = local360.medications || chartPanelData.medications;
+                chartPanelData.labs = local360.labs || {};
+                chartPanelData.visits = local360.visits || [];
+                chartPanelData.alerts = local360.alerts || [];
+                chartPanelData.controlled_substances = local360.controlled_substances || [];
+                chartPanelData.healthie_id = chartPanelData.healthie_id || local360.demographics?.healthie_client_id || '';
+                // Re-render with full data if chart is still open for this patient
+                const refreshContent = document.getElementById('globalChartContent') || document.getElementById('chartPanelContent');
+                if (refreshContent) renderChartPanel(refreshContent);
+            }
+        });
     } catch (e) {
         console.error('Chart load error:', e);
         // Absolute fallback — always render, never leave spinner stuck
