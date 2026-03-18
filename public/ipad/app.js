@@ -8068,7 +8068,7 @@ function selectQuickDispensePatient(patientId, patientName, regimen) {
         `;
     }
     if (regimen) {
-        const match = regimen.match(/(\d+(?:\.\d+)?)\s*(?:ml|mL)/i);
+        const match = regimen.match(/(\d+(?:\.\d+)?)\s*(?:ml|mL)?/i);
         if (match) {
             const regimenDose = parseFloat(match[1]);
             document.getElementById('qdDoseMl').value = regimenDose.toFixed(2);

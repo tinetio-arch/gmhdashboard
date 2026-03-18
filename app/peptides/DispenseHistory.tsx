@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import type { PeptideDispense } from '@/lib/peptideQueries';
 import { withBasePath } from '@/lib/basePath';
@@ -9,9 +9,10 @@ interface DispenseHistoryProps {
     dispenses: PeptideDispense[];
 }
 
-export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
+const PAGE_SIZE = 50;
+
+export default function DispenseHistory({ dispenses: initialDispenses }: DispenseHistoryProps) {
     const router = useRouter();
-    const [isExpanded, setIsExpanded] = useState(false);
     const [updating, setUpdating] = useState<string | null>(null);
     const [deleting, setDeleting] = useState<string | null>(null);
     const [editingNotes, setEditingNotes] = useState<string | null>(null);
@@ -20,9 +21,65 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
     const [orderDateValue, setOrderDateValue] = useState('');
     const [editingReceivedDate, setEditingReceivedDate] = useState<string | null>(null);
     const [receivedDateValue, setReceivedDateValue] = useState('');
+
+    // Search + pagination state
+    const [searchQuery, setSearchQuery] = useState('');
+    const [debouncedQuery, setDebouncedQuery] = useState('');
     const [statusFilter, setStatusFilter] = useState<'all' | 'Pending' | 'Paid'>('all');
     const [sortBy, setSortBy] = useState<'none' | 'patient_name' | 'order_date' | 'received_date'>('none');
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+    const [offset, setOffset] = useState(0);
+    const [total, setTotal] = useState(0);
+    const [dispenses, setDispenses] = useState<PeptideDispense[]>(initialDispenses);
+    const [loading, setLoading] = useState(false);
+    const [isServerMode, setIsServerMode] = useState(false);
+
+    // Debounce search input
+    useEffect(() => {
+        const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+        return () => clearTimeout(timer);
+    }, [searchQuery]);
+
+    // Fetch from server when search/filter/pagination changes
+    const fetchDispenses = useCallback(async () => {
+        const hasFilters = debouncedQuery || statusFilter !== 'all' || offset > 0;
+        if (!hasFilters) {
+            // Reset to initial SSR data
+            setDispenses(initialDispenses);
+            setTotal(0);
+            setIsServerMode(false);
+            return;
+        }
+
+        setLoading(true);
+        setIsServerMode(true);
+        try {
+            const params = new URLSearchParams();
+            if (debouncedQuery) params.set('patient', debouncedQuery);
+            if (statusFilter !== 'all') params.set('status', statusFilter);
+            params.set('limit', String(PAGE_SIZE));
+            params.set('offset', String(offset));
+
+            const res = await fetch(withBasePath(`/api/peptides/dispenses?${params.toString()}`));
+            if (!res.ok) throw new Error('Failed to fetch');
+            const data = await res.json();
+            setDispenses(data.dispenses);
+            setTotal(data.total);
+        } catch (err) {
+            console.error('[DispenseHistory] fetch error:', err);
+        } finally {
+            setLoading(false);
+        }
+    }, [debouncedQuery, statusFilter, offset, initialDispenses]);
+
+    useEffect(() => {
+        fetchDispenses();
+    }, [fetchDispenses]);
+
+    // Reset to page 0 when search/filter changes
+    useEffect(() => {
+        setOffset(0);
+    }, [debouncedQuery, statusFilter]);
 
     const toggleSort = (field: 'patient_name' | 'order_date' | 'received_date') => {
         if (sortBy === field) {
@@ -36,13 +93,10 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
     const sortIndicator = (field: 'patient_name' | 'order_date' | 'received_date') =>
         sortBy === field ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
 
-    // Apply status filter then sort
-    let filteredDispenses = statusFilter === 'all'
-        ? [...dispenses]
-        : dispenses.filter(d => d.status === statusFilter);
-
+    // Client-side sort on the current page of results
+    let sortedDispenses = [...dispenses];
     if (sortBy !== 'none') {
-        filteredDispenses.sort((a, b) => {
+        sortedDispenses.sort((a, b) => {
             const aVal = sortBy === 'patient_name' ? a.patient_name : (sortBy === 'order_date' ? a.order_date : a.received_date) || '';
             const bVal = sortBy === 'patient_name' ? b.patient_name : (sortBy === 'order_date' ? b.order_date : b.received_date) || '';
             const cmp = aVal.localeCompare(bVal);
@@ -50,10 +104,17 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
         });
     }
 
-    const displayDispenses = isExpanded ? filteredDispenses : filteredDispenses.slice(0, 15);
+    // When not in server mode, apply client-side status filter for initial data
+    if (!isServerMode && statusFilter !== 'all') {
+        sortedDispenses = sortedDispenses.filter(d => d.status === statusFilter);
+    }
 
-    const pendingCount = dispenses.filter(d => d.status === 'Pending').length;
-    const paidCount = dispenses.filter(d => d.status === 'Paid').length;
+    const pendingCount = initialDispenses.filter(d => d.status === 'Pending').length;
+    const paidCount = initialDispenses.filter(d => d.status === 'Paid').length;
+
+    const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+    const totalPages = isServerMode ? Math.ceil(total / PAGE_SIZE) : 1;
+    const displayTotal = isServerMode ? total : sortedDispenses.length;
 
     const updateField = async (dispenseId: string, field: string, value: unknown) => {
         setUpdating(dispenseId);
@@ -63,7 +124,11 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ dispense_id: dispenseId, [field]: value }),
             });
-            router.refresh();
+            if (isServerMode) {
+                await fetchDispenses();
+            } else {
+                router.refresh();
+            }
         } catch (error) {
             console.error('Failed to update:', error);
         } finally {
@@ -86,7 +151,11 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
                 const data = await res.json();
                 throw new Error(data.error || 'Failed to delete');
             }
-            router.refresh();
+            if (isServerMode) {
+                await fetchDispenses();
+            } else {
+                router.refresh();
+            }
         } catch (error) {
             console.error('Failed to delete:', error);
             alert('Failed to delete dispense');
@@ -130,7 +199,23 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
                 <h3 style={{ margin: 0, fontSize: '1.25rem' }}>Patient Dispense Log</h3>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                    {/* Patient Search */}
+                    <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search patient name..."
+                        style={{
+                            padding: '0.4rem 0.7rem',
+                            borderRadius: '0.375rem',
+                            border: '1px solid #d1d5db',
+                            fontSize: '0.8rem',
+                            width: '180px',
+                            outline: 'none',
+                        }}
+                    />
+
                     {/* Status Filter Buttons */}
                     <div style={{ display: 'flex', gap: '0.25rem' }}>
                         <button
@@ -146,7 +231,7 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
                                 cursor: 'pointer',
                             }}
                         >
-                            All ({dispenses.length})
+                            All ({initialDispenses.length})
                         </button>
                         <button
                             onClick={() => setStatusFilter('Pending')}
@@ -161,7 +246,7 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
                                 cursor: 'pointer',
                             }}
                         >
-                            ⏳ Pending ({pendingCount})
+                            Pending ({pendingCount})
                         </button>
                         <button
                             onClick={() => setStatusFilter('Paid')}
@@ -176,11 +261,11 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
                                 cursor: 'pointer',
                             }}
                         >
-                            ✅ Paid ({paidCount})
+                            Paid ({paidCount})
                         </button>
                     </div>
                     <span style={{ color: '#64748b', fontSize: '0.875rem' }}>
-                        {filteredDispenses.length} dispenses
+                        {displayTotal} dispenses
                     </span>
                 </div>
             </div>
@@ -191,6 +276,8 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
                 border: '1px solid rgba(148, 163, 184, 0.22)',
                 boxShadow: '0 12px 28px rgba(15, 23, 42, 0.06)',
                 overflow: 'auto',
+                opacity: loading ? 0.6 : 1,
+                transition: 'opacity 0.15s',
             }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', minWidth: '950px' }}>
                     <thead>
@@ -224,7 +311,7 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
                         </tr>
                     </thead>
                     <tbody>
-                        {displayDispenses.map((d) => (
+                        {sortedDispenses.map((d) => (
                             <tr key={d.dispense_id} style={{
                                 borderBottom: '1px solid #f1f5f9',
                                 opacity: deleting === d.dispense_id ? 0.4 : 1,
@@ -410,22 +497,55 @@ export default function DispenseHistory({ dispenses }: DispenseHistoryProps) {
                     </tbody>
                 </table>
 
-                {filteredDispenses.length > 15 && (
-                    <div style={{ padding: '1rem', textAlign: 'center', borderTop: '1px solid #f1f5f9' }}>
-                        <button
-                            onClick={() => setIsExpanded(!isExpanded)}
-                            style={{ background: 'none', border: 'none', color: '#0ea5e9', cursor: 'pointer', fontWeight: 600, fontSize: '0.875rem' }}
-                        >
-                            {isExpanded ? 'Show Less ▲' : `Show All ${filteredDispenses.length} Dispenses ▼`}
-                        </button>
+                {/* Pagination Controls */}
+                {isServerMode && totalPages > 1 && (
+                    <div style={{
+                        padding: '0.75rem 1rem',
+                        borderTop: '1px solid #f1f5f9',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                    }}>
+                        <span style={{ color: '#64748b', fontSize: '0.8rem' }}>
+                            Showing {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
+                        </span>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <button
+                                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                                disabled={offset === 0}
+                                style={{
+                                    ...paginationBtn,
+                                    opacity: offset === 0 ? 0.4 : 1,
+                                    cursor: offset === 0 ? 'default' : 'pointer',
+                                }}
+                            >
+                                Previous
+                            </button>
+                            <span style={{ fontSize: '0.8rem', color: '#374151', padding: '0.35rem 0' }}>
+                                Page {currentPage} of {totalPages}
+                            </span>
+                            <button
+                                onClick={() => setOffset(offset + PAGE_SIZE)}
+                                disabled={offset + PAGE_SIZE >= total}
+                                style={{
+                                    ...paginationBtn,
+                                    opacity: offset + PAGE_SIZE >= total ? 0.4 : 1,
+                                    cursor: offset + PAGE_SIZE >= total ? 'default' : 'pointer',
+                                }}
+                            >
+                                Next
+                            </button>
+                        </div>
                     </div>
                 )}
 
-                {filteredDispenses.length === 0 && (
+                {sortedDispenses.length === 0 && !loading && (
                     <p style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
-                        {statusFilter === 'all'
-                            ? 'No dispenses recorded yet. Use the form above to dispense peptides to patients.'
-                            : `No ${statusFilter.toLowerCase()} dispenses found.`
+                        {searchQuery
+                            ? `No dispenses found for "${searchQuery}".`
+                            : statusFilter === 'all'
+                                ? 'No dispenses recorded yet. Use the form above to dispense peptides to patients.'
+                                : `No ${statusFilter.toLowerCase()} dispenses found.`
                         }
                     </p>
                 )}
@@ -438,3 +558,4 @@ const headerStyle: React.CSSProperties = { padding: '0.6rem 0.75rem', textAlign:
 const cellStyle: React.CSSProperties = { padding: '0.5rem 0.75rem' };
 const saveBtn: React.CSSProperties = { background: '#10b981', color: '#fff', border: 'none', borderRadius: '0.25rem', padding: '0.15rem 0.4rem', cursor: 'pointer', fontSize: '0.7rem' };
 const cancelBtn: React.CSSProperties = { background: '#ef4444', color: '#fff', border: 'none', borderRadius: '0.25rem', padding: '0.15rem 0.4rem', cursor: 'pointer', fontSize: '0.7rem' };
+const paginationBtn: React.CSSProperties = { padding: '0.35rem 0.75rem', borderRadius: '0.375rem', border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', fontWeight: 500, color: '#374151' };

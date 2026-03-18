@@ -1,6 +1,6 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: March 14, 2026
+**Last Updated**: March 18, 2026
 **Primary AI Assistant**: Claude Code (Anthropic)
 **Sprint Period**: December 25, 2025 - March 14, 2026
 
@@ -383,7 +383,25 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 14, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 18, 2026)
+
+### March 18, 2026: Peptide Dispense Log — Server-Side Pagination & Patient Search
+
+**Feature**: Added server-side pagination and patient name search to the Peptide Dispense Log, replacing the previous hard-coded 100-row limit.
+
+**Changes**:
+- `lib/peptideQueries.ts`: Added `fetchPeptideDispensesPaginated()` — accepts `patient` (ILIKE search), `status` filter, `offset`, `limit`; returns `{ dispenses, total }` for pagination
+- `app/api/peptides/dispenses/route.ts`: GET now accepts query params `?patient=&status=&limit=&offset=`; backwards-compatible (no params = legacy flat array for SSR)
+- `app/peptides/DispenseHistory.tsx`: Added patient search input (debounced 300ms), server-side pagination (50 per page with Previous/Next), status filter triggers server query. Initial SSR data still loads for fast first paint; search/filter/pagination switches to client-side fetching.
+
+**API Contract** (new):
+```
+GET /api/peptides/dispenses?patient=Smith&status=Paid&limit=50&offset=0
+→ { dispenses: PeptideDispense[], total: number }
+```
+Without query params, returns flat `PeptideDispense[]` array (legacy).
+
+---
 
 ### March 14, 2026: 💳 Dual-Stripe Billing Implementation (iPad App) - COMPLETE
 

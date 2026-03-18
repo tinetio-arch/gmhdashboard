@@ -235,7 +235,7 @@ export async function fetchPeptideOrders(limit = 100): Promise<PeptideOrder[]> {
  */
 export async function fetchPeptideDispenses(limit = 100): Promise<PeptideDispense[]> {
   return query<PeptideDispense>(`
-    SELECT 
+    SELECT
       d.sale_id as dispense_id,
       d.product_id,
       p.name as peptide_name,
@@ -255,6 +255,70 @@ export async function fetchPeptideDispenses(limit = 100): Promise<PeptideDispens
     ORDER BY d.created_at DESC
     LIMIT $1
   `, [limit]);
+}
+
+/**
+ * Fetch patient dispense history with server-side pagination, patient search, and status filter.
+ * Returns { dispenses, total } so the frontend can render pagination controls.
+ */
+export async function fetchPeptideDispensesPaginated(opts: {
+  patient?: string;
+  status?: 'Paid' | 'Pending';
+  limit?: number;
+  offset?: number;
+}): Promise<{ dispenses: PeptideDispense[]; total: number }> {
+  const { patient, status, limit = 50, offset = 0 } = opts;
+
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+  let idx = 1;
+
+  if (patient) {
+    conditions.push(`d.patient_name ILIKE $${idx++}`);
+    params.push(`%${patient}%`);
+  }
+  if (status) {
+    conditions.push(`d.status = $${idx++}`);
+    params.push(status);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  // Count total matching rows
+  const [countRow] = await query<{ total: string }>(`
+    SELECT COUNT(*) as total
+    FROM peptide_dispenses d
+    ${whereClause}
+  `, params);
+
+  const total = Number(countRow?.total ?? 0);
+
+  // Fetch the page of results
+  const dataParams = [...params, limit, offset];
+  const dispenses = await query<PeptideDispense>(`
+    SELECT
+      d.sale_id as dispense_id,
+      d.product_id,
+      p.name as peptide_name,
+      d.quantity,
+      d.patient_name,
+      d.order_date::text,
+      d.received_date::text,
+      d.status,
+      d.education_complete,
+      d.notes,
+      p.label_directions,
+      COALESCE(d.patient_dob, pt.dob::text) as patient_dob,
+      d.created_at
+    FROM peptide_dispenses d
+    JOIN peptide_products p ON p.product_id = d.product_id
+    LEFT JOIN patients pt ON pt.full_name ILIKE d.patient_name
+    ${whereClause}
+    ORDER BY d.created_at DESC
+    LIMIT $${idx++} OFFSET $${idx}
+  `, dataParams);
+
+  return { dispenses, total };
 }
 
 /**

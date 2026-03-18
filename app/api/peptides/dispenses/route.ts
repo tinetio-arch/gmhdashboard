@@ -5,16 +5,34 @@
  * PATCH - Update dispense status (paid, education complete, etc.)
  */
 
-import { NextResponse } from 'next/server';
-import { fetchPeptideDispenses, createPeptideDispense, updatePeptideDispense, deletePeptideDispense } from '@/lib/peptideQueries';
+import { NextRequest, NextResponse } from 'next/server';
+import { fetchPeptideDispenses, fetchPeptideDispensesPaginated, createPeptideDispense, updatePeptideDispense, deletePeptideDispense } from '@/lib/peptideQueries';
 import { requireUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { generateLabelPdf } from '@/lib/pdf/labelGenerator';
 import { uploadLabelToHealthie } from '@/lib/healthieUploadLabel';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
         await requireUser('read');
+        const { searchParams } = new URL(request.url);
+        const patient = searchParams.get('patient') || undefined;
+        const status = searchParams.get('status') as 'Paid' | 'Pending' | undefined;
+        const limit = Math.min(Number(searchParams.get('limit')) || 50, 200);
+        const offset = Math.max(Number(searchParams.get('offset')) || 0, 0);
+
+        // If any pagination/filter params are provided, use paginated query
+        if (patient || status || searchParams.has('limit') || searchParams.has('offset')) {
+            const result = await fetchPeptideDispensesPaginated({
+                patient,
+                status: status === 'Paid' || status === 'Pending' ? status : undefined,
+                limit,
+                offset,
+            });
+            return NextResponse.json(result);
+        }
+
+        // Legacy: return flat array for backwards compatibility (page.tsx server-side fetch)
         const dispenses = await fetchPeptideDispenses();
         return NextResponse.json(dispenses);
     } catch (error) {

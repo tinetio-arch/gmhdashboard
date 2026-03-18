@@ -5,6 +5,7 @@ import { createHealthieClient } from '@/lib/healthie';
 import { healthieGraphQL } from '@/lib/healthieApi';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 10;
 
 interface Patient360 {
     demographics: any;
@@ -152,10 +153,9 @@ export async function GET(
 
         const healthieId = patient.healthie_client_id;
         if (healthieId) {
-            try {
-                // Fetch appointments from Healthie GraphQL
-                // NOTE: Healthie appointments only support user_id (not client_id), and status field is pm_status
-                const appointmentData = await healthieGraphQL<{
+            // Fetch appointments and prescriptions in parallel via Promise.allSettled
+            const [appointmentResult, prescriptionResult] = await Promise.allSettled([
+                healthieGraphQL<{
                     appointments: Array<{
                         id: string;
                         date: string;
@@ -186,56 +186,9 @@ export async function GET(
               notes
             }
           }
-        `, { userId: healthieId, offset: 0 });
+        `, { userId: healthieId, offset: 0 }),
 
-                healthieVisits = appointmentData.appointments || [];
-            } catch (visitErr) {
-                console.error(`[Patient360] Healthie visits failed for ${healthieId}:`, visitErr instanceof Error ? visitErr.message : visitErr);
-                // Gracefully continue with empty visits
-            }
-
-            // Optional: fetch lab orders from Healthie if needed
-            // NOTE: Healthie labOrders doesn't accept patient_id filter, date_received doesn't exist - use created_at
-            // Query all and filter client-side
-            try {
-                const labData = await healthieGraphQL<{
-                    labOrders: Array<{
-                        id: string;
-                        patient?: { id: string } | null;
-                        created_at: string;
-                        lab_company?: string | null;
-                        status?: string | null;
-                    }>;
-                }>(`
-          query GetPatientLabOrders {
-            labOrders {
-              id
-              patient {
-                id
-              }
-              created_at
-              lab_company
-              status
-            }
-          }
-        `);
-
-                // Filter to this patient's labs
-                healthieLabs = (labData.labOrders || [])
-                    .filter(lab => lab.patient?.id === healthieId)
-                    .map(lab => ({
-                        ...lab,
-                        patient_id: lab.patient?.id,
-                        date_received: lab.created_at, // Map created_at to date_received for backwards compat
-                    }));
-            } catch (labErr) {
-                console.error(`[Patient360] Healthie labs failed for ${healthieId}:`, labErr instanceof Error ? labErr.message : labErr);
-                // Gracefully continue with empty labs
-            }
-
-            // Fetch prescriptions from Healthie/DoseSpot
-            try {
-                const prescriptionData = await healthieGraphQL<{
+                healthieGraphQL<{
                     prescriptions: Array<{
                         id: string;
                         product_name?: string | null;
@@ -279,12 +232,19 @@ export async function GET(
               }
             }
           }
-        `, { patient_id: healthieId });
+        `, { patient_id: healthieId }),
+            ]);
 
-                healthiePrescriptions = prescriptionData.prescriptions || [];
-            } catch (rxErr) {
-                console.error(`[Patient360] Healthie prescriptions failed for ${healthieId}:`, rxErr instanceof Error ? rxErr.message : rxErr);
-                // Gracefully continue with empty prescriptions
+            if (appointmentResult.status === 'fulfilled') {
+                healthieVisits = appointmentResult.value.appointments || [];
+            } else {
+                console.error(`[Patient360] Healthie visits failed for ${healthieId}:`, appointmentResult.reason instanceof Error ? appointmentResult.reason.message : appointmentResult.reason);
+            }
+
+            if (prescriptionResult.status === 'fulfilled') {
+                healthiePrescriptions = prescriptionResult.value.prescriptions || [];
+            } else {
+                console.error(`[Patient360] Healthie prescriptions failed for ${healthieId}:`, prescriptionResult.reason instanceof Error ? prescriptionResult.reason.message : prescriptionResult.reason);
             }
         }
 
