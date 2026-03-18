@@ -11,6 +11,9 @@ export const DEFAULT_TESTOSTERONE_DEA_CODE = '4000';
 /** Mandated waste per syringe in mL (regulatory constant). */
 export const WASTE_PER_SYRINGE = 0.1;
 
+/** Vials below this threshold are prompted for retirement after dispense */
+export const RETIREMENT_THRESHOLD_ML = 2.0;
+
 export function normalizeTestosteroneVendor(
   candidate: string | null | undefined
 ): (typeof TESTOSTERONE_VENDORS)[number] | null {

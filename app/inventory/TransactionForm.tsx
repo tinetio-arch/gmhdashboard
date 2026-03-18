@@ -439,6 +439,7 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
         throw new Error(payloadCurrent?.error ?? 'Unable to record dispense for the current vial.');
       }
 
+      let payloadNext: any = {};
       if (remainingRemoval > 0.01) {
         const secondResponse = await fetch(withBasePath('/api/inventory/transactions'), {
           method: 'POST',
@@ -463,7 +464,7 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
             signatureStatus: 'awaiting_signature'
           })
         });
-        const payloadNext = await secondResponse.json().catch(() => ({}));
+        payloadNext = await secondResponse.json().catch(() => ({}));
         if (!secondResponse.ok) {
           throw new Error(payloadNext?.error ?? 'Unable to record dispense for the next vial.');
         }
@@ -478,6 +479,37 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
         type: 'success',
         message: `Finished vial ${selectedVial.external_id ?? selectedVial.vial_id} and logged the remaining ${remainingRemoval > 0 ? `${remainingRemoval.toFixed(2)} mL` : ''} on ${nextVial.external_id ?? nextVial.vial_id}.`
       });
+
+      // Check if second vial should be retired after split
+      const nextVialRemaining = payloadNext?.updatedRemainingMl != null
+        ? parseFloat(payloadNext.updatedRemainingMl)
+        : NaN;
+      if (nextVialRemaining > 0 && nextVialRemaining < 2.0) {
+        const nextVialLabel = nextVial.external_id ?? nextVial.vial_id;
+        const doRetire = window.confirm(
+          `⚠️ Vial ${nextVialLabel} now has ${nextVialRemaining.toFixed(2)} mL remaining — ` +
+          `not enough for a standard dose.\n\nRetire this vial and document the remaining volume as waste?`
+        );
+        if (doRetire) {
+          try {
+            const retireResp = await fetch(withBasePath('/api/inventory/retire-vial'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ vialExternalId: nextVialLabel })
+            });
+            const retireResult = await retireResp.json();
+            if (retireResult.success) {
+              setStatus({
+                type: 'success',
+                message: `Vial ${nextVialLabel} retired. ${retireResult.wastedMl.toFixed(2)} mL documented as waste.`
+              });
+              onSaved?.();
+            }
+          } catch (retireErr) {
+            console.error('[TransactionForm] Retire split vial failed:', retireErr);
+          }
+        }
+      }
     } catch (error) {
       setStatus({ type: 'error', message: (error as Error).message });
     }
@@ -571,6 +603,34 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
       setDispenseEntireVial(false);
       setSyringes('');
       onSaved?.();
+
+      // Check if vial should be retired (< 2.0 mL remaining)
+      if (remainingAfter > 0 && remainingAfter < 2.0) {
+        const vialLabel = selectedVial?.external_id ?? selectedVialId;
+        const doRetire = window.confirm(
+          `⚠️ Vial ${vialLabel} now has ${remainingAfter.toFixed(2)} mL remaining — ` +
+          `not enough for a standard dose.\n\nRetire this vial and document the remaining volume as waste?`
+        );
+        if (doRetire) {
+          try {
+            const retireResp = await fetch(withBasePath('/api/inventory/retire-vial'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ vialExternalId: vialLabel })
+            });
+            const retireResult = await retireResp.json();
+            if (retireResult.success) {
+              setStatus({
+                type: 'success',
+                message: `Vial ${vialLabel} retired. ${retireResult.wastedMl.toFixed(2)} mL documented as waste.`
+              });
+              onSaved?.();
+            }
+          } catch (retireErr) {
+            console.error('[TransactionForm] Retire vial failed:', retireErr);
+          }
+        }
+      }
     } catch (error) {
       setStatus({ type: 'error', message: (error as Error).message });
     }

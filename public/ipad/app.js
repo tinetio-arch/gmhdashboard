@@ -8148,6 +8148,29 @@ async function submitQuickDispense() {
 
             btn.textContent = '✅ Done';
 
+            // Check if vial should be retired
+            const newRemaining = resp?.data?.updated_remaining_ml ?? resp?.updatedRemainingMl;
+            if (newRemaining != null && newRemaining > 0 && newRemaining < 2.0) {
+                const doRetire = confirm(
+                    `Vial ${vialExternalId} now has ${parseFloat(newRemaining).toFixed(2)} mL remaining — ` +
+                    `not enough for a standard dose.\n\nRetire this vial and document remaining as waste?`
+                );
+                if (doRetire) {
+                    try {
+                        const retireResp = await apiFetch('/ops/api/inventory/retire-vial', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ vialExternalId })
+                        });
+                        if (retireResp?.success) {
+                            successEl.textContent += ` | Vial ${vialExternalId} retired (${parseFloat(newRemaining).toFixed(2)} mL waste documented).`;
+                        }
+                    } catch (retireErr) {
+                        console.error('[iPad] Retire vial failed:', retireErr);
+                    }
+                }
+            }
+
             // Prompt to print dispense label
             promptPrintLabel({
                 patientName, drugName, dosePerSyringe, syringes,
@@ -8268,6 +8291,27 @@ async function submitQuickDispense() {
             successEl.style.display = 'block';
 
             btn.textContent = '✅ Done';
+
+            // Check if second vial should be retired after split
+            const newRemaining2 = resp2?.data?.updated_remaining_ml ?? resp2?.updatedRemainingMl;
+            if (newRemaining2 != null && newRemaining2 > 0 && newRemaining2 < 2.0) {
+                const doRetire = confirm(
+                    `Vial ${nextVialExternalId} now has ${parseFloat(newRemaining2).toFixed(2)} mL remaining — ` +
+                    `not enough for a standard dose.\n\nRetire this vial and document remaining as waste?`
+                );
+                if (doRetire) {
+                    try {
+                        await apiFetch('/ops/api/inventory/retire-vial', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ vialExternalId: nextVialExternalId })
+                        });
+                        successEl.innerHTML += `<br>🗑️ Vial ${nextVialExternalId} retired (${parseFloat(newRemaining2).toFixed(2)} mL waste documented).`;
+                    } catch (retireErr) {
+                        console.error('[iPad] Retire vial failed:', retireErr);
+                    }
+                }
+            }
 
             // Prompt to print dispense label (combined info)
             promptPrintLabel({

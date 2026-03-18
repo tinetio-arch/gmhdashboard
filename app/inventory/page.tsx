@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 
 import Link from 'next/link';
 import { fetchInventory, fetchInventorySummary } from '@/lib/inventoryQueries';
+import { query } from '@/lib/db';
 import { fetchActivePatientOptions } from '@/lib/patientQueries';
 import InventoryActions from './InventoryActions';
 import InventoryTable from './InventoryTable';
@@ -11,10 +12,21 @@ import { requireUser } from '@/lib/auth';
 
 export default async function InventoryPage() {
   const user = await requireUser('write');
-  const [summary, vials, patientOptions] = await Promise.all([
+  const [summary, vials, patientOptions, retiredVials] = await Promise.all([
     fetchInventorySummary(),
     fetchInventory(),
-    fetchActivePatientOptions()
+    fetchActivePatientOptions(),
+    query<any>(`
+      SELECT DISTINCT ON (d.vial_id)
+        v.external_id, v.lot_number, v.dea_drug_name, v.size_ml,
+        d.waste_ml, d.created_at as retired_at, d.notes,
+        d.created_by
+      FROM dispenses d
+      JOIN vials v ON d.vial_id = v.vial_id
+      WHERE d.transaction_type = 'waste_retirement'
+      ORDER BY d.vial_id, d.created_at DESC
+      LIMIT 20
+    `).catch(() => [] as any[]),
   ]);
 
   const transactionVials = vials
@@ -78,7 +90,42 @@ export default async function InventoryPage() {
       </p>
 
       <InventoryTable vials={vials} currentUserRole={user.role} />
+
+      <RetiredVialsSection vials={retiredVials} />
     </section>
+  );
+}
+
+function RetiredVialsSection({ vials }: { vials: any[] }) {
+  if (vials.length === 0) return null;
+  return (
+    <details style={{ marginTop: '2rem' }}>
+      <summary style={{
+        fontSize: '1.1rem', fontWeight: 600, cursor: 'pointer',
+        color: '#64748b', marginBottom: '0.75rem'
+      }}>
+        Retired Vials ({vials.length})
+      </summary>
+      <div style={{
+        display: 'grid', gap: '0.5rem',
+        background: '#f8fafc', borderRadius: '0.75rem', padding: '1rem',
+        border: '1px solid rgba(148, 163, 184, 0.22)'
+      }}>
+        {vials.map((v, i) => (
+          <div key={i} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '0.5rem 0.75rem', background: '#fff', borderRadius: '0.5rem',
+            border: '1px solid #e2e8f0', fontSize: '0.875rem'
+          }}>
+            <span><strong>{v.external_id}</strong> — {v.dea_drug_name || 'Testosterone Cypionate'} ({v.size_ml}mL)</span>
+            <span style={{ color: '#94a3b8' }}>
+              {v.waste_ml ? `${parseFloat(v.waste_ml).toFixed(2)} mL wasted` : ''}
+              {v.retired_at ? ` · ${new Date(v.retired_at).toLocaleDateString()}` : ''}
+            </span>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 

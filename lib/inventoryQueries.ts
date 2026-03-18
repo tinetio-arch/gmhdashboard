@@ -4,6 +4,7 @@ import { recordDispenseEvent } from './dispenseHistory';
 import {
   DEFAULT_TESTOSTERONE_DEA_CODE,
   DEFAULT_TESTOSTERONE_VENDOR,
+  RETIREMENT_THRESHOLD_ML,
   TESTOSTERONE_VENDORS,
   WASTE_PER_SYRINGE,
   normalizeTestosteroneVendor
@@ -1249,6 +1250,135 @@ export async function reopenDispense(input: ReopenDispenseInput): Promise<void> 
     });
 
     await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Retire a nearly-empty vial — documents remaining volume as waste.
+ * Creates dispense record (waste_retirement), DEA transaction, and audit trail.
+ */
+export async function retireVial(
+  vialExternalId: string,
+  retiredByUserId: string,
+  retiredByName: string
+): Promise<{ success: boolean; wastedMl: number; vialId: string; details: string }> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+
+    const vialLookup = await client.query<{
+      vial_id: string;
+      controlled_substance: boolean | null;
+      dea_drug_name: string | null;
+      dea_drug_code: string | null;
+      remaining_volume_ml: string | null;
+    }>(
+      `SELECT vial_id, controlled_substance, dea_drug_name, dea_drug_code, remaining_volume_ml
+         FROM vials
+        WHERE external_id = $1
+        FOR UPDATE`,
+      [vialExternalId.trim()]
+    );
+
+    if (vialLookup.rowCount === 0) {
+      throw new Error(`Vial "${vialExternalId}" not found.`);
+    }
+
+    const vialRow = vialLookup.rows[0];
+    const remainingMl = parseFloat(vialRow.remaining_volume_ml ?? '0');
+
+    if (remainingMl <= 0) {
+      throw new Error(`Vial "${vialExternalId}" is already empty — nothing to retire.`);
+    }
+    if (remainingMl >= RETIREMENT_THRESHOLD_ML) {
+      throw new Error(
+        `Vial "${vialExternalId}" has ${remainingMl.toFixed(2)} mL remaining — above the ${RETIREMENT_THRESHOLD_ML} mL retirement threshold.`
+      );
+    }
+
+    const wastedMl = remainingMl;
+    const notes = `Vial retired — insufficient volume for standard dose. Remaining ${wastedMl.toFixed(2)}mL documented as waste.`;
+
+    // Insert waste_retirement dispense record
+    const dispenseInsert = await client.query<{ dispense_id: string }>(
+      `INSERT INTO dispenses (
+        vial_id, vial_external_id, patient_id, patient_name,
+        dispense_date, transaction_type,
+        total_dispensed_ml, syringe_count, dose_per_syringe_ml,
+        waste_ml, total_amount, notes,
+        signature_status, created_by
+      )
+      VALUES ($1, $2, NULL, 'VIAL RETIREMENT',
+        NOW(), 'waste_retirement',
+        0, 0, NULL,
+        $3, $3, $4,
+        'not_required', $5)
+      RETURNING dispense_id`,
+      [vialRow.vial_id, vialExternalId.trim(), wastedMl, notes, retiredByUserId]
+    );
+    const dispenseId = dispenseInsert.rows[0].dispense_id;
+
+    // Zero out the vial
+    await client.query(
+      `UPDATE vials SET remaining_volume_ml = 0, status = 'Empty', updated_at = NOW() WHERE vial_id = $1`,
+      [vialRow.vial_id]
+    );
+
+    // DEA transaction for waste documentation
+    if (vialRow.controlled_substance) {
+      await client.query(
+        `INSERT INTO dea_transactions (
+          dispense_id, vial_id, patient_id, patient_name,
+          prescriber, dea_drug_name, dea_drug_code, dea_schedule,
+          quantity_dispensed, units, transaction_time,
+          source_system, notes
+        )
+        VALUES ($1, $2, NULL, 'WASTE - VIAL RETIREMENT',
+          NULL, $3, $4, 'Schedule III',
+          $5, 'mL', NOW(),
+          'dashboard', $6)
+        ON CONFLICT (dispense_id) DO UPDATE SET
+          quantity_dispensed = EXCLUDED.quantity_dispensed,
+          notes = EXCLUDED.notes,
+          updated_at = NOW()`,
+        [
+          dispenseId,
+          vialRow.vial_id,
+          vialRow.dea_drug_name,
+          vialRow.dea_drug_code ?? DEFAULT_TESTOSTERONE_DEA_CODE,
+          wastedMl,
+          notes
+        ]
+      );
+    }
+
+    // Audit trail
+    await recordDispenseEvent(client, {
+      dispenseId,
+      eventType: 'vial_retired',
+      actorUserId: retiredByUserId,
+      actorRole: 'write',
+      payload: {
+        vialExternalId: vialExternalId.trim(),
+        wastedMl,
+        retiredByName,
+        reason: 'Insufficient volume for standard dose'
+      }
+    });
+
+    await client.query('COMMIT');
+
+    return {
+      success: true,
+      wastedMl,
+      vialId: vialRow.vial_id,
+      details: notes
+    };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
