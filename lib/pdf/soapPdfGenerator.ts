@@ -190,12 +190,12 @@ export async function generateSoapPdf(params: SoapPdfParams): Promise<Buffer> {
 
     // ─── FOOTER on every page ───
     const range = doc.bufferedPageRange();
-    for (let i = 0; i < range.count; i++) {
+    for (let i = range.start; i < range.start + range.count; i++) {
         doc.switchToPage(i);
         // Footer at bottom of page (792 - 50 = 742, minus a bit for text height)
         doc.fontSize(7).font('Helvetica').fillColor('#999999')
             .text(
-                `NowOptimal Network — CONFIDENTIAL — Page ${i + 1} of ${range.count}`,
+                `NowOptimal Network — CONFIDENTIAL — Page ${i - range.start + 1} of ${range.count}`,
                 60, 750,
                 { width: pageWidth, align: 'center' }
             );
