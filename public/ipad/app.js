@@ -1097,7 +1097,8 @@ function renderEmptyState(icon, title, subtitle) {
 // TODAY VIEW
 // ============================================================
 function renderTodayView(container) {
-    if (isLoading && !dashboardData) {
+    // Only show loading spinner on very first load when we have zero data
+    if (isLoading && !dashboardData && healthieAppointments.length === 0 && allPatients.length === 0) {
         container.innerHTML = renderLoadingState();
         return;
     }
@@ -1353,13 +1354,16 @@ function renderHealthieAppointment(appt) {
     const canAdvance = statusClass !== 'completed' && apptId;
 
     return `
-        <div class="healthie-appt-card" onclick="${patientId ? `navigateToPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}')` : ''}" style="cursor:${patientId ? 'pointer' : 'default'};">
+        <div class="healthie-appt-card" style="cursor:default;">
             <div class="healthie-appt-time">${displayTime || '—'}</div>
-            <div class="healthie-appt-info">
+            <div class="healthie-appt-info" ${patientId ? `onclick="openChartForPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}');" style="cursor:pointer; flex:1;"` : 'style="flex:1;"'}
                 <div class="healthie-appt-name">${sanitize(name)}</div>
                 <div class="healthie-appt-type">${sanitize(type)}${provider ? ' · ' + sanitize(provider) : ''}</div>
             </div>
-            <div class="healthie-appt-status sched-status ${statusClass}" ${canAdvance ? `onclick="event.stopPropagation(); handleHealthieClick('${apptId}', '${status}')" style="cursor:pointer;" title="Click to advance status"` : ''}>${statusLabel}</div>
+            <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+                ${patientId ? `<button onclick="event.stopPropagation(); openChartForPatient('${patientId}', '${sanitize(name).replace(/'/g, "\\\'")}')" style="padding:5px 8px; background:rgba(0,212,255,0.12); color:var(--cyan); border:1px solid rgba(0,212,255,0.25); border-radius:6px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;">📋</button>` : ''}
+                <div class="healthie-appt-status sched-status ${statusClass}" ${canAdvance ? `onclick="event.stopPropagation(); handleHealthieClick('${apptId}', '${status}')" style="cursor:pointer;" title="Click to advance status"` : ''}>${statusLabel}</div>
+            </div>
         </div>
     `;
 }
@@ -3724,6 +3728,7 @@ function renderChartPanel(content) {
             <button class="chart-tab-btn ${window._chartTab === 'prescriptions' ? 'active' : ''}" data-tab="prescriptions" onclick="switchChartTab('prescriptions')">\ud83d\udc8a Rx</button>
             <button class="chart-tab-btn ${window._chartTab === 'erx' ? 'active' : ''}" data-tab="erx" onclick="switchChartTab('erx')">\ud83d\udccb E-Rx</button>
             <button class="chart-tab-btn ${window._chartTab === 'dispense' ? 'active' : ''}" data-tab="dispense" onclick="switchChartTab('dispense')">\ud83d\udc89 Dispense Hx</button>
+            <button style="margin-left:auto; padding:6px 12px; background:linear-gradient(135deg, #ef4444, #dc2626); color:white; border:none; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer; white-space:nowrap; letter-spacing:0.02em;" onclick="startScribeFromChart('${d.patient_id || d.healthie_id || ''}', '${(d.demographics?.full_name || 'Patient').replace(/'/g, "\\'")}')" title="Start recording for this patient">🎤 Record</button>
         </div>
         <div id="chartTabContent"></div>
     `;
@@ -5809,12 +5814,23 @@ function setSupplyFilter(category) {
 // PATIENTS VIEW
 // ============================================================
 function renderPatientsView(container) {
-    // Load all patients if not loaded (with guard to prevent infinite loop)
-    if (!patientsLoaded && allPatients.length === 0 && !isLoading) {
+    // Load patients if not yet loaded or if previous load failed with empty result
+    if (allPatients.length === 0 && !isLoading) {
         container.innerHTML = renderLoadingState();
-        patientsLoaded = true; // prevent re-entry
-        loadAllPatients().then(() => {
+        loadAllPatients().then((ok) => {
             if (currentTab === 'patients') renderCurrentTab();
+            if (!ok && allPatients.length === 0) {
+                // Show retry state instead of infinite spinner
+                const main = document.getElementById('mainContent');
+                const view = main?.querySelector('#view-patients');
+                if (view) view.innerHTML = `
+                    <h1 style="font-size:28px; margin-bottom:20px;">Patients</h1>
+                    ${renderEmptyState('⚠️', 'Failed to load patients', 'Tap below to retry')}
+                    <div style="text-align:center; margin-top:16px;">
+                        <button onclick="renderCurrentTab()" style="padding:10px 24px; background:var(--cyan); color:#0a0f1a; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;">↻ Retry</button>
+                    </div>
+                `;
+            }
         });
         return;
     }
@@ -7793,69 +7809,104 @@ async function openQuickDispenseModal() {
     const existing = document.getElementById('quickDispenseModal');
     if (existing) existing.remove();
 
-    // Load available vials
+    // Check morning audit status first
+    let morningCheckDone = false;
+    try {
+        const checkResp = await apiFetch('/ops/api/inventory/controlled-check?action=status');
+        morningCheckDone = checkResp?.completed === true;
+    } catch(e) {
+        console.warn('[QuickDispense] Morning check status failed:', e);
+    }
+
+    // Load available vials (sorted FIFO by expiration)
     let vials = [];
     try {
-        console.log('[QuickDispense] Fetching vials...');
         const data = await apiFetch('/ops/api/inventory/vials/?status=Active');
         vials = data?.data || data?.vials || data || [];
         if (!Array.isArray(vials)) vials = [];
-        console.log('[QuickDispense] Loaded vials:', vials.length);
     } catch (err) {
         console.error('[QuickDispense] Failed to load vials:', err);
         vials = [];
     }
 
-    const deaVials = vials.filter(v => v.dea_schedule || v.dea_drug_name);
-    console.log('[QuickDispense] DEA vials filtered:', deaVials.length);
+    // Filter to DEA vials only, sort FIFO (earliest expiration first, Carrie Boyd preferred)
+    const deaVials = vials
+        .filter(v => v.dea_schedule || v.dea_drug_name)
+        .filter(v => parseFloat(v.remaining_ml || v.remaining_volume_ml || v.volume_ml || 0) > 0)
+        .sort((a, b) => {
+            const aCarrie = (a.dea_drug_name || '').toLowerCase().includes('carrie') || (a.dea_drug_name || '').toLowerCase().includes('miglyol');
+            const bCarrie = (b.dea_drug_name || '').toLowerCase().includes('carrie') || (b.dea_drug_name || '').toLowerCase().includes('miglyol');
+            if (aCarrie && !bCarrie) return -1;
+            if (!aCarrie && bCarrie) return 1;
+            const aExp = a.expiration_date ? new Date(a.expiration_date).getTime() : Infinity;
+            const bExp = b.expiration_date ? new Date(b.expiration_date).getTime() : Infinity;
+            return aExp - bExp;
+        });
+
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
 
-    console.log('[QuickDispense] About to insert modal HTML...');
     document.body.insertAdjacentHTML('beforeend', `
         <div id="quickDispenseModal" class="modal-overlay visible" style="display:flex;">
-            <div class="modal modal-large" style="max-width:540px;">
+            <div class="modal modal-large" style="max-width:560px;">
                 <div class="modal-header">
                     <h2 style="font-size:18px; margin:0;">✅ Record Controlled Dispense</h2>
                     <button class="modal-close" onclick="document.getElementById('quickDispenseModal').remove()">✕</button>
                 </div>
-                <div class="modal-body" style="padding:20px;">
-                    <div style="margin-bottom:16px;">
+                <div class="modal-body" style="padding:20px; max-height:70vh; overflow-y:auto; -webkit-overflow-scrolling:touch;">
+                    ${!morningCheckDone ? `
+                        <div style="padding:10px 14px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:14px; font-weight:600;">
+                            ⚠️ Morning inventory check NOT completed. Dispensing may be blocked.
+                        </div>
+                    ` : `
+                        <div style="padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); border-radius:8px; color:#22c55e; font-size:12px; margin-bottom:14px;">
+                            ✅ Morning check completed
+                        </div>
+                    `}
+                    <div style="margin-bottom:14px;">
                         <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Patient</label>
                         <div class="patient-search-wrapper">
                             <input type="text" id="qdPatientSearch" class="patient-search-input" placeholder="Type 2+ letters to search patients…" autocomplete="off" />
                             <div id="qdPatientResults" class="patient-search-results"></div>
                             <div id="qdPatientBadge" class="patient-selected-badge" style="display:none;"></div>
                         </div>
+                        <div id="qdRegimenInfo" style="display:none; margin-top:6px; padding:6px 10px; background:rgba(0,212,255,0.08); border:1px solid rgba(0,212,255,0.15); border-radius:6px; font-size:12px; color:var(--cyan);"></div>
                     </div>
-                    <div style="margin-bottom:16px;">
-                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Select Vial</label>
-                        <select id="qdVial" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                    <div style="margin-bottom:14px;">
+                        <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Select Vial (Carrie Boyd first → then by expiration)</label>
+                        <select id="qdVial" onchange="updateDispenseSummary()" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
                             <option value="">Choose a vial…</option>
-                            ${deaVials.map(v => `<option value="${v.external_id || v.vial_id}" data-drug="${v.dea_drug_name || 'Testosterone Cypionate'}" data-remaining="${v.remaining_ml || v.volume_ml || 10}">${v.external_id || v.vial_id} — ${v.dea_drug_name || 'Testosterone'} (${parseFloat(v.remaining_ml || v.volume_ml || 10).toFixed(1)}mL remain)</option>`).join('')}
+                            ${deaVials.map((v, i) => {
+                                const remaining = parseFloat(v.remaining_ml || v.remaining_volume_ml || v.volume_ml || 0);
+                                const isCarrie = (v.dea_drug_name || '').toLowerCase().includes('carrie') || (v.dea_drug_name || '').toLowerCase().includes('miglyol');
+                                const label = isCarrie ? '💉 CB' : '🧪';
+                                const expDate = v.expiration_date ? new Date(v.expiration_date).toLocaleDateString('en-US', {month:'short', year:'2-digit'}) : '';
+                                return `<option value="${v.external_id || v.vial_id}" data-drug="${v.dea_drug_name || 'Testosterone Cypionate'}" data-remaining="${remaining}" ${i === 0 ? 'selected' : ''}>${label} ${v.external_id || v.vial_id} — ${remaining.toFixed(1)}mL remain${expDate ? ' (exp ' + expDate + ')' : ''}</option>`;
+                            }).join('')}
                         </select>
                     </div>
-                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px;">
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:14px;">
                         <div>
-                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Dose (mL)</label>
-                            <input id="qdDoseMl" type="number" step="0.01" value="0.50" min="0.01" max="10" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
-                        </div>
-                        <div>
-                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Waste (mL)</label>
-                            <input id="qdWasteMl" type="number" step="0.01" value="0.00" min="0" max="10" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Dose/Syringe (mL)</label>
+                            <input id="qdDoseMl" type="number" step="0.01" value="0.50" min="0.01" max="10" oninput="updateDispenseSummary()" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
                         </div>
                         <div>
                             <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Syringes</label>
-                            <input id="qdSyringes" type="number" value="1" min="1" max="5" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                            <input id="qdSyringes" type="number" value="1" min="1" max="10" oninput="updateDispenseSummary()" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Waste (auto)</label>
+                            <input id="qdWasteMl" type="text" readonly style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:rgba(255,255,255,0.03); color:var(--text-secondary); font-size:14px; cursor:not-allowed;">
                         </div>
                     </div>
-                    <div style="margin-bottom:16px;">
+                    <div id="qdSummary" style="padding:10px 14px; background:rgba(0,212,255,0.06); border:1px solid rgba(0,212,255,0.12); border-radius:8px; margin-bottom:14px; font-size:13px; color:var(--text-secondary);"></div>
+                    <div style="margin-bottom:14px;">
                         <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Notes</label>
                         <input id="qdNotes" type="text" placeholder="Optional notes…" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
                     </div>
                     <div id="qdError" style="display:none; padding:8px 12px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.2); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:12px;"></div>
                     <div id="qdSuccess" style="display:none; padding:8px 12px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); border-radius:8px; color:#22c55e; font-size:13px; margin-bottom:12px;"></div>
                 </div>
-                <div class="modal-actions">
+                <div class="modal-actions" style="padding-bottom:env(safe-area-inset-bottom, 16px);">
                     <button class="btn-cancel" onclick="document.getElementById('quickDispenseModal').remove()">Cancel</button>
                     <button class="btn-primary" id="qdSubmitBtn" onclick="submitQuickDispense()" style="background:linear-gradient(135deg, #059669 0%, #10b981 100%);">✅ Record Dispense</button>
                 </div>
@@ -7863,10 +7914,13 @@ async function openQuickDispenseModal() {
         </div>
     `);
 
-    // Setup patient search
+    updateDispenseSummary();
+
+    // Setup patient search with regimen auto-fill
     let qdTimeout = null;
-    let qdSelectedPatientId = null;
-    let qdSelectedPatientName = '';
+    window._qdPatientId = null;
+    window._qdPatientName = '';
+    window._qdPatientRegimen = '';
     const input = document.getElementById('qdPatientSearch');
     const results = document.getElementById('qdPatientResults');
     if (input) {
@@ -7881,11 +7935,15 @@ async function openQuickDispenseModal() {
                 }).slice(0, 10);
                 if (matches.length > 0) {
                     results.style.display = 'block';
-                    results.innerHTML = matches.map(p => `
-                        <div class="patient-search-item" onclick="selectQuickDispensePatient('${p.id || p.patient_id}', '${sanitize(p.name || p.full_name || '').replace(/'/g, "\\\\'")}')">
-                            <span class="patient-search-name">${sanitize(p.name || p.full_name)}</span>
-                        </div>
-                    `).join('');
+                    results.innerHTML = matches.map(p => {
+                        const regimen = p.regimen || '';
+                        return `
+                            <div class="patient-search-item" onclick="selectQuickDispensePatient('${p.id || p.patient_id}', '${sanitize(p.name || p.full_name || '').replace(/'/g, "\\'")}', '${sanitize(regimen).replace(/'/g, "\\'")}')">
+                                <span class="patient-search-name">${sanitize(p.name || p.full_name)}</span>
+                                ${regimen ? `<span style="font-size:11px; color:var(--text-tertiary); margin-left:8px;">${sanitize(regimen)}</span>` : ''}
+                            </div>
+                        `;
+                    }).join('');
                 } else {
                     results.innerHTML = '<div class="patient-search-empty">No patients found</div>';
                     results.style.display = 'block';
@@ -7893,54 +7951,118 @@ async function openQuickDispenseModal() {
             }, 200);
         });
     }
-
-    console.log('[QuickDispense] Modal HTML inserted, setting up event listeners...');
-
-    // Store patient selection on window for the submit function
-    window._qdPatientId = null;
-    window._qdPatientName = '';
-
-    console.log('[QuickDispense] Setup complete, modal should be visible');
 }
 
-function selectQuickDispensePatient(patientId, patientName) {
+function updateDispenseSummary() {
+    const WASTE_PER_SYRINGE = 0.1;
+    const doseMl = parseFloat(document.getElementById('qdDoseMl')?.value || 0);
+    const syringes = parseInt(document.getElementById('qdSyringes')?.value || 1);
+    const vialSelect = document.getElementById('qdVial');
+    const remaining = parseFloat(vialSelect?.selectedOptions[0]?.dataset?.remaining || 0);
+
+    const totalWaste = Number((syringes * WASTE_PER_SYRINGE).toFixed(2));
+    const totalDose = Number((doseMl * syringes).toFixed(2));
+    const totalRemoval = Number((totalDose + totalWaste).toFixed(2));
+    const remainingAfter = Number(Math.max(remaining - totalRemoval, 0).toFixed(2));
+    const exceedsVial = totalRemoval > remaining + 0.001;
+
+    const wasteEl = document.getElementById('qdWasteMl');
+    if (wasteEl) wasteEl.value = totalWaste.toFixed(2) + ' mL (' + syringes + ' × 0.1)';
+
+    const summaryEl = document.getElementById('qdSummary');
+    if (summaryEl) {
+        if (exceedsVial && remaining > 0) {
+            summaryEl.innerHTML = `
+                <div style="color:#f87171; font-weight:600;">⚠️ Exceeds vial volume!</div>
+                <div style="margin-top:4px;">💉 Dose: ${totalDose.toFixed(2)} mL (${doseMl} × ${syringes}) + 🗑️ Waste: ${totalWaste.toFixed(2)} mL = <strong>${totalRemoval.toFixed(2)} mL total</strong></div>
+                <div>Vial has only <strong>${remaining.toFixed(2)} mL</strong>. Need ${(totalRemoval - remaining).toFixed(2)} mL more from another vial.</div>
+            `;
+            summaryEl.style.borderColor = 'rgba(239,68,68,0.3)';
+            summaryEl.style.background = 'rgba(239,68,68,0.08)';
+        } else if (!vialSelect?.value) {
+            summaryEl.innerHTML = `<div>💉 Dose: ${totalDose.toFixed(2)} mL + 🗑️ Waste: ${totalWaste.toFixed(2)} mL = <strong>${totalRemoval.toFixed(2)} mL</strong></div><div style="color:var(--text-tertiary);">Select a vial to see remaining volume</div>`;
+            summaryEl.style.borderColor = 'rgba(0,212,255,0.12)';
+            summaryEl.style.background = 'rgba(0,212,255,0.06)';
+        } else {
+            summaryEl.innerHTML = `
+                <div>💉 Dose: ${totalDose.toFixed(2)} mL (${doseMl} × ${syringes}) + 🗑️ Waste: ${totalWaste.toFixed(2)} mL = <strong>${totalRemoval.toFixed(2)} mL total</strong></div>
+                <div style="margin-top:4px;">Vial: ${remaining.toFixed(2)} mL → <strong style="color:var(--green);">${remainingAfter.toFixed(2)} mL</strong> remaining after</div>
+            `;
+            summaryEl.style.borderColor = 'rgba(0,212,255,0.12)';
+            summaryEl.style.background = 'rgba(0,212,255,0.06)';
+        }
+    }
+}
+
+function selectQuickDispensePatient(patientId, patientName, regimen) {
     window._qdPatientId = patientId;
     window._qdPatientName = patientName;
+    window._qdPatientRegimen = regimen || '';
     const input = document.getElementById('qdPatientSearch');
     const results = document.getElementById('qdPatientResults');
     const badge = document.getElementById('qdPatientBadge');
+    const regimenEl = document.getElementById('qdRegimenInfo');
     if (input) input.value = '';
     if (results) { results.innerHTML = ''; results.style.display = 'none'; }
     if (badge) {
         badge.style.display = 'flex';
         badge.innerHTML = `
             <span>👤 ${patientName}</span>
-            <button onclick="window._qdPatientId=null; window._qdPatientName=''; this.parentElement.style.display='none';" class="patient-clear-btn">✕</button>
+            <button onclick="window._qdPatientId=null; window._qdPatientName=''; window._qdPatientRegimen=''; this.parentElement.style.display='none'; document.getElementById('qdRegimenInfo').style.display='none';" class="patient-clear-btn">✕</button>
         `;
+    }
+    if (regimen) {
+        const match = regimen.match(/(\d+(?:\.\d+)?)\s*(?:ml|mL)/i);
+        if (match) {
+            const regimenDose = parseFloat(match[1]);
+            document.getElementById('qdDoseMl').value = regimenDose.toFixed(2);
+            if (regimenEl) {
+                regimenEl.style.display = 'block';
+                regimenEl.innerHTML = `📋 Regimen: <strong>${sanitize(regimen)}</strong> — dose auto-filled to ${regimenDose} mL`;
+            }
+            updateDispenseSummary();
+        } else {
+            if (regimenEl) {
+                regimenEl.style.display = 'block';
+                regimenEl.innerHTML = `📋 Regimen: <strong>${sanitize(regimen)}</strong>`;
+            }
+        }
+    } else {
+        if (regimenEl) regimenEl.style.display = 'none';
     }
 }
 
 async function submitQuickDispense() {
+    const WASTE_PER_SYRINGE = 0.1;
     const btn = document.getElementById('qdSubmitBtn');
     const errorEl = document.getElementById('qdError');
     const successEl = document.getElementById('qdSuccess');
     const vialSelect = document.getElementById('qdVial');
     const vialExternalId = vialSelect?.value;
     const drugName = vialSelect?.selectedOptions[0]?.dataset?.drug || 'Testosterone Cypionate';
-    const doseMl = parseFloat(document.getElementById('qdDoseMl')?.value || 0);
-    const wasteMl = parseFloat(document.getElementById('qdWasteMl')?.value || 0);
+    const vialRemaining = parseFloat(vialSelect?.selectedOptions[0]?.dataset?.remaining || 0);
+    const dosePerSyringe = parseFloat(document.getElementById('qdDoseMl')?.value || 0);
     const syringes = parseInt(document.getElementById('qdSyringes')?.value || 1);
     const notes = document.getElementById('qdNotes')?.value || '';
     const patientId = window._qdPatientId;
     const patientName = window._qdPatientName;
 
+    const totalDose = Number((dosePerSyringe * syringes).toFixed(3));
+    const totalWaste = Number((syringes * WASTE_PER_SYRINGE).toFixed(3));
+    const totalRemoval = Number((totalDose + totalWaste).toFixed(3));
+
+    errorEl.style.display = 'none';
     if (!patientId) { errorEl.textContent = 'Please select a patient'; errorEl.style.display = 'block'; return; }
     if (!vialExternalId) { errorEl.textContent = 'Please select a vial'; errorEl.style.display = 'block'; return; }
-    if (doseMl <= 0) { errorEl.textContent = 'Dose must be greater than 0'; errorEl.style.display = 'block'; return; }
+    if (dosePerSyringe <= 0) { errorEl.textContent = 'Dose per syringe must be greater than 0'; errorEl.style.display = 'block'; return; }
+    if (totalRemoval > vialRemaining + 0.001) {
+        errorEl.textContent = `Total ${totalRemoval.toFixed(2)} mL exceeds vial remaining ${vialRemaining.toFixed(2)} mL. Use GMH Dashboard for split-vial dispensing.`;
+        errorEl.style.display = 'block';
+        return;
+    }
 
     btn.textContent = 'Dispensing…';
     btn.disabled = true;
-    errorEl.style.display = 'none';
 
     try {
         const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
@@ -7952,24 +8074,24 @@ async function submitQuickDispense() {
                 patientName,
                 dispenseDate: today,
                 syringeCount: syringes,
-                dosePerSyringeMl: doseMl / syringes,
-                totalDispensedMl: doseMl,
-                wasteMl,
+                dosePerSyringeMl: dosePerSyringe,
+                totalDispensedMl: totalDose,
+                wasteMl: totalWaste,
+                totalAmount: totalRemoval,
                 transactionType: 'dispense',
-                notes,
+                notes: notes || `iPad dispense: ${syringes} syringe(s) @ ${dosePerSyringe}mL + ${totalWaste}mL waste`,
                 deaDrugName: drugName,
             })
         });
 
         if (resp.error) throw new Error(resp.error);
 
-        successEl.textContent = `${drugName} dispensed to ${patientName}: ${doseMl}mL + ${wasteMl}mL waste`;
+        successEl.textContent = `✅ ${drugName} dispensed to ${patientName}: ${totalDose}mL dose + ${totalWaste}mL waste (${syringes} syringe${syringes > 1 ? 's' : ''})`;
         successEl.style.display = 'block';
 
         btn.textContent = '✅ Done';
         setTimeout(() => {
             document.getElementById('quickDispenseModal')?.remove();
-            // Refresh inventory data
             loadInventorySummary().then(() => { if (currentTab === 'inventory') renderCurrentTab(); });
         }, 1500);
     } catch (e) {
@@ -7980,6 +8102,7 @@ async function submitQuickDispense() {
         btn.disabled = false;
     }
 }
+
 
 // ─── DEMOGRAPHICS EDITING MODAL ─────────────────────────────
 function openEditDemographicsModal(patientId) {
@@ -8661,3 +8784,22 @@ async function selectStripeAccount(account) {
 }
 
 // sendInvoice() removed per admin request
+
+// Start scribe/recording directly from patient chart panel
+function startScribeFromChart(patientId, patientName) {
+    if (!patientId) {
+        showToast('No patient selected', 'error');
+        return;
+    }
+    // Switch to scribe tab and pre-fill patient
+    window.location.hash = '#scribe';
+    setTimeout(() => {
+        const scribeSearch = document.getElementById('scribePatientSearch') || document.querySelector('#view-scribe input[type="text"]');
+        if (scribeSearch) {
+            scribeSearch.value = patientName;
+            scribeSearch.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        showToast(`Switched to Scribe for ${patientName}`, 'info');
+    }, 300);
+}
+
