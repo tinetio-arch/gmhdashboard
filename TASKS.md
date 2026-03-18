@@ -237,28 +237,22 @@ if (healthieId) {
   # Open iPad → Patients tab → click any patient → should load in <3 seconds
   # Open iPad → Today tab → click 📋 Chart → chart panel should open without hanging
   ```
-- **Headless Command**: `claude -p "Read CLAUDE.md fully. Read TASKS.md Task 013 carefully — it has the exact code to use. Open app/api/patients/[id]/360/route.ts. Make exactly 3 changes: (1) Delete the labOrders query block (lines 197-234), (2) Add maxDuration=10 after line 7, (3) Wrap the remaining appointments + prescriptions Healthie calls in Promise.allSettled for parallel execution. Keep all types and error handling. Build with npm run build." --dangerously-skip-permissions --max-turns 15`
 - **Completed**: _(date and brief summary when done)_
 
 ---
 
-### Task 014 — 🔴 FIX: Regimen Auto-Fill (iPad regex + syringe default + dashboard placeholder)
-- **Priority**: 🔴 CRITICAL — causes wrong dispense amounts if staff doesn't catch it
+### Task 014 — 🔴 FIX: iPad Regimen Regex (PARTIAL — regex only, do NOT change syringes)
+- **Priority**: 🔴 CRITICAL
 - **Status**: ⬜ PENDING
 - **Phase**: Hotfix
-- **Depends On**: None (can run in parallel with Task 013)
-- **Description**: Two dispense forms have regimen auto-fill bugs:
-  1. **iPad Quick Dispense**: Regex requires "ml"/"mL" suffix — fails on common regimens like "0.5 q4d". Neither form sets syringes to 1 when auto-filling.
-  2. **Dashboard TransactionForm**: Regex works but syringe field stays empty with misleading placeholder "(e.g. 16)".
+- **Depends On**: None
+- **⚠️ IMPORTANT**: This task is ONLY the regex fix. Do NOT auto-set syringes to 1. Do NOT change the syringe placeholder. Patients are prescribed multi-syringe regimens (e.g., "0.5 q4d" = 16 syringes over 2 months). Staff enters the syringe count intentionally.
+- **Description**: The iPad Quick Dispense regex requires "ml"/"mL" suffix to parse dose from regimen — fails on common formats like "0.5 q4d".
 - **Files**:
-  - `public/ipad/app.js` — MODIFY (3 small changes)
-  - `app/inventory/TransactionForm.tsx` — MODIFY (2 small changes)
+  - `public/ipad/app.js` — MODIFY (1 change ONLY)
 
-#### Fix A — iPad `public/ipad/app.js`
-
-**Location**: `selectQuickDispensePatient` function (search for `function selectQuickDispensePatient`)
-
-**Change 1**: Fix regex — make "ml" optional. Find:
+#### The ONE Change
+In `selectQuickDispensePatient` function, find:
 ```javascript
 const match = regimen.match(/(\d+(?:\.\d+)?)\s*(?:ml|mL)/i);
 ```
@@ -266,65 +260,381 @@ Replace with:
 ```javascript
 const match = regimen.match(/(\d+(?:\.\d+)?)\s*(?:ml|mL)?/i);
 ```
-(Add `?` after the `(?:ml|mL)` group)
+(Add `?` after the `(?:ml|mL)` group to make "ml" optional)
 
-**Change 2**: Auto-set syringes to 1 when dose auto-fills. After the line:
-```javascript
-document.getElementById('qdDoseMl').value = regimenDose.toFixed(2);
-```
-Add:
-```javascript
-// FIX(2026-03-18): Auto-set syringes to 1 when regimen dose auto-fills
-document.getElementById('qdSyringes').value = 1;
-```
-
-**Change 3**: Update the regimen info message. Change:
-```javascript
-regimenEl.innerHTML = `📋 Regimen: <strong>${sanitize(regimen)}</strong> — dose auto-filled to ${regimenDose} mL`;
-```
-To:
-```javascript
-regimenEl.innerHTML = `📋 Regimen: <strong>${sanitize(regimen)}</strong> — auto-filled: ${regimenDose} mL × 1 syringe`;
-```
-
-#### Fix B — Dashboard `app/inventory/TransactionForm.tsx`
-
-**Change 1**: In `handlePatientSelect` function (search for `function handlePatientSelect`), after `setDosePerSyringe(regimenDose.toString());`, add syringe default:
-```typescript
-    if (regimenDose !== null && !dispenseEntireVial) {
-      setDosePerSyringe(regimenDose.toString());
-      // FIX(2026-03-18): Auto-set syringes to 1 when regimen dose auto-fills.
-      // Prevents confusion from empty syringe field with misleading placeholder.
-      if (!syringes) {
-        setSyringes('1');
-      }
-    }
-```
-
-**Change 2**: Fix misleading placeholder. Search for:
-```
-placeholder="Total syringes (e.g. 16)"
-```
-Replace with:
-```
-placeholder="# of syringes (e.g. 1)"
-```
+**Do NOT**:
+- Set `qdSyringes.value = 1` anywhere
+- Change any syringe placeholder text
+- Modify TransactionForm.tsx
+- Change the regimen info message to mention "× 1 syringe"
 
 - **Acceptance Criteria**:
-  - [ ] iPad regex matches regimens without "ml" suffix (e.g., "0.5 q4d" → dose=0.5)
-  - [ ] iPad auto-sets syringes to 1 when dose auto-fills from regimen
-  - [ ] Dashboard auto-sets syringes to '1' when dose auto-fills AND syringes field is empty
-  - [ ] Dashboard placeholder says "(e.g. 1)" not "(e.g. 16)"
+  - [ ] Regex matches regimens without "ml" suffix (e.g., "0.5 q4d" → dose=0.5)
+  - [ ] Regex still matches regimens WITH "ml" suffix (e.g., "0.5ml q4d" → dose=0.5)
+  - [ ] Syringe field is NOT auto-set — it stays empty for staff to fill
+  - [ ] No changes to TransactionForm.tsx
+  - [ ] Build passes: `npm run build`
+- **Completed**: _(date and brief summary when done)_
+
+---
+
+### Task 015 — 🟡 FEATURE: Hybrid Vial Retirement Prompt (Dashboard + iPad)
+- **Priority**: 🟡 HIGH — removes nearly-empty vials from circulation, prevents split-vial errors
+- **Status**: ⬜ PENDING
+- **Phase**: Feature
+- **Depends On**: None (uses existing `createDispense` infrastructure)
+- **Description**: After a dispense leaves a vial with < 2.0 mL remaining, prompt the user: "Retire this vial and document as waste?" If confirmed, the remaining volume is recorded as waste with full DEA audit trail, and the vial is removed from active circulation. Retired vials are visible in a "Retired Vials" section on the dashboard inventory page.
+
+#### Overview of Changes
+1. **New constant** in `lib/testosterone.ts`
+2. **New function** `retireVial()` in `lib/inventoryQueries.ts`
+3. **New API route** `POST /api/inventory/retire-vial`
+4. **Dashboard UI** — retirement prompt in `TransactionForm.tsx` after dispense
+5. **iPad UI** — retirement prompt in `app.js` after dispense
+6. **Dashboard inventory page** — "Retired Vials" section in `app/inventory/page.tsx`
+
+---
+
+#### Change 1: `lib/testosterone.ts` — Add retirement threshold constant
+Add near `WASTE_PER_SYRINGE`:
+```typescript
+/** Vials below this threshold are prompted for retirement after dispense */
+export const RETIREMENT_THRESHOLD_ML = 2.0;
+```
+
+---
+
+#### Change 2: `lib/inventoryQueries.ts` — Add `retireVial()` function
+
+Add a new exported async function. This MUST use the same `BEGIN` / `FOR UPDATE` / `COMMIT` transaction pattern as `createDispense` (around line 450-470). Read the existing `createDispense` function to understand the pattern.
+
+```typescript
+import { RETIREMENT_THRESHOLD_ML, WASTE_PER_SYRINGE } from './testosterone';
+
+/**
+ * Retire a nearly-empty vial — documents remaining volume as waste.
+ * Creates dispense record (waste_retirement), DEA transaction, and audit trail.
+ */
+export async function retireVial(
+  vialExternalId: string,
+  retiredByUserId: string,
+  retiredByName: string
+): Promise<{ success: boolean; wastedMl: number; vialId: string; details: string }> {
+  // Use the pool/client transaction pattern from createDispense:
+  // const client = await pool.connect();
+  // try {
+  //   await client.query('BEGIN');
+  //   const vialRow = await client.query('SELECT * FROM vials WHERE external_id = $1 FOR UPDATE', [vialExternalId]);
+  //   ... validate remaining > 0 and < RETIREMENT_THRESHOLD_ML ...
+  //   ... INSERT into dispenses with transaction_type = 'waste_retirement' ...
+  //   ... INSERT into dea_transactions with waste details ...
+  //   ... UPDATE vials SET remaining_volume_ml = 0 ...
+  //   ... INSERT into dispense_history with event_type = 'vial_retired' ...
+  //   await client.query('COMMIT');
+  // } catch { await client.query('ROLLBACK'); throw; }
+  // finally { client.release(); }
+
+  // Dispense record fields:
+  // - transaction_type: 'waste_retirement'
+  // - patient_id: NULL
+  // - patient_name: 'VIAL RETIREMENT'
+  // - total_dispensed_ml: 0 (no drug dispensed to anyone)
+  // - waste_ml: <the vial's remaining_volume_ml>
+  // - total_amount: <the vial's remaining_volume_ml>
+  // - notes: 'Vial retired — insufficient volume for standard dose. Remaining [X]mL documented as waste.'
+  // - signature_status: 'not_required'
+  // - syringe_count: 0
+  // - created_by_user_id: retiredByUserId
+
+  // DEA transaction fields:
+  // - drug_name: <from vial.dea_drug_name>
+  // - schedule: 'CIII'
+  // - quantity_mg: <wastedMl * 200> (testosterone is 200mg/mL)
+  // - patient_name_snapshot: 'WASTE - VIAL RETIREMENT'
+  // - transaction_type: 'waste'
+
+  // Dispense history fields:
+  // - event_type: 'vial_retired'
+  // - changed_by: retiredByUserId
+}
+```
+
+**CRITICAL RULES**:
+- Use `FOR UPDATE` lock on the vial row (Constraint 2 from system design)
+- Validate `remaining_volume_ml > 0` — don't retire an already-empty vial
+- Validate `remaining_volume_ml < RETIREMENT_THRESHOLD_ML` — don't accidentally retire a vial with significant volume
+- The DEA concentration for testosterone cypionate is 200mg/mL
+- Look at how `createDispense` does its INSERT into `dispenses` and `dea_transactions` to match the exact column names
+
+---
+
+#### Change 3: `app/api/inventory/retire-vial/route.ts` — New API endpoint
+
+```typescript
+import { NextRequest, NextResponse } from 'next/server';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
+import { retireVial } from '@/lib/inventoryQueries';
+
+export const dynamic = 'force-dynamic';
+
+export async function POST(request: NextRequest) {
+    let user;
+    try { user = await requireApiUser(request, 'write'); }
+    catch (error) {
+        if (error instanceof UnauthorizedError)
+            return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+        throw error;
+    }
+
+    try {
+        const body = await request.json();
+        if (!body.vialExternalId) {
+            return NextResponse.json(
+                { success: false, error: 'vialExternalId is required' }, { status: 400 }
+            );
+        }
+
+        const result = await retireVial(
+            body.vialExternalId,
+            user.user_id,
+            user.display_name || user.email || user.user_id
+        );
+
+        return NextResponse.json({
+            success: true,
+            wastedMl: result.wastedMl,
+            vialId: result.vialId,
+            details: result.details,
+        });
+    } catch (error) {
+        console.error('[retire-vial] Error:', error);
+        const message = error instanceof Error ? error.message : 'Internal server error';
+        return NextResponse.json({ success: false, error: message }, { status: 500 });
+    }
+}
+```
+
+---
+
+#### Change 4: `app/inventory/TransactionForm.tsx` — Dashboard retirement prompt
+
+The dispense response already returns `updatedRemainingMl` (see `app/api/inventory/transactions/route.ts` line 99). After a successful dispense:
+
+**In `handleSubmit()`** — after the existing `setStatus({ type: 'success', ... })` call, add:
+```typescript
+// Check if vial should be retired (< 2.0 mL remaining)
+if (payloadResult.updatedRemainingMl != null &&
+    payloadResult.updatedRemainingMl > 0 &&
+    payloadResult.updatedRemainingMl < 2.0) {
+  const vialLabel = selectedVial?.external_id ?? selectedVialId;
+  const doRetire = window.confirm(
+    `⚠️ Vial ${vialLabel} now has ${payloadResult.updatedRemainingMl.toFixed(2)} mL remaining — ` +
+    `not enough for a standard dose.\n\nRetire this vial and document the remaining volume as waste?`
+  );
+  if (doRetire) {
+    try {
+      const retireResp = await fetch(withBasePath('/api/inventory/retire-vial'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vialExternalId: vialLabel })
+      });
+      const retireResult = await retireResp.json();
+      if (retireResult.success) {
+        setStatus({
+          type: 'success',
+          message: `Vial ${vialLabel} retired. ${retireResult.wastedMl.toFixed(2)} mL documented as waste.`
+        });
+      }
+    } catch (retireErr) {
+      console.error('[TransactionForm] Retire vial failed:', retireErr);
+    }
+  }
+}
+```
+
+**In `handleSplitAcrossVials()`** — same pattern after the split completes. Check both the first vial (it will be at 0 after split, so skip) and the next vial's response. The first vial goes to 0 by design (split uses all remaining). Only check the second vial if its response includes remaining < 2.0.
+
+**IMPORTANT**: After retirement, refresh the vial list so the retired vial disappears from the picker. Call whatever existing refresh mechanism `TransactionForm` uses (look for how vials are refetched after a successful dispense).
+
+---
+
+#### Change 5: `public/ipad/app.js` — iPad retirement prompt
+
+**In `submitQuickDispense()`** — two places:
+
+**A) After single-vial dispense success** (around line 8146, after `successEl.textContent = ...`):
+```javascript
+// Check if vial should be retired
+const newRemaining = resp?.data?.updated_remaining_ml ?? resp?.updatedRemainingMl;
+if (newRemaining != null && newRemaining > 0 && newRemaining < 2.0) {
+    const doRetire = confirm(
+        `Vial ${vialExternalId} now has ${newRemaining.toFixed(2)} mL remaining — ` +
+        `not enough for a standard dose.\n\nRetire this vial and document remaining as waste?`
+    );
+    if (doRetire) {
+        try {
+            const retireResp = await apiFetch('/ops/api/inventory/retire-vial', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ vialExternalId })
+            });
+            if (retireResp?.success) {
+                successEl.textContent += ` | Vial ${vialExternalId} retired (${newRemaining.toFixed(2)} mL waste documented).`;
+            }
+        } catch (retireErr) {
+            console.error('[iPad] Retire vial failed:', retireErr);
+        }
+    }
+}
+```
+
+**B) After split-vial dispense success** (around line 8264, after second vial response):
+Check the SECOND vial's response (resp2). The first vial is intentionally emptied by the split. Only prompt for the second vial if it's now under 2.0 mL.
+```javascript
+// Check if second vial should be retired after split
+const newRemaining2 = resp2?.data?.updated_remaining_ml ?? resp2?.updatedRemainingMl;
+if (newRemaining2 != null && newRemaining2 > 0 && newRemaining2 < 2.0) {
+    const doRetire = confirm(
+        `Vial ${nextVialExternalId} now has ${newRemaining2.toFixed(2)} mL remaining — ` +
+        `not enough for a standard dose.\n\nRetire this vial and document remaining as waste?`
+    );
+    if (doRetire) {
+        try {
+            await apiFetch('/ops/api/inventory/retire-vial', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ vialExternalId: nextVialExternalId })
+            });
+            successEl.innerHTML += `<br>🗑️ Vial ${nextVialExternalId} retired (${newRemaining2.toFixed(2)} mL waste documented).`;
+        } catch (retireErr) {
+            console.error('[iPad] Retire vial failed:', retireErr);
+        }
+    }
+}
+```
+
+Also check the FIRST vial after split — if it wasn't fully emptied (edge case where split leaves a tiny remainder), prompt for it too using `resp1.data.updated_remaining_ml`.
+
+---
+
+#### Change 6: `app/inventory/page.tsx` — Retired Vials section
+
+Add a `RetiredVialsSection` component and render it on the inventory page, after `InventoryTable` and before the closing `</section>`.
+
+**Server-side data fetch** — add to the `Promise.all` in `InventoryPage()`:
+```typescript
+// Fetch recently retired vials
+const retiredVials = await query<{
+    vial_id: string;
+    external_id: string;
+    lot_number: string;
+    dea_drug_name: string;
+    size_ml: string;
+    updated_at: string;
+}>(`
+    SELECT v.vial_id, v.external_id, v.lot_number, v.dea_drug_name, v.size_ml, v.updated_at
+    FROM vials v
+    WHERE v.remaining_volume_ml::numeric = 0
+      AND v.controlled_substance = true
+      AND EXISTS (
+          SELECT 1 FROM dispense_history dh
+          WHERE dh.dispense_id IN (
+              SELECT dispense_id FROM dispenses WHERE vial_id = v.vial_id AND transaction_type = 'waste_retirement'
+          )
+          AND dh.event_type = 'vial_retired'
+      )
+    ORDER BY v.updated_at DESC
+    LIMIT 20
+`);
+```
+
+If no `dispense_history` table is available or the column names differ, use a simpler query:
+```typescript
+// Fallback: get retired vials from dispenses table directly
+const retiredVials = await query<any>(`
+    SELECT DISTINCT ON (d.vial_id)
+        v.external_id, v.lot_number, v.dea_drug_name, v.size_ml,
+        d.waste_ml, d.created_at as retired_at, d.notes,
+        d.created_by_user_id
+    FROM dispenses d
+    JOIN vials v ON d.vial_id = v.vial_id
+    WHERE d.transaction_type = 'waste_retirement'
+    ORDER BY d.vial_id, d.created_at DESC
+    LIMIT 20
+`);
+```
+
+**Component** — collapsible section:
+```tsx
+function RetiredVialsSection({ vials }: { vials: any[] }) {
+    if (vials.length === 0) return null;
+    return (
+        <details style={{ marginTop: '2rem' }}>
+            <summary style={{
+                fontSize: '1.1rem', fontWeight: 600, cursor: 'pointer',
+                color: '#64748b', marginBottom: '0.75rem'
+            }}>
+                🗑️ Retired Vials ({vials.length})
+            </summary>
+            <div style={{
+                display: 'grid', gap: '0.5rem',
+                background: '#f8fafc', borderRadius: '0.75rem', padding: '1rem',
+                border: '1px solid rgba(148, 163, 184, 0.22)'
+            }}>
+                {vials.map((v, i) => (
+                    <div key={i} style={{
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        padding: '0.5rem 0.75rem', background: '#fff', borderRadius: '0.5rem',
+                        border: '1px solid #e2e8f0', fontSize: '0.875rem'
+                    }}>
+                        <span><strong>{v.external_id}</strong> — {v.dea_drug_name || 'Testosterone Cypionate'} ({v.size_ml}mL)</span>
+                        <span style={{ color: '#94a3b8' }}>
+                            {v.waste_ml ? `${parseFloat(v.waste_ml).toFixed(2)} mL wasted` : ''}
+                            {v.retired_at ? ` · ${new Date(v.retired_at).toLocaleDateString()}` : ''}
+                        </span>
+                    </div>
+                ))}
+            </div>
+        </details>
+    );
+}
+```
+
+Match the existing page styling (white cards, `#64748b` secondary text, `0.75rem` border radius).
+
+---
+
+- **Acceptance Criteria**:
+  - [ ] `RETIREMENT_THRESHOLD_ML = 2.0` exported from `lib/testosterone.ts`
+  - [ ] `retireVial()` uses `BEGIN` / `FOR UPDATE` / `COMMIT` transaction (same pattern as `createDispense`)
+  - [ ] Retirement creates `dispenses` record with `transaction_type = 'waste_retirement'`
+  - [ ] Retirement creates `dea_transactions` record documenting the waste
+  - [ ] Retirement logs to `dispense_history` with `event_type = 'vial_retired'`
+  - [ ] Retirement sets `remaining_volume_ml = 0` on the vial
+  - [ ] `POST /api/inventory/retire-vial` endpoint works with auth
+  - [ ] **Dashboard**: After dispense leaves vial < 2.0 mL, prompt appears
+  - [ ] **iPad**: After dispense leaves vial < 2.0 mL, prompt appears
+  - [ ] **Both prompts match** — same threshold, same messaging, same behavior
+  - [ ] Clicking "Retire" removes vial from active inventory
+  - [ ] Clicking "Keep Active" (or Cancel on confirm dialog) does nothing
+  - [ ] Retired vials section visible on dashboard inventory page
+  - [ ] Morning check no longer counts retired vials (they have remaining=0, already filtered)
   - [ ] Build passes: `npm run build`
 - **Test After Deploy**:
   ```bash
   pm2 restart gmh-dashboard
-  # iPad: Open Quick Dispense → search patient with regimen "0.5 q4d"
-  #   → Dose should show 0.50, Syringes should show 1
-  # Dashboard: Go to Inventory → Dispense → select patient with regimen "0.5 q4d"
-  #   → Dose should show 0.5, Syringes should show 1
+  # Test 1 — Dashboard single dispense:
+  #   Dispense from a partial vial until remaining < 2mL → retirement prompt should appear
+  #   Click OK → vial disappears from picker, appears in Retired section
+  # Test 2 — iPad single dispense:
+  #   Same test via Quick Dispense → confirm dialog should appear
+  # Test 3 — Split-vial:
+  #   Do a split dispense that leaves the second vial < 2mL → prompt for second vial only
+  # Test 4 — DEA audit:
+  #   Check /ops/dea → waste entry should appear with 'WASTE - VIAL RETIREMENT'
+  # Test 5 — Morning check:
+  #   System counts should NOT include retired vials
   ```
-- **Headless Command**: `claude -p "Read CLAUDE.md fully. Read TASKS.md Task 014 carefully — it has exact find/replace instructions. Make 3 changes in public/ipad/app.js (in the selectQuickDispensePatient function): fix regex to make ml optional, add syringe auto-set to 1, update info message. Make 2 changes in app/inventory/TransactionForm.tsx: add syringe auto-set in handlePatientSelect, fix placeholder text. Build with npm run build." --dangerously-skip-permissions --max-turns 15`
 - **Completed**: _(date and brief summary when done)_
 
 ---
@@ -616,6 +926,10 @@ placeholder="# of syringes (e.g. 1)"
 ## Dependency Graph
 
 ```
+Task 013 (360 Timeout Fix) ─── deploy immediately
+Task 014 (Regex Fix) ─── deploy immediately
+Task 015 (Vial Retirement) ─── deploy after 013+014
+
 Task 001 (DB Migration)
   ├── Task 002 (Rx API Routes) ──┬── Task 004 (Sync Cron)
   │                               ├── Task 005 (Rx Tab) ──── Task 006 (Alerts + Meds)
@@ -633,17 +947,18 @@ Task 010 (Session Refresh) ── independent, run anytime
 | Order | Task | Can Parallelize With |
 |-------|------|---------------------|
 | **1** | **013 (HOTFIX: 360 Timeout)** | **014** |
-| **2** | **014 (HOTFIX: Regimen Auto-Fill)** | **013** |
-| 3     | 001  | 009, 010            |
-| 4     | 002  | 003, 009, 010       |
-| 5     | 003  | 002, 009, 010       |
-| 6     | 004  | 005, 009, 010       |
-| 7     | 005  | 004, 011            |
-| 8     | 006  | 011                 |
-| 9     | 007  | 008, 011            |
-| 10    | 008  | 007, 011            |
-| 11    | 011  | 007, 008            |
-| 12    | 012  | —                   |
+| **2** | **014 (HOTFIX: Regex Fix)** | **013** |
+| **3** | **015 (Vial Retirement)** | 009, 010 |
+| 4     | 001  | 009, 010            |
+| 5     | 002  | 003, 009, 010       |
+| 6     | 003  | 002, 009, 010       |
+| 7     | 004  | 005, 009, 010       |
+| 8     | 005  | 004, 011            |
+| 9     | 006  | 011                 |
+| 10    | 007  | 008, 011            |
+| 11    | 008  | 007, 011            |
+| 12    | 011  | 007, 008            |
+| 13    | 012  | —                   |
 
 Tasks 009 and 010 are independent bug fixes — run them anytime, even first.
 
