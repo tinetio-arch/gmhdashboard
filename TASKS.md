@@ -104,6 +104,231 @@ The prompt shows calls like `/ops/api/prescriptions/...`. In the actual iPad app
 
 ## Active Tasks
 
+### Task 013 — 🔴 FIX: Patient 360 Route Timeout (labOrders fetches ALL org data)
+- **Priority**: 🔴 CRITICAL — blocks patient detail loading on iPad
+- **Status**: ⬜ PENDING
+- **Phase**: Hotfix
+- **Depends On**: None
+- **Description**: The 360 route (`app/api/patients/[id]/360/route.ts`) hangs for 30+ seconds because its `labOrders` Healthie query fetches ALL lab orders for the entire organization (no patient filter), then filters client-side. This route also lacks `maxDuration` and runs its 3 Healthie calls sequentially instead of in parallel.
+- **Root Cause**: Lines 200-221 — the `labOrders` GraphQL query has NO `patient_id` variable. It pulls thousands of records from Healthie.
+- **Files**:
+  - `app/api/patients/[id]/360/route.ts` — MODIFY (3 changes)
+
+#### Change 1: DELETE the labOrders query block entirely (lines 197-234)
+Remove this entire block:
+```typescript
+// Optional: fetch lab orders from Healthie if needed
+// NOTE: Healthie labOrders doesn't accept patient_id filter ...
+try {
+    const labData = await healthieGraphQL<{...}>(`
+        query GetPatientLabOrders {
+            labOrders { ... }
+        }
+    `);
+    healthieLabs = (labData.labOrders || [])
+        .filter(lab => lab.patient?.id === healthieId)
+        .map(lab => ({ ... }));
+} catch (labErr) { ... }
+```
+The local Postgres `lab_review_queue` table (already queried at lines 98-103) provides the same data. `healthieLabs` stays as its initialized empty array `[]`.
+
+#### Change 2: Add `maxDuration` after line 7
+After `export const dynamic = 'force-dynamic';` add:
+```typescript
+export const maxDuration = 10;
+```
+
+#### Change 3: Parallelize the remaining 2 Healthie calls
+Currently appointments (lines 155-195) and prescriptions (lines 236-288) run sequentially inside `if (healthieId)`. Wrap them in `Promise.allSettled`:
+
+```typescript
+if (healthieId) {
+    const [appointmentResult, prescriptionResult] = await Promise.allSettled([
+        // Appointments
+        (async () => {
+            const appointmentData = await healthieGraphQL<{
+                appointments: Array<{
+                    id: string;
+                    date: string;
+                    appointment_type?: { name?: string } | null;
+                    provider?: { full_name?: string } | null;
+                    pm_status?: string | null;
+                    location?: string | null;
+                    notes?: string | null;
+                }>;
+            }>(`
+              query GetPatientAppointments($userId: ID, $offset: Int) {
+                appointments(
+                  user_id: $userId,
+                  offset: $offset,
+                  should_paginate: true,
+                  filter: "all"
+                ) {
+                  id
+                  date
+                  appointment_type { name }
+                  provider { full_name }
+                  pm_status
+                  location
+                  notes
+                }
+              }
+            `, { userId: healthieId, offset: 0 });
+            return appointmentData.appointments || [];
+        })(),
+        // Prescriptions
+        (async () => {
+            const prescriptionData = await healthieGraphQL<{
+                prescriptions: Array<{
+                    id: string;
+                    product_name?: string | null;
+                    display_name?: string | null;
+                    dosage?: string | null;
+                    dose_form?: string | null;
+                    directions?: string | null;
+                    quantity?: string | null;
+                    unit?: string | null;
+                    refills?: number | null;
+                    days_supply?: number | null;
+                    normalized_status?: string | null;
+                    schedule?: string | null;
+                    date_written?: string | null;
+                    last_fill_date?: string | null;
+                    prescriber_name?: string | null;
+                    pharmacy?: { name?: string; city?: string; state?: string } | null;
+                }>;
+            }>(`
+              query GetPatientPrescriptions($patient_id: ID!) {
+                prescriptions(patient_id: $patient_id, current_only: true) {
+                  id product_name display_name dosage dose_form directions quantity unit
+                  refills days_supply normalized_status schedule date_written last_fill_date
+                  prescriber_name pharmacy { name city state }
+                }
+              }
+            `, { patient_id: healthieId });
+            return prescriptionData.prescriptions || [];
+        })(),
+    ]);
+
+    healthieVisits = appointmentResult.status === 'fulfilled' ? appointmentResult.value : [];
+    healthiePrescriptions = prescriptionResult.status === 'fulfilled' ? prescriptionResult.value : [];
+
+    if (appointmentResult.status === 'rejected') {
+        console.error(`[Patient360] Healthie visits failed for ${healthieId}:`, appointmentResult.reason);
+    }
+    if (prescriptionResult.status === 'rejected') {
+        console.error(`[Patient360] Healthie prescriptions failed for ${healthieId}:`, prescriptionResult.reason);
+    }
+}
+```
+
+- **Acceptance Criteria**:
+  - [ ] The `labOrders` query block is completely removed
+  - [ ] `export const maxDuration = 10;` added after `export const dynamic`
+  - [ ] Appointments and prescriptions run via `Promise.allSettled` (parallel)
+  - [ ] `healthieLabs` remains `[]` (set from the initialized value)
+  - [ ] The `labs.healthie_labs` field in the response is now always `[]` — this is acceptable because `labs.queue_items` (from local Postgres) has the data
+  - [ ] Error logging preserved with `[Patient360]` prefix
+  - [ ] Existing response shape unchanged (all fields still present)
+  - [ ] Build passes: `npm run build`
+- **Test After Deploy**:
+  ```bash
+  pm2 restart gmh-dashboard
+  # Open iPad → Patients tab → click any patient → should load in <3 seconds
+  # Open iPad → Today tab → click 📋 Chart → chart panel should open without hanging
+  ```
+- **Headless Command**: `claude -p "Read CLAUDE.md fully. Read TASKS.md Task 013 carefully — it has the exact code to use. Open app/api/patients/[id]/360/route.ts. Make exactly 3 changes: (1) Delete the labOrders query block (lines 197-234), (2) Add maxDuration=10 after line 7, (3) Wrap the remaining appointments + prescriptions Healthie calls in Promise.allSettled for parallel execution. Keep all types and error handling. Build with npm run build." --dangerously-skip-permissions --max-turns 15`
+- **Completed**: _(date and brief summary when done)_
+
+---
+
+### Task 014 — 🔴 FIX: Regimen Auto-Fill (iPad regex + syringe default + dashboard placeholder)
+- **Priority**: 🔴 CRITICAL — causes wrong dispense amounts if staff doesn't catch it
+- **Status**: ⬜ PENDING
+- **Phase**: Hotfix
+- **Depends On**: None (can run in parallel with Task 013)
+- **Description**: Two dispense forms have regimen auto-fill bugs:
+  1. **iPad Quick Dispense**: Regex requires "ml"/"mL" suffix — fails on common regimens like "0.5 q4d". Neither form sets syringes to 1 when auto-filling.
+  2. **Dashboard TransactionForm**: Regex works but syringe field stays empty with misleading placeholder "(e.g. 16)".
+- **Files**:
+  - `public/ipad/app.js` — MODIFY (3 small changes)
+  - `app/inventory/TransactionForm.tsx` — MODIFY (2 small changes)
+
+#### Fix A — iPad `public/ipad/app.js`
+
+**Location**: `selectQuickDispensePatient` function (search for `function selectQuickDispensePatient`)
+
+**Change 1**: Fix regex — make "ml" optional. Find:
+```javascript
+const match = regimen.match(/(\d+(?:\.\d+)?)\s*(?:ml|mL)/i);
+```
+Replace with:
+```javascript
+const match = regimen.match(/(\d+(?:\.\d+)?)\s*(?:ml|mL)?/i);
+```
+(Add `?` after the `(?:ml|mL)` group)
+
+**Change 2**: Auto-set syringes to 1 when dose auto-fills. After the line:
+```javascript
+document.getElementById('qdDoseMl').value = regimenDose.toFixed(2);
+```
+Add:
+```javascript
+// FIX(2026-03-18): Auto-set syringes to 1 when regimen dose auto-fills
+document.getElementById('qdSyringes').value = 1;
+```
+
+**Change 3**: Update the regimen info message. Change:
+```javascript
+regimenEl.innerHTML = `📋 Regimen: <strong>${sanitize(regimen)}</strong> — dose auto-filled to ${regimenDose} mL`;
+```
+To:
+```javascript
+regimenEl.innerHTML = `📋 Regimen: <strong>${sanitize(regimen)}</strong> — auto-filled: ${regimenDose} mL × 1 syringe`;
+```
+
+#### Fix B — Dashboard `app/inventory/TransactionForm.tsx`
+
+**Change 1**: In `handlePatientSelect` function (search for `function handlePatientSelect`), after `setDosePerSyringe(regimenDose.toString());`, add syringe default:
+```typescript
+    if (regimenDose !== null && !dispenseEntireVial) {
+      setDosePerSyringe(regimenDose.toString());
+      // FIX(2026-03-18): Auto-set syringes to 1 when regimen dose auto-fills.
+      // Prevents confusion from empty syringe field with misleading placeholder.
+      if (!syringes) {
+        setSyringes('1');
+      }
+    }
+```
+
+**Change 2**: Fix misleading placeholder. Search for:
+```
+placeholder="Total syringes (e.g. 16)"
+```
+Replace with:
+```
+placeholder="# of syringes (e.g. 1)"
+```
+
+- **Acceptance Criteria**:
+  - [ ] iPad regex matches regimens without "ml" suffix (e.g., "0.5 q4d" → dose=0.5)
+  - [ ] iPad auto-sets syringes to 1 when dose auto-fills from regimen
+  - [ ] Dashboard auto-sets syringes to '1' when dose auto-fills AND syringes field is empty
+  - [ ] Dashboard placeholder says "(e.g. 1)" not "(e.g. 16)"
+  - [ ] Build passes: `npm run build`
+- **Test After Deploy**:
+  ```bash
+  pm2 restart gmh-dashboard
+  # iPad: Open Quick Dispense → search patient with regimen "0.5 q4d"
+  #   → Dose should show 0.50, Syringes should show 1
+  # Dashboard: Go to Inventory → Dispense → select patient with regimen "0.5 q4d"
+  #   → Dose should show 0.5, Syringes should show 1
+  ```
+- **Headless Command**: `claude -p "Read CLAUDE.md fully. Read TASKS.md Task 014 carefully — it has exact find/replace instructions. Make 3 changes in public/ipad/app.js (in the selectQuickDispensePatient function): fix regex to make ml optional, add syringe auto-set to 1, update info message. Make 2 changes in app/inventory/TransactionForm.tsx: add syringe auto-set in handlePatientSelect, fix placeholder text. Build with npm run build." --dangerously-skip-permissions --max-turns 15`
+- **Completed**: _(date and brief summary when done)_
+
+---
+
 ### Task 001 — Prescription Cache Table Migration
 - **Priority**: 🔴 CRITICAL
 - **Status**: ⬜ PENDING
@@ -407,16 +632,18 @@ Task 010 (Session Refresh) ── independent, run anytime
 
 | Order | Task | Can Parallelize With |
 |-------|------|---------------------|
-| 1     | 001  | 009, 010            |
-| 2     | 002  | 003, 009, 010       |
-| 3     | 003  | 002, 009, 010       |
-| 4     | 004  | 005, 009, 010       |
-| 5     | 005  | 004, 011            |
-| 6     | 006  | 011                 |
-| 7     | 007  | 008, 011            |
-| 8     | 008  | 007, 011            |
-| 9     | 011  | 007, 008            |
-| 10    | 012  | —                   |
+| **1** | **013 (HOTFIX: 360 Timeout)** | **014** |
+| **2** | **014 (HOTFIX: Regimen Auto-Fill)** | **013** |
+| 3     | 001  | 009, 010            |
+| 4     | 002  | 003, 009, 010       |
+| 5     | 003  | 002, 009, 010       |
+| 6     | 004  | 005, 009, 010       |
+| 7     | 005  | 004, 011            |
+| 8     | 006  | 011                 |
+| 9     | 007  | 008, 011            |
+| 10    | 008  | 007, 011            |
+| 11    | 011  | 007, 008            |
+| 12    | 012  | —                   |
 
 Tasks 009 and 010 are independent bug fixes — run them anytime, even first.
 
