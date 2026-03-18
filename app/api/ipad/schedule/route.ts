@@ -39,15 +39,16 @@ export async function GET(request: NextRequest) {
         // Build GraphQL query — try multiple approaches to find today's appointments
         let appointments: any[] = [];
 
-        // CRITICAL OPTIMIZATION: Filter by provider_id at API level to avoid fetching all 4970 appointments (29s response time)
-        // The appointments query DOES support provider_id filtering!
-        // Build query dynamically based on whether we have a provider_id
+        // Use specificDay to fetch ONLY today's appointments (instead of all 5000+)
+        // Also filter by provider_id at API level when available
         const appointmentQuery = providerId
-            ? `query GetAppointments($providerId: ID!) {
+            ? `query GetAppointments($providerId: ID!, $day: String!) {
                 appointments(
                     filter: "all",
                     provider_id: $providerId,
-                    should_paginate: false
+                    specificDay: $day,
+                    should_paginate: false,
+                    is_with_clients: true
                 ) {
                     id date length pm_status location other_party_id
                     appointment_type { name }
@@ -57,10 +58,12 @@ export async function GET(request: NextRequest) {
                     contact_type
                 }
             }`
-            : `query GetAppointments {
+            : `query GetAppointments($day: String!) {
                 appointments(
                     filter: "all",
-                    should_paginate: false
+                    specificDay: $day,
+                    should_paginate: false,
+                    is_with_clients: true
                 ) {
                     id date length pm_status location other_party_id
                     appointment_type { name }
@@ -71,12 +74,13 @@ export async function GET(request: NextRequest) {
                 }
             }`;
 
-        const variables: Record<string, string> = providerId ? { providerId } : {};
+        const variables: Record<string, string> = providerId
+            ? { providerId, day: todayStr }
+            : { day: todayStr };
 
         // Direct fetch with AbortController
-        // INCREASED: Healthie API can be slow (10s was timing out constantly)
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30000);
+        const timeout = setTimeout(() => controller.abort(), 15000);
 
         try {
             const response = await fetch(HEALTHIE_API_URL, {
@@ -97,41 +101,9 @@ export async function GET(request: NextRequest) {
                 if (result.errors) {
                     console.error('[iPad Schedule] Healthie errors:', JSON.stringify(result.errors));
                 }
-                let allUpcoming = result.data?.appointments || [];
-                console.log('[iPad Schedule] Fetched', allUpcoming.length, 'upcoming appointments from Healthie');
-
-                // DEBUG: Log first 5 appointment dates to see format
-                if (allUpcoming.length > 0) {
-                    console.log('[iPad Schedule] First 5 appointment dates:', allUpcoming.slice(0, 5).map((a: any) => ({
-                        raw: a.date,
-                        parsed: new Date(a.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }),
-                        provider: a.provider?.full_name
-                    })));
-                }
-
-                // Filter to TODAY ONLY (backend date filtering)
-                appointments = allUpcoming.filter((a: any) => {
-                    if (!a.date) return false;
-                    const apptDate = new Date(a.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
-                    return apptDate === todayStr;
-                });
-                console.log('[iPad Schedule] Filtered to', appointments.length, 'appointments for TODAY:', todayStr, '(from', allUpcoming.length, 'total)');
-
-                // Log appointments after filtering (provider filtering now happens at GraphQL level)
-                if (appointments.length > 0 && appointments.length <= 30) {
-                    console.log('[iPad Schedule] TODAY appointments by provider:',
-                        appointments.map((a: any) => ({
-                            provider_id: a.provider?.id,
-                            provider_name: a.provider?.full_name,
-                            patient: (a.user?.first_name || '') + ' ' + (a.user?.last_name || ''),
-                            location: a.location,
-                            appt_type: a.appointment_type?.name
-                        }))
-                    );
-                }
-
-                // Provider filtering is now done at GraphQL level (see query above) for performance
-                console.log(`[iPad Schedule] ${providerId ? 'Provider-filtered' : 'All-provider'} appointments: ${appointments.length}`);
+                // specificDay already filters to today at the API level — no client-side filtering needed
+                appointments = result.data?.appointments || [];
+                console.log(`[iPad Schedule] Fetched ${appointments.length} appointments for ${todayStr} (specificDay filter, provider: ${providerId || 'all'})`);
             } else {
                 console.warn('[iPad Schedule] HTTP', response.status);
             }
