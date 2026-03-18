@@ -106,7 +106,7 @@ The prompt shows calls like `/ops/api/prescriptions/...`. In the actual iPad app
 
 ### Task 013 — 🔴 FIX: Patient 360 Route Timeout (labOrders fetches ALL org data)
 - **Priority**: 🔴 CRITICAL — blocks patient detail loading on iPad
-- **Status**: ⬜ PENDING
+- **Status**: ✅ DONE
 - **Phase**: Hotfix
 - **Depends On**: None
 - **Description**: The 360 route (`app/api/patients/[id]/360/route.ts`) hangs for 30+ seconds because its `labOrders` Healthie query fetches ALL lab orders for the entire organization (no patient filter), then filters client-side. This route also lacks `maxDuration` and runs its 3 Healthie calls sequentially instead of in parallel.
@@ -237,13 +237,13 @@ if (healthieId) {
   # Open iPad → Patients tab → click any patient → should load in <3 seconds
   # Open iPad → Today tab → click 📋 Chart → chart panel should open without hanging
   ```
-- **Completed**: _(date and brief summary when done)_
+- **Completed**: 2026-03-18 — Deleted labOrders fetch-all block, added maxDuration=10, wrapped appointments+prescriptions in Promise.allSettled for parallel execution.
 
 ---
 
 ### Task 014 — 🔴 FIX: iPad Regimen Regex (PARTIAL — regex only, do NOT change syringes)
 - **Priority**: 🔴 CRITICAL
-- **Status**: ⬜ PENDING
+- **Status**: ✅ DONE
 - **Phase**: Hotfix
 - **Depends On**: None
 - **⚠️ IMPORTANT**: This task is ONLY the regex fix. Do NOT auto-set syringes to 1. Do NOT change the syringe placeholder. Patients are prescribed multi-syringe regimens (e.g., "0.5 q4d" = 16 syringes over 2 months). Staff enters the syringe count intentionally.
@@ -272,15 +272,15 @@ const match = regimen.match(/(\d+(?:\.\d+)?)\s*(?:ml|mL)?/i);
   - [ ] Regex matches regimens without "ml" suffix (e.g., "0.5 q4d" → dose=0.5)
   - [ ] Regex still matches regimens WITH "ml" suffix (e.g., "0.5ml q4d" → dose=0.5)
   - [ ] Syringe field is NOT auto-set — it stays empty for staff to fill
-  - [ ] No changes to TransactionForm.tsx
-  - [ ] Build passes: `npm run build`
-- **Completed**: _(date and brief summary when done)_
+  - [x] No changes to TransactionForm.tsx
+  - [x] Build passes: `npm run build`
+- **Completed**: 2026-03-18 — Added `?` after `(?:ml|mL)` group to make ml suffix optional in regimen regex. No other changes.
 
 ---
 
 ### Task 015 — 🟡 FEATURE: Hybrid Vial Retirement Prompt (Dashboard + iPad)
 - **Priority**: 🟡 HIGH — removes nearly-empty vials from circulation, prevents split-vial errors
-- **Status**: ⬜ PENDING
+- **Status**: ✅ DONE
 - **Phase**: Feature
 - **Depends On**: None (uses existing `createDispense` infrastructure)
 - **Description**: After a dispense leaves a vial with < 2.0 mL remaining, prompt the user: "Retire this vial and document as waste?" If confirmed, the remaining volume is recorded as waste with full DEA audit trail, and the vial is removed from active circulation. Retired vials are visible in a "Retired Vials" section on the dashboard inventory page.
@@ -635,7 +635,7 @@ Match the existing page styling (white cards, `#64748b` secondary text, `0.75rem
   # Test 5 — Morning check:
   #   System counts should NOT include retired vials
   ```
-- **Completed**: _(date and brief summary when done)_
+- **Completed**: 2026-03-18 — Added RETIREMENT_THRESHOLD_ML=2.0, retireVial() with FOR UPDATE transaction, POST /api/inventory/retire-vial endpoint, retirement prompts in Dashboard TransactionForm (single+split) and iPad app.js (single+split), RetiredVialsSection on inventory page. Build passes, deployed.
 
 ---
 
