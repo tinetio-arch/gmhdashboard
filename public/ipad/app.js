@@ -6060,8 +6060,18 @@ async function selectPatient(id) {
     detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
     // Load 360 data
-    const data360 = await loadPatient360(id);
-    renderPatient360(data360, patient, id);
+    try {
+        const data360 = await loadPatient360(id);
+        renderPatient360(data360, patient, id);
+    } catch (e) {
+        console.error('[selectPatient] render failed:', e);
+        const container = document.getElementById('patient360Data');
+        if (container) {
+            container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--red); font-size:13px;">
+                Failed to load patient details. <button onclick="selectPatient('${id}')" style="color:var(--cyan); background:none; border:none; cursor:pointer; text-decoration:underline;">Retry</button>
+            </div>`;
+        }
+    }
 }
 
 function formatDateDisplay(dateStr) {
@@ -6316,7 +6326,7 @@ function renderPatient360(data, patient, patientId) {
     // ─── Inline Clinical Sections (collapsible) ───
     html += renderInlineAllergiesSection(data);
     html += renderInlineDiagnosesSection(data, demo);
-    html += renderInlineMedicationsSection(data, peptides, trt);
+    html += renderInlineMedicationsSection(data, peptides, dispenses);
     html += renderInlinePrescriptionsSummary(data);
 
     // ─── Lab Dates ───
