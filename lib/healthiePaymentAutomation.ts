@@ -1,4 +1,5 @@
 import { query } from './db';
+import { healthieGraphQL } from './healthieApi';
 
 const HEALTHIE_PAYMENT_METHOD_KEY = 'healthie';
 const HEALTHIE_PAYMENT_METHOD_LABEL = 'Healthie';
@@ -11,6 +12,16 @@ const NOW_MENS_CLIENT_LABEL = 'NowMensHealth.Care';
 
 const PAID_STATUSES = new Set(['paid', 'complete', 'completed', 'succeeded', 'success', 'processed']);
 const FAILED_STATUSES = new Set(['declined', 'failed', 'card_declined', 'error', 'voided']);
+// FIX(2026-03-19): "Not Yet Paid" from Healthie means the recurring charge failed (card declined, expired, etc.)
+const UNPAID_STATUSES = new Set(['not yet paid', 'unpaid', 'overdue', 'past_due']);
+
+// Webhook event types that contain payment resource IDs requiring hydration from Healthie API
+const PAYMENT_EVENT_TYPES = new Set([
+  'requested_payment.created',
+  'requested_payment.updated',
+  'recurring_payment.updated',
+  'recurring_payment.created',
+]);
 
 type PaymentWebhookResult = {
   handled: boolean;
@@ -317,10 +328,112 @@ async function deactivatePatientBilling(patientId: string, status: string): Prom
   );
 }
 
+/**
+ * FIX(2026-03-19): Healthie webhooks only send { eventType, resource_id, resource_id_type }.
+ * They do NOT include the payment object. We must fetch it from Healthie's API.
+ */
+async function hydratePaymentFromHealthie(resourceId: string, resourceType: string): Promise<any | null> {
+  try {
+    if (resourceType === 'RequestedPayment') {
+      const data = await healthieGraphQL<{
+        requestedPayment: {
+          id: string;
+          status: string;
+          price: string;
+          invoice_id: string;
+          recipient_id: string;
+          recipient: { id: string; first_name: string; last_name: string } | null;
+          sender_id: string;
+          created_at: string;
+          paid_at: string | null;
+        } | null;
+      }>(`
+        query GetRequestedPayment($id: ID) {
+          requestedPayment(id: $id) {
+            id status price invoice_id
+            recipient_id recipient { id first_name last_name }
+            sender_id created_at paid_at
+          }
+        }
+      `, { id: resourceId });
+
+      const rp = data.requestedPayment;
+      if (!rp) return null;
+      return {
+        id: rp.id,
+        invoice_id: rp.invoice_id,
+        status: rp.status,
+        amount: rp.price,
+        client_id: rp.recipient_id,
+        paid_at: rp.paid_at,
+        created_at: rp.created_at,
+        _patient_name: rp.recipient ? `${rp.recipient.first_name} ${rp.recipient.last_name}` : null,
+      };
+    }
+
+    if (resourceType === 'RecurringPayment') {
+      // For recurring payments, fetch recipient + last billing item to find the latest requested payment
+      const data = await healthieGraphQL<{
+        recurringPayment: {
+          id: string;
+          recipient_id: string;
+          amount_to_pay: string;
+          last_billing_item: { id: string; requested_payment_id: string | null } | null;
+        } | null;
+      }>(`
+        query GetRecurringPayment($id: ID) {
+          recurringPayment(id: $id) {
+            id recipient_id amount_to_pay
+            last_billing_item { id requested_payment_id }
+          }
+        }
+      `, { id: resourceId });
+
+      const rp = data.recurringPayment;
+      if (!rp) return null;
+
+      // If there's a linked requested payment, hydrate that for accurate status
+      const rpId = rp.last_billing_item?.requested_payment_id;
+      if (rpId) {
+        return hydratePaymentFromHealthie(rpId, 'RequestedPayment');
+      }
+
+      // Fallback: return what we have (no status available without a requested payment)
+      return {
+        id: rp.id,
+        amount: rp.amount_to_pay,
+        client_id: rp.recipient_id,
+        status: 'unknown',
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error('[healthie-webhook] Failed to hydrate payment from Healthie API:', error);
+    return null;
+  }
+}
+
 export async function handleHealthiePaymentWebhook(payload: any): Promise<PaymentWebhookResult> {
-  const payment = extractPaymentPayload(payload);
+  let payment = extractPaymentPayload(payload);
+
+  // FIX(2026-03-19): If no payment object in body, hydrate from Healthie API using resource_id
+  // Healthie webhooks only send { eventType, resource_id, resource_id_type }
   if (!payment) {
-    return { handled: false };
+    const eventType = payload?.eventType || payload?.event_type || '';
+    const resourceId = String(payload?.resource_id || '');
+    const resourceType = payload?.resource_id_type || '';
+
+    if (PAYMENT_EVENT_TYPES.has(eventType) && resourceId) {
+      console.log('[healthie-webhook] Hydrating payment from Healthie API', { eventType, resourceId, resourceType });
+      payment = await hydratePaymentFromHealthie(resourceId, resourceType);
+      if (!payment) {
+        console.warn('[healthie-webhook] Could not hydrate payment', { eventType, resourceId });
+        return { handled: false };
+      }
+    } else {
+      return { handled: false };
+    }
   }
 
   const invoiceId = extractInvoiceId(payment);
@@ -343,13 +456,42 @@ export async function handleHealthiePaymentWebhook(payload: any): Promise<Paymen
 
   const patientId = await resolvePatientId(invoiceId, healthieClientId);
   if (!patientId) {
+    // FIX(2026-03-19): Try resolving by healthieClientId from hydrated payment
+    // The recipient_id from Healthie maps to healthie_client_id in our patients table
+    if (healthieClientId) {
+      const directMatch = await query<{ patient_id: string }>(
+        `SELECT patient_id FROM patients WHERE healthie_client_id = $1 LIMIT 1`,
+        [healthieClientId]
+      );
+      if (directMatch[0]?.patient_id) {
+        const directPatientId = directMatch[0].patient_id;
+        console.log('[healthie-webhook] Resolved patient via patients.healthie_client_id', {
+          healthieClientId, patientId: directPatientId, status, amount,
+          patientName: payment._patient_name,
+        });
+        return await processPaymentForPatient(directPatientId, invoiceId, healthieClientId, status, amount, paidAt, payment);
+      }
+    }
+
     console.warn('[healthie-webhook] Payment received but patient mapping not found', {
-      invoiceId,
-      healthieClientId,
+      invoiceId, healthieClientId, status, amount,
+      patientName: payment._patient_name,
     });
     return { handled: true };
   }
 
+  return await processPaymentForPatient(patientId, invoiceId, healthieClientId, status, amount, paidAt, payment);
+}
+
+async function processPaymentForPatient(
+  patientId: string,
+  invoiceId: string | null,
+  healthieClientId: string | null,
+  status: string | null,
+  amount: number,
+  paidAt: string | null,
+  payment: any,
+): Promise<PaymentWebhookResult> {
   if (invoiceId) {
     await upsertInvoiceRecord({
       invoiceId,
@@ -368,24 +510,25 @@ export async function handleHealthiePaymentWebhook(payload: any): Promise<Paymen
     const clientType = await determineClientGroup(patientId);
     await activatePatientBilling(patientId, clientType);
     console.log('[healthie-webhook] Activated billing for paid invoice', {
-      patientId,
-      invoiceId,
-      healthieClientId,
+      patientId, invoiceId, healthieClientId, amount,
+      patientName: payment._patient_name,
     });
     return { handled: true, patientId, invoiceId: normalizedInvoiceId, status: normalizedStatus };
   }
 
-  if (status && FAILED_STATUSES.has(status)) {
+  if (status && (FAILED_STATUSES.has(status) || UNPAID_STATUSES.has(status))) {
     await deactivatePatientBilling(patientId, status);
-    console.warn('[healthie-webhook] Deactivated billing for FAILED invoice', {
-      patientId,
-      invoiceId,
-      healthieClientId,
-      status
+    console.warn('[healthie-webhook] ⚠️ PAYMENT FAILURE — Deactivated billing', {
+      patientId, invoiceId, healthieClientId, status, amount,
+      patientName: payment._patient_name,
     });
     return { handled: true, patientId, invoiceId: normalizedInvoiceId, status: normalizedStatus };
   }
 
+  console.log('[healthie-webhook] Payment event processed (status not actionable)', {
+    patientId, invoiceId, status, amount,
+    patientName: payment._patient_name,
+  });
   return { handled: true, patientId, invoiceId: normalizedInvoiceId, status: normalizedStatus };
 }
 

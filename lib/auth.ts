@@ -320,6 +320,22 @@ export async function requireUser(minRole: UserRole = 'read'): Promise<PublicUse
 }
 
 export async function requireApiUser(request: NextRequest, minRole: UserRole = 'read'): Promise<PublicUser> {
+  // Allow internal API access via shared secret (used by Perplexity, cron, etc.)
+  const internalAuth = request.headers.get('x-internal-auth');
+  if (internalAuth && internalAuth === process.env.INTERNAL_AUTH_SECRET) {
+    return {
+      user_id: 'api-internal',
+      email: 'api@internal',
+      role: 'admin' as UserRole,
+      display_name: 'Internal API',
+      is_active: true,
+      is_provider: false,
+      can_sign: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!token) {
     throw new UnauthorizedError();

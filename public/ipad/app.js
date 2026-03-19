@@ -6941,6 +6941,13 @@ function printLabel(patientId, patientName, medication, options = {}) {
     const med = medication || 'Testosterone Cypionate';
     const type = options.type || (med.toLowerCase().includes('testosterone') ? 'testosterone' : 'peptide');
 
+    // FIX(2026-03-19): Match dashboard label format exactly
+    // Append 200mg/ml for testosterone if not already present
+    let labelMed = med;
+    if (type === 'testosterone' && !med.includes('200mg') && !med.includes('200 mg')) {
+        labelMed = 'Testosterone Cypionate 200mg/ml';
+    }
+
     // Look up patient DOB from cached data
     const p360 = patient360Cache[patientId];
     const demo = p360?.demographics || {};
@@ -6948,19 +6955,22 @@ function printLabel(patientId, patientName, medication, options = {}) {
     const dob = options.dob || demo.dob || demo.date_of_birth || patientData.dob || patientData.date_of_birth || '';
     const formattedDob = dob ? formatDateDisplay(dob) : '';
 
+    // Format expiration date if provided
+    const expDate = options.expDate ? formatDateDisplay(options.expDate) : '';
+
     const params = new URLSearchParams({
         type,
         patientName: patientName || '',
         patientDob: formattedDob,
-        medication: med,
-        dosage: options.dosage || '',
-        provider: 'Phil Schafer, NP',
-        dateDispensed: new Date().toLocaleDateString('en-US'),
+        medication: labelMed,
+        dosage: options.dosage || 'Use as directed',
+        provider: 'Dr. Aaron Whitten NMD - DEA: MW6359574',
+        dateDispensed: new Date().toLocaleDateString('en-US', { timeZone: 'America/Phoenix' }),
         lotNumber: options.lotNumber || '',
         volume: options.volume || '',
         vialNumber: options.vialNumber || '',
         amountDispensed: options.amountDispensed || '',
-        expDate: options.expDate || '',
+        expDate: expDate,
     });
     window.open(`/ops/api/labels/generate/?${params.toString()}`, '_blank');
 }
@@ -7745,7 +7755,7 @@ async function openControlledDispenseModal(patientId, patientName) {
                         <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">Select Vial</label>
                         <select id="cdVial" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
                             <option value="">Choose a vial…</option>
-                            ${deaVials.map(v => `<option value="${v.vial_id || v.id}" data-drug="${v.dea_drug_name || 'Testosterone Cypionate'}" data-schedule="${v.dea_schedule || 'CIII'}" data-remaining="${v.remaining_ml || v.volume_ml || 10}">${v.external_id || v.vial_id} — ${v.dea_drug_name || 'Testosterone'} (${parseFloat(v.remaining_ml || v.volume_ml || 10).toFixed(1)}mL remain)</option>`).join('')}
+                            ${deaVials.map(v => `<option value="${v.vial_id || v.id}" data-drug="${v.dea_drug_name || 'Testosterone Cypionate'}" data-schedule="${v.dea_schedule || 'CIII'}" data-remaining="${v.remaining_ml || v.volume_ml || 10}" data-lot="${v.lot_number || ''}" data-exp="${v.expiration_date || ''}" data-extid="${v.external_id || v.vial_id}">${v.external_id || v.vial_id} — ${v.dea_drug_name || 'Testosterone'} (${parseFloat(v.remaining_ml || v.volume_ml || 10).toFixed(1)}mL remain)</option>`).join('')}
                         </select>
                     </div>
                     <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px;">
@@ -7816,11 +7826,15 @@ async function submitControlledDispense(patientId, patientName) {
         successEl.textContent = `${drugName} dispensed: ${doseMl}mL + ${wasteMl}mL waste from ${vialSelect.selectedOptions[0]?.text?.split(' —')[0] || 'vial'}`;
         successEl.style.display = 'block';
 
-        // Print label
+        // Print label — pass lot/exp from vial select data attributes
+        const _selOpt = vialSelect?.selectedOptions[0];
         printLabel(patientId, patientName, drugName, {
             dosage: `${doseMl}mL`,
             volume: `${doseMl}mL`,
-            vialNumber: vialId,
+            vialNumber: _selOpt?.dataset?.extid || vialId,
+            lotNumber: _selOpt?.dataset?.lot || '',
+            expDate: _selOpt?.dataset?.exp || '',
+            amountDispensed: `${doseMl}`,
         });
 
         btn.textContent = '✅ Done';
@@ -7925,7 +7939,7 @@ async function openQuickDispenseModal() {
                                 const isCarrie = (v.dea_drug_name || '').toLowerCase().includes('carrie') || (v.dea_drug_name || '').toLowerCase().includes('miglyol');
                                 const label = isCarrie ? '💉 CB' : '🧪';
                                 const expDate = v.expiration_date ? new Date(v.expiration_date).toLocaleDateString('en-US', {month:'short', year:'2-digit'}) : '';
-                                return `<option value="${v.external_id || v.vial_id}" data-drug="${v.dea_drug_name || 'Testosterone Cypionate'}" data-remaining="${remaining}" ${i === 0 ? 'selected' : ''}>${label} ${v.external_id || v.vial_id} — ${remaining.toFixed(1)}mL remain${expDate ? ' (exp ' + expDate + ')' : ''}</option>`;
+                                return `<option value="${v.external_id || v.vial_id}" data-drug="${v.dea_drug_name || 'Testosterone Cypionate'}" data-remaining="${remaining}" data-lot="${v.lot_number || ''}" data-exp="${v.expiration_date || ''}" ${i === 0 ? 'selected' : ''}>${label} ${v.external_id || v.vial_id} — ${remaining.toFixed(1)}mL remain${expDate ? ' (exp ' + expDate + ')' : ''}</option>`;
                             }).join('')}
                         </select>
                     </div>
@@ -8102,6 +8116,8 @@ async function submitQuickDispense() {
     const vialExternalId = vialSelect?.value;
     const drugName = vialSelect?.selectedOptions[0]?.dataset?.drug || 'Testosterone Cypionate';
     const vialRemaining = parseFloat(vialSelect?.selectedOptions[0]?.dataset?.remaining || 0);
+    const vialLotNumber = vialSelect?.selectedOptions[0]?.dataset?.lot || '';
+    const vialExpDate = vialSelect?.selectedOptions[0]?.dataset?.exp || '';
     const dosePerSyringe = parseFloat(document.getElementById('qdDoseMl')?.value || 0);
     const syringes = parseInt(document.getElementById('qdSyringes')?.value || 1);
     const notes = document.getElementById('qdNotes')?.value || '';
@@ -8180,6 +8196,7 @@ async function submitQuickDispense() {
             promptPrintLabel({
                 patientName, drugName, dosePerSyringe, syringes,
                 totalDose, totalWaste, totalRemoval, vialExternalId,
+                lotNumber: vialLotNumber, expDate: vialExpDate,
                 date: today
             });
 
@@ -8323,6 +8340,7 @@ async function submitQuickDispense() {
                 patientName, drugName, dosePerSyringe, syringes,
                 totalDose, totalWaste, totalRemoval,
                 vialExternalId: `${vialExternalId} + ${nextVialExternalId} (split)`,
+                lotNumber: vialLotNumber, expDate: vialExpDate,
                 date: today
             });
 
@@ -8359,7 +8377,7 @@ function promptPrintLabel(info) {
                 </div>
                 <div style="display:flex; gap:10px; justify-content:center;">
                     <button onclick="document.getElementById('printLabelPrompt').remove()" class="btn-cancel" style="flex:1;">No Thanks</button>
-                    <button onclick="(function(i){ printLabel(window._qdPatientId, i.patientName, i.drugName, { dosage: i.dosePerSyringe + 'mL x ' + i.syringes + ' syringe(s)', volume: String(i.totalDose), vialNumber: i.vialExternalId, amountDispensed: i.totalRemoval + 'mL' }); document.getElementById('printLabelPrompt').remove(); })(window._lastDispenseInfo)" class="btn-primary" style="flex:1; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);">🖨️ Print Label</button>
+                    <button onclick="(function(i){ printLabel(window._qdPatientId, i.patientName, i.drugName, { dosage: i.dosePerSyringe + 'mL x ' + i.syringes + ' syringe(s)', volume: String(i.totalDose), vialNumber: i.vialExternalId, amountDispensed: String(i.totalDose), lotNumber: i.lotNumber || '', expDate: i.expDate || '' }); document.getElementById('printLabelPrompt').remove(); })(window._lastDispenseInfo)" class="btn-primary" style="flex:1; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);">🖨️ Print Label</button>
                 </div>
             </div>
         </div>

@@ -323,6 +323,7 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
     const regimenDose = parseRegimenDose(patient.regimen);
     if (regimenDose !== null && !dispenseEntireVial) {
       setDosePerSyringe(regimenDose.toString());
+      setSyringes('1');
     }
   }
 
@@ -863,7 +864,7 @@ export default function TransactionForm({ patients, vials, onSaved, currentUserR
               onChange={(event) => setSyringes(event.target.value)}
               style={{ ...fieldStyle, backgroundColor: dispenseEntireVial ? '#f1f5f9' : '#ffffff' }}
               disabled={dispenseEntireVial}
-              placeholder="Total syringes (e.g. 16)"
+              placeholder="e.g. 1"
             />
           </InputLabel>
         </div>
