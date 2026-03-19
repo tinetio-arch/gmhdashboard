@@ -1,4 +1,4 @@
-// VERSION: 2026-03-18-14:00 - Timeout fixes, permission restrictions, print labels, split-vial dispensing
+// VERSION: 2026-03-19-09:35 - Patient tab spinner fix v3 + diagnostic logging
 /* ============================================================
    GMH Ops v2.0 — iPad Companion App (LIVE DATA)
    Connects to /ops/api/* endpoints via same-origin cookies
@@ -6019,13 +6019,14 @@ function handlePatientSearch(query) {
 }
 
 async function selectPatient(id) {
+    console.log('%c[selectPatient v3.0] Clicked patient: ' + id, 'background:#22d3ee;color:#000;padding:2px 6px;font-weight:bold;');
     const patients = getPatients();
     const patient = patients.find(p => String(p.id || p.patient_id) === String(id));
-    if (!patient) return;
+    if (!patient) { console.error('[selectPatient] Patient not found in list for id:', id); return; }
     selectedPatient = patient;
 
     const detail = document.getElementById('patientDetail');
-    if (!detail) return;
+    if (!detail) { console.error('[selectPatient] patientDetail container not found'); return; }
 
     const name = patient.name || patient.patient_name || patient.full_name || ((patient.first_name || '') + ' ' + (patient.last_name || '')).trim();
     const color = patient.avatar_color || getAvatarColor(name);
@@ -6061,10 +6062,13 @@ async function selectPatient(id) {
 
     // Load 360 data
     try {
+        console.log('[selectPatient] Loading 360 data for:', id);
         const data360 = await loadPatient360(id);
+        console.log('[selectPatient] 360 data loaded:', data360 ? 'got data' : 'NULL', data360 ? Object.keys(data360) : []);
         renderPatient360(data360, patient, id);
+        console.log('[selectPatient] renderPatient360 completed successfully');
     } catch (e) {
-        console.error('[selectPatient] render failed:', e);
+        console.error('[selectPatient] render failed:', e, e?.stack);
         const container = document.getElementById('patient360Data');
         if (container) {
             container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--red); font-size:13px;">
@@ -6499,7 +6503,9 @@ function renderPatient360(data, patient, patientId) {
         </div>
     `;
 
+    console.log('[renderPatient360] Setting innerHTML, html length:', html.length);
     container.innerHTML = html;
+    console.log('[renderPatient360] innerHTML set successfully');
 
     // Async: load lab orders & results for this patient
     loadPatientLabData(patientId);
