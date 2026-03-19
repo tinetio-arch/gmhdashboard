@@ -701,21 +701,26 @@ async function apiFetch(url, options = {}) {
         }
 
         if (!resp.ok) {
-            // ✅ USER-FRIENDLY ERROR MESSAGES
+            // ✅ USER-FRIENDLY ERROR MESSAGES — parse server error for 400s
             const errorText = await resp.text().catch(() => '');
-            console.error(`[API Error] ${resp.status} ${url}:`, errorText.substring(0, 200));
+            console.error(`[API Error] ${resp.status} ${url}:`, errorText.substring(0, 500));
+
+            let serverMsg = '';
+            try { serverMsg = JSON.parse(errorText)?.error || ''; } catch {}
 
             if (resp.status >= 500) {
                 showToast('Server error - please try again', 'error');
             } else if (resp.status === 404) {
                 showToast('Resource not found', 'error');
+            } else if (resp.status === 400 && serverMsg) {
+                showToast(serverMsg, 'error');
             } else if (resp.status === 400) {
                 showToast('Invalid request', 'error');
             } else {
                 showToast(`Request failed (${resp.status})`, 'error');
             }
 
-            throw new Error(`HTTP ${resp.status}`);
+            throw new Error(serverMsg || `HTTP ${resp.status}`);
         }
 
         clearTimeout(timeoutId);
@@ -8354,7 +8359,7 @@ function promptPrintLabel(info) {
                 </div>
                 <div style="display:flex; gap:10px; justify-content:center;">
                     <button onclick="document.getElementById('printLabelPrompt').remove()" class="btn-cancel" style="flex:1;">No Thanks</button>
-                    <button onclick="openPrintLabelWindow(window._lastDispenseInfo); document.getElementById('printLabelPrompt').remove();" class="btn-primary" style="flex:1; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);">🖨️ Print Label</button>
+                    <button onclick="(function(i){ printLabel(window._qdPatientId, i.patientName, i.drugName, { dosage: i.dosePerSyringe + 'mL x ' + i.syringes + ' syringe(s)', volume: String(i.totalDose), vialNumber: i.vialExternalId, amountDispensed: i.totalRemoval + 'mL' }); document.getElementById('printLabelPrompt').remove(); })(window._lastDispenseInfo)" class="btn-primary" style="flex:1; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);">🖨️ Print Label</button>
                 </div>
             </div>
         </div>
