@@ -973,6 +973,7 @@ async function loadAllPatients() {
                 status: p.status_key || p.status || 'Active',
                 healthie_client_id: p.healthie_client_id || p.healthie_id || '',
                 ghl_contact_id: p.ghl_contact_id || '',
+                avatar_url: p.avatar_url || '',
             }));
         } else if (Array.isArray(data)) {
             allPatients = data;
@@ -3549,7 +3550,16 @@ async function loadChartData(patientId) {
         // BACKGROUND: Load 360 data for labs/visits/alerts (non-blocking)
         timedFetch(`/ops/api/patients/${patientId}/360/`, 20000).then(local360 => {
             if (local360 && chartPanelPatientId === patientId) {
-                chartPanelData.demographics = local360.demographics || chartPanelData.demographics;
+                // FIX(2026-03-19): Merge 360 demographics INTO existing (don't overwrite Healthie-enriched data)
+                const existingDemo = chartPanelData.demographics || {};
+                const newDemo = local360.demographics || {};
+                chartPanelData.demographics = { ...existingDemo, ...newDemo };
+                // Restore Healthie fields that 360 doesn't have
+                if (existingDemo.address_line1 && !newDemo.address_line1) chartPanelData.demographics.address_line1 = existingDemo.address_line1;
+                if (existingDemo.address_line_1 && !newDemo.address_line_1) chartPanelData.demographics.address_line_1 = existingDemo.address_line_1;
+                if (existingDemo.city && !newDemo.city) chartPanelData.demographics.city = existingDemo.city;
+                if (existingDemo.state && !newDemo.state) chartPanelData.demographics.state = existingDemo.state;
+                if (existingDemo.zip && !newDemo.zip) chartPanelData.demographics.zip = existingDemo.zip;
                 chartPanelData.medications = local360.medications || chartPanelData.medications;
                 chartPanelData.labs = local360.labs || {};
                 chartPanelData.visits = local360.visits || [];
@@ -3574,12 +3584,118 @@ async function loadChartData(patientId) {
     }
 }
 
+// Vital sign normal ranges — returns true if out of range
+function isVitalOutOfRange(category, value) {
+    if (!category || !value) return false;
+    const cat = (category || '').toLowerCase().replace(/[_\s]+/g, ' ').trim();
+    const val = String(value).trim();
+
+    // Blood Pressure: systolic/diastolic
+    if (cat.includes('blood pressure') || cat === 'bp') {
+        const match = val.match(/(\d+)\s*\/\s*(\d+)/);
+        if (match) {
+            const sys = parseInt(match[1]), dia = parseInt(match[2]);
+            return sys > 140 || sys < 90 || dia > 90 || dia < 60;
+        }
+        return false;
+    }
+
+    const num = parseFloat(val);
+    if (isNaN(num)) return false;
+
+    // Heart Rate / Pulse
+    if (cat.includes('heart rate') || cat === 'pulse' || cat === 'hr') {
+        return num > 100 || num < 60;
+    }
+    // Temperature (Fahrenheit)
+    if (cat.includes('temperature') || cat === 'temp') {
+        return num > 100.4 || num < 96.0;
+    }
+    // Oxygen Saturation (SpO2)
+    if (cat.includes('oxygen') || cat.includes('spo2') || cat.includes('o2 sat')) {
+        return num < 95;
+    }
+    // Respiration Rate
+    if (cat.includes('respiration') || cat.includes('respiratory') || cat === 'rr') {
+        return num > 20 || num < 12;
+    }
+    // Weight (flag extremes)
+    if (cat === 'weight') {
+        return num > 400 || num < 80;
+    }
+    // Blood Glucose
+    if (cat.includes('glucose') || cat.includes('blood sugar')) {
+        return num > 200 || num < 70;
+    }
+
+    return false;
+}
+
+// Delete an erroneous vital from Healthie/local DB (also removes duplicates)
+async function deleteVital(vitalId, source, btnEl, patientId, category, value, diaId) {
+    if (!vitalId) { showToast('No vital ID', 'error'); return; }
+    if (!confirm('Remove this vital reading and any duplicates? This cannot be undone.')) return;
+
+    const card = btnEl.closest('[data-vital-id]');
+    if (card) {
+        card.style.opacity = '0.4';
+        card.style.pointerEvents = 'none';
+    }
+
+    try {
+        let url = `/ops/api/ipad/vitals?id=${encodeURIComponent(vitalId)}&source=${source}`;
+        if (patientId) url += `&patient_id=${encodeURIComponent(patientId)}`;
+        if (category) url += `&category=${encodeURIComponent(category)}`;
+        if (value) url += `&value=${encodeURIComponent(value)}`;
+        const resp = await fetch(url, {
+            method: 'DELETE',
+            credentials: 'include',
+        });
+        const result = await resp.json();
+
+        if (result.success) {
+            // Also delete the paired diastolic entry if this was a BP
+            if (diaId && diaId !== 'null' && diaId !== '') {
+                fetch(`/ops/api/ipad/vitals?id=${encodeURIComponent(diaId)}&source=${source}&patient_id=${encodeURIComponent(patientId || '')}&category=Blood Pressure Diastolic&value=`, {
+                    method: 'DELETE', credentials: 'include'
+                }).catch(() => {});
+            }
+            const count = result.deleted_count || 1;
+            showToast(`✅ Removed ${count > 1 ? count + ' vitals (incl. duplicates)' : 'vital'}`, 'success');
+            // Remove from cached data — remove all matching category+value (duplicates)
+            if (chartPanelData?.healthie_vitals) {
+                if (category && value) {
+                    const numVal = parseFloat(value);
+                    chartPanelData.healthie_vitals = chartPanelData.healthie_vitals.filter(v =>
+                        !(v.category === category && parseFloat(v.metric_stat) === numVal)
+                    );
+                } else {
+                    chartPanelData.healthie_vitals = chartPanelData.healthie_vitals.filter(v => v.id !== vitalId);
+                }
+            }
+            // Fade out and remove the card
+            if (card) {
+                card.style.transition = 'all 0.3s';
+                card.style.opacity = '0';
+                card.style.transform = 'scale(0.8)';
+                setTimeout(() => card.remove(), 300);
+            }
+        } else {
+            showToast('❌ ' + (result.error || 'Failed to remove'), 'error');
+            if (card) { card.style.opacity = '1'; card.style.pointerEvents = 'auto'; }
+        }
+    } catch (e) {
+        showToast('❌ Network error removing vital', 'error');
+        if (card) { card.style.opacity = '1'; card.style.pointerEvents = 'auto'; }
+    }
+}
+
 function renderChartPanel(content) {
     const d = chartPanelData;
     if (!d) return;
 
-    // Default to charting tab
-    if (!window._chartTab) window._chartTab = 'charting';
+    // Default to notes tab
+    if (!window._chartTab || window._chartTab === 'charting') window._chartTab = 'notes';
 
     const demo = d.demographics || {};
     const hAllergies = d.healthie_allergies || [];
@@ -3588,61 +3704,115 @@ function renderChartPanel(content) {
     const peptides = (d.medications || {}).peptides || d.peptides || [];
     const trt = (d.medications || {}).trt || d.trt || [];
 
-    // ICD-10 code lookup (common men's health diagnoses)
+    // ICD-10 code lookup — comprehensive clinical reference
     const ICD10_LOOKUP = {
-        'E11.9': 'Type 2 Diabetes',
-        'E11.65': 'Type 2 Diabetes with Hyperglycemia',
-        'E78.5': 'Hyperlipidemia',
-        'E78.0': 'Pure Hypercholesterolemia',
-        'E66.9': 'Obesity',
-        'E66.01': 'Morbid Obesity',
-        'I10': 'Essential Hypertension',
-        'I25.10': 'Coronary Artery Disease',
-        'E29.1': 'Testicular Hypofunction',
-        'N52.9': 'Erectile Dysfunction',
-        'N40.0': 'Benign Prostatic Hyperplasia',
-        'F41.1': 'Generalized Anxiety Disorder',
-        'F32.9': 'Major Depressive Disorder',
-        'F33.9': 'Recurrent Depressive Disorder',
-        'F51.01': 'Insomnia',
-        'M79.3': 'Panniculitis',
-        'Z79.4': 'Long-term Testosterone Use',
-        'Z79.899': 'Long-term Medication Use',
-        'Z68.41': 'BMI 40.0-44.9 (Adult)',
-        'Z68.42': 'BMI 45.0-49.9 (Adult)',
+        // Endocrine / Metabolic
+        'E11.9': 'Type 2 Diabetes', 'E11.65': 'Type 2 Diabetes with Hyperglycemia',
+        'E11.22': 'Type 2 Diabetes with CKD', 'E11.40': 'Type 2 Diabetes with Neuropathy',
+        'E78.5': 'Hyperlipidemia', 'E78.0': 'Pure Hypercholesterolemia', 'E78.1': 'Hypertriglyceridemia',
+        'E78.2': 'Mixed Hyperlipidemia',
+        'E66.9': 'Obesity', 'E66.01': 'Morbid Obesity', 'E66.3': 'Overweight',
+        'E29.1': 'Testicular Hypofunction', 'E03.9': 'Hypothyroidism',
+        'E05.90': 'Hyperthyroidism', 'E55.9': 'Vitamin D Deficiency',
+        'E61.1': 'Iron Deficiency', 'E53.8': 'Vitamin B12 Deficiency',
+        'R73.03': 'Prediabetes', 'E13.9': 'Other Specified Diabetes',
+        // Cardiovascular
+        'I10': 'Essential Hypertension', 'I11.9': 'Hypertensive Heart Disease',
+        'I25.10': 'Coronary Artery Disease', 'I48.91': 'Atrial Fibrillation',
+        'I48.0': 'Paroxysmal Atrial Fibrillation', 'I34.1': 'Mitral Valve Prolapse',
+        'I50.9': 'Heart Failure', 'I63.9': 'Cerebral Infarction (Stroke)',
+        'I73.9': 'Peripheral Vascular Disease', 'I83.90': 'Varicose Veins',
+        'R00.0': 'Tachycardia', 'R00.1': 'Bradycardia', 'R03.0': 'Elevated Blood Pressure',
+        // Respiratory
+        'J20.9': 'Acute Bronchitis', 'J06.9': 'Upper Respiratory Infection',
+        'J15.9': 'Pneumonia', 'J18.9': 'Pneumonia, Unspecified', 'J12.9': 'Viral Pneumonia',
+        'J44.1': 'COPD with Acute Exacerbation', 'J44.9': 'COPD',
+        'J45.20': 'Mild Intermittent Asthma', 'J45.30': 'Mild Persistent Asthma',
+        'J45.40': 'Moderate Persistent Asthma', 'J45.50': 'Severe Persistent Asthma',
+        'J45.909': 'Asthma, Unspecified', 'J30.9': 'Allergic Rhinitis',
+        'J02.9': 'Acute Pharyngitis', 'J01.90': 'Acute Sinusitis',
+        'J32.9': 'Chronic Sinusitis', 'J40': 'Bronchitis',
+        'R06.02': 'Shortness of Breath', 'R05.9': 'Cough', 'R05': 'Cough',
+        // GI
+        'K21.9': 'GERD', 'K21.0': 'GERD with Esophagitis',
+        'K58.9': 'Irritable Bowel Syndrome', 'K50.90': "Crohn's Disease",
+        'K51.90': 'Ulcerative Colitis', 'K76.0': 'Fatty Liver Disease',
+        'K80.20': 'Gallstones', 'R10.9': 'Abdominal Pain',
+        'R11.2': 'Nausea with Vomiting', 'R11.0': 'Nausea',
+        'K30': 'Dyspepsia', 'R19.7': 'Diarrhea',
+        // Musculoskeletal
+        'M25.50': 'Joint Pain', 'M54.5': 'Low Back Pain', 'M54.2': 'Cervicalgia (Neck Pain)',
+        'M79.3': 'Panniculitis', 'M79.1': 'Myalgia', 'M79.7': 'Fibromyalgia',
+        'M17.9': 'Knee Osteoarthritis', 'M19.90': 'Osteoarthritis',
+        'M81.0': 'Osteoporosis', 'G89.29': 'Chronic Pain',
+        // Mental Health
+        'F41.1': 'Generalized Anxiety Disorder', 'F41.9': 'Anxiety Disorder',
+        'F32.9': 'Major Depressive Disorder', 'F33.9': 'Recurrent Depressive Disorder',
+        'F32.1': 'Major Depression, Moderate', 'F43.10': 'PTSD',
+        'F51.01': 'Insomnia', 'F10.20': 'Alcohol Use Disorder',
+        'F17.210': 'Nicotine Dependence', 'F90.9': 'ADHD',
+        // Neurological
+        'G47.33': 'Obstructive Sleep Apnea', 'G43.909': 'Migraine',
+        'G40.909': 'Epilepsy', 'G20': "Parkinson's Disease",
+        'R51': 'Headache', 'R51.9': 'Headache',
+        // Genitourinary
+        'N52.9': 'Erectile Dysfunction', 'N40.0': 'Benign Prostatic Hyperplasia',
+        'N40.1': 'BPH with LUTS', 'N39.0': 'Urinary Tract Infection',
+        'N18.3': 'CKD Stage 3', 'N18.9': 'Chronic Kidney Disease',
+        // Infectious
+        'B34.9': 'Viral Infection', 'A49.9': 'Bacterial Infection',
+        'U07.1': 'COVID-19', 'B97.29': 'Coronavirus',
+        'J11.1': 'Influenza with Respiratory Symptoms',
+        // Skin
+        'L30.9': 'Dermatitis', 'L70.0': 'Acne Vulgaris', 'L40.9': 'Psoriasis',
+        'L50.9': 'Urticaria', 'B35.1': 'Tinea (Fungal Infection)',
+        // General / Symptoms
+        'R50.9': 'Fever', 'R53.83': 'Fatigue', 'R53.1': 'Weakness',
+        'R63.4': 'Weight Loss', 'R63.5': 'Weight Gain',
+        'R42': 'Dizziness', 'R55': 'Syncope',
+        // Administrative
+        'Z79.4': 'Long-term Testosterone Use', 'Z79.899': 'Long-term Medication Use',
+        'Z68.41': 'BMI 40.0-44.9 (Adult)', 'Z68.42': 'BMI 45.0-49.9 (Adult)',
         'Z87.891': 'Personal History of Nicotine Dependence',
-        'J20.9': 'Acute Bronchitis',
-        'J06.9': 'Upper Respiratory Infection',
-        'J30.9': 'Allergic Rhinitis',
-        'R06.02': 'Shortness of Breath',
-        'R03.0': 'Elevated Blood Pressure',
-        'R73.03': 'Prediabetes',
-        'R50.9': 'Fever',
-        'I34.1': 'Mitral Valve Prolapse',
-        'G47.33': 'Obstructive Sleep Apnea',
-        'K21.9': 'GERD',
-        'M25.50': 'Joint Pain',
-        'R10.9': 'Abdominal Pain',
-        'R51': 'Headache'
+        'Z00.00': 'General Adult Medical Exam', 'Z23': 'Immunization Encounter',
     };
 
     // Extract working diagnoses (ICD-10 codes) from scribe history and SOAP notes
     const workingDiagnoses = [];
     const seenICD = new Set();
 
+    // FIX(2026-03-19): Extract diagnosis descriptions from SOAP assessment text
+    // The assessment often has "1. Acute bronchitis (J20.9)" format
+    function extractDescFromAssessment(assessment, code) {
+        if (!assessment) return null;
+        // Match patterns like "Pneumonia, unspecified (J15.9)" or "1. Acute bronchitis (J20.9)"
+        const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`([\\w][^\\n(]*?)\\s*\\(${escaped}\\)`, 'i');
+        const match = assessment.match(regex);
+        if (match) {
+            // Clean up: remove leading numbers/dots like "1. " or "2. "
+            return match[1].replace(/^\d+\.\s*/, '').trim();
+        }
+        return null;
+    }
+
     // From scribe history
     (d.scribe_history || []).forEach(s => {
         if (s.icd10_codes) {
             const codes = Array.isArray(s.icd10_codes) ? s.icd10_codes : [s.icd10_codes];
             codes.forEach(codeObj => {
-                // Handle both string format and object format
                 const codeStr = typeof codeObj === 'string' ? codeObj : (codeObj.code || String(codeObj));
                 const cleanCode = codeStr.trim();
                 if (cleanCode && !seenICD.has(cleanCode)) {
                     seenICD.add(cleanCode);
+                    // Priority: 1) codeObj.description, 2) lookup table, 3) extract from SOAP, 4) code itself
+                    const desc = (codeObj.description && codeObj.description !== '') ? codeObj.description
+                        : ICD10_LOOKUP[cleanCode]
+                        || extractDescFromAssessment(s.soap_assessment, cleanCode)
+                        || cleanCode;
                     workingDiagnoses.push({
                         code: cleanCode,
-                        description: ICD10_LOOKUP[cleanCode] || 'Unknown',
+                        description: desc,
                         date: s.created_at || s.visit_date
                     });
                 }
@@ -3667,8 +3837,65 @@ function renderChartPanel(content) {
         } catch { return ''; }
     }
 
-    // Get last 5 vitals (most recent)
-    const recentVitals = hVitals.slice(0, 5);
+    // FIX(2026-03-19): Deduplicate vitals (same category + value within 5 min = duplicate)
+    const deduped = [];
+    const seenVitals = new Set();
+    for (const v of hVitals) {
+        const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
+        const bucket = Math.floor(ts / 300000); // 5-min bucket
+        const key = `${v.category}_${v.metric_stat}_${bucket}`;
+        if (!seenVitals.has(key)) {
+            seenVitals.add(key);
+            deduped.push(v);
+        }
+    }
+
+    // FIX(2026-03-19): Merge BP Systolic + Diastolic into one "Blood Pressure" card
+    const merged = [];
+    const bpSysEntries = {};
+    const bpDiaEntries = {};
+    const bpUsed = new Set();
+    for (const v of deduped) {
+        const cat = (v.category || '').toLowerCase();
+        if (cat === 'blood pressure systolic' || cat === 'blood pressure' || cat === 'bp systolic') {
+            const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
+            const bucket = Math.floor(ts / 300000);
+            bpSysEntries[bucket] = v;
+        } else if (cat === 'blood pressure diastolic' || cat === 'bp diastolic') {
+            const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
+            const bucket = Math.floor(ts / 300000);
+            bpDiaEntries[bucket] = v;
+        }
+    }
+    for (const v of deduped) {
+        const cat = (v.category || '').toLowerCase();
+        if (cat === 'blood pressure systolic' || cat === 'blood pressure' || cat === 'bp systolic') {
+            const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
+            const bucket = Math.floor(ts / 300000);
+            const dia = bpDiaEntries[bucket];
+            const sysVal = Math.round(parseFloat(v.metric_stat));
+            const diaVal = dia ? Math.round(parseFloat(dia.metric_stat)) : null;
+            merged.push({
+                ...v,
+                id: v.id,
+                _diaId: dia?.id || null,
+                category: 'Blood Pressure',
+                metric_stat: diaVal ? `${sysVal}/${diaVal}` : `${sysVal}`,
+            });
+            bpUsed.add(v.id);
+            if (dia) bpUsed.add(dia.id);
+        } else if (cat === 'blood pressure diastolic' || cat === 'bp diastolic') {
+            if (!bpUsed.has(v.id)) {
+                // Orphan diastolic — show as-is
+                merged.push(v);
+            }
+        } else {
+            merged.push(v);
+        }
+    }
+
+    // Get last 8 vitals (most recent, deduplicated, BP merged)
+    const recentVitals = merged.slice(0, 8);
 
     content.innerHTML = `
         <!-- Patient Photo + Demographics -->
@@ -3751,9 +3978,19 @@ function renderChartPanel(content) {
             ${recentVitals.length > 0
                 ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:6px;">${recentVitals.map(v => {
                     const recordedBy = v.created_by?.full_name || v.created_by?.email || (v.description && v.description.includes('by ') ? v.description.split('by ').pop().split(')')[0] : '');
-                    return `<div style="font-size:11px; padding:4px 8px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border);">
-                    <div style="color:var(--text-tertiary); font-size:9px; text-transform:uppercase;">${v.category || v.type || '?'}</div>
-                    <div style="color:var(--text-primary); font-weight:600;">${v.metric_stat || '—'}</div>
+                    const outOfRange = isVitalOutOfRange(v.category, v.metric_stat);
+                    const bgStyle = outOfRange ? 'background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4);' : 'background:var(--surface-2); border:1px solid var(--border);';
+                    const valueColor = outOfRange ? 'color:#f87171; font-weight:700;' : 'color:var(--text-primary); font-weight:600;';
+                    const vitalId = v.id || '';
+                    const vitalDiaId = v._diaId || '';
+                    const vitalSource = String(vitalId).startsWith('local_') ? 'local' : 'healthie';
+                    const vCat = (v.category || '').replace(/'/g, "\\'");
+                    const vVal = String(v.metric_stat || '').replace(/'/g, "\\'");
+                    const vPatId = chartPanelData?.healthie_id || '';
+                    return `<div style="font-size:11px; padding:4px 8px; border-radius:6px; ${bgStyle} position:relative;" data-vital-id="${vitalId}">
+                    <button onclick="deleteVital('${vitalId}', '${vitalSource}', this, '${vPatId}', '${vCat}', '${vVal}', '${vitalDiaId}')" style="position:absolute; top:2px; right:4px; background:none; border:none; color:var(--text-tertiary); font-size:10px; cursor:pointer; padding:0 2px; opacity:0.5;" title="Remove this vital" onmouseover="this.style.opacity='1';this.style.color='#ef4444'" onmouseout="this.style.opacity='0.5';this.style.color='var(--text-tertiary)'">✕</button>
+                    <div style="color:var(--text-tertiary); font-size:9px; text-transform:uppercase; padding-right:14px;">${v.category || v.type || '?'}${outOfRange ? ' ⚠️' : ''}</div>
+                    <div style="${valueColor}">${v.metric_stat || '—'}</div>
                     <div style="color:var(--text-tertiary); font-size:9px;">${fmtVitalDate(v.created_at)}</div>
                     ${recordedBy ? `<div style="color:var(--cyan); font-size:9px;">by ${recordedBy.split('@')[0]}</div>` : ''}
                 </div>`;
@@ -3764,16 +4001,12 @@ function renderChartPanel(content) {
         <!-- Controlled Substance Alert (if any) -->
         ${renderControlledSubstanceAlert(d)}
 
-        <!-- Tabs (Charting / Forms / Documents / Financial / Dispense Hx) -->
-        <div class="chart-tab-nav">
-            <button class="chart-tab-btn ${window._chartTab === 'charting' ? 'active' : ''}" data-tab="charting" onclick="switchChartTab('charting')">\ud83d\udccb Charting</button>
-            <button class="chart-tab-btn ${window._chartTab === 'forms' ? 'active' : ''}" data-tab="forms" onclick="switchChartTab('forms')">\ud83d\udcdd Forms</button>
-            <button class="chart-tab-btn ${window._chartTab === 'documents' ? 'active' : ''}" data-tab="documents" onclick="switchChartTab('documents')">\ud83d\udcc1 Documents</button>
-            <button class="chart-tab-btn ${window._chartTab === 'financial' ? 'active' : ''}" data-tab="financial" onclick="switchChartTab('financial')">\ud83d\udcb0 Financial</button>
-            <button class="chart-tab-btn ${window._chartTab === 'prescriptions' ? 'active' : ''}" data-tab="prescriptions" onclick="switchChartTab('prescriptions')">\ud83d\udc8a Rx</button>
-            <button class="chart-tab-btn ${window._chartTab === 'erx' ? 'active' : ''}" data-tab="erx" onclick="switchChartTab('erx')">\ud83d\udccb E-Rx</button>
-            <button class="chart-tab-btn ${window._chartTab === 'dispense' ? 'active' : ''}" data-tab="dispense" onclick="switchChartTab('dispense')">\ud83d\udc89 Dispense Hx</button>
-            <button style="margin-left:auto; padding:6px 12px; background:linear-gradient(135deg, #ef4444, #dc2626); color:white; border:none; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer; white-space:nowrap; letter-spacing:0.02em;" onclick="startScribeFromChart('${d.patient_id || d.healthie_id || ''}', '${(d.demographics?.full_name || 'Patient').replace(/'/g, "\\'")}')" title="Start recording for this patient">🎤 Record</button>
+        <!-- Consolidated Tabs -->
+        <div class="chart-tab-nav" style="gap:0; padding:4px 8px;">
+            <button class="chart-tab-btn ${window._chartTab === 'notes' || window._chartTab === 'charting' ? 'active' : ''}" data-tab="notes" onclick="switchChartTab('notes')" style="flex:1; font-size:12px;">📋 Notes</button>
+            <button class="chart-tab-btn ${window._chartTab === 'meds' || window._chartTab === 'prescriptions' || window._chartTab === 'erx' || window._chartTab === 'dispense' ? 'active' : ''}" data-tab="meds" onclick="switchChartTab('meds')" style="flex:1; font-size:12px;">💊 Meds & Rx</button>
+            <button class="chart-tab-btn ${window._chartTab === 'files' || window._chartTab === 'forms' || window._chartTab === 'documents' ? 'active' : ''}" data-tab="files" onclick="switchChartTab('files')" style="flex:1; font-size:12px;">📁 Files</button>
+            <button class="chart-tab-btn ${window._chartTab === 'financial' ? 'active' : ''}" data-tab="financial" onclick="switchChartTab('financial')" style="flex:1; font-size:12px;">💰 Financial</button>
         </div>
         <div id="chartTabContent"></div>
     `;
@@ -3795,20 +4028,151 @@ function renderChartTabContent() {
     if (!container || !chartPanelData) return;
     const d = chartPanelData;
 
-    if (window._chartTab === 'charting') {
-        renderChartingTab(container, d);
-    } else if (window._chartTab === 'forms') {
-        renderFormsTab(container, d);
-    } else if (window._chartTab === 'documents') {
-        renderDocumentsTab(container, d);
-    } else if (window._chartTab === 'financial') {
+    // Map legacy tab names to consolidated tabs
+    const tab = window._chartTab;
+    if (tab === 'notes' || tab === 'charting') {
+        renderNotesTab(container, d);
+    } else if (tab === 'meds' || tab === 'prescriptions' || tab === 'erx' || tab === 'dispense') {
+        renderMedsRxTab(container, d);
+    } else if (tab === 'files' || tab === 'forms' || tab === 'documents') {
+        renderFilesTab(container, d);
+    } else if (tab === 'financial') {
         renderFinancialTab(container, d);
-    } else if (window._chartTab === 'prescriptions') {
-        renderPrescriptionsTab(container, d);
-    } else if (window._chartTab === 'erx') {
-        renderERxTab(container, d);
-    } else if (window._chartTab === 'dispense') {
-        renderDispenseTab(container, d);
+    }
+}
+
+// ==================== CONSOLIDATED NOTES TAB ====================
+// Combines Charting (SOAP notes) + inline scribe recording
+function renderNotesTab(container, d) {
+    const patientId = d.demographics?.patient_id || d.healthie_id || chartPanelPatientId || '';
+    const patientName = (d.demographics?.full_name || 'Patient').replace(/'/g, "\\'");
+    const healthieId = d.healthie_id || '';
+
+    container.innerHTML = `
+        <div style="padding:8px 12px;">
+            <!-- Inline Record / Generate Actions -->
+            <div style="display:flex; gap:8px; margin-bottom:12px;">
+                <button id="chartRecordBtn" onclick="startInlineRecording('${patientId}', '${patientName}', '${healthieId}')" style="flex:1; padding:12px; background:linear-gradient(135deg, #ef4444, #dc2626); color:white; border:none; border-radius:10px; font-size:14px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; box-shadow:0 2px 8px rgba(239,68,68,0.3);">
+                    🎤 Record Visit
+                </button>
+                <button onclick="generateNoteFromChart('${patientId}', '${patientName}')" style="flex:1; padding:12px; background:linear-gradient(135deg, #8b5cf6, #6d28d9); color:white; border:none; border-radius:10px; font-size:14px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; box-shadow:0 2px 8px rgba(139,92,246,0.3);">
+                    ✨ Generate Note
+                </button>
+            </div>
+            <div id="inlineRecordingArea"></div>
+        </div>
+    `;
+
+    // Render the charting content below the action buttons
+    const chartingContainer = document.createElement('div');
+    container.appendChild(chartingContainer);
+    renderChartingTab(chartingContainer, d);
+}
+
+// Inline recording from patient chart — no page navigation
+function startInlineRecording(patientId, patientName, healthieId) {
+    const btn = document.getElementById('chartRecordBtn');
+    const area = document.getElementById('inlineRecordingArea');
+    if (!area) return;
+
+    // Check if already recording
+    if (window._inlineRecording) {
+        stopInlineRecording();
+        return;
+    }
+
+    // Start recording via scribe
+    window._inlineRecording = true;
+    btn.innerHTML = '⏹️ Stop Recording';
+    btn.style.background = 'linear-gradient(135deg, #f59e0b, #d97706)';
+    btn.setAttribute('onclick', 'stopInlineRecording()');
+
+    area.innerHTML = `
+        <div style="padding:10px 12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <div style="width:10px; height:10px; border-radius:50%; background:#ef4444; animation:pulse 1.5s infinite;"></div>
+                <span style="color:#f87171; font-weight:600; font-size:13px;">Recording in progress for ${patientName}...</span>
+            </div>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-top:4px;">Speak naturally. Press Stop when done, then Generate Note.</div>
+        </div>
+    `;
+
+    // Use the existing scribe recording infrastructure
+    startScribeFromChart(patientId, patientName);
+}
+
+function stopInlineRecording() {
+    window._inlineRecording = false;
+    const btn = document.getElementById('chartRecordBtn');
+    const area = document.getElementById('inlineRecordingArea');
+    if (btn) {
+        const patientId = chartPanelData?.demographics?.patient_id || chartPanelData?.healthie_id || '';
+        const patientName = (chartPanelData?.demographics?.full_name || 'Patient').replace(/'/g, "\\'");
+        const healthieId = chartPanelData?.healthie_id || '';
+        btn.innerHTML = '🎤 Record Visit';
+        btn.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
+        btn.setAttribute('onclick', `startInlineRecording('${patientId}', '${patientName}', '${healthieId}')`);
+    }
+    if (area) {
+        area.innerHTML = `
+            <div style="padding:8px 12px; background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:10px; margin-bottom:8px;">
+                <div style="color:#22c55e; font-weight:600; font-size:12px;">✅ Recording stopped. Click "Generate Note" to create the SOAP note.</div>
+            </div>
+        `;
+    }
+}
+
+function generateNoteFromChart(patientId, patientName) {
+    // Navigate to scribe with patient pre-selected and trigger generate
+    startScribeFromChart(patientId, patientName);
+    showToast('Opening Scribe to generate note...', 'info');
+}
+
+// ==================== CONSOLIDATED MEDS & RX TAB ====================
+// Combines Prescriptions + E-Rx + Dispense History
+function renderMedsRxTab(container, d) {
+    // Sub-tabs within Meds & Rx
+    const subTab = window._medsSubTab || 'rx';
+
+    container.innerHTML = `
+        <div style="display:flex; gap:4px; padding:6px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <button class="chart-subtab ${subTab === 'rx' ? 'active' : ''}" onclick="window._medsSubTab='rx'; renderChartTabContent();" style="flex:1; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'rx' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">💊 Medications</button>
+            <button class="chart-subtab ${subTab === 'erx' ? 'active' : ''}" onclick="window._medsSubTab='erx'; renderChartTabContent();" style="flex:1; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'erx' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">📝 E-Prescribe</button>
+            <button class="chart-subtab ${subTab === 'dispense' ? 'active' : ''}" onclick="window._medsSubTab='dispense'; renderChartTabContent();" style="flex:1; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'dispense' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">💉 Dispense Hx</button>
+        </div>
+    `;
+
+    const subContainer = document.createElement('div');
+    container.appendChild(subContainer);
+
+    if (subTab === 'rx') {
+        renderPrescriptionsTab(subContainer, d);
+    } else if (subTab === 'erx') {
+        renderERxTab(subContainer, d);
+    } else if (subTab === 'dispense') {
+        renderDispenseTab(subContainer, d);
+    }
+}
+
+// ==================== CONSOLIDATED FILES TAB ====================
+// Combines Forms + Documents
+function renderFilesTab(container, d) {
+    const subTab = window._filesSubTab || 'forms';
+
+    container.innerHTML = `
+        <div style="display:flex; gap:4px; padding:6px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <button class="chart-subtab ${subTab === 'forms' ? 'active' : ''}" onclick="window._filesSubTab='forms'; renderChartTabContent();" style="flex:1; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'forms' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">📝 Intake Forms</button>
+            <button class="chart-subtab ${subTab === 'docs' ? 'active' : ''}" onclick="window._filesSubTab='docs'; renderChartTabContent();" style="flex:1; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'docs' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">📁 Documents</button>
+        </div>
+    `;
+
+    const subContainer = document.createElement('div');
+    container.appendChild(subContainer);
+
+    if (subTab === 'forms') {
+        renderFormsTab(subContainer, d);
+    } else if (subTab === 'docs') {
+        renderDocumentsTab(subContainer, d);
     }
 }
 
@@ -4400,6 +4764,35 @@ function renderFormsTab(container, d) {
     });
 }
 
+// ==================== DOB HELPERS ====================
+// Convert YYYY-MM-DD → MM/DD/YYYY for display in edit forms
+function formatDobForEdit(isoDate) {
+    if (!isoDate) return '';
+    const m = String(isoDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return isoDate;
+    return `${m[2]}/${m[3]}/${m[1]}`;
+}
+
+// Convert MM/DD/YYYY → YYYY-MM-DD for saving to DB/Healthie
+function parseDobToISO(display) {
+    if (!display) return '';
+    const m = String(display).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (!m) return display; // fallback: return as-is if already ISO or unrecognized
+    return `${m[3]}-${m[1]}-${m[2]}`;
+}
+
+// Auto-insert slashes as user types: 01 → 01/, 01/15 → 01/15/
+function autoFormatDob(input) {
+    let v = input.value.replace(/[^\d]/g, '');
+    if (v.length > 8) v = v.slice(0, 8);
+    if (v.length >= 4) {
+        v = v.slice(0, 2) + '/' + v.slice(2, 4) + '/' + v.slice(4);
+    } else if (v.length >= 2) {
+        v = v.slice(0, 2) + '/' + v.slice(2);
+    }
+    input.value = v;
+}
+
 // ==================== EDIT DEMOGRAPHICS FORM ====================
 // Complete replacement for showEditDemographicsForm() in app.js
 
@@ -4441,7 +4834,7 @@ function showEditDemographicsForm() {
                 </div>
                 <div>
                     <label style="color:var(--text-tertiary); font-size:11px; text-transform:uppercase; display:block; margin-bottom:4px; font-weight:600;">Date of Birth</label>
-                    <input id="editDob" type="date" value="${demo.dob || ''}" style="width:100%; padding:8px 10px; border-radius:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:14px; box-sizing:border-box;">
+                    <input id="editDob" type="text" inputmode="numeric" value="${demo.dob ? formatDobForEdit(demo.dob) : ''}" placeholder="MM/DD/YYYY" maxlength="10" oninput="autoFormatDob(this)" style="width:100%; padding:8px 10px; border-radius:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:14px; box-sizing:border-box;">
                 </div>
                 <div>
                     <label style="color:var(--text-tertiary); font-size:11px; text-transform:uppercase; display:block; margin-bottom:4px; font-weight:600;">Gender</label>
@@ -4548,7 +4941,7 @@ async function saveEditedDemographics() {
         first_name: firstName,
         last_name: lastName,
         preferred_name: document.getElementById('editPreferredName')?.value?.trim() || '',
-        dob: document.getElementById('editDob')?.value || '',
+        dob: parseDobToISO(document.getElementById('editDob')?.value) || '',
         gender: document.getElementById('editGender')?.value || '',
         phone_primary: document.getElementById('editPhone')?.value?.trim() || '',
         email: document.getElementById('editEmail')?.value?.trim() || '',
@@ -4576,11 +4969,16 @@ async function saveEditedDemographics() {
 
         if (result?.success) {
             const syncStatus = [];
-            if (result.gmh_synced) syncStatus.push('GMH Dashboard');
-            if (result.healthie_synced) syncStatus.push('Healthie');
-            if (result.ghl_synced) syncStatus.push('GHL');
+            if (result.gmh_synced) syncStatus.push('GMH ✅');
+            if (result.healthie_synced) syncStatus.push('Healthie ✅');
+            else if (result.healthie_error) syncStatus.push('Healthie ❌');
+            if (result.ghl_synced) syncStatus.push('GHL ✅');
 
-            showToast(`✅ Saved to: ${syncStatus.join(', ')}`, 'success');
+            if (result.healthie_error) {
+                showToast(`⚠️ Saved locally but Healthie error: ${result.healthie_error}`, 'error');
+            } else {
+                showToast(`✅ Saved to: ${syncStatus.join(', ')}`, 'success');
+            }
 
             // Reload chart data to show updated info
             if (chartPanelPatientId) {
@@ -4982,7 +5380,10 @@ function renderFinancialTab(container, d) {
 
     const formatCurrency = (amount) => {
         if (!amount) return '$0.00';
-        return `$${parseFloat(amount).toFixed(2)}`;
+        const cleaned = String(amount).replace(/[^0-9.\-]/g, '');
+        const num = parseFloat(cleaned);
+        if (isNaN(num)) return String(amount);
+        return `$${num.toFixed(2)}`;
     };
 
     container.innerHTML = `
@@ -5080,7 +5481,10 @@ function renderDispenseTab(container, d) {
 
     const formatCurrency = (amount) => {
         if (!amount) return '$0.00';
-        return `$${parseFloat(amount).toFixed(2)}`;
+        const cleaned = String(amount).replace(/[^0-9.\-]/g, '');
+        const num = parseFloat(cleaned);
+        if (isNaN(num)) return String(amount);
+        return `$${num.toFixed(2)}`;
     };
 
     container.innerHTML = `
@@ -5902,7 +6306,7 @@ function renderPatientsView(container) {
         const pType = formatClientType(p.client_type_key || p.client_type || '');
         return `
                         <div class="recent-patient-card" onclick="selectPatient('${p.id || p.patient_id}')">
-                            <div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>
+                            ${p.avatar_url ? `<div class="patient-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>`}
                             <div class="recent-patient-name">${name}</div>
                             ${pType ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${pType}</div>` : ''}
                         </div>
@@ -5980,7 +6384,7 @@ function renderPatientListItem(p) {
 
     return `
         <div class="patient-list-item" onclick="selectPatient('${p.id || p.patient_id}')">
-            <div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>
+            ${p.avatar_url ? `<div class="patient-list-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>`}
             <div class="patient-list-info">
                 <div class="patient-list-name">${sanitize(name)}
                     ${hasHealthie ? '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:#22c55e; font-weight:500;">✓ Healthie</span>' : '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(239,68,68,0.1); color:#ef4444; font-weight:500;">✗ Not linked</span>'}
@@ -6037,7 +6441,7 @@ async function selectPatient(id) {
     detail.innerHTML = `
         <div class="patient-detail">
             <div class="patient-detail-header">
-                <div class="patient-detail-avatar" style="background:${color}" id="patientAvatar-${id}">${getInitials(name)}</div>
+                ${patient.avatar_url ? `<div class="patient-detail-avatar" style="background:${color}; overflow:hidden; padding:0;" id="patientAvatar-${id}"><img src="${patient.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-detail-avatar" style="background:${color}" id="patientAvatar-${id}">${getInitials(name)}</div>`}
                 <div style="flex:1">
                     <div class="patient-detail-name">${sanitize(name)}</div>
                     ${patient.dob ? `<div class="patient-detail-dob">DOB: ${formatDateDisplay(patient.dob)}</div>` : ''}
@@ -7448,7 +7852,11 @@ async function submitAllVitals(patientId) {
             return;
         }
     }
-    if (bpSys && bpDia) vitals.push({ metric_type: 'blood_pressure', value: bpSys + '/' + bpDia, unit: 'mmHg', blood_pressure_systolic: bpSys, blood_pressure_diastolic: bpDia });
+    // FIX(2026-03-19): Send BP as two separate entries — Healthie metric_stat is numeric, can't store "120/80"
+    if (bpSys && bpDia) {
+        vitals.push({ metric_type: 'blood_pressure_systolic', value: bpSys, unit: 'mmHg' });
+        vitals.push({ metric_type: 'blood_pressure_diastolic', value: bpDia, unit: 'mmHg' });
+    }
     var pulse = document.getElementById('vPulse')?.value;
     if (pulse) vitals.push({ metric_type: 'heart_rate', value: pulse, unit: 'bpm' });
     var rr = document.getElementById('vRR')?.value;
@@ -7491,7 +7899,8 @@ async function submitAllVitals(patientId) {
                     var hid = chartPanelData && chartPanelData.healthie_id;
                     if (hid) {
                         var categoryMap = {
-                            blood_pressure: 'Blood Pressure',
+                            blood_pressure_systolic: 'Blood Pressure Systolic',
+                            blood_pressure_diastolic: 'Blood Pressure Diastolic',
                             heart_rate: 'Heart Rate',
                             respiration_rate: 'Respiration Rate',
                             temperature: 'Temperature',
@@ -8475,7 +8884,7 @@ function openEditDemographicsModal(patientId) {
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;">
                         <div>
                             <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">DOB</label>
-                            <input id="editDOB" type="date" value="${demo.dob || ''}" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
+                            <input id="editDOB" type="text" inputmode="numeric" value="${demo.dob ? formatDobForEdit(demo.dob) : ''}" placeholder="MM/DD/YYYY" maxlength="10" oninput="autoFormatDob(this)" style="width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:14px; font-family:inherit;">
                         </div>
                         <div>
                             <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; font-weight:600;">Gender</label>
@@ -8525,7 +8934,7 @@ async function submitDemographicsEdit(patientId) {
     const payload = {
         first_name: document.getElementById('editFirstName')?.value?.trim(),
         last_name: document.getElementById('editLastName')?.value?.trim(),
-        dob: document.getElementById('editDOB')?.value,
+        dob: parseDobToISO(document.getElementById('editDOB')?.value) || '',
         gender: document.getElementById('editGender')?.value,
         phone_primary: document.getElementById('editPhone')?.value?.trim(),
         email: document.getElementById('editEmail')?.value?.trim(),

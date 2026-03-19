@@ -44,13 +44,30 @@ export async function POST(request: NextRequest) {
             }, { status: 400 });
         }
 
+        // FIX(2026-03-19): Resolve patient_id — may be UUID or Healthie numeric ID
+        let resolvedPatientId = patient_id;
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patient_id);
+        if (!isUuid) {
+            const [resolved] = await query<{ patient_id: string }>(
+                `SELECT p.patient_id FROM patients p
+                 LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id AND hc.is_active = true
+                 WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1
+                 LIMIT 1`,
+                [patient_id]
+            );
+            if (!resolved) {
+                return NextResponse.json({ success: false, error: 'Patient not found for ID: ' + patient_id }, { status: 404 });
+            }
+            resolvedPatientId = resolved.patient_id;
+        }
+
         // Get patient info
         const patientRows = await query<{
             full_name: string;
             email: string;
         }>(
             `SELECT full_name, email FROM patients WHERE patient_id = $1::uuid LIMIT 1`,
-            [patient_id]
+            [resolvedPatientId]
         );
 
         if (patientRows.length === 0) {
@@ -64,9 +81,9 @@ export async function POST(request: NextRequest) {
 
         // Route to appropriate Stripe account
         if (stripe_account === 'healthie') {
-            return await chargeViaHealthie(patient_id, patient.full_name, amount, description);
+            return await chargeViaHealthie(resolvedPatientId, patient.full_name, amount, description);
         } else {
-            return await chargeViaDirectStripe(patient_id, patient.full_name, patient.email, amount, description);
+            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, description);
         }
 
     } catch (error: any) {

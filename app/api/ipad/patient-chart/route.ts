@@ -90,6 +90,42 @@ export async function GET(request: NextRequest) {
         }
         if (!healthieId) healthieId = patientId; // last resort fallback
 
+        // FIX(2026-03-19): Auto-provision patient if they exist in Healthie but not locally.
+        // This handles patients created directly in Healthie that were never synced.
+        if (!patient && !isUuid) {
+            try {
+                // Quick Healthie lookup to confirm this is a real client
+                const hCheck = await safeHealthieQuery<{ user: { id: string; first_name: string; last_name: string; email: string | null; phone_number: string | null; dob: string | null; gender: string | null } | null }>('autoProvision', `
+                    query CheckUser($id: ID) {
+                        user(id: $id) { id first_name last_name email phone_number dob gender }
+                    }
+                `, { id: healthieId });
+
+                const hu = hCheck?.user;
+                if (hu) {
+                    const fullName = `${hu.first_name || ''} ${hu.last_name || ''}`.trim() || 'Unknown';
+                    const [newPatient] = await query<any>(
+                        `INSERT INTO patients (full_name, email, phone_primary, dob, gender, healthie_client_id, status_key, created_at, updated_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, 'active', NOW(), NOW())
+                         RETURNING *`,
+                        [fullName, hu.email || null, hu.phone_number || null, hu.dob || null, hu.gender || null, hu.id]
+                    );
+                    if (newPatient) {
+                        await query(
+                            `INSERT INTO healthie_clients (patient_id, healthie_client_id, match_method, is_active, created_at, updated_at)
+                             VALUES ($1, $2, 'auto_provision_chart', TRUE, NOW(), NOW())
+                             ON CONFLICT (healthie_client_id) DO UPDATE SET patient_id = EXCLUDED.patient_id, is_active = TRUE, updated_at = NOW()`,
+                            [newPatient.patient_id, hu.id]
+                        );
+                        patient = newPatient;
+                        console.log(`[Patient Chart] Auto-provisioned patient: ${fullName} (Healthie: ${hu.id} → ${newPatient.patient_id})`);
+                    }
+                }
+            } catch (provisionErr: any) {
+                console.warn('[Patient Chart] Auto-provision failed:', provisionErr?.message || provisionErr);
+            }
+        }
+
         // ✅ Enhanced demographics with GMH dashboard fields
         const localData: any = {
             demographics: {
@@ -332,10 +368,11 @@ export async function GET(request: NextRequest) {
             `, { clientId: healthieId }),
         ]);
 
-        // 3. Fetch local scribe history — only if we have a valid uuid patient_id
+        // 3. Fetch local scribe history — check both UUID and Healthie ID
+        // FIX(2026-03-19): Scribe sessions created before auto-provision may use Healthie ID
         let scribeHistory: any[] = [];
         const localPatientId = patient?.patient_id;
-        if (localPatientId) {
+        if (localPatientId || healthieId) {
             scribeHistory = await query<any>(`
                 SELECT
                     ss.session_id, ss.visit_type, ss.status, ss.created_at,
@@ -343,10 +380,10 @@ export async function GET(request: NextRequest) {
                     sn.icd10_codes, sn.cpt_codes, sn.full_note_text
                 FROM scribe_sessions ss
                 LEFT JOIN scribe_notes sn ON ss.session_id = sn.session_id
-                WHERE ss.patient_id = $1
+                WHERE ss.patient_id = $1 OR ss.patient_id = $2
                 ORDER BY ss.created_at DESC
                 LIMIT 20
-            `, [localPatientId]);
+            `, [localPatientId || '', healthieId || '']);
         }
 
         // 4. Fetch Direct Stripe payment methods for this patient
@@ -399,10 +436,10 @@ export async function GET(request: NextRequest) {
                     recorded_by_email,
                     notes as description
                 FROM patient_metrics
-                WHERE patient_id = $1
+                WHERE patient_id = $1 OR patient_id = $2
                 ORDER BY recorded_at DESC
                 LIMIT 50
-            `, [localPatientId]);
+            `, [localPatientId || '', healthieId || '']);
             console.log(`[Patient Chart] Found ${localVitals.length} local vitals for patient ${localPatientId}`);
         } catch (err) {
             console.warn(`[Patient Chart] Failed to query local vitals:`, err instanceof Error ? err.message : err);
@@ -503,11 +540,11 @@ export async function GET(request: NextRequest) {
                     v.remaining_volume_ml
                 FROM dispenses d
                 LEFT JOIN vials v ON d.vial_id = v.vial_id
-                WHERE d.patient_id = $1
+                WHERE (d.patient_id = $1 OR d.patient_id = $2)
                     AND d.signature_status = 'signed'
                 ORDER BY d.dispense_date DESC
                 LIMIT 10
-            `, [localPatientId]);
+            `, [localPatientId || '', healthieId || '']);
             console.log(`[Patient Chart] Found ${trtDispenses.length} TRT dispenses for patient ${localPatientId}`);
         } catch (err) {
             console.warn(`[Patient Chart] Failed to query TRT dispenses:`, err instanceof Error ? err.message : err);
@@ -540,26 +577,33 @@ export async function GET(request: NextRequest) {
             peptideDispenses = [];
         }
 
-        // Merge Healthie user profile data into demographics (fills in name, dob, etc.)
+        // FIX(2026-03-19): Healthie is the source of truth for demographics.
+        // Always prefer Healthie data over stale local DB values for core fields.
         const hp = userProfile?.user;
         if (hp) {
             const demographics = localData.demographics;
-            if (!demographics.full_name && (hp.first_name || hp.last_name)) {
+            // Core demographics — Healthie wins (user enters data in Healthie directly)
+            if (hp.first_name || hp.last_name) {
                 demographics.full_name = `${hp.first_name || ''} ${hp.last_name || ''}`.trim();
+                demographics.first_name = hp.first_name || '';
+                demographics.last_name = hp.last_name || '';
             }
-            if (!demographics.dob && hp.dob) demographics.dob = hp.dob;
-            if (!demographics.phone_primary && hp.phone_number) demographics.phone_primary = hp.phone_number;
-            if (!demographics.email && hp.email) demographics.email = hp.email;
-            if (!demographics.gender && hp.gender) demographics.gender = hp.gender;
+            if (hp.dob) demographics.dob = hp.dob;
+            if (hp.phone_number) demographics.phone_primary = hp.phone_number;
+            if (hp.email) demographics.email = hp.email;
+            if (hp.gender) demographics.gender = hp.gender;
             // Additional fields from expanded profile
             demographics.sex = hp.sex || demographics.sex || '';
             demographics.pronouns = hp.pronouns || demographics.pronouns || '';
             demographics.height = hp.height || demographics.height || '';
             demographics.weight = hp.weight || demographics.weight || '';
             demographics.legal_name = hp.legal_name || '';
-            // Address
+            demographics.preferred_name = hp.preferred_name || demographics.preferred_name || '';
+            // Address — Healthie location is authoritative
             if (hp.location) {
+                demographics.address_line_1 = hp.location.line1 || '';
                 demographics.address_line1 = hp.location.line1 || '';
+                demographics.address_line_2 = hp.location.line2 || '';
                 demographics.address_line2 = hp.location.line2 || '';
                 demographics.city = hp.location.city || '';
                 demographics.state = hp.location.state || '';
@@ -567,11 +611,17 @@ export async function GET(request: NextRequest) {
                 demographics.country = hp.location.country || '';
                 demographics.location_id = hp.location.id || '';
             }
-            // Insurance — TODO: Use insurance_authorization field in future
 
             // Tags and group
             demographics.tags = hp.active_tags || [];
             demographics.user_group = hp.user_group?.name || '';
+
+            // Save avatar_url to local DB so patient list can show photos
+            if (hp.avatar_url && patient?.patient_id) {
+                query('UPDATE patients SET avatar_url = $1 WHERE patient_id = $2 AND (avatar_url IS NULL OR avatar_url != $1)',
+                    [hp.avatar_url, patient.patient_id]
+                ).catch(() => {}); // fire-and-forget
+            }
         }
 
         return NextResponse.json({
@@ -612,10 +662,10 @@ export async function GET(request: NextRequest) {
 
 // Direct Healthie fetch — bypasses rate limiter to prevent zombie connection buildup.
 // Uses AbortController for proper cancellation of timed-out requests.
-const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
-const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
-
+// FIX(2026-03-19): Read env vars at call time, not module load time
 async function safeHealthieQuery<T>(label: string, gql: string, variables: Record<string, unknown>): Promise<T | null> {
+    const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
+    const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
     const controller = new AbortController();
     const timeout = setTimeout(() => {
         controller.abort();
@@ -632,7 +682,9 @@ async function safeHealthieQuery<T>(label: string, gql: string, variables: Recor
             },
             body: JSON.stringify({ query: gql, variables }),
             signal: controller.signal,
-        });
+            // FIX(2026-03-19): Disable Next.js fetch cache — stale cached responses were returning null for location/dob
+            cache: 'no-store',
+        } as any);
 
         clearTimeout(timeout);
 

@@ -228,7 +228,7 @@ function enforceLabStatusOnPatientStatus(
 
 export async function fetchPatientDataEntries(): Promise<PatientDataEntryRow[]> {
   return query<PatientDataEntryRow>(
-    `SELECT v.*, p.healthie_client_id, p.ghl_contact_id
+    `SELECT v.*, p.healthie_client_id, p.ghl_contact_id, p.avatar_url
      FROM patient_data_entry_v v
      LEFT JOIN patients p ON v.patient_id = p.patient_id
      ORDER BY

@@ -43,6 +43,20 @@ export async function POST(request: NextRequest) {
         const Stripe = require('stripe');
         const stripe = new Stripe(stripeSecretKey);
 
+        // FIX(2026-03-19): Resolve patient_id — may be UUID or Healthie numeric ID
+        let resolvedPatientId = patient_id;
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patient_id);
+        if (!isUuid) {
+            const [resolved] = await query<{ patient_id: string }>(
+                `SELECT p.patient_id FROM patients p
+                 LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id AND hc.is_active = true
+                 WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1
+                 LIMIT 1`,
+                [patient_id]
+            );
+            if (resolved) resolvedPatientId = resolved.patient_id;
+        }
+
         // Get patient info
         const patientRows = await query<{
             full_name: string;
@@ -53,7 +67,7 @@ export async function POST(request: NextRequest) {
              FROM patients
              WHERE patient_id = $1::uuid
              LIMIT 1`,
-            [patient_id]
+            [resolvedPatientId]
         );
 
         if (patientRows.length === 0) {
@@ -76,9 +90,9 @@ export async function POST(request: NextRequest) {
             const customer = await stripe.customers.create({
                 email: patient.email || undefined,
                 name: patient.full_name,
-                description: `GMH Patient ID: ${patient_id}`,
+                description: `GMH Patient ID: ${resolvedPatientId}`,
                 metadata: {
-                    patient_id: patient_id,
+                    patient_id: resolvedPatientId,
                     healthie_id: healthie_id,
                     source: 'GMH iPad App - Dual Card Save'
                 }
@@ -88,7 +102,7 @@ export async function POST(request: NextRequest) {
             // Save to database
             await query(
                 `UPDATE patients SET stripe_customer_id = $1 WHERE patient_id = $2::uuid`,
-                [stripeCustomerId, patient_id]
+                [stripeCustomerId, resolvedPatientId]
             );
 
             console.log(`[Dual Card Save] Created Stripe customer: ${stripeCustomerId}`);

@@ -14,8 +14,25 @@ export async function PUT(
 ) {
     try {
         const user = await requireApiUser(request, 'write');
-        const patientId = params.id;
+        const rawId = (await params).id;
         const body = await request.json();
+
+        // FIX(2026-03-19): iPad may pass Healthie ID (numeric) instead of UUID patient_id.
+        let patientId = rawId;
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId);
+        if (!isUuid) {
+            const [resolved] = await query<{ patient_id: string }>(
+                `SELECT p.patient_id FROM patients p
+                 LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id AND hc.is_active = true
+                 WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1
+                 LIMIT 1`,
+                [rawId]
+            );
+            if (!resolved) {
+                return NextResponse.json({ error: 'Patient not found for ID: ' + rawId }, { status: 404 });
+            }
+            patientId = resolved.patient_id;
+        }
 
         const {
             first_name, last_name, dob, gender,
@@ -30,7 +47,7 @@ export async function PUT(
 
         const fullName = `${first_name} ${last_name}`;
 
-        // 1. Update local GMH DB (note: patients table doesn't have first_name/last_name columns, only full_name)
+        // 1. Update local GMH DB
         await query(
             `UPDATE patients SET
                 full_name = $2,
@@ -47,8 +64,9 @@ export async function PUT(
                 regimen || null]
         );
 
-        // 2. Sync to Healthie
+        // 2. Sync to Healthie — updateClient for core fields, upsertClientLocation for address
         let healthieSynced = false;
+        let healthieError: string | null = null;
         try {
             const patientRows = await query(
                 `SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1`,
@@ -57,7 +75,13 @@ export async function PUT(
             const healthieClientId = (patientRows as any[])[0]?.healthie_client_id;
 
             if (healthieClientId) {
-                await healthieGraphQL(`
+                // FIX(2026-03-19): updateClient mutation — check response messages for Healthie validation errors
+                const updateResult = await healthieGraphQL<{
+                    updateClient: {
+                        user: { id: string; first_name: string; last_name: string } | null;
+                        messages: { field: string; message: string }[] | null;
+                    };
+                }>(`
                     mutation UpdateClient(
                         $id: ID, $first_name: String, $last_name: String, $dob: String,
                         $gender: String, $phone_number: String, $email: String,
@@ -90,9 +114,19 @@ export async function PUT(
                     weight: weight || undefined,
                     preferred_name: preferred_name || undefined,
                 });
-                healthieSynced = true;
 
-                // FIX(2026-03-16): Sync address via upsertClientLocation — updateClient ignores location fields
+                // Check for Healthie validation messages
+                const messages = updateResult?.updateClient?.messages;
+                if (messages && messages.length > 0) {
+                    const msgText = messages.map(m => `${m.field}: ${m.message}`).join(', ');
+                    console.warn('[demographics] Healthie updateClient validation:', msgText);
+                    healthieError = msgText;
+                } else {
+                    healthieSynced = true;
+                    console.log(`[demographics] ✅ Synced core demographics to Healthie for ${healthieClientId}`);
+                }
+
+                // Sync address via upsertClientLocation — updateClient ignores location fields
                 const hasAddress = address_line_1 || city || state || zip;
                 if (hasAddress) {
                     try {
@@ -107,14 +141,22 @@ export async function PUT(
                                 zip: zip || undefined,
                                 country: 'US',
                             });
+                            console.log(`[demographics] ✅ Synced address to Healthie for ${healthieClientId}`);
+                        } else {
+                            console.warn('[demographics] Could not create Healthie client for location sync');
                         }
-                    } catch (locErr) {
-                        console.warn('[demographics] Healthie location sync failed:', locErr);
+                    } catch (locErr: any) {
+                        console.error('[demographics] Healthie location sync failed:', locErr?.message || locErr);
+                        healthieError = (healthieError ? healthieError + '; ' : '') + 'Address sync failed: ' + (locErr?.message || 'unknown error');
                     }
                 }
+            } else {
+                console.warn('[demographics] No Healthie client ID found for patient', patientId);
+                healthieError = 'No Healthie client ID linked to this patient';
             }
-        } catch (healthieErr) {
-            console.warn('[demographics] Healthie sync failed:', healthieErr);
+        } catch (healthieErr: any) {
+            console.error('[demographics] Healthie sync failed:', healthieErr?.message || healthieErr);
+            healthieError = healthieErr?.message || 'Healthie sync failed';
         }
 
         // 3. Sync to GHL
@@ -157,6 +199,7 @@ export async function PUT(
         return NextResponse.json({
             success: true,
             healthie_synced: healthieSynced,
+            healthie_error: healthieError,
             ghl_synced: ghlSynced,
             gmh_synced: true,
         });

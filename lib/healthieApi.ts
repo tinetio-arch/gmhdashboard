@@ -64,7 +64,8 @@ export async function healthieGraphQL<T = Record<string, unknown>>(
     // Rate limit: wait for a token before making the request
     await healthieRateLimiter.acquire();
 
-    let response = await fetch(apiUrl, { method: 'POST', headers, body });
+    // FIX(2026-03-19): Disable Next.js fetch cache — stale responses caused DoseSpot errors
+    let response = await fetch(apiUrl, { method: 'POST', headers, body, cache: 'no-store' } as any);
 
     // Handle 429 rate limit: backoff and retry once
     if (response.status === 429) {
@@ -72,7 +73,7 @@ export async function healthieGraphQL<T = Record<string, unknown>>(
         const backoffMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 60_000;
         healthieRateLimiter.backoff(backoffMs);
         await healthieRateLimiter.acquire();
-        response = await fetch(apiUrl, { method: 'POST', headers, body });
+        response = await fetch(apiUrl, { method: 'POST', headers, body, cache: 'no-store' } as any);
     }
 
     if (!response.ok) {
