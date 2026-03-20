@@ -91,6 +91,7 @@ export async function POST(request: NextRequest) {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ query: mutation, variables: { input } }),
+                cache: "no-store",
             signal: controller.signal,
         });
 

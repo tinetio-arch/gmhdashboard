@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { denoiseAudioBuffer } from '@/lib/audio-denoise';
 import {
     S3Client,
     PutObjectCommand,
@@ -35,6 +36,7 @@ export async function POST(request: NextRequest) {
         const visitType = (formData.get('visit_type') as string) || 'follow_up';
         const preTranscribed = formData.get('transcript') as string | null;
         const patientName = formData.get('patient_name') as string | null;
+        const encounterDate = formData.get('encounter_date') as string | null;
 
         if (!patientId) {
             return NextResponse.json({ success: false, error: 'patient_id is required' }, { status: 400 });
@@ -92,16 +94,35 @@ export async function POST(request: NextRequest) {
             };
             const ext = extMap[mimeType] || 'webm';
 
+            // ==================== DENOISE AUDIO ====================
+            // RNNoise + ffmpeg noise reduction before uploading to S3
+            // Falls back to raw audio if denoise fails (never blocks the flow)
+            let processedBuffer = buffer;
+            let uploadExt = ext;
+            let uploadMimeType = mimeType;
+
+            if (process.env.SCRIBE_DENOISE_ENABLED !== 'false') {
+                try {
+                    const denoised = await denoiseAudioBuffer(buffer, ext);
+                    processedBuffer = denoised.buffer;
+                    uploadExt = denoised.format; // 'wav'
+                    uploadMimeType = 'audio/wav';
+                    console.log(`[Scribe] Audio denoised: ${ext} → ${uploadExt} in ${denoised.durationMs}ms (${(buffer.length/1024).toFixed(0)}KB → ${(processedBuffer.length/1024).toFixed(0)}KB)`);
+                } catch (denoiseErr: any) {
+                    console.warn('[Scribe] Denoise failed, using original audio:', denoiseErr?.message);
+                }
+            }
+
             const timestamp = Date.now();
-            const s3Key = `scribe/audio/${resolvedPatientId}/${timestamp}.${ext}`;
+            const s3Key = `scribe/audio/${resolvedPatientId}/${timestamp}.${uploadExt}`;
 
             // Upload to S3
             const s3 = new S3Client({ region: AWS_REGION });
             await s3.send(new PutObjectCommand({
                 Bucket: S3_BUCKET,
                 Key: s3Key,
-                Body: buffer,
-                ContentType: mimeType,
+                Body: processedBuffer,
+                ContentType: uploadMimeType,
             }));
             audioS3Key = s3Key;
 
@@ -120,7 +141,7 @@ export async function POST(request: NextRequest) {
                 'flac': 'flac',
                 'm4a': 'mp4',
             };
-            const mediaFormat = awsFormatMap[ext] || 'webm';
+            const mediaFormat = awsFormatMap[uploadExt] || 'webm';
 
             const transcribe = new TranscribeClient({ region: AWS_REGION });
             try {
@@ -158,8 +179,8 @@ export async function POST(request: NextRequest) {
         const [session] = await query<any>(`
             INSERT INTO scribe_sessions
                 (patient_id, appointment_id, visit_type, audio_s3_key,
-                 transcript, transcript_source, status, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 transcript, transcript_source, status, created_by, encounter_date)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
         `, [
             resolvedPatientId,
@@ -170,6 +191,7 @@ export async function POST(request: NextRequest) {
             preTranscribed ? 'manual' : 'aws_transcribe_medical',
             preTranscribed ? 'transcribed' : 'transcribing',               // new status for async
             user.user_id,
+            encounterDate || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }),
         ]);
 
         return NextResponse.json({

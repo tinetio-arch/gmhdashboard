@@ -14,6 +14,7 @@ async function healthieQuery(gql: string, variables: Record<string, unknown> = {
             'Content-Type': 'application/json',
         },
         body: JSON.stringify({ query: gql, variables }),
+                cache: "no-store",
     });
 
     if (!response.ok) {

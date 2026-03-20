@@ -23,7 +23,7 @@ export async function PUT(
         if (!isUuid) {
             const [resolved] = await query<{ patient_id: string }>(
                 `SELECT p.patient_id FROM patients p
-                 LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id AND hc.is_active = true
+                 LEFT JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text AND hc.is_active = true
                  WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1
                  LIMIT 1`,
                 [rawId]
@@ -39,7 +39,19 @@ export async function PUT(
             phone_primary, email,
             address_line_1, address_line_2, city, state, zip,
             regimen, height, weight, preferred_name,
+            interesting_facts,
         } = body;
+
+        // FIX(2026-03-19): If only interesting_facts is being saved (no other demographics fields), do a targeted update
+        const hasOtherFields = dob || gender || phone_primary || email || address_line_1 || city || state || zip || regimen || height || weight;
+        if (interesting_facts !== undefined && !hasOtherFields) {
+            await query(
+                'UPDATE patients SET interesting_facts = $1::text, updated_at = NOW() WHERE patient_id = $2::uuid',
+                [interesting_facts ?? null, String(patientId)]
+            );
+            console.log(`[demographics] Saved interesting_facts for patient ${patientId}`);
+            return NextResponse.json({ success: true, gmh_synced: true, healthie_synced: false, ghl_synced: false });
+        }
 
         if (!first_name || !last_name) {
             return NextResponse.json({ error: 'First and last name required' }, { status: 400 });
@@ -50,18 +62,16 @@ export async function PUT(
         // 1. Update local GMH DB
         await query(
             `UPDATE patients SET
-                full_name = $2,
-                preferred_name = $3,
+                full_name = $2, preferred_name = $3,
                 dob = $4, gender = $5, phone_primary = $6, email = $7,
                 address_line1 = $8, address_line2 = $9, city = $10, state = $11, postal_code = $12,
-                regimen = $13,
-                updated_at = NOW()
+                regimen = $13, interesting_facts = $14, updated_at = NOW()
             WHERE patient_id = $1`,
             [patientId, fullName,
                 preferred_name || null,
                 dob || null, gender || null, phone_primary || null, email || null,
                 address_line_1 || null, address_line_2 || null, city || null, state || null, zip || null,
-                regimen || null]
+                regimen || null, interesting_facts !== undefined ? (interesting_facts || null) : null]
         );
 
         // 2. Sync to Healthie — updateClient for core fields, upsertClientLocation for address

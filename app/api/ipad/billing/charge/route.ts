@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
         if (!isUuid) {
             const [resolved] = await query<{ patient_id: string }>(
                 `SELECT p.patient_id FROM patients p
-                 LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id AND hc.is_active = true
+                 LEFT JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text AND hc.is_active = true
                  WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1
                  LIMIT 1`,
                 [patient_id]

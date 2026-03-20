@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
         }
 
         const sessions = await query<any>(`
-            SELECT 
+            SELECT
                 ss.session_id,
                 ss.patient_id,
                 p.full_name as patient_name,
@@ -36,6 +36,7 @@ export async function GET(request: NextRequest) {
                 ss.transcript_source,
                 ss.created_at,
                 ss.updated_at,
+                ss.encounter_date,
                 CASE WHEN ss.transcript IS NOT NULL THEN LENGTH(ss.transcript) ELSE 0 END as transcript_length,
                 sn.note_id,
                 sn.healthie_status,

@@ -450,11 +450,12 @@ function applyRolePermissions() {
         }
     }
 
-    // Add CEO tab for providers and admin emails only (prevent duplicates)
+    // CEO tab — Phil Schafer ONLY
+    const isPhil = currentUser.email === 'admin@nowoptimal.com';
     const isProviderOrAdmin = currentUser.is_provider === true
         || currentUser.email === 'admin@granitemountainhealth.com'
         || currentUser.email === 'admin@nowoptimal.com';
-    if (perms.can_view_ceo_dashboard && isProviderOrAdmin && nav && !nav.querySelector('[data-tab="ceo"]')) {
+    if (isPhil && nav && !nav.querySelector('[data-tab="ceo"]')) {
         const ceoTab = document.createElement('button');
         ceoTab.className = 'tab-item';
         ceoTab.dataset.tab = 'ceo';
@@ -533,11 +534,8 @@ function switchTab(tab) {
     if (!validTabs.includes(tab)) tab = 'today';
     // RBAC: prevent access to tabs user doesn't have permission for
     if (currentUser?.permissions) {
-        const ceoAllowed = currentUser.permissions.can_view_ceo_dashboard
-            && (currentUser.is_provider === true
-                || currentUser.email === 'admin@granitemountainhealth.com'
-                || currentUser.email === 'admin@nowoptimal.com');
-        if (tab === 'ceo' && !ceoAllowed) tab = 'today';
+        // CEO tab — Phil Schafer ONLY
+        if (tab === 'ceo' && currentUser.email !== 'admin@nowoptimal.com') tab = 'today';
         if (tab === 'scribe' && !currentUser.permissions.can_use_scribe) tab = 'today';
         if (tab === 'schedule' && !currentUser.permissions.can_use_scribe) tab = 'today';
     }
@@ -1182,7 +1180,7 @@ function renderTodayView(container) {
             </div>
         </div>
 
-        ${(currentUser?.permissions?.can_view_revenue && (revenue.today >= 0 || revenue.week >= 0 || revenue.month >= 0)) ? `
+        ${(currentUser?.email === 'admin@nowoptimal.com' && (revenue.today >= 0 || revenue.week >= 0 || revenue.month >= 0)) ? `
             <div class="section-header">
                 <h2>Revenue</h2>
             </div>
@@ -1905,9 +1903,13 @@ function renderScribeList(container) {
 function renderScribeSessionCard(session) {
     const name = session.patient_name || 'Unknown Patient';
     const visitType = (session.visit_type || 'follow_up').replace(/_/g, ' ');
-    const time = session.created_at ? new Date(session.created_at).toLocaleString('en-US', {
-        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+    const encounterDateStr = session.encounter_date
+        ? new Date(session.encounter_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Phoenix' })
+        : null;
+    const timeStr = session.created_at ? new Date(session.created_at).toLocaleString('en-US', {
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Phoenix'
     }) : '';
+    const time = encounterDateStr ? `${encounterDateStr} · ${timeStr}` : timeStr;
     const status = session.status || 'recording';
     const statusColors = {
         recording: 'var(--red)', transcribed: 'var(--yellow)', transcribing: 'var(--cyan)',
@@ -2128,6 +2130,14 @@ function renderScribeNewSession(container) {
                         </button>
                     `).join('')}
                 </div>
+            </div>
+            <div class="scribe-field">
+                <label>Encounter Date</label>
+                <input type="date" id="scribeEncounterDate"
+                       value="${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' })}"
+                       max="${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' })}"
+                       style="padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text-primary); font-size:14px; width:100%;" />
+                <p style="font-size:12px; color:var(--text-tertiary); margin-top:4px;">Change to backdate notes for past visits</p>
             </div>
             <div class="scribe-field">
                 <label>Input Method</label>
@@ -2666,6 +2676,8 @@ async function attemptScribeUpload(blob, filename) {
     formData.append('patient_id', scribePatientId);
     formData.append('visit_type', scribeVisitType);
     formData.append('patient_name', scribePatientName || '');
+    const encounterDateEl = document.getElementById('scribeEncounterDate');
+    if (encounterDateEl?.value) formData.append('encounter_date', encounterDateEl.value);
 
     try {
         const resp = await fetch('/ops/api/scribe/transcribe/', {
@@ -2819,6 +2831,8 @@ async function submitManualTranscript() {
     formData.append('visit_type', scribeVisitType);
     formData.append('patient_name', scribePatientName || '');
     formData.append('transcript', textarea.value.trim());
+    const encounterDateEl = document.getElementById('scribeEncounterDate');
+    if (encounterDateEl?.value) formData.append('encounter_date', encounterDateEl.value);
 
     try {
         const resp = await fetch('/ops/api/scribe/transcribe/', {
@@ -3040,7 +3054,7 @@ function renderScribeReview(container) {
 
         <div class="scribe-session-summary">
             <div class="scribe-session-patient">${activeScribeSession.patient_name || getPatientNameById(scribePatientId)}</div>
-            <div class="scribe-session-meta">${(activeScribeSession.visit_type || '').replace(/_/g, ' ')} · ${isSubmitted ? '✅ Submitted to Healthie' : '📝 Draft'}</div>
+            <div class="scribe-session-meta">${(activeScribeSession.visit_type || '').replace(/_/g, ' ')} · ${activeScribeSession.encounter_date ? new Date(activeScribeSession.encounter_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' · ' : ''}${isSubmitted ? '✅ Submitted to Healthie' : '📝 Draft'}</div>
         </div>
 
         <div class="soap-sections">
@@ -3173,6 +3187,30 @@ async function submitNoteToHealthie() {
 
         if (result?.success) {
             showToast('Note submitted to Healthie! ✅', 'success');
+
+            // Auto-advance appointment to "Completed"
+            var patId = activeScribeSession?.patient_id || '';
+            var patHealthieId = activeScribeSession?.healthie_id || chartPanelData?.healthie_id || '';
+            if (patId || patHealthieId) {
+                // Load schedule data if not already loaded
+                if (!scheduleAllData || scheduleAllData.length === 0) {
+                    try {
+                        var schedResp = await apiFetch('/ops/api/ipad/schedule/');
+                        if (schedResp?.success) scheduleAllData = schedResp.patients || [];
+                    } catch (e) { /* best effort */ }
+                }
+                if (scheduleAllData && scheduleAllData.length > 0) {
+                    var completedAppt = scheduleAllData.find(function(a) {
+                        return (a.patient_id === patId || a.healthie_id === patId ||
+                                a.patient_id === patHealthieId || a.healthie_id === patHealthieId)
+                            && a.appointment_status !== 'Completed' && a.appointment_status !== 'No Show' && a.appointment_status !== 'Cancelled';
+                    });
+                    if (completedAppt && completedAppt.appointment_id) {
+                        updateApptStatus(completedAppt.appointment_id, 'Completed');
+                    }
+                }
+            }
+
             await loadScribeSessions();
             activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
             renderCurrentTab();
@@ -3215,15 +3253,23 @@ async function aiEditNote() {
             }
             input.value = '';
             showToast('AI edit applied!', 'success');
-            await loadScribeSessions();
-            activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession?.session_id) || activeScribeSession;
-            renderCurrentTab();
+            try {
+                await loadScribeSessions();
+                activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession?.session_id) || activeScribeSession;
+                renderCurrentTab();
+            } catch (renderErr) {
+                console.error('[Scribe:AI-Edit] Edit succeeded but re-render failed:', renderErr?.message, renderErr?.stack);
+                // Edit was saved — don't show "failed" toast, just warn
+                showToast('Edit saved — tap note to refresh view', 'info');
+            }
         } else {
+            console.error('[Scribe:AI-Edit] Server returned failure:', result?.error, JSON.stringify(result));
             showToast(result?.error || 'AI edit failed', 'error');
         }
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
-        showToast('AI edit failed', 'error');
+        console.error('[Scribe:AI-Edit] Request failed:', e?.message, e?.stack);
+        showToast('AI edit failed: ' + (e?.message || 'unknown error'), 'error');
     }
 }
 
@@ -3584,6 +3630,195 @@ async function loadChartData(patientId) {
     }
 }
 
+// ==================== ALLERGIES ====================
+async function markNKDA() {
+    const healthieId = chartPanelData?.healthie_id || chartPanelData?.demographics?.healthie_client_id || chartPanelPatientId;
+    if (!healthieId) { showToast('No patient ID', 'error'); return; }
+    if (!confirm('Mark this patient as NKDA (No Known Drug Allergies)?')) return;
+
+    const enteredBy = currentUser?.display_name || currentUser?.email?.split('@')[0] || 'Staff';
+    try {
+        const resp = await apiFetch('/ops/api/ipad/patient-data/', {
+            method: 'POST',
+            body: JSON.stringify({
+                action: 'add_allergy',
+                healthie_id: healthieId,
+                is_nkda: true,
+                entered_by: enteredBy,
+            })
+        });
+        if (resp?.success) {
+            showToast('✅ NKDA documented by ' + enteredBy, 'success');
+            if (chartPanelPatientId) loadChartData(chartPanelPatientId);
+        } else {
+            showToast('Failed: ' + (resp?.error || 'Unknown'), 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save NKDA', 'error');
+    }
+}
+
+function showAllergyForm() {
+    const area = document.getElementById('allergyFormArea');
+    if (!area) return;
+    if (area.innerHTML.trim()) { area.innerHTML = ''; return; } // toggle
+
+    area.innerHTML = `
+        <div style="padding:8px; margin-top:6px; background:var(--surface-2); border-radius:8px; border:1px solid var(--border);">
+            <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <input id="allergyName" type="text" placeholder="Allergy name (e.g., Penicillin)" style="flex:2; padding:6px 8px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:12px; font-family:inherit;">
+                <select id="allergyCategory" style="flex:1; padding:6px 4px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:11px;">
+                    <option value="Drug">Drug</option>
+                    <option value="Food">Food</option>
+                    <option value="Environmental">Environmental</option>
+                    <option value="Pet">Pet</option>
+                    <option value="Latex">Latex</option>
+                </select>
+            </div>
+            <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <input id="allergyReaction" type="text" placeholder="Reaction (e.g., Rash, Hives)" style="flex:1; padding:6px 8px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:12px; font-family:inherit;">
+                <select id="allergySeverity" style="width:100px; padding:6px 4px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:11px;">
+                    <option value="">Severity</option>
+                    <option value="Mild">Mild</option>
+                    <option value="Moderate">Moderate</option>
+                    <option value="Severe">Severe</option>
+                </select>
+            </div>
+            <div style="display:flex; gap:6px;">
+                <button onclick="submitAllergy()" style="flex:1; padding:6px; border-radius:6px; background:linear-gradient(135deg,#ef4444,#dc2626); border:none; color:white; font-size:11px; font-weight:600; cursor:pointer;">Add Allergy</button>
+                <button onclick="document.getElementById('allergyFormArea').innerHTML=''" style="padding:6px 12px; border-radius:6px; background:var(--surface); border:1px solid var(--border); color:var(--text-tertiary); font-size:11px; cursor:pointer;">Cancel</button>
+            </div>
+        </div>
+    `;
+    document.getElementById('allergyName')?.focus();
+}
+
+async function submitAllergy() {
+    const name = document.getElementById('allergyName')?.value?.trim();
+    if (!name) { showToast('Enter allergy name', 'error'); return; }
+
+    const healthieId = chartPanelData?.healthie_id || chartPanelData?.demographics?.healthie_client_id || chartPanelPatientId;
+    if (!healthieId) { showToast('No patient ID', 'error'); return; }
+
+    const enteredBy = currentUser?.display_name || currentUser?.email?.split('@')[0] || 'Staff';
+    try {
+        const resp = await apiFetch('/ops/api/ipad/patient-data/', {
+            method: 'POST',
+            body: JSON.stringify({
+                action: 'add_allergy',
+                healthie_id: healthieId,
+                name: name,
+                category: document.getElementById('allergyCategory')?.value || 'Drug',
+                reaction: document.getElementById('allergyReaction')?.value?.trim() || '',
+                severity: document.getElementById('allergySeverity')?.value || '',
+                entered_by: enteredBy,
+            })
+        });
+        if (resp?.success) {
+            showToast('✅ Allergy added: ' + name, 'success');
+            document.getElementById('allergyFormArea').innerHTML = '';
+            if (chartPanelPatientId) loadChartData(chartPanelPatientId);
+        } else {
+            showToast('Failed: ' + (resp?.error || 'Unknown'), 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save allergy', 'error');
+    }
+}
+
+// ==================== INTERESTING FACTS ====================
+function toggleInterestingPanel() {
+    const panel = document.getElementById('interestingPanel');
+    if (panel) {
+        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    }
+}
+
+async function saveInterestingFacts() {
+    const input = document.getElementById('interestingInput');
+    const text = input?.value?.trim() || '';
+    const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
+    if (!patientId) { showToast('No patient ID', 'error'); return; }
+
+    try {
+        const resp = await apiFetch(`/ops/api/ipad/patient/${patientId}/demographics`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                first_name: chartPanelData?.demographics?.first_name || chartPanelData?.demographics?.full_name?.split(' ')[0] || 'Patient',
+                last_name: chartPanelData?.demographics?.last_name || chartPanelData?.demographics?.full_name?.split(' ').slice(1).join(' ') || '',
+                interesting_facts: text,
+            })
+        });
+        if (resp?.success) {
+            showToast('⭐ Saved!', 'success');
+            if (chartPanelData?.demographics) chartPanelData.demographics.interesting_facts = text;
+            // Refresh chart
+            const content = document.getElementById('globalChartContent') || document.getElementById('chartPanelContent');
+            if (content) renderChartPanel(content);
+        } else {
+            showToast('Failed to save: ' + (resp?.error || 'Unknown'), 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save', 'error');
+    }
+}
+
+// Calculate age from DOB string (YYYY-MM-DD)
+function calcAge(dob) {
+    if (!dob) return '';
+    try {
+        const d = new Date(dob + 'T12:00:00Z');
+        const now = new Date();
+        let age = now.getFullYear() - d.getFullYear();
+        const m = now.getMonth() - d.getMonth();
+        if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+        return age;
+    } catch { return ''; }
+}
+
+// Clean up vital value — strip trailing .0, remove embedded units
+function formatVitalValue(val) {
+    if (val == null) return '—';
+    let s = String(val);
+    // Strip trailing .0 (e.g., 111.0 → 111)
+    if (/^\d+\.0$/.test(s)) s = s.replace('.0', '');
+    // Strip embedded unit text that getVitalUnit will add (prevent "111 bpm bpm")
+    s = s.replace(/\s*(bpm|mmhg|°f|breaths\/min|%|lbs|in|mg\/dl)\s*$/i, '');
+    return s || '—';
+}
+
+// Get display unit for a vital sign category (includes measurement method if available)
+function getVitalUnit(category, description) {
+    const cat = (category || '').toLowerCase();
+    const desc = (description || '').trim();
+
+    if (cat.includes('blood pressure') || cat === 'bp') {
+        // Check for method in description (Auto, Manual, A-Line)
+        if (desc && /auto|manual|a-line|arterial/i.test(desc)) return 'mmHg (' + desc + ')';
+        return 'mmHg';
+    }
+    if (cat.includes('heart rate') || cat === 'pulse' || cat === 'hr') return 'bpm';
+    if (cat.includes('respiration') || cat.includes('respiratory') || cat === 'rr') return 'breaths/min';
+    if (cat.includes('temperature') || cat === 'temp') {
+        // Check for method in description (Tympanic, Oral, Rectal, etc.)
+        if (desc && /tympanic|oral|rectal|temporal|axillary/i.test(desc)) return '°F (' + desc + ')';
+        return '°F';
+    }
+    if (cat.includes('oxygen') || cat.includes('spo2') || cat.includes('o2')) {
+        // Check for O2 source in description
+        if (desc && /on\s+\w|^RA$|NC|NRB|vent/i.test(desc)) {
+            const source = desc.replace(/^on\s+/i, '');
+            return '% on ' + source;
+        }
+        return '% on RA';
+    }
+    if (cat === 'weight') return 'lbs';
+    if (cat === 'height') return 'in';
+    if (cat === 'bmi') return '';
+    if (cat.includes('glucose') || cat.includes('blood sugar')) return 'mg/dL';
+    return '';
+}
+
 // Vital sign normal ranges — returns true if out of range
 function isVitalOutOfRange(category, value) {
     if (!category || !value) return false;
@@ -3837,39 +4072,50 @@ function renderChartPanel(content) {
         } catch { return ''; }
     }
 
-    // FIX(2026-03-19): Deduplicate vitals (same category + value within 5 min = duplicate)
+    // Clean metric_stat values — strip embedded units, trailing .0
+    hVitals.forEach(v => {
+        if (v.metric_stat != null) {
+            let s = String(v.metric_stat);
+            s = s.replace(/\s*(bpm|mmhg|°f|breaths\/min|%|lbs|in|mg\/dl)\s*$/i, '');
+            if (/^\d+\.0$/.test(s)) s = s.replace('.0', '');
+            v.metric_stat = s;
+        }
+    });
+
+    // Deduplicate: same category + cleaned value within 5 min = duplicate (across local + Healthie)
     const deduped = [];
     const seenVitals = new Set();
     for (const v of hVitals) {
+        const cat = (v.category || '').toLowerCase();
+        const val = String(v.metric_stat || '');
         const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
-        const bucket = Math.floor(ts / 300000); // 5-min bucket
-        const key = `${v.category}_${v.metric_stat}_${bucket}`;
+        const bucket = Math.floor(ts / 300000);
+        const key = `${cat}_${val}_${bucket}`;
         if (!seenVitals.has(key)) {
             seenVitals.add(key);
             deduped.push(v);
         }
     }
 
-    // FIX(2026-03-19): Merge BP Systolic + Diastolic into one "Blood Pressure" card
+    // Merge BP Systolic + Diastolic into one "Blood Pressure" card
     const merged = [];
     const bpSysEntries = {};
     const bpDiaEntries = {};
     const bpUsed = new Set();
     for (const v of deduped) {
         const cat = (v.category || '').toLowerCase();
-        if (cat === 'blood pressure systolic' || cat === 'blood pressure' || cat === 'bp systolic') {
-            const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
-            const bucket = Math.floor(ts / 300000);
-            bpSysEntries[bucket] = v;
-        } else if (cat === 'blood pressure diastolic' || cat === 'bp diastolic') {
-            const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
-            const bucket = Math.floor(ts / 300000);
-            bpDiaEntries[bucket] = v;
+        const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
+        const bucket = Math.floor(ts / 300000);
+        if (cat.includes('systolic') || (cat === 'blood pressure' && !cat.includes('diastolic'))) {
+            if (!bpSysEntries[bucket]) bpSysEntries[bucket] = v;
+        } else if (cat.includes('diastolic')) {
+            if (!bpDiaEntries[bucket]) bpDiaEntries[bucket] = v;
         }
     }
     for (const v of deduped) {
         const cat = (v.category || '').toLowerCase();
-        if (cat === 'blood pressure systolic' || cat === 'blood pressure' || cat === 'bp systolic') {
+        if (cat.includes('systolic') || (cat === 'blood pressure' && !cat.includes('diastolic'))) {
+            if (bpUsed.has(v.id)) continue;
             const ts = v.created_at ? new Date(v.created_at).getTime() : 0;
             const bucket = Math.floor(ts / 300000);
             const dia = bpDiaEntries[bucket];
@@ -3881,14 +4127,13 @@ function renderChartPanel(content) {
                 _diaId: dia?.id || null,
                 category: 'Blood Pressure',
                 metric_stat: diaVal ? `${sysVal}/${diaVal}` : `${sysVal}`,
+                description: v.description || dia?.description || null,
             });
             bpUsed.add(v.id);
             if (dia) bpUsed.add(dia.id);
-        } else if (cat === 'blood pressure diastolic' || cat === 'bp diastolic') {
-            if (!bpUsed.has(v.id)) {
-                // Orphan diastolic — show as-is
-                merged.push(v);
-            }
+        } else if (cat.includes('diastolic')) {
+            // Skip — handled above with systolic
+            if (!bpUsed.has(v.id)) bpUsed.add(v.id); // orphan, skip it
         } else {
             merged.push(v);
         }
@@ -3904,10 +4149,13 @@ function renderChartPanel(content) {
                 ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border);">\ud83d\udc64</div>`}
                 <div style="flex:1;">
                     <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
-                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${formatDateDisplay(demo.dob)}` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${formatDateDisplay(demo.dob)} (${calcAge(demo.dob)}yo)` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''}</div>
                 </div>
-                <button onclick="closeGlobalChart()" style="padding:4px 10px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer; margin-right:8px;" title="Close chart">✕ Close</button>
-                <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
+                    <button onclick="toggleInterestingPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.2); color:#a855f7; font-size:11px; font-weight:600; cursor:pointer;" title="Interesting facts about this patient">⭐ Interesting</button>
+                    <button onclick="closeGlobalChart()" style="padding:4px 10px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer;" title="Close chart">✕</button>
+                </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
                 ${demo.phone_primary ? `<div><span style="color:var(--text-tertiary);">Phone:</span> <span style="color:var(--text-secondary);">${demo.phone_primary}</span></div>` : ''}
@@ -3933,15 +4181,51 @@ function renderChartPanel(content) {
             </div>` : ''}
         </div>
 
+        <!-- INTERESTING FACTS (collapsible panel) -->
+        <div id="interestingPanel" style="display:none; padding:6px 8px; border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(168,85,247,0.04);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:#a855f7; font-weight:600; margin-bottom:6px;">⭐ Interesting Facts</div>
+            ${demo.interesting_facts ? `<div id="interestingDisplay" style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap; line-height:1.5; margin-bottom:6px;">${demo.interesting_facts}</div>` : ''}
+            <div id="interestingInputArea" style="${demo.interesting_facts ? 'display:none;' : ''}">
+                <textarea id="interestingInput" placeholder="Pet names, kids, occupation, hobbies, fun facts..." style="width:100%; padding:8px; border-radius:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); font-size:12px; font-family:inherit; resize:vertical; min-height:60px; box-sizing:border-box;">${demo.interesting_facts || ''}</textarea>
+                <div style="display:flex; gap:6px; margin-top:4px;">
+                    <button onclick="saveInterestingFacts()" style="flex:1; padding:6px; border-radius:6px; background:linear-gradient(135deg,#a855f7,#7c3aed); border:none; color:white; font-size:11px; font-weight:600; cursor:pointer;">Save</button>
+                    <button onclick="document.getElementById('interestingPanel').style.display='none'" style="padding:6px 12px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); font-size:11px; cursor:pointer;">Cancel</button>
+                </div>
+            </div>
+            ${demo.interesting_facts ? `<button onclick="document.getElementById('interestingInputArea').style.display='block'; document.getElementById('interestingDisplay').style.display='none';" style="font-size:10px; background:none; border:none; color:#a855f7; cursor:pointer; padding:0;">✏️ Edit</button>` : ''}
+        </div>
+
+        <!-- Show interesting facts inline if they exist (compact) -->
+        ${demo.interesting_facts ? `
+        <div id="interestingBadge" style="padding:2px 8px 4px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="font-size:10px; display:flex; align-items:center; gap:4px; cursor:pointer;" onclick="toggleInterestingPanel()">
+                <span style="color:#a855f7;">⭐</span>
+                <span style="color:var(--text-tertiary); font-style:italic;">${demo.interesting_facts.substring(0, 80)}${demo.interesting_facts.length > 80 ? '...' : ''}</span>
+            </div>
+        </div>` : ''}
+
         <!-- ALLERGIES (always visible) -->
         <div id="allergies-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
             <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
                 <span>\ud83d\udea8 Allergies</span>
-                <button class="chart-add-btn" onclick="showPatientDataForm('allergy')" title="Add Allergy" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+                <div style="display:flex; gap:4px; align-items:center;">
+                    ${!hAllergies.some(a => a.is_nkda) ? `<button onclick="markNKDA()" style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); color:#22c55e; cursor:pointer; font-weight:600;" title="Mark No Known Drug Allergies">NKDA</button>` : ''}
+                    <button class="chart-add-btn" onclick="showAllergyForm()" title="Add Allergy" style="font-size:12px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">＋</button>
+                </div>
             </div>
             ${hAllergies.length > 0
-                ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${hAllergies.map(a => `<span style="font-size:11px; padding:2px 8px; border-radius:10px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.2);">${a.name || 'Unknown'}${a.severity ? ` (${a.severity})` : ''}</span>`).join('')}</div>`
-                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">NKDA</div>`}
+                ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${hAllergies.map(a => {
+                    if (a.is_nkda) {
+                        const ts = a.created_at ? new Date(a.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix' }) : '';
+                        return `<span style="font-size:11px; padding:2px 8px; border-radius:10px; background:rgba(34,197,94,0.15); color:#22c55e; border:1px solid rgba(34,197,94,0.2);">✅ NKDA${a.entered_by ? ' — ' + a.entered_by : ''}${ts ? ' · ' + ts : ''}</span>`;
+                    }
+                    const severityColors = { severe: '#ef4444', moderate: '#f59e0b', mild: '#22c55e' };
+                    const sev = (a.severity || '').toLowerCase();
+                    const sevColor = severityColors[sev] || '#f87171';
+                    return `<span style="font-size:11px; padding:2px 8px; border-radius:10px; background:rgba(239,68,68,0.15); color:${sevColor}; border:1px solid rgba(239,68,68,0.2);">${a.name || 'Unknown'}${a.severity ? ' (' + a.severity + ')' : ''}${a.reaction ? ' — ' + a.reaction : ''}</span>`;
+                }).join('')}</div>`
+                : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No allergies documented</div>`}
+            <div id="allergyFormArea"></div>
         </div>
 
         <!-- WORKING DIAGNOSES (ICD-10 codes from chart notes) -->
@@ -3990,7 +4274,7 @@ function renderChartPanel(content) {
                     return `<div style="font-size:11px; padding:4px 8px; border-radius:6px; ${bgStyle} position:relative;" data-vital-id="${vitalId}">
                     <button onclick="deleteVital('${vitalId}', '${vitalSource}', this, '${vPatId}', '${vCat}', '${vVal}', '${vitalDiaId}')" style="position:absolute; top:2px; right:4px; background:none; border:none; color:var(--text-tertiary); font-size:10px; cursor:pointer; padding:0 2px; opacity:0.5;" title="Remove this vital" onmouseover="this.style.opacity='1';this.style.color='#ef4444'" onmouseout="this.style.opacity='0.5';this.style.color='var(--text-tertiary)'">✕</button>
                     <div style="color:var(--text-tertiary); font-size:9px; text-transform:uppercase; padding-right:14px;">${v.category || v.type || '?'}${outOfRange ? ' ⚠️' : ''}</div>
-                    <div style="${valueColor}">${v.metric_stat || '—'}</div>
+                    <div style="${valueColor}">${formatVitalValue(v.metric_stat)} <span style="font-weight:400; font-size:9px; color:var(--text-tertiary);">${getVitalUnit(v.category, v.description)}</span></div>
                     <div style="color:var(--text-tertiary); font-size:9px;">${fmtVitalDate(v.created_at)}</div>
                     ${recordedBy ? `<div style="color:var(--cyan); font-size:9px;">by ${recordedBy.split('@')[0]}</div>` : ''}
                 </div>`;
@@ -4050,13 +4334,10 @@ function renderNotesTab(container, d) {
 
     container.innerHTML = `
         <div style="padding:8px 12px;">
-            <!-- Inline Record / Generate Actions -->
-            <div style="display:flex; gap:8px; margin-bottom:12px;">
-                <button id="chartRecordBtn" onclick="startInlineRecording('${patientId}', '${patientName}', '${healthieId}')" style="flex:1; padding:12px; background:linear-gradient(135deg, #ef4444, #dc2626); color:white; border:none; border-radius:10px; font-size:14px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; box-shadow:0 2px 8px rgba(239,68,68,0.3);">
+            <!-- Inline Record Action -->
+            <div style="margin-bottom:12px;">
+                <button id="chartRecordBtn" onclick="startInlineRecording('${patientId}', '${patientName}', '${healthieId}')" style="width:100%; padding:14px; background:linear-gradient(135deg, #ef4444, #dc2626); color:white; border:none; border-radius:10px; font-size:15px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 2px 8px rgba(239,68,68,0.3);">
                     🎤 Record Visit
-                </button>
-                <button onclick="generateNoteFromChart('${patientId}', '${patientName}')" style="flex:1; padding:12px; background:linear-gradient(135deg, #8b5cf6, #6d28d9); color:white; border:none; border-radius:10px; font-size:14px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; box-shadow:0 2px 8px rgba(139,92,246,0.3);">
-                    ✨ Generate Note
                 </button>
             </div>
             <div id="inlineRecordingArea"></div>
@@ -4069,42 +4350,104 @@ function renderNotesTab(container, d) {
     renderChartingTab(chartingContainer, d);
 }
 
-// Inline recording from patient chart — no page navigation
-function startInlineRecording(patientId, patientName, healthieId) {
+// ==================== INLINE CHART RECORDING ====================
+// Full recording system within the patient chart — same flow as scribe but stays in chart
+
+let inlineMediaRecorder = null;
+let inlineAudioChunks = [];
+let inlineRecordingTimer = null;
+let inlineRecordingStart = 0;
+let inlineSessionId = null;
+
+async function startInlineRecording(patientId, patientName, healthieId) {
     const btn = document.getElementById('chartRecordBtn');
     const area = document.getElementById('inlineRecordingArea');
     if (!area) return;
 
-    // Check if already recording
     if (window._inlineRecording) {
         stopInlineRecording();
         return;
     }
 
-    // Start recording via scribe
-    window._inlineRecording = true;
-    btn.innerHTML = '⏹️ Stop Recording';
-    btn.style.background = 'linear-gradient(135deg, #f59e0b, #d97706)';
-    btn.setAttribute('onclick', 'stopInlineRecording()');
+    // Request microphone
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+        showToast('Microphone access denied. Check Settings → Safari → Microphone.', 'error');
+        return;
+    }
 
-    area.innerHTML = `
-        <div style="padding:10px 12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-                <div style="width:10px; height:10px; border-radius:50%; background:#ef4444; animation:pulse 1.5s infinite;"></div>
-                <span style="color:#f87171; font-weight:600; font-size:13px;">Recording in progress for ${patientName}...</span>
+    try {
+        inlineAudioChunks = [];
+        const mimeType = getRecordingMimeType();
+        const opts = mimeType ? { mimeType } : {};
+        inlineMediaRecorder = new MediaRecorder(stream, opts);
+        inlineMediaRecorder.ondataavailable = e => { if (e.data.size > 0) inlineAudioChunks.push(e.data); };
+        inlineMediaRecorder.onstop = () => handleInlineRecordingComplete(patientId, patientName);
+        inlineMediaRecorder.start(1000);
+
+        window._inlineRecording = true;
+        window._inlineRecordingMime = inlineMediaRecorder.mimeType || mimeType;
+        inlineRecordingStart = Date.now();
+
+        btn.innerHTML = '⏹️ Stop Recording';
+        btn.style.background = 'linear-gradient(135deg, #f59e0b, #d97706)';
+        btn.setAttribute('onclick', 'stopInlineRecording()');
+
+        // Disable generate button while recording
+        const genBtn = btn.nextElementSibling;
+        if (genBtn) { genBtn.style.opacity = '0.4'; genBtn.style.pointerEvents = 'none'; }
+
+        area.innerHTML = `
+            <div style="padding:12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+                    <div style="width:10px; height:10px; border-radius:50%; background:#ef4444; animation:pulse 1.5s infinite;"></div>
+                    <span style="color:#f87171; font-weight:600; font-size:14px;">Recording</span>
+                    <span id="inlineRecTimer" style="color:var(--text-tertiary); font-size:13px; font-family:monospace; margin-left:auto;">00:00</span>
+                </div>
+                <div style="font-size:11px; color:var(--text-tertiary);">Speak naturally. Press Stop when done.</div>
             </div>
-            <div style="font-size:11px; color:var(--text-tertiary); margin-top:4px;">Speak naturally. Press Stop when done, then Generate Note.</div>
-        </div>
-    `;
+        `;
 
-    // Use the existing scribe recording infrastructure
-    startScribeFromChart(patientId, patientName);
+        inlineRecordingTimer = setInterval(() => {
+            const el = document.getElementById('inlineRecTimer');
+            if (el) {
+                const elapsed = Math.floor((Date.now() - inlineRecordingStart) / 1000);
+                const min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+                const sec = String(elapsed % 60).padStart(2, '0');
+                el.textContent = `${min}:${sec}`;
+            }
+        }, 1000);
+
+        showToast('🎤 Recording started', 'success');
+
+        // Auto-advance appointment to "In Progress" if patient has one today
+        if (patientId || healthieId) {
+            var matchAppt = scheduleAllData?.find(function(a) {
+                return (a.patient_id === patientId || a.healthie_id === healthieId || a.healthie_id === patientId)
+                    && a.appointment_status !== 'Completed' && a.appointment_status !== 'No Show' && a.appointment_status !== 'Cancelled';
+            });
+            if (matchAppt && matchAppt.appointment_id && matchAppt.appointment_status !== 'In Progress') {
+                updateApptStatus(matchAppt.appointment_id, 'In Progress');
+            }
+        }
+    } catch (err) {
+        stream.getTracks().forEach(t => t.stop());
+        showToast('Could not start recording: ' + (err.message || 'unsupported'), 'error');
+    }
 }
 
 function stopInlineRecording() {
+    if (inlineRecordingTimer) { clearInterval(inlineRecordingTimer); inlineRecordingTimer = null; }
+    if (inlineMediaRecorder && (inlineMediaRecorder.state === 'recording' || inlineMediaRecorder.state === 'paused')) {
+        if (inlineMediaRecorder.state === 'paused') inlineMediaRecorder.resume();
+        inlineMediaRecorder.stop();
+        inlineMediaRecorder.stream?.getTracks().forEach(t => t.stop());
+    }
     window._inlineRecording = false;
+
     const btn = document.getElementById('chartRecordBtn');
-    const area = document.getElementById('inlineRecordingArea');
     if (btn) {
         const patientId = chartPanelData?.demographics?.patient_id || chartPanelData?.healthie_id || '';
         const patientName = (chartPanelData?.demographics?.full_name || 'Patient').replace(/'/g, "\\'");
@@ -4112,18 +4455,188 @@ function stopInlineRecording() {
         btn.innerHTML = '🎤 Record Visit';
         btn.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
         btn.setAttribute('onclick', `startInlineRecording('${patientId}', '${patientName}', '${healthieId}')`);
+        // Re-enable generate button
+        const genBtn = btn.nextElementSibling;
+        if (genBtn) { genBtn.style.opacity = '1'; genBtn.style.pointerEvents = 'auto'; }
     }
-    if (area) {
+}
+
+async function handleInlineRecordingComplete(patientId, patientName) {
+    const area = document.getElementById('inlineRecordingArea');
+    if (!area) return;
+
+    const mimeType = window._inlineRecordingMime || 'audio/webm';
+    const blob = new Blob(inlineAudioChunks, { type: mimeType });
+    const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+    const elapsed = Math.floor((Date.now() - inlineRecordingStart) / 1000);
+    const sizeKB = (blob.size / 1024).toFixed(0);
+
+    area.innerHTML = `
+        <div style="padding:12px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); border-radius:10px; margin-bottom:8px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                <div class="loading-spinner" style="width:16px; height:16px; border-width:2px;"></div>
+                <span style="color:#f59e0b; font-weight:600; font-size:13px;">Uploading & Transcribing...</span>
+            </div>
+            <div style="font-size:11px; color:var(--text-tertiary);">Duration: ${Math.floor(elapsed/60)}m ${elapsed%60}s · Size: ${sizeKB}KB</div>
+        </div>
+    `;
+
+    // Upload to scribe transcribe endpoint
+    const formData = new FormData();
+    formData.append('audio', blob, `visit-recording.${ext}`);
+    formData.append('patient_id', patientId);
+    formData.append('visit_type', 'follow_up');
+    formData.append('patient_name', patientName || '');
+
+    try {
+        const resp = await fetch('/ops/api/scribe/transcribe/', {
+            method: 'POST', body: formData, credentials: 'include',
+        });
+        if (!resp.ok) throw new Error(`Upload failed (HTTP ${resp.status})`);
+        const data = await resp.json();
+
+        if (data.success) {
+            inlineSessionId = data.data?.session_id;
+            const status = data.data?.status;
+
+            if (status === 'transcribing') {
+                // Poll for completion
+                area.innerHTML = `
+                    <div style="padding:12px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); border-radius:10px; margin-bottom:8px;">
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                            <div class="loading-spinner" style="width:16px; height:16px; border-width:2px;"></div>
+                            <span style="color:#f59e0b; font-weight:600; font-size:13px;">Transcribing in progress...</span>
+                        </div>
+                        <div style="font-size:11px; color:var(--text-tertiary);">This usually takes 30-60 seconds. The Generate button will activate when ready.</div>
+                    </div>
+                `;
+                pollInlineTranscription(inlineSessionId, area, patientId, patientName);
+            } else if (status === 'transcribed') {
+                showInlineTranscriptionReady(area, data.data, patientId, patientName);
+            }
+        } else {
+            throw new Error(data.error || 'Transcription failed');
+        }
+    } catch (err) {
         area.innerHTML = `
-            <div style="padding:8px 12px; background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:10px; margin-bottom:8px;">
-                <div style="color:#22c55e; font-weight:600; font-size:12px;">✅ Recording stopped. Click "Generate Note" to create the SOAP note.</div>
+            <div style="padding:12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
+                <div style="color:#f87171; font-weight:600; font-size:13px;">❌ Upload failed: ${err.message}</div>
+                <button onclick="startInlineRecording('${patientId}', '${patientName}', '')" style="margin-top:8px; padding:6px 12px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); font-size:11px; cursor:pointer;">Try Again</button>
+            </div>
+        `;
+    }
+}
+
+function pollInlineTranscription(sessionId, area, patientId, patientName) {
+    let attempts = 0;
+    const maxAttempts = 60; // 2 minutes max
+    const poll = setInterval(async () => {
+        attempts++;
+        try {
+            const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+            if (data?.success && data.data?.status === 'transcribed') {
+                clearInterval(poll);
+                showInlineTranscriptionReady(area, data.data, patientId, patientName);
+            } else if (attempts >= maxAttempts) {
+                clearInterval(poll);
+                area.innerHTML = `
+                    <div style="padding:12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
+                        <div style="color:#f87171; font-weight:600; font-size:13px;">⏱️ Transcription is taking longer than expected.</div>
+                        <button onclick="pollInlineTranscription('${sessionId}', document.getElementById('inlineRecordingArea'), '${patientId}', '${patientName}')" style="margin-top:6px; padding:6px 12px; border-radius:6px; background:var(--cyan); border:none; color:#000; font-size:11px; font-weight:600; cursor:pointer;">Check Again</button>
+                    </div>
+                `;
+            }
+        } catch (e) { /* keep polling */ }
+    }, 3000);
+}
+
+function showInlineTranscriptionReady(area, sessionData, patientId, patientName) {
+    const transcript = sessionData.raw_transcript || sessionData.transcript || '';
+    const wordCount = transcript.split(/\s+/).filter(Boolean).length;
+    inlineSessionId = sessionData.session_id;
+
+    showToast('✅ Transcription complete!', 'success');
+
+    area.innerHTML = `
+        <div style="padding:12px; background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.2); border-radius:10px; margin-bottom:8px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                <span style="color:#22c55e; font-weight:700; font-size:13px;">✅ Transcription Ready</span>
+                <span style="color:var(--text-tertiary); font-size:11px;">${wordCount} words</span>
+            </div>
+            <div style="max-height:120px; overflow-y:auto; font-size:11px; color:var(--text-secondary); line-height:1.5; padding:8px; background:var(--surface-2); border-radius:6px; margin-bottom:10px; white-space:pre-wrap;">${transcript.substring(0, 500)}${transcript.length > 500 ? '...' : ''}</div>
+            <button onclick="generateInlineNote('${patientId}', '${patientName}')" style="width:100%; padding:12px; background:linear-gradient(135deg, #8b5cf6, #6d28d9); color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px;">
+                ✨ Generate SOAP Note
+            </button>
+        </div>
+    `;
+}
+
+async function generateInlineNote(patientId, patientName) {
+    const area = document.getElementById('inlineRecordingArea');
+    if (!area || !inlineSessionId) {
+        showToast('No transcription session found', 'error');
+        return;
+    }
+
+    area.innerHTML = `
+        <div style="padding:12px; background:rgba(139,92,246,0.08); border:1px solid rgba(139,92,246,0.2); border-radius:10px; margin-bottom:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <div class="loading-spinner" style="width:16px; height:16px; border-width:2px;"></div>
+                <span style="color:#a855f7; font-weight:600; font-size:13px;">Generating SOAP note with AI...</span>
+            </div>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-top:4px;">This takes 15-30 seconds.</div>
+        </div>
+    `;
+
+    try {
+        const resp = await fetch('/ops/api/scribe/generate-note/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: inlineSessionId, patient_id: patientId }),
+            credentials: 'include',
+        });
+        const data = await resp.json();
+
+        if (data.success && data.data) {
+            const note = data.data;
+            showToast('✅ SOAP note generated!', 'success');
+
+            area.innerHTML = `
+                <div style="padding:12px; background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.2); border-radius:10px; margin-bottom:8px;">
+                    <div style="color:#22c55e; font-weight:700; font-size:13px; margin-bottom:8px;">✅ SOAP Note Generated</div>
+                    ${note.soap_subjective ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--cyan); font-weight:700;">SUBJECTIVE</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap; line-height:1.4;">${note.soap_subjective.substring(0, 300)}${note.soap_subjective.length > 300 ? '...' : ''}</div></div>` : ''}
+                    ${note.soap_assessment ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--cyan); font-weight:700;">ASSESSMENT</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap; line-height:1.4;">${note.soap_assessment.substring(0, 300)}${note.soap_assessment.length > 300 ? '...' : ''}</div></div>` : ''}
+                    <div style="display:flex; gap:8px; margin-top:10px;">
+                        <button onclick="window.location.hash='#scribe'; setTimeout(() => { if (typeof loadScribeSessions === 'function') loadScribeSessions(); }, 300);" style="flex:1; padding:8px; border-radius:6px; background:var(--cyan); border:none; color:#000; font-size:12px; font-weight:600; cursor:pointer;">View Full Note in Scribe</button>
+                        <button onclick="document.getElementById('inlineRecordingArea').innerHTML=''; loadChartData(chartPanelPatientId);" style="padding:8px 12px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); font-size:12px; cursor:pointer;">Dismiss</button>
+                    </div>
+                </div>
+            `;
+
+            // Reload chart data to show the new note in the timeline
+            if (chartPanelPatientId) {
+                setTimeout(() => loadChartData(chartPanelPatientId), 2000);
+            }
+        } else {
+            throw new Error(data.error || 'Generation failed');
+        }
+    } catch (err) {
+        area.innerHTML = `
+            <div style="padding:12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
+                <div style="color:#f87171; font-weight:600; font-size:13px;">❌ Note generation failed: ${err.message}</div>
+                <button onclick="generateInlineNote('${patientId}', '${patientName}')" style="margin-top:6px; padding:6px 12px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); font-size:11px; cursor:pointer;">Retry</button>
             </div>
         `;
     }
 }
 
 function generateNoteFromChart(patientId, patientName) {
-    // Navigate to scribe with patient pre-selected and trigger generate
+    // If we have an inline session ready, generate from it
+    if (inlineSessionId) {
+        generateInlineNote(patientId, patientName);
+        return;
+    }
+    // Otherwise open scribe
     startScribeFromChart(patientId, patientName);
     showToast('Opening Scribe to generate note...', 'info');
 }
@@ -4213,8 +4726,21 @@ function renderMedicationsSection(d, hMeds, peptides, trt) {
     }
 
     // Existing hMeds, peptides, TRT (as secondary items)
+    // FIX(2026-03-19): Don't duplicate dosage if already in the name
     const otherMeds = [
-        ...hMeds.map(m => `${m.name || '?'}${m.dosage ? ' ' + m.dosage : ''}`),
+        ...hMeds.map(m => {
+            const name = m.name || '?';
+            const dosage = m.dosage || '';
+            const freq = m.frequency || '';
+            const route = m.route || '';
+            // Skip dosage if it's already part of the name
+            const hasDosageInName = dosage && name.toLowerCase().includes(dosage.toLowerCase());
+            let display = name;
+            if (dosage && !hasDosageInName) display += ' ' + dosage;
+            if (route) display += ' ' + route;
+            if (freq) display += ' ' + freq;
+            return display;
+        }),
         ...peptides.map(m => m.medication_name || m.product_name || '?'),
         ...trt.map(m => m.medication_name || '?'),
     ].filter(Boolean);
@@ -4586,90 +5112,165 @@ function closeDoseSpotFullscreen() {
 }
 
 // ==================== CHARTING TAB ====================
-// Shows: scribe notes, Healthie chart notes (expandable), appointments, controlled substances, alerts
-// NOTE: Allergies, Medications, and Vitals are now shown permanently above the tabs
+// Shows: all SOAP notes (scribe + Healthie) in one unified timeline
 function renderChartingTab(container, d) {
     const hAppts = d.healthie_appointments || [];
     const controlled = d.controlled_substances || [];
     const alerts = d.alerts || [];
     const scribeHist = d.scribe_history || [];
 
-    // Safe date formatter
     function fmtDate(dt) {
         if (!dt) return '—';
         try { const dd = new Date(dt); return isNaN(dd.getTime()) ? '—' : dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/Phoenix' }); } catch { return '—'; }
     }
 
-    // Separate SOAP/chart notes from patient forms
-    const allChartNotes = d.healthie_chart_notes || [];
-    const soapNotes = allChartNotes.filter(n => {
+    // Merge ALL notes into one timeline: scribe SOAP notes + Healthie chart notes
+    const allNotes = [];
+
+    // Scribe notes (have full SOAP structure)
+    scribeHist.forEach(s => {
+        // Skip sessions with no SOAP content (transcribed but never generated, failed recordings, etc.)
+        const hasContent = s.soap_subjective || s.soap_objective || s.soap_assessment || s.soap_plan;
+        if (!hasContent) return;
+
+        // Build follow-up summary from the Plan section
+        let followUpSummary = '';
+        if (s.soap_plan) {
+            // Extract action items from plan (lines starting with numbers or bullets)
+            const planLines = s.soap_plan.split('\n').filter(l => l.trim());
+            const actionItems = planLines.filter(l => /^\d+\.|^[-•*]|^Follow|^Return|^Recheck|^Schedule|^Refer/i.test(l.trim()));
+            if (actionItems.length > 0) {
+                followUpSummary = actionItems.map(l => l.replace(/^\d+\.\s*/, '').trim()).join(' · ');
+            }
+        }
+
+        allNotes.push({
+            type: 'scribe',
+            title: (s.visit_type || 'Visit Note').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+            date: s.created_at,
+            status: s.status,
+            soap: { s: s.soap_subjective, o: s.soap_objective, a: s.soap_assessment, p: s.soap_plan },
+            icd10: s.icd10_codes,
+            followUp: followUpSummary,
+            preview: s.soap_subjective ? s.soap_subjective.substring(0, 100) : 'No subjective recorded',
+        });
+    });
+
+    // Healthie chart notes — deduplicate against scribe notes by content matching
+    // Notes submitted from Scribe to Healthie appear in BOTH sources.
+    // Build a set of subjective text snippets from scribe notes to match against.
+    const scribeSubjectiveSnippets = new Set();
+    scribeHist.forEach(s => {
+        if (s.soap_subjective) {
+            // Use first 50 chars of subjective as a fingerprint (strip HTML tags)
+            const clean = s.soap_subjective.replace(/<[^>]*>/g, '').trim().substring(0, 50).toLowerCase();
+            if (clean.length > 10) scribeSubjectiveSnippets.add(clean);
+        }
+    });
+
+    (d.healthie_chart_notes || []).forEach(n => {
         const name = (n.name || '').toLowerCase();
-        return name.includes('soap') || name.includes('chart note') || name.includes('progress note') || name.includes('visit note') || name.includes('encounter');
+        // Skip intake/admin forms — those go in the Files tab
+        if (name.includes('consent') || name.includes('hipaa') || name.includes('intake') ||
+            name.includes('agreement') || name.includes('health concern') || name.includes('medical history') ||
+            name.includes('patient info') || name.includes('registration') || name.includes('demographics') ||
+            name.includes('insurance') || name.includes('privacy') || name.includes('authorization') ||
+            name.includes('consent to treat')) return;
+
+        // Skip if this is a SOAP note that duplicates a scribe note (content match)
+        if (name.includes('soap') || name.includes('chart note') || name.includes('progress note') || name.includes('visit note')) {
+            const answers = n.form_answers || [];
+            // Check if any answer content matches scribe subjective
+            const isDuplicate = answers.some(a => {
+                const text = (a.displayed_answer || a.answer || '').replace(/<[^>]*>/g, '').trim().substring(0, 50).toLowerCase();
+                return text.length > 10 && scribeSubjectiveSnippets.has(text);
+            });
+            if (isDuplicate) return; // Skip — this is the Healthie copy of a scribe note
+        }
+
+        const answers = n.form_answers || [];
+        allNotes.push({
+            type: 'healthie',
+            title: n.name || 'Chart Note',
+            date: n.created_at,
+            status: n.finished ? 'completed' : 'draft',
+            answers: answers,
+            preview: answers.length > 0 ? `${answers[0].label}: ${(answers[0].displayed_answer || answers[0].answer || '').substring(0, 80)}` : 'No content',
+        });
+    });
+
+    // Sort by date (newest first)
+    allNotes.sort((a, b) => {
+        const da = a.date ? new Date(a.date).getTime() : 0;
+        const db = b.date ? new Date(b.date).getTime() : 0;
+        return db - da;
     });
 
     container.innerHTML = `
-        <!-- Previous SOAP Notes from Healthie -->
-        ${soapNotes.length > 0 ? `
+        <!-- All Clinical Notes (unified timeline) -->
         <div class="chart-section">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>\ud83d\udccb Previous SOAP Notes (${soapNotes.length})</span>
-                <span class="chart-chevron">\u203a</span>
-            </div>
-            <div class="chart-section-body">
-                ${soapNotes.slice(0, 20).map((n, i) => `
-                    <div class="chart-lab-card" style="cursor:pointer;" onclick="this.classList.toggle('chart-note-expanded')">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <div class="chart-lab-name">${n.name || 'Chart Note'}</div>
-                            <div class="chart-lab-detail">${fmtDate(n.created_at)}</div>
-                        </div>
-                        <div class="chart-note-preview" style="margin-top:4px;">
-                            ${n.form_answers?.length > 0 ? `<div class="chart-med-detail">${n.form_answers.slice(0, 2).map(a => `${a.label}: ${(a.displayed_answer || a.answer || '').substring(0, 80)}`).join('; ')}${n.form_answers.length > 2 ? '\u2026 (click to expand)' : ''}</div>` : '<div class="chart-med-detail" style="color:var(--text-tertiary);">Click to expand</div>'}
-                        </div>
-                        <div class="chart-note-full" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
-                            ${n.form_answers?.length > 0 ? n.form_answers.map(a => `
-                                <div style="margin-bottom:6px;">
-                                    <div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">${a.label || 'Field'}</div>
-                                    <div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${a.displayed_answer || a.answer || '—'}</div>
-                                </div>
-                            `).join('') : '<div class="chart-empty">No content</div>'}
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        </div>` : '<div class="chart-section"><div class="chart-empty" style="padding:12px;">No previous SOAP notes found</div></div>'}
-
-        
-        <!-- Scribe SOAP Notes (GMH Dashboard) -->
-        ${scribeHist.length > 0 ? `
-        <div class="chart-section">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>🎙️ Scribe SOAP Notes (${scribeHist.length})</span>
+                <span>📋 Clinical Notes (${allNotes.length})</span>
                 <span class="chart-chevron">›</span>
             </div>
             <div class="chart-section-body">
-                ${scribeHist.map((s, i) => `
-                    <div class="chart-lab-card" style="cursor:pointer;" onclick="this.classList.toggle('chart-note-expanded')">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <div class="chart-lab-name">${s.visit_type || 'Scribe Note'} - ${s.status || 'Completed'}</div>
-                            <div class="chart-lab-detail">${fmtDate(s.created_at)}</div>
-                        </div>
-                        <div class="chart-note-preview" style="margin-top:4px;">
-                            <div class="chart-med-detail">
-                                ${s.soap_subjective ? 'S: ' + s.soap_subjective.substring(0, 80) + '...' : 'Click to expand'}
+                ${allNotes.length > 0 ? allNotes.map((n, i) => {
+                    const icon = n.type === 'scribe' ? '🎙️' : '📝';
+                    const statusBadge = n.status === 'submitted' || n.status === 'completed'
+                        ? '<span style="font-size:9px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:#22c55e; margin-left:6px;">✓</span>'
+                        : n.status === 'draft' ? '<span style="font-size:9px; padding:1px 5px; border-radius:3px; background:rgba(245,158,11,0.15); color:#f59e0b; margin-left:6px;">Draft</span>' : '';
+
+                    let expandedContent = '';
+                    if (n.type === 'scribe' && n.soap) {
+                        const sections = [
+                            n.soap.s ? { label: 'SUBJECTIVE', text: n.soap.s } : null,
+                            n.soap.o ? { label: 'OBJECTIVE', text: n.soap.o } : null,
+                            n.soap.a ? { label: 'ASSESSMENT', text: n.soap.a } : null,
+                            n.soap.p ? { label: 'PLAN', text: n.soap.p } : null,
+                        ].filter(Boolean);
+                        expandedContent = sections.map(sec => `
+                            <div style="margin-bottom:10px;">
+                                <div style="font-size:10px; text-transform:uppercase; color:var(--cyan); font-weight:700; letter-spacing:0.05em; margin-bottom:2px;">${sec.label}</div>
+                                <div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap; line-height:1.5;">${sec.text}</div>
                             </div>
+                        `).join('');
+                        if (n.icd10) {
+                            const codes = Array.isArray(n.icd10) ? n.icd10 : [];
+                            if (codes.length > 0) {
+                                expandedContent += `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${codes.map(c => {
+                                    const code = typeof c === 'string' ? c : c.code;
+                                    return `<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7; font-family:monospace;">${code}</span>`;
+                                }).join('')}</div>`;
+                            }
+                        }
+                    } else if (n.answers) {
+                        expandedContent = n.answers.map(a => `
+                            <div style="margin-bottom:6px;">
+                                <div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">${a.label || 'Field'}</div>
+                                <div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${a.displayed_answer || a.answer || '—'}</div>
+                            </div>
+                        `).join('');
+                    }
+
+                    return `
+                    <div class="chart-lab-card" style="cursor:pointer; transition:all 0.15s;" onclick="this.querySelector('.note-full').style.display = this.querySelector('.note-full').style.display === 'none' ? 'block' : 'none'; this.querySelector('.note-preview').style.display = this.querySelector('.note-full').style.display === 'none' ? 'block' : 'none';">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div class="chart-lab-name" style="display:flex; align-items:center; gap:4px;">
+                                ${icon} ${n.title}${statusBadge}
+                            </div>
+                            <div class="chart-lab-detail">${fmtDate(n.date)}</div>
                         </div>
-                        <div class="chart-note-full" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
-                            ${s.soap_subjective ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">SUBJECTIVE</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${s.soap_subjective}</div></div>` : ''}
-                            ${s.soap_objective ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">OBJECTIVE</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${s.soap_objective}</div></div>` : ''}
-                            ${s.soap_assessment ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">ASSESSMENT</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${s.soap_assessment}</div></div>` : ''}
-                            ${s.soap_plan ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">PLAN</div><div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${s.soap_plan}</div></div>` : ''}
-                            ${s.icd10_codes ? `<div style="margin-bottom:8px;"><div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">ICD-10 CODES</div><div style="font-size:12px; color:var(--text-secondary);">${JSON.stringify(s.icd10_codes)}</div></div>` : ''}
+                        <div class="note-preview" style="margin-top:4px;">
+                            <div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">${n.preview}...</div>
+                            ${n.followUp ? `<div style="font-size:10px; color:#22c55e; margin-top:3px; display:flex; align-items:start; gap:4px;"><span style="flex-shrink:0;">📌</span><span>${n.followUp.substring(0, 120)}${n.followUp.length > 120 ? '...' : ''}</span></div>` : ''}
                         </div>
-                    </div>
-                `).join('')}
+                        <div class="note-full" style="display:none; margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+                            ${expandedContent || '<div style="color:var(--text-tertiary); font-size:12px;">No content</div>'}
+                        </div>
+                    </div>`;
+                }).join('') : '<div class="chart-empty" style="padding:16px; text-align:center;">No clinical notes yet. Click Record Visit to create one.</div>'}
             </div>
         </div>
-        ` : ''}
 <!-- Appointments -->
         ${hAppts.length > 0 ? `
         <div class="chart-section collapsed">
@@ -7424,7 +8025,8 @@ function renderCEODashboard(container) {
                 <button onclick="loadAllData()" style="padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>
             </div>
 
-            <!-- Revenue Cards -->
+            <!-- Revenue Cards — Phil only -->
+            ${currentUser?.email === 'admin@nowoptimal.com' ? `
             <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-bottom:20px;">
                 <div style="background:linear-gradient(135deg, rgba(34,211,238,0.15), rgba(6,182,212,0.05)); border:1px solid rgba(34,211,238,0.2); border-radius:12px; padding:20px;">
                     <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">Today's Revenue</div>
@@ -7439,6 +8041,7 @@ function renderCEODashboard(container) {
                     <div style="font-size:28px; font-weight:700; color:#22c55e;">$${Number(monthRev).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
                 </div>
             </div>
+            ` : ''}
 
             <!-- Operational KPIs -->
             <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin-bottom:20px;">
@@ -7543,11 +8146,27 @@ async function renderScheduleView(container) {
     var verifyEl = document.getElementById('scheduleContent');
     console.log('[Schedule] scheduleContent element exists:', !!verifyEl);
 
+    // Load previsit tasks from server (shared across all iPads)
+    await loadPrevisitTasks();
+
+    // Auto-refresh previsit tasks every 15 seconds so provider sees staff updates
+    if (window._previsitPollTimer) clearInterval(window._previsitPollTimer);
+    window._previsitPollTimer = setInterval(async function() {
+        if (currentTab !== 'schedule') { clearInterval(window._previsitPollTimer); return; }
+        await loadPrevisitTasks();
+        var contentEl = document.getElementById('scheduleContent');
+        if (contentEl && scheduleAllData.length > 0) {
+            renderScheduleList(contentEl);
+            var provMap = new Map();
+            scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
+            renderProviderTabs([...provMap.values()]);
+        }
+    }, 15000);
+
     if (verifyEl) {
         await loadScheduleData();
     } else {
         console.error('[Schedule] CRITICAL: scheduleContent not found after DOM wait!');
-        // Try one more time after longer delay
         await new Promise(resolve => setTimeout(resolve, 200));
         await loadScheduleData();
     }
@@ -7602,23 +8221,9 @@ async function loadScheduleData(forceRefresh) {
 
         var startTime = Date.now();
 
-        // ✅ AUTO-FILTER: If logged-in user is a provider with healthie_provider_id, filter by their schedule
+        // Fetch ALL provider schedules — provider tabs handle filtering on the client side
         var url = '/ops/api/ipad/schedule/';
-        console.log('[Schedule] Current user:', JSON.stringify({
-            email: currentUser?.email,
-            is_provider: currentUser?.is_provider,
-            healthie_provider_id: currentUser?.healthie_provider_id
-        }));
-        if (currentUser?.is_provider && currentUser?.healthie_provider_id) {
-            url += '?provider_id=' + encodeURIComponent(currentUser.healthie_provider_id);
-            console.log('[Schedule] Provider detected - filtering by provider_id:', currentUser.healthie_provider_id);
-        } else if (currentUser?.healthie_provider_id) {
-            // Also filter for non-provider accounts that have a healthie_provider_id (like admin@nowoptimal.com mapped to Phil)
-            url += '?provider_id=' + encodeURIComponent(currentUser.healthie_provider_id);
-            console.log('[Schedule] Non-provider with healthie_provider_id - filtering by provider_id:', currentUser.healthie_provider_id);
-        } else {
-            console.log('[Schedule] No provider filter - showing all appointments');
-        }
+        console.log('[Schedule] Fetching all providers (filter via tabs)');
 
         var resp = await fetch(url, { credentials: 'include', signal: controller.signal });
         var elapsed = Date.now() - startTime;
@@ -7694,12 +8299,86 @@ function filterScheduleByProvider(providerName) {
     if (contentEl) renderScheduleList(contentEl);
 }
 
+// ==================== PRE-VISIT CHECKLIST (Server-synced) ====================
+const PREVISIT_TASKS = [
+    { key: 'forms', label: '📝 Forms Signed' },
+    { key: 'vitals', label: '🩺 Vitals Done' },
+    { key: 'meds', label: '💊 Meds/Allergies Verified' },
+    { key: 'demo', label: '👤 Demographics/Group Verified' },
+    { key: 'app', label: '📱 App Installed/Mentioned' },
+];
+
+// Server-synced task state — shared across all iPads
+let previsitServerData = {}; // { appointmentId: { taskKey: { completed_by, completed_at } } }
+
+async function loadPrevisitTasks() {
+    try {
+        var resp = await apiFetch('/ops/api/ipad/previsit-tasks/');
+        if (resp?.success) {
+            previsitServerData = resp.tasks || {};
+        }
+    } catch (e) {
+        console.warn('[Previsit] Load failed:', e);
+    }
+}
+
+function getPrevisitState(apptId) {
+    var serverTasks = previsitServerData[apptId] || [];
+    var state = {};
+    serverTasks.forEach(function(t) { state[t.key] = t; });
+    return state;
+}
+
+async function togglePrevisitTask(apptId, taskKey) {
+    var state = getPrevisitState(apptId);
+    var isCompleted = !state[taskKey];
+    var who = currentUser?.display_name || currentUser?.email?.split('@')[0] || 'Staff';
+
+    // Optimistic update
+    if (isCompleted) {
+        if (!previsitServerData[apptId]) previsitServerData[apptId] = [];
+        previsitServerData[apptId].push({ key: taskKey, completed_by: who, completed_at: new Date().toISOString() });
+    } else {
+        previsitServerData[apptId] = (previsitServerData[apptId] || []).filter(function(t) { return t.key !== taskKey; });
+    }
+
+    // Re-render
+    var contentEl = document.getElementById('scheduleContent');
+    if (contentEl) renderScheduleList(contentEl);
+    var provMap = new Map();
+    scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
+    renderProviderTabs([...provMap.values()]);
+
+    // Persist to server
+    try {
+        await apiFetch('/ops/api/ipad/previsit-tasks/', {
+            method: 'POST',
+            body: JSON.stringify({ appointment_id: apptId, task_key: taskKey, completed: isCompleted, completed_by: who })
+        });
+    } catch (e) {
+        console.error('[Previsit] Save failed:', e);
+        showToast('Task save failed — try again', 'error');
+    }
+}
+
+function isPrevisitComplete(apptId) {
+    var state = getPrevisitState(apptId);
+    return PREVISIT_TASKS.every(function(t) { return state[t.key]; });
+}
+
+function previsitCompletedCount(apptId) {
+    var state = getPrevisitState(apptId);
+    return PREVISIT_TASKS.filter(function(t) { return state[t.key]; }).length;
+}
+
 function getApptStatusStyle(st) {
     switch(st) {
         case 'Confirmed': return { color: '#22c55e', bg: 'rgba(34,197,94,0.15)' };
+        case 'Scheduled': return { color: '#22c55e', bg: 'rgba(34,197,94,0.15)' };
         case 'Checked In': return { color: '#22d3ee', bg: 'rgba(34,211,238,0.15)' };
         case 'In Progress': return { color: '#a855f7', bg: 'rgba(168,85,247,0.15)' };
         case 'Completed': return { color: '#10b981', bg: 'rgba(16,185,129,0.15)' };
+        case 'Cancelled': return { color: '#ef4444', bg: 'rgba(239,68,68,0.15)' };
         case 'No Show': return { color: '#ef4444', bg: 'rgba(239,68,68,0.15)' };
         default: return { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)' };
     }
@@ -7710,10 +8389,14 @@ function renderScheduleList(contentEl) {
     if (filtered.length === 0) { contentEl.innerHTML = '<div class="empty-state-card"><h3>No appointments</h3><p>No appointments for this provider today.</p></div>'; return; }
     filtered.sort(function(a, b) { return new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime(); });
 
-    var confirmed = filtered.filter(function(p) { return p.appointment_status === 'Confirmed'; }).length;
+    var activeAppts = filtered.filter(function(p) { return p.appointment_status !== 'Completed' && p.appointment_status !== 'No Show' && p.appointment_status !== 'Cancelled'; });
+    var readyCount = activeAppts.filter(function(p) { return p.appointment_id && isPrevisitComplete(p.appointment_id); }).length;
+    var checkedIn = filtered.filter(function(p) { return p.appointment_status === 'Checked In'; }).length;
     var showProv = scheduleProviderFilter === 'all';
-    var html = '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;"><span style="font-size:14px; color:var(--text-secondary);">' + filtered.length + ' patients</span>';
-    if (confirmed > 0) html += '<span style="font-size:11px; padding:3px 10px; border-radius:6px; background:rgba(34,197,94,0.1); color:#22c55e;">' + confirmed + ' confirmed</span>';
+    var html = '<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; flex-wrap:wrap;">';
+    html += '<span style="font-size:14px; color:var(--text-secondary);">' + filtered.length + ' patients</span>';
+    if (checkedIn > 0) html += '<span style="font-size:11px; padding:3px 10px; border-radius:6px; background:rgba(34,211,238,0.1); color:#22d3ee;">' + checkedIn + ' checked in</span>';
+    if (readyCount > 0) html += '<span style="font-size:11px; padding:3px 10px; border-radius:6px; background:rgba(34,197,94,0.1); color:#22c55e;">✅ ' + readyCount + ' ready for provider</span>';
     html += '</div>';
 
     filtered.forEach(function(p) {
@@ -7722,8 +8405,12 @@ function renderScheduleList(contentEl) {
         var apptId = p.appointment_id || '';
         var canAdv = apptId && st !== 'Completed' && st !== 'No Show';
         var pid = p.patient_id || '';
+        var isFinalStatus = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
+        var allTasksDone = apptId && isPrevisitComplete(apptId);
+        var cardBg = isFinalStatus ? 'var(--card)' : allTasksDone ? 'rgba(34,197,94,0.08)' : 'var(--card)';
+        var cardBorder = isFinalStatus ? 'var(--border-light)' : allTasksDone ? 'rgba(34,197,94,0.3)' : 'var(--border-light)';
 
-        html += '<div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:14px 16px; margin-bottom:8px;">';
+        html += '<div style="background:' + cardBg + '; border:1px solid ' + cardBorder + '; border-radius:12px; padding:14px 16px; margin-bottom:8px;' + (allTasksDone && !isFinalStatus ? ' border-left:3px solid #22c55e;' : '') + '">';
         html += '<div style="display:flex; align-items:center; justify-content:space-between;">';
         html += '<div style="display:flex; align-items:center; gap:12px; flex:1; min-width:0;">';
         html += '<div style="width:42px; height:42px; border-radius:10px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--text-primary); flex-shrink:0;">' + getInitials(p.full_name) + '</div>';
@@ -7736,14 +8423,131 @@ function renderScheduleList(contentEl) {
         html += '</div></div></div>';
         html += '<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">';
         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Open chart">📋 Chart</button>';
-        if (canAdv) {
-            html += '<span style="font-size:11px; padding:4px 10px; border-radius:6px; background:' + s.bg + '; color:' + s.color + '; font-weight:500; cursor:pointer;" onclick="event.stopPropagation(); handleHealthieClick(\x27' + apptId + '\x27, \x27' + st + '\x27)" title="Advance status">' + st + '</span>';
-        } else {
-            html += '<span style="font-size:11px; padding:4px 10px; border-radius:6px; background:' + s.bg + '; color:' + s.color + '; font-weight:500;">' + st + '</span>';
+        // Status badge + dropdown for status changes
+        var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
+        html += '<div style="position:relative; display:inline-block;">';
+        html += '<span style="font-size:11px; padding:4px 10px; border-radius:6px; background:' + s.bg + '; color:' + s.color + '; font-weight:600; cursor:' + (isFinal ? 'default' : 'pointer') + '; user-select:none;" ' + (isFinal ? '' : 'onclick="event.stopPropagation(); toggleStatusMenu(\x27sm_' + apptId + '\x27)"') + '>' + st + (isFinal ? '' : ' ▾') + '</span>';
+        if (!isFinal && apptId) {
+            html += '<div id="sm_' + apptId + '" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:var(--card); border:1px solid var(--border-light); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.3); z-index:100; min-width:140px; overflow:hidden;">';
+            var statusOptions = [
+                { label: '✅ Check In', value: 'Checked In', show: st === 'Scheduled' || st === 'Confirmed' },
+                { label: '🟣 In Progress', value: 'In Progress', show: st === 'Checked In' },
+                { label: '✅ Completed', value: 'Completed', show: st === 'In Progress' || st === 'Checked In' },
+                { label: '🚫 No Show', value: 'No Show', show: st !== 'No Show' && st !== 'Completed' },
+                { label: '❌ Cancel', value: 'Cancelled', show: st !== 'Cancelled' && st !== 'Completed' && st !== 'No Show' },
+            ];
+            statusOptions.forEach(function(opt) {
+                if (!opt.show) return;
+                var optStyle = opt.value === 'No Show' || opt.value === 'Cancelled' ? 'color:#ef4444;' : 'color:var(--text-primary);';
+                html += '<div onclick="event.stopPropagation(); updateApptStatus(\x27' + apptId + '\x27, \x27' + opt.value + '\x27)" style="padding:10px 14px; font-size:12px; font-weight:500; cursor:pointer; border-bottom:1px solid var(--border); ' + optStyle + '" onmouseover="this.style.background=\'var(--surface-2)\'" onmouseout="this.style.background=\'transparent\'">' + opt.label + '</div>';
+            });
+            html += '</div>';
         }
-        html += '</div></div></div>';
+        html += '</div>';
+        html += '</div></div>';
+
+        // Pre-visit checklist (only for active appointments)
+        if (apptId && !isFinalStatus) {
+            var pvState = getPrevisitState(apptId);
+            var doneCount = previsitCompletedCount(apptId);
+            var totalTasks = PREVISIT_TASKS.length;
+            html += '<div style="margin-top:10px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.06);">';
+            // Progress bar
+            var pct = Math.round((doneCount / totalTasks) * 100);
+            html += '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">';
+            html += '<div style="flex:1; height:4px; background:var(--surface-2); border-radius:2px; overflow:hidden;"><div style="width:' + pct + '%; height:100%; background:' + (allTasksDone ? '#22c55e' : '#0891b2') + '; border-radius:2px; transition:width 0.3s;"></div></div>';
+            html += '<span style="font-size:10px; color:' + (allTasksDone ? '#22c55e' : 'var(--text-tertiary)') + '; font-weight:600; white-space:nowrap;">' + (allTasksDone ? '✅ Ready' : doneCount + '/' + totalTasks) + '</span>';
+            html += '</div>';
+            // Task pills with timestamps
+            html += '<div style="display:flex; flex-wrap:wrap; gap:4px;">';
+            PREVISIT_TASKS.forEach(function(t) {
+                var taskData = pvState[t.key];
+                var done = !!taskData;
+                var pillBg = done ? 'rgba(34,197,94,0.15)' : 'var(--surface-2)';
+                var pillColor = done ? '#22c55e' : 'var(--text-tertiary)';
+                var pillBorder = done ? 'rgba(34,197,94,0.3)' : 'var(--border)';
+                var tooltip = done && taskData.completed_by ? taskData.completed_by + (taskData.completed_at ? ' · ' + new Date(taskData.completed_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix' }) : '') : '';
+                html += '<button onclick="event.stopPropagation(); togglePrevisitTask(\x27' + apptId + '\x27, \x27' + t.key + '\x27)" title="' + (tooltip || 'Click to complete') + '" style="padding:3px 8px; font-size:10px; font-weight:500; border-radius:6px; border:1px solid ' + pillBorder + '; background:' + pillBg + '; color:' + pillColor + '; cursor:pointer; font-family:inherit; transition:all 0.15s;">' + (done ? '✓ ' : '') + t.label + '</button>';
+            });
+            html += '</div>';
+            // Show who completed tasks (compact timestamp line)
+            var completedTasks = PREVISIT_TASKS.filter(function(t) { return pvState[t.key]; });
+            if (completedTasks.length > 0) {
+                var lastTask = completedTasks.reduce(function(a, b) {
+                    var aTime = pvState[a.key]?.completed_at ? new Date(pvState[a.key].completed_at).getTime() : 0;
+                    var bTime = pvState[b.key]?.completed_at ? new Date(pvState[b.key].completed_at).getTime() : 0;
+                    return bTime > aTime ? b : a;
+                });
+                var lastData = pvState[lastTask.key];
+                if (lastData && lastData.completed_by) {
+                    var timeStr = lastData.completed_at ? new Date(lastData.completed_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix' }) : '';
+                    html += '<div style="font-size:9px; color:var(--text-tertiary); margin-top:3px;">Last: ' + lastData.completed_by + (timeStr ? ' at ' + timeStr : '') + '</div>';
+                }
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
     });
     contentEl.innerHTML = html;
+}
+
+function toggleStatusMenu(menuId) {
+    // Close any other open menus first
+    document.querySelectorAll('[id^="sm_"]').forEach(function(el) {
+        if (el.id !== menuId) el.style.display = 'none';
+    });
+    var menu = document.getElementById(menuId);
+    if (menu) menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    // Close on outside click
+    if (menu && menu.style.display === 'block') {
+        setTimeout(function() {
+            document.addEventListener('click', function closeMenu(e) {
+                if (!menu.contains(e.target)) {
+                    menu.style.display = 'none';
+                    document.removeEventListener('click', closeMenu);
+                }
+            });
+        }, 50);
+    }
+}
+
+async function updateApptStatus(appointmentId, newStatus) {
+    // Close menu
+    document.querySelectorAll('[id^="sm_"]').forEach(function(el) { el.style.display = 'none'; });
+
+    // Optimistic update in local data
+    var appt = scheduleAllData.find(function(a) { return String(a.appointment_id) === String(appointmentId); });
+    var prev = appt ? appt.appointment_status : null;
+    if (appt) appt.appointment_status = newStatus;
+    // Also update Today tab data
+    var todayAppt = healthieAppointments.find(function(a) { return String(a.id) === String(appointmentId); });
+    if (todayAppt) { todayAppt.status = newStatus; todayAppt.appointment_status = newStatus; }
+
+    var contentEl = document.getElementById('scheduleContent');
+    if (contentEl) renderScheduleList(contentEl);
+    var provMap = new Map();
+    scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
+    renderProviderTabs([...provMap.values()]);
+    showToast('Status → ' + newStatus, 'info');
+
+    try {
+        var resp = await apiFetch('/ops/api/ipad/appointment-status/', {
+            method: 'PATCH',
+            body: JSON.stringify({ appointment_id: appointmentId, status: newStatus }),
+        });
+        if (resp.success) {
+            showToast('✓ ' + newStatus + ' saved to Healthie', 'success');
+        } else {
+            throw new Error(resp.error || 'Unknown error');
+        }
+    } catch (e) {
+        // Rollback
+        if (appt && prev) appt.appointment_status = prev;
+        if (todayAppt && prev) { todayAppt.status = prev; todayAppt.appointment_status = prev; }
+        if (contentEl) renderScheduleList(contentEl);
+        showToast('Status update failed: ' + e.message, 'error');
+    }
 }
 
 function navigateToPatient(patientId, patientName) {
@@ -7774,19 +8578,26 @@ function openVitalsModal(patientId, patientName) {
     html += '<div class="modal-body" style="padding:20px;">';
     html += '<div style="font-size:13px; color:var(--text-tertiary); margin-bottom:14px;">Patient: <strong style="color:var(--text-primary);">' + patientName + '</strong></div>';
 
-    // Row 1: Blood Pressure + Heart Rate + RR
+    var selectStyle = 'width:100%; padding:10px 8px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:13px; font-family:inherit;';
+
+    // Row 1: Blood Pressure + Method
     html += '<div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">';
-    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">BP Systolic</label><input id="vBpSys" type="number" placeholder="120" style="' + formStyle + '"></div>';
-    html += '<div style="width:10px; display:flex; align-items:flex-end; padding-bottom:12px; color:var(--text-tertiary); font-size:16px;">/</div>';
-    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">BP Diastolic</label><input id="vBpDia" type="number" placeholder="80" style="' + formStyle + '"></div>';
-    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Pulse (bpm)</label><input id="vPulse" type="number" placeholder="72" style="' + formStyle + '"></div>';
-    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">RR (/min)</label><input id="vRR" type="number" placeholder="18" style="' + formStyle + '"></div>';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Blood Pressure (mmHg)</label><input id="vBP" type="text" inputmode="numeric" placeholder="120/80" maxlength="7" style="' + formStyle + '" oninput="autoFormatBP(this)"></div>';
+    html += '<div style="min-width:100px;"><label style="' + labelStyle + '">BP Method</label><select id="vBPMethod" style="' + selectStyle + '"><option value="Auto">Auto</option><option value="Manual">Manual</option><option value="Arterial Line">A-Line</option></select></div>';
     html += '</div>';
 
-    // Row 2: Temp + SpO2
+    // Row 2: Pulse + RR
+    html += '<div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Heart Rate</label><input id="vPulse" type="number" placeholder="72" style="' + formStyle + '"></div>';
+    html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Resp Rate</label><input id="vRR" type="number" placeholder="18" style="' + formStyle + '"></div>';
+    html += '</div>';
+
+    // Row 3: Temp + Method + SpO2 + O2 Source
     html += '<div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">';
     html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">Temp (°F)</label><input id="vTemp" type="number" step="0.1" placeholder="98.6" style="' + formStyle + '"></div>';
+    html += '<div style="min-width:100px;"><label style="' + labelStyle + '">Temp Method</label><select id="vTempMethod" style="' + selectStyle + '"><option value="Tympanic">Tympanic</option><option value="Oral">Oral</option><option value="Temporal">Temporal</option><option value="Axillary">Axillary</option><option value="Rectal">Rectal</option></select></div>';
     html += '<div style="' + fieldWrap + '"><label style="' + labelStyle + '">SpO2 (%)</label><input id="vSpO2" type="number" placeholder="98" style="' + formStyle + '"></div>';
+    html += '<div style="min-width:100px;"><label style="' + labelStyle + '">O₂ Source</label><select id="vO2Source" style="' + selectStyle + '"><option value="RA">RA</option><option value="1L NC">1L NC</option><option value="2L NC">2L NC</option><option value="3L NC">3L NC</option><option value="4L NC">4L NC</option><option value="5L NC">5L NC</option><option value="6L NC">6L NC</option><option value="NRB">NRB</option><option value="Venti">Venti</option><option value="CPAP">CPAP/BiPAP</option><option value="Vent">Vent</option></select></div>';
     html += '</div>';
 
     // Row 3: Height + Weight + auto BMI
@@ -7832,6 +8643,17 @@ function calcBMI() {
 
 function updateVitalsUnit() {} // kept for backwards compat
 
+// Auto-format BP: "120" → "120/" after 3 digits
+function autoFormatBP(input) {
+    let v = input.value.replace(/[^\d\/]/g, '');
+    // If user typed 3+ digits without a slash, insert one
+    if (v.length >= 3 && !v.includes('/')) {
+        v = v.slice(0, 3) + '/' + v.slice(3);
+    }
+    // Limit to 7 chars (e.g., 120/80)
+    input.value = v.slice(0, 7);
+}
+
 async function submitAllVitals(patientId) {
     var btn = document.getElementById('vitalsSubmitBtn');
     var errorEl = document.getElementById('vitalsError');
@@ -7841,36 +8663,39 @@ async function submitAllVitals(patientId) {
 
     // Gather all non-empty vitals
     var vitals = [];
-    var bpSys = document.getElementById('vBpSys')?.value;
-    var bpDia = document.getElementById('vBpDia')?.value;
-    // ✅ Validate BP format
-    if (bpSys && bpDia) {
-        if (!/^\d{2,3}$/.test(bpSys) || !/^\d{2,3}$/.test(bpDia)) {
-            errorEl.textContent = 'Blood pressure must be numeric (e.g., 120/80)';
+
+    // Blood Pressure — single field "120/80"
+    var bpRaw = document.getElementById('vBP')?.value || '';
+    if (bpRaw) {
+        var bpMatch = bpRaw.match(/^(\d{2,3})\/(\d{2,3})$/);
+        if (!bpMatch) {
+            errorEl.textContent = 'Blood pressure format: 120/80 (systolic/diastolic)';
             errorEl.style.display = 'block';
             return;
         }
-        var systolic = parseInt(bpSys);
-        var diastolic = parseInt(bpDia);
+        var systolic = parseInt(bpMatch[1]);
+        var diastolic = parseInt(bpMatch[2]);
         if (systolic < 60 || systolic > 250 || diastolic < 30 || diastolic > 150) {
-            errorEl.textContent = 'Blood pressure values out of range (60-250 / 30-150)';
+            errorEl.textContent = 'Blood pressure out of range (60-250 / 30-150)';
             errorEl.style.display = 'block';
             return;
         }
+        // Store as two Healthie entries (metric_stat is numeric) but display as combined
+        var bpMethod = document.getElementById('vBPMethod')?.value || 'Auto';
+        vitals.push({ metric_type: 'blood_pressure_systolic', value: String(systolic), unit: 'mmHg', notes: bpMethod });
+        vitals.push({ metric_type: 'blood_pressure_diastolic', value: String(diastolic), unit: 'mmHg', notes: bpMethod });
     }
-    // FIX(2026-03-19): Send BP as two separate entries — Healthie metric_stat is numeric, can't store "120/80"
-    if (bpSys && bpDia) {
-        vitals.push({ metric_type: 'blood_pressure_systolic', value: bpSys, unit: 'mmHg' });
-        vitals.push({ metric_type: 'blood_pressure_diastolic', value: bpDia, unit: 'mmHg' });
-    }
+
     var pulse = document.getElementById('vPulse')?.value;
     if (pulse) vitals.push({ metric_type: 'heart_rate', value: pulse, unit: 'bpm' });
     var rr = document.getElementById('vRR')?.value;
-    if (rr) vitals.push({ metric_type: 'respiration_rate', value: rr, unit: '/min' });
+    if (rr) vitals.push({ metric_type: 'respiration_rate', value: rr, unit: 'breaths/min' });
     var temp = document.getElementById('vTemp')?.value;
-    if (temp) vitals.push({ metric_type: 'temperature', value: temp, unit: '°F' });
+    var tempMethod = document.getElementById('vTempMethod')?.value || 'Tympanic';
+    if (temp) vitals.push({ metric_type: 'temperature', value: temp, unit: '°F', notes: tempMethod });
     var spo2 = document.getElementById('vSpO2')?.value;
-    if (spo2) vitals.push({ metric_type: 'oxygen_saturation', value: spo2, unit: '%' });
+    var o2Source = document.getElementById('vO2Source')?.value || 'RA';
+    if (spo2) vitals.push({ metric_type: 'oxygen_saturation', value: spo2, unit: '%', notes: 'on ' + o2Source });
     var height = document.getElementById('vHeight')?.value;
     if (height) vitals.push({ metric_type: 'height', value: height, unit: 'in' });
     var weight = document.getElementById('vWeight')?.value;
@@ -7894,7 +8719,10 @@ async function submitAllVitals(patientId) {
         for (var i = 0; i < vitals.length; i++) {
             try {
                 var v = vitals[i];
-                v.notes = notes;
+                // Preserve per-vital method notes, append general notes
+                var vitalDescription = v.notes || '';
+                if (notes) vitalDescription = vitalDescription ? vitalDescription + ' — ' + notes : notes;
+                v.notes = vitalDescription;
                 var resp = await apiFetch('/ops/api/ipad/patient/' + patientId + '/metrics/', {
                     method: 'POST',
                     body: JSON.stringify(v)
@@ -7924,7 +8752,8 @@ async function submitAllVitals(patientId) {
                                         action: 'add_vital',
                                         healthie_id: hid,
                                         category: cat,
-                                        value: v.value
+                                        value: v.value,
+                                        description: vitalDescription || ''
                                     })
                                 }).catch(function(err) { console.error('[Vitals] Healthie sync error:', err); });
                             } catch (syncErr) {

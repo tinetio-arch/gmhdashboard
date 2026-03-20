@@ -41,29 +41,19 @@ export async function GET(request: NextRequest) {
 
         // Use specificDay to fetch ONLY today's appointments (instead of all 5000+)
         // Also filter by provider_id at API level when available
-        const appointmentQuery = providerId
-            ? `query GetAppointments($providerId: ID!, $day: String!) {
+        // FIX(2026-03-19): Healthie API key only returns the key owner's appointments.
+        // Must query each provider separately and combine results.
+        const PROVIDER_IDS = [
+            '12088269',  // Phil Schafer NP
+            '12093125',  // Aaron Whitten (Dr. Whitten)
+        ];
+
+        const appointmentQuery = `query GetAppointments($providerId: ID!, $day: String!) {
                 appointments(
                     filter: "all",
                     provider_id: $providerId,
                     specificDay: $day,
-                    should_paginate: false,
-                    is_with_clients: true
-                ) {
-                    id date length pm_status location other_party_id
-                    appointment_type { name }
-                    provider { id full_name }
-                    attendees { id first_name last_name }
-                    user { id first_name last_name }
-                    contact_type
-                }
-            }`
-            : `query GetAppointments($day: String!) {
-                appointments(
-                    filter: "all",
-                    specificDay: $day,
-                    should_paginate: false,
-                    is_with_clients: true
+                    should_paginate: false
                 ) {
                     id date length pm_status location other_party_id
                     appointment_type { name }
@@ -74,42 +64,52 @@ export async function GET(request: NextRequest) {
                 }
             }`;
 
-        const variables: Record<string, string> = providerId
-            ? { providerId, day: todayStr }
-            : { day: todayStr };
-
-        // Direct fetch with AbortController
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
+        // Fetch appointments for each provider in parallel
+        const fetchProviderAppts = async (provId: string) => {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+            try {
+                const response = await fetch(HEALTHIE_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                        'AuthorizationSource': 'API',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: appointmentQuery,
+                        variables: { providerId: provId, day: todayStr },
+                    }),
+                    signal: controller.signal,
+                    cache: 'no-store',
+                } as any);
+                clearTimeout(timeout);
+                if (response.ok) {
+                    const result = await response.json();
+                    return result.data?.appointments || [];
+                }
+                return [];
+            } catch {
+                clearTimeout(timeout);
+                return [];
+            }
+        };
 
         try {
-            const response = await fetch(HEALTHIE_API_URL, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Basic ${HEALTHIE_API_KEY}`,
-                    'AuthorizationSource': 'API',
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ query: appointmentQuery, variables }),
-                signal: controller.signal,
-            });
-
-            clearTimeout(timeout);
-
-            if (response.ok) {
-                const result = await response.json();
-                if (result.errors) {
-                    console.error('[iPad Schedule] Healthie errors:', JSON.stringify(result.errors));
+            const results = await Promise.all(PROVIDER_IDS.map(fetchProviderAppts));
+            // Combine and deduplicate by appointment ID
+            const seenIds = new Set<string>();
+            for (const provAppts of results) {
+                for (const appt of provAppts) {
+                    if (!seenIds.has(appt.id)) {
+                        seenIds.add(appt.id);
+                        appointments.push(appt);
+                    }
                 }
-                // specificDay already filters to today at the API level — no client-side filtering needed
-                appointments = result.data?.appointments || [];
-                console.log(`[iPad Schedule] Fetched ${appointments.length} appointments for ${todayStr} (specificDay filter, provider: ${providerId || 'all'})`);
-            } else {
-                console.warn('[iPad Schedule] HTTP', response.status);
             }
+            console.log(`[iPad Schedule] Fetched ${appointments.length} appointments for ${todayStr} across ${PROVIDER_IDS.length} providers`);
         } catch (err: any) {
-            clearTimeout(timeout);
-            console.warn('[iPad Schedule] Fetch error:', err.name === 'AbortError' ? 'timeout' : err.message);
+            console.warn('[iPad Schedule] Fetch error:', err.message);
             return NextResponse.json({ success: true, patients: [], error: 'Could not reach Healthie — try again' });
         }
 
@@ -167,7 +167,7 @@ export async function GET(request: NextRequest) {
                 appointment_type: appt.appointment_type?.name || 'Appointment',
                 provider: appt.provider?.full_name || '',
                 provider_id: appt.provider?.id || '',
-                appointment_status: appt.pm_status || 'Scheduled',
+                appointment_status: appt.pm_status && appt.pm_status !== 'None' ? appt.pm_status : 'Scheduled',
                 time: appt.date ? new Date(appt.date).toLocaleTimeString('en-US', {
                     hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix'
                 }) : '',
@@ -199,7 +199,8 @@ export async function GET(request: NextRequest) {
                         },
                         body: JSON.stringify({ query: userQuery }),
                         signal: AbortSignal.timeout(5000),
-                    });
+                        cache: 'no-store',
+                    } as any);
                     if (resp.ok) {
                         const userData = await resp.json();
                         const user = userData.data?.user;

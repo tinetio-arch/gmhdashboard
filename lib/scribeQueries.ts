@@ -55,12 +55,13 @@ export async function createScribeSession(data: {
     transcript?: string;
     transcript_source?: string;
     created_by: string;
+    encounter_date?: string;
 }): Promise<ScribeSession> {
     const [session] = await query<ScribeSession>(`
     INSERT INTO scribe_sessions
       (patient_id, appointment_id, visit_type, audio_s3_key,
-       transcript, transcript_source, status, created_by)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       transcript, transcript_source, status, created_by, encounter_date)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     RETURNING *
   `, [
         data.patient_id,
@@ -71,6 +72,7 @@ export async function createScribeSession(data: {
         data.transcript_source || 'deepgram',
         data.transcript ? 'transcribed' : 'recording',
         data.created_by,
+        data.encounter_date || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }),
     ]);
     return session;
 }

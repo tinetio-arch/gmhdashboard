@@ -99,51 +99,54 @@ async function addVital(healthieId: string, body: any) {
 }
 
 // ==================== ADD ALLERGY ====================
+// FIX(2026-03-19): Healthie allergy API requires org-level category configuration
+// which isn't set up. Store allergies locally with NKDA support.
 async function addAllergy(healthieId: string, body: any) {
-    const { name, severity, reaction, category_type } = body;
+    const { name, severity, reaction, category, is_nkda, entered_by } = body;
+
+    // Resolve patient_id from healthie_id
+    const [patient] = await query<{ patient_id: string }>(
+        `SELECT p.patient_id FROM patients p
+         LEFT JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text AND hc.is_active = true
+         WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1 OR p.patient_id::text = $1
+         LIMIT 1`,
+        [healthieId]
+    );
+    const patientId = patient?.patient_id;
+    if (!patientId) {
+        return NextResponse.json({ success: false, error: 'Patient not found' }, { status: 404 });
+    }
+
+    // NKDA: mark patient as having no known allergies
+    if (is_nkda) {
+        // Remove any existing allergies and add NKDA marker
+        await query('DELETE FROM patient_allergies WHERE patient_id = $1', [patientId]);
+        const [nkda] = await query<any>(
+            `INSERT INTO patient_allergies (patient_id, name, is_nkda, status, entered_by, created_at)
+             VALUES ($1, 'NKDA', TRUE, 'Active', $2, NOW())
+             RETURNING *`,
+            [patientId, entered_by || 'Staff']
+        );
+        console.log(`[iPad:PatientData] Marked NKDA for patient ${patientId} by ${entered_by}`);
+        return NextResponse.json({ success: true, data: nkda });
+    }
 
     if (!name) {
-        return NextResponse.json({ success: false, error: 'name is required' }, { status: 400 });
+        return NextResponse.json({ success: false, error: 'Allergy name is required' }, { status: 400 });
     }
 
-    const result = await healthieGraphQL<any>(`
-        mutation CreateAllergy($input: createAllergySensitivityInput!) {
-            createAllergySensitivity(input: $input) {
-                allergy_sensitivity {
-                    id
-                    name
-                    severity
-                    reaction
-                    status
-                    category_type
-                }
-                messages {
-                    field
-                    message
-                }
-            }
-        }
-    `, {
-        input: {
-            user_id: healthieId,
-            name: name,
-            severity: severity || '',
-            reaction: reaction || '',
-            category_type: category_type || 'Allergy',
-            status: 'Active',
-        }
-    });
+    // Remove NKDA marker if adding a real allergy
+    await query('DELETE FROM patient_allergies WHERE patient_id = $1 AND is_nkda = TRUE', [patientId]);
 
-    if (result.createAllergySensitivity?.messages?.length > 0) {
-        const msg = result.createAllergySensitivity.messages.map((m: any) => m.message).join(', ');
-        return NextResponse.json({ success: false, error: msg }, { status: 400 });
-    }
+    const [allergy] = await query<any>(
+        `INSERT INTO patient_allergies (patient_id, name, severity, reaction, category, status, entered_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, 'Active', $6, NOW())
+         RETURNING *`,
+        [patientId, name, severity || null, reaction || null, category || 'Drug', entered_by || 'Staff']
+    );
 
-    console.log(`[iPad:PatientData] Added allergy "${name}" for patient ${healthieId}`);
-    return NextResponse.json({
-        success: true,
-        data: result.createAllergySensitivity?.allergy_sensitivity || {},
-    });
+    console.log(`[iPad:PatientData] Added allergy "${name}" for patient ${patientId} by ${entered_by}`);
+    return NextResponse.json({ success: true, data: allergy });
 }
 
 // ==================== ADD MEDICATION ====================
@@ -188,10 +191,27 @@ async function addMedication(healthieId: string, body: any) {
         return NextResponse.json({ success: false, error: msg }, { status: 400 });
     }
 
-    console.log(`[iPad:PatientData] Added medication "${name}" for patient ${healthieId}`);
+    // FIX(2026-03-19): Healthie creates medications as inactive. Must update to activate.
+    const medId = result.createMedication?.medication?.id;
+    if (medId) {
+        try {
+            await healthieGraphQL<any>(`
+                mutation ActivateMed($input: updateMedicationInput!) {
+                    updateMedication(input: $input) {
+                        medication { id active }
+                        messages { field message }
+                    }
+                }
+            `, { input: { id: medId, active: true } });
+        } catch (activateErr) {
+            console.warn(`[iPad:PatientData] Could not activate medication ${medId}:`, activateErr);
+        }
+    }
+
+    console.log(`[iPad:PatientData] Added medication "${name}" for patient ${healthieId} (id: ${medId})`);
     return NextResponse.json({
         success: true,
-        data: result.createMedication?.medication || {},
+        data: { ...result.createMedication?.medication, active: true },
     });
 }
 

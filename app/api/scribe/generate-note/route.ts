@@ -103,7 +103,21 @@ Create a complete, clinically accurate, and legally defensible medical record th
 Patient Information Required:
 - Patient Name: ${ctx.patient_name}
 - Visit Date: ${currentDate}
+- Visit Type/Focus: ${ctx.visit_type || 'General'}
 - Clinical Transcript: ${ctx.transcript}
+
+**VISIT FOCUS — CRITICAL:**
+The primary reason for this visit is: **${ctx.visit_type || 'General encounter'}**. The SOAP note should be centered around this visit purpose. All procedures documented in the Objective and Plan sections must be procedures **performed by ${providerName} during THIS visit ONLY**.
+
+**DISTINGUISHING PROVIDER vs. EXTERNAL PROCEDURES — VERY IMPORTANT:**
+- If the patient mentions procedures, injections, treatments, or visits done at ANOTHER provider's office (e.g., "I got a cortisone shot at my orthopedist"), these are **patient-reported history** and belong in the **Subjective/HPI section only** — NOT in the Objective or Plan.
+- Only document procedures in the Objective section that **${providerName} personally performed** during this encounter.
+- If unsure whether a procedure was done by ${providerName} or another provider, place it in the HPI as "Patient reports..." rather than documenting it as a performed procedure.
+
+**LOT NUMBERS & PRODUCT TRACKING:**
+- If the provider mentions lot numbers, NDC numbers, batch numbers, or specific product identifiers during the encounter, these MUST be captured exactly as stated in the Plan section under the corresponding procedure/medication.
+- For pellet insertions: document the pellet type, dosage (mg), lot number, expiration date, and insertion site.
+- Format: "Lot #: [number], Exp: [date]" on its own line under the procedure.
 
 **PATIENT MEDICAL HISTORY (from EMR):**
 Use this context to enrich the SOAP note. Include these medications in the "Current Medications" section of Subjective, and include these allergies in the "Allergies" section.

@@ -5,6 +5,51 @@ import Stripe from 'stripe';
 
 export const dynamic = 'force-dynamic';
 
+// Merge Healthie allergies with local patient_allergies table
+async function mergeAllergies(healthieAllergies: any[], patientId: string | null): Promise<any[]> {
+    let localAllergies: any[] = [];
+    if (patientId) {
+        try {
+            localAllergies = await query<any>(
+                `SELECT allergy_id as id, name, severity, reaction, category as category_type,
+                        status, is_nkda, entered_by, created_at
+                 FROM patient_allergies WHERE patient_id = $1::uuid ORDER BY created_at DESC`,
+                [patientId]
+            );
+        } catch { /* table might not exist yet */ }
+    }
+
+    // If local has NKDA marker, show that
+    const hasNKDA = localAllergies.some((a: any) => a.is_nkda);
+    if (hasNKDA) {
+        const nkdaEntry = localAllergies.find((a: any) => a.is_nkda);
+        return [{
+            id: nkdaEntry?.id || 'nkda',
+            name: 'NKDA',
+            severity: null,
+            reaction: null,
+            status: 'Active',
+            category_type: null,
+            is_nkda: true,
+            entered_by: nkdaEntry?.entered_by || 'Staff',
+            created_at: nkdaEntry?.created_at || new Date().toISOString(),
+        }];
+    }
+
+    // Combine: local allergies + Healthie allergies (deduplicate by name)
+    const seen = new Set<string>();
+    const combined: any[] = [];
+    for (const a of localAllergies) {
+        const key = (a.name || '').toLowerCase();
+        if (!seen.has(key)) { seen.add(key); combined.push(a); }
+    }
+    for (const a of healthieAllergies) {
+        const key = (a.name || '').toLowerCase();
+        if (!seen.has(key)) { seen.add(key); combined.push(a); }
+    }
+    return combined;
+}
+
 // Fetch comprehensive patient chart data from Healthie for the scribe chart panel.
 // Combines local DB data with Healthie GraphQL for a full picture.
 export async function GET(request: NextRequest) {
@@ -23,14 +68,21 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-        // Helper function to merge local vitals with Healthie vitals
+        // FIX(2026-03-19): Vitals were showing twice (local + Healthie copies).
+        // Healthie is the source of truth. Only use local vitals as fallback when Healthie has none.
         const mergeVitals = (localVitals: any[], healthieVitals: any[]) => {
-            // Convert local vitals to Healthie format
-            const formattedLocal = localVitals.map(v => ({
+            // If Healthie has vitals, use those exclusively (they're synced from local anyway)
+            if (healthieVitals.length > 0) {
+                return healthieVitals
+                    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+            }
+
+            // Fallback: use local vitals if Healthie has none
+            return localVitals.map(v => ({
                 id: `local_${v.metric_id}`,
                 type: 'MetricEntry',
                 category: v.metric_type?.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()) || 'Vital',
-                metric_stat: v.value + (v.unit ? ` ${v.unit}` : ''),
+                metric_stat: v.value,
                 created_at: v.created_at,
                 description: v.description || '',
                 created_by: {
@@ -38,19 +90,7 @@ export async function GET(request: NextRequest) {
                     full_name: v.recorded_by_email?.split('@')[0] || 'Staff',
                     email: v.recorded_by_email || ''
                 }
-            }));
-
-            // Merge and deduplicate by timestamp (keep Healthie version if duplicate within 5 seconds)
-            const merged = [...formattedLocal, ...healthieVitals];
-            const seen = new Set<string>();
-            return merged
-                .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-                .filter(v => {
-                    const key = `${v.category}_${new Date(v.created_at).getTime()}`;
-                    if (seen.has(key)) return false;
-                    seen.add(key);
-                    return true;
-                });
+            })).sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
         };
 
         // 1. Look up patient in local DB with full GMH dashboard fields
@@ -159,7 +199,7 @@ export async function GET(request: NextRequest) {
 
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
-        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, billingItems] = await Promise.all([
+        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, billingItems, pendingForms] = await Promise.all([
             // Chart notes (form answer groups) - NOTE: sort_by is NOT supported by Healthie API
             safeHealthieQuery<any>('chartNotes', `
                 query GetChartNotes($userId: String) {
@@ -183,9 +223,10 @@ export async function GET(request: NextRequest) {
             `, { userId: healthieId }),
 
             // Medications
+            // FIX(2026-03-19): Query all medications (not just active) — Healthie creates as inactive
             safeHealthieQuery<any>('medications', `
                 query GetMedications($patientId: ID) {
-                    medications(patient_id: $patientId, active: true) {
+                    medications(patient_id: $patientId) {
                         id
                         name
                         dosage
@@ -194,7 +235,9 @@ export async function GET(request: NextRequest) {
                         directions
                         start_date
                         end_date
+                        active
                         normalized_status
+                        comment
                     }
                 }
             `, { patientId: healthieId }),
@@ -366,6 +409,25 @@ export async function GET(request: NextRequest) {
                     }
                 }
             `, { clientId: healthieId }),
+
+            // Pending/requested forms (not started or in progress)
+            safeHealthieQuery<any>('pendingForms', `
+                query GetPendingForms($userId: ID) {
+                    requestedFormCompletions(user_id: $userId) {
+                        id
+                        status
+                        date_to_show
+                        custom_module_form {
+                            id
+                            name
+                        }
+                        form_answer_group {
+                            id
+                            finished
+                        }
+                    }
+                }
+            `, { userId: healthieId }),
         ]);
 
         // 3. Fetch local scribe history — check both UUID and Healthie ID
@@ -518,7 +580,35 @@ export async function GET(request: NextRequest) {
                 healthie_id: item.id
             }))
             .slice(0, 10); // Latest 10 payments
-        console.log(`[Patient Chart] Found ${lastPayments.length} billing items from Healthie`);
+        // Also include Direct Stripe payments from local DB
+        if (localPatientId) {
+            try {
+                const localPayments = await query<any>(
+                    `SELECT transaction_id, amount, description, stripe_account, status, created_at, created_by
+                     FROM payment_transactions
+                     WHERE patient_id = $1
+                     ORDER BY created_at DESC
+                     LIMIT 10`,
+                    [localPatientId]
+                );
+                for (const lp of localPayments) {
+                    lastPayments.push({
+                        amount: `$${parseFloat(lp.amount || 0).toFixed(2)}`,
+                        payment_date: lp.created_at || '',
+                        payment_type: lp.stripe_account === 'direct' ? 'Direct Stripe' : 'Healthie Stripe',
+                        description: lp.description || '',
+                        status: lp.status || 'completed',
+                        local_id: lp.transaction_id,
+                    });
+                }
+            } catch (err) {
+                console.warn('[Patient Chart] Failed to query local payments:', err);
+            }
+        }
+        // Sort all payments by date, newest first
+        lastPayments.sort((a: any, b: any) => new Date(b.payment_date || 0).getTime() - new Date(a.payment_date || 0).getTime());
+        lastPayments = lastPayments.slice(0, 10);
+        console.log(`[Patient Chart] Found ${lastPayments.length} total payments (Healthie + Direct Stripe)`);
 
         // Query testosterone dispenses
         let trtDispenses: any[] = [];
@@ -631,8 +721,14 @@ export async function GET(request: NextRequest) {
                 healthie_id: healthieId,
                 healthie_profile: hp || null,
                 chart_notes: chartNotes?.formAnswerGroups || [],
+                pending_forms: (pendingForms?.requestedFormCompletions || []).map((f: any) => ({
+                    id: f.id,
+                    name: f.custom_module_form?.name || 'Unknown Form',
+                    status: f.form_answer_group?.finished ? 'completed' : (f.form_answer_group ? 'in_progress' : 'not_started'),
+                    date: f.date_to_show || null,
+                })),
                 medications: medications?.medications || [],
-                allergies: allergies?.user?.allergy_sensitivities || [],
+                allergies: await mergeAllergies(allergies?.user?.allergy_sensitivities || [], localPatientId),
                 appointments: appointments?.appointments || [],
                 documents: documents?.documents || [],
                 vitals: mergeVitals(localVitals, entries?.entries || []),

@@ -251,7 +251,17 @@ export async function POST(request: NextRequest) {
         // 5.5. Generate PDF and upload to Healthie as a document
         let pdfDocumentId: string | null = null;
         try {
-            const visitDate = new Date(note.created_at || Date.now()).toLocaleDateString('en-US', {
+            // Use encounter_date from session if available, fallback to note.created_at
+            const [session] = await query<any>(
+                'SELECT encounter_date FROM scribe_sessions WHERE session_id = $1',
+                [note.session_id]
+            );
+            const encounterDateRaw = session?.encounter_date;
+            // encounter_date is a DATE column returned as 'YYYY-MM-DD' string
+            const visitDateObj = encounterDateRaw
+                ? new Date(encounterDateRaw + 'T12:00:00') // noon to avoid timezone shift
+                : new Date(note.created_at || Date.now());
+            const visitDate = visitDateObj.toLocaleDateString('en-US', {
                 year: 'numeric', month: 'long', day: 'numeric'
             });
             const pdfBuffer = await generateSoapPdf({
@@ -371,7 +381,7 @@ export async function POST(request: NextRequest) {
                                     type: 'MetricEntry',
                                     category: type,
                                     metric_stat: String(value),
-                                    created_at: new Date().toISOString(),
+                                    created_at: visitDateObj.toISOString(),
                                 }
                             });
                             vitalsCreated++;
@@ -394,7 +404,7 @@ export async function POST(request: NextRequest) {
                                             type: 'MetricEntry',
                                             category: 'Blood Pressure - Diastolic',
                                             metric_stat: String(diastolic),
-                                            created_at: new Date().toISOString(),
+                                            created_at: visitDateObj.toISOString(),
                                         }
                                     });
                                     vitalsCreated++;
