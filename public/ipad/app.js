@@ -9971,8 +9971,9 @@ async function updateBillingInfo() {
                         return `
                         <div style="background: ${bgColor}; border: 1px solid ${borderColor}; padding: 12px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                             <div style="flex: 1;">
-                                <div style="color: var(--text-primary); font-size: 14px;">${pm.card_type_label || 'Card'} ****${pm.last_four || '****'}</div>
-                                <div style="color: var(--text-tertiary); font-size: 12px;">Expires ${pm.expiration || 'N/A'} · ZIP ${pm.zip || 'N/A'}</div>
+                                <div style="color: var(--text-primary); font-size: 14px;">${isDirectStripe ? '💳 Billing Card (Direct)' : '🏥 Healthie Card'} ****${pm.last_four || '****'}</div>
+                                <div style="color: var(--text-tertiary); font-size: 12px;">${isDirectStripe ? 'For products, services, peptides' : 'Managed in Healthie — subscriptions only'}</div>
+                                <div style="color: var(--text-tertiary); font-size: 11px;">Expires ${pm.expiration || 'N/A'} · ZIP ${pm.zip || 'N/A'}</div>
                             </div>
                             <div style="display: flex; gap: 8px; align-items: center;">
                                 ${pm.is_default ? '<div style="background: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px;">Default</div>' : ''}
@@ -9983,23 +9984,6 @@ async function updateBillingInfo() {
                     }).join('')}
                 </div>
             ` : ''}
-
-            <div style="margin-bottom: 20px;">
-                <div style="font-size: 12px; font-weight: 600; color: #10b981; text-transform: uppercase; margin-bottom: 8px;">
-                    🏥 For Packages & Subscriptions
-                </div>
-                <button onclick="addNewCard()" style="
-                    width: 100%; padding: 14px;
-                    background: linear-gradient(135deg, #10b981, #059669);
-                    color: white; border: none; border-radius: 8px;
-                    font-size: 14px; font-weight: 600; cursor: pointer;
-                ">
-                    ➕ Add Card to Healthie Stripe
-                </button>
-                <div style="font-size: 11px; color: var(--text-tertiary); margin-top: 6px; padding: 0 4px;">
-                    Use this for recurring packages managed in Healthie
-                </div>
-            </div>
 
             <div style="margin-bottom: 16px;">
                 <div style="font-size: 12px; font-weight: 600; color: #f093fb; text-transform: uppercase; margin-bottom: 8px;">
@@ -10034,17 +10018,6 @@ function closeBillingModal() {
         window._billingModal.remove();
         delete window._billingModal;
     }
-}
-
-function addNewCard() {
-    const healthieId = chartPanelData?.healthie_id;
-    if (!healthieId) {
-        showToast('Error: No Healthie ID', 'error');
-        return;
-    }
-    closeBillingModal();
-    window.open(`https://app.gethealthie.com/patients/${healthieId}/billing`, '_blank');
-    showToast('Opening Healthie billing page to add card...', 'info');
 }
 
 async function deletePaymentMethod(paymentMethodId) {
@@ -10235,131 +10208,57 @@ async function chargePatient() {
     const patientName = chartPanelData?.demographics?.full_name || 'Patient';
     const paymentMethods = chartPanelData?.payment_methods || [];
 
-    if (!patientId) {
-        showToast('No patient selected', 'error');
-        console.error('[chargePatient] Missing patient_id. chartPanelData:', chartPanelData, 'chartPanelPatientId:', chartPanelPatientId);
+    // Check for a Direct Stripe card
+    const directCards = paymentMethods.filter(pm =>
+        pm.source_type === 'direct_stripe' || pm.id?.startsWith('direct_pm_')
+    );
+
+    if (directCards.length === 0) {
+        showToast('No billing card on file. Add a card first.', 'error');
         return;
     }
 
-    // Step 1: Select Stripe account (removed payment method check - will validate per account type)
-    const stripeAccountModal = document.createElement('div');
-    stripeAccountModal.style.cssText = `
-        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(0,0,0,0.8); z-index: 10000;
-        display: flex; align-items: center; justify-content: center;
-        padding: 20px;
-    `;
-    stripeAccountModal.innerHTML = `
-        <div style="background: var(--card); border-radius: 12px; padding: 24px; max-width: 400px; width: 100%;">
-            <h3 style="margin: 0 0 16px; color: var(--text-primary); font-size: 18px;">Select Stripe Account</h3>
-            <div style="color: var(--text-secondary); font-size: 13px; margin-bottom: 20px;">
-                Choose which Stripe account to charge ${patientName}:
-            </div>
-
-            <button onclick="selectStripeAccount('healthie')" style="
-                width: 100%; padding: 16px; margin-bottom: 12px;
-                background: linear-gradient(135deg, #10b981, #059669);
-                color: white; border: none; border-radius: 8px;
-                font-size: 14px; font-weight: 600; cursor: pointer;
-                text-align: left; display: flex; align-items: center; justify-content: space-between;
-            ">
-                <div>
-                    <div>🏥 Healthie Stripe</div>
-                    <div style="font-size: 11px; opacity: 0.8; margin-top: 4px;">For packages & subscriptions</div>
-                </div>
-                <div style="font-size: 18px;">→</div>
-            </button>
-
-            <button onclick="selectStripeAccount('direct')" style="
-                width: 100%; padding: 16px; margin-bottom: 16px;
-                background: linear-gradient(135deg, #f093fb, #f5576c);
-                color: white; border: none; border-radius: 8px;
-                font-size: 14px; font-weight: 600; cursor: pointer;
-                text-align: left; display: flex; align-items: center; justify-content: space-between;
-            ">
-                <div>
-                    <div>💳 Bill Patient for Product/Service</div>
-                    <div style="font-size: 11px; opacity: 0.8; margin-top: 4px;">For today's visit, products, or services</div>
-                </div>
-                <div style="font-size: 18px;">→</div>
-            </button>
-
-            <button onclick="closeStripeAccountModal()" style="
-                width: 100%; padding: 12px;
-                background: transparent; color: var(--text-tertiary); border: 1px solid var(--border-light);
-                border-radius: 8px; font-size: 13px; cursor: pointer;
-            ">Cancel</button>
-        </div>
-    `;
-    document.body.appendChild(stripeAccountModal);
-
-    // Store modal reference for cleanup
-    window._stripeAccountModal = stripeAccountModal;
-}
-
-function closeStripeAccountModal() {
-    if (window._stripeAccountModal) {
-        window._stripeAccountModal.remove();
-        delete window._stripeAccountModal;
-    }
-}
-
-async function selectStripeAccount(account) {
-    closeStripeAccountModal();
-
-    const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
-    const patientName = chartPanelData?.demographics?.full_name || 'Patient';
-
-    if (!patientId) {
-        showToast('No patient selected', 'error');
-        console.error('[selectStripeAccount] Missing patient_id. chartPanelData:', chartPanelData, 'chartPanelPatientId:', chartPanelPatientId);
-        return;
-    }
-
-    // Step 2: Get amount and description
+    // Will be replaced with showProductSearchModal() in Step 3
+    // For now, use the old prompt() flow but hardcode to direct
     const amount = prompt(`Enter amount to charge ${patientName}:`);
-    if (!amount || isNaN(parseFloat(amount))) {
-        if (amount !== null) showToast('Invalid amount', 'error');
-        return;
-    }
+    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return;
 
     const description = prompt('Description/reason for charge:');
-    if (!description) {
-        showToast('Description required', 'error');
-        return;
-    }
+    if (!description) return;
 
-    const amountNum = parseFloat(amount);
-    const accountLabel = account === 'healthie' ? 'Healthie (Packages/Subscriptions)' : 'Bill for Product/Service';
+    await processChargeRequest(patientId, healthieId, patientName, parseFloat(amount), description, 'direct', null);
+}
 
-    if (!confirm(`Charge ${patientName} $${amountNum.toFixed(2)} via ${accountLabel}?\n\n"${description}"`)) {
-        return;
-    }
-
-    showToast('Processing charge...', 'info');
-
+async function processChargeRequest(patientId, healthieId, patientName, amount, description, stripeAccount, productId) {
     try {
+        showToast('Processing charge...', 'info');
         const response = await apiFetch('/ops/api/ipad/billing/charge/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                patient_id: patientId,
-                amount: amountNum,
-                description,
-                stripe_account: account
+                patient_id: healthieId || patientId,
+                amount: amount,
+                description: description,
+                stripe_account: stripeAccount,
+                product_id: productId
             })
         });
 
         if (response.success) {
-            showToast(`✅ ${response.message}`, 'success');
-            // Reload payment data
-            await loadChartData(patientId);
+            showToast(`Charged ${patientName} $${amount.toFixed(2)} for ${description}`, 'success');
+            // Refresh payment data
+            if (patientId) {
+                await loadChartData(patientId);
+            }
+            return response;
         } else {
-            showToast(`❌ ${response.error}`, 'error');
+            showToast(`Charge failed: ${response.error || 'Unknown error'}`, 'error');
+            return null;
         }
-    } catch (error) {
-        console.error('[chargePatient]', error);
-        showToast(`❌ Failed to charge patient: ${error.message}`, 'error');
+    } catch (err) {
+        console.error('Charge error:', err);
+        showToast('Network error — check before retrying.', 'error');
+        return null;
     }
 }
 
