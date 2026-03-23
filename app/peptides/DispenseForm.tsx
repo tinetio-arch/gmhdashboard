@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { withBasePath } from '@/lib/basePath';
 
 interface DispenseFormProps {
-    productOptions: { value: string; label: string }[];
+    productOptions: { value: string; label: string; stock: number }[];
 }
 
 interface PatientSearchResult {
@@ -37,6 +37,11 @@ export default function DispenseForm({ productOptions }: DispenseFormProps) {
     const [status, setStatus] = useState<'Paid' | 'Pending'>('Paid');
     const [educationComplete, setEducationComplete] = useState(false);
     const [notes, setNotes] = useState('');
+    const [stockWarning, setStockWarning] = useState<string | null>(null);
+
+    // Check stock when product changes
+    const selectedProduct = productOptions.find(p => p.value === productId);
+    const isOutOfStock = selectedProduct ? selectedProduct.stock <= 0 : false;
 
     // Patient search with debounce
     useEffect(() => {
@@ -115,9 +120,14 @@ export default function DispenseForm({ productOptions }: DispenseFormProps) {
                 }),
             });
 
+            const data = await response.json();
             if (!response.ok) {
-                const data = await response.json();
                 throw new Error(data.error || 'Failed to record dispense');
+            }
+
+            // Show stock warning from API if returned
+            if (data.stock_warning) {
+                setStockWarning(data.stock_warning);
             }
 
             // Reset form
@@ -195,6 +205,20 @@ export default function DispenseForm({ productOptions }: DispenseFormProps) {
                 </div>
             )}
 
+            {stockWarning && (
+                <div style={{
+                    background: '#fffbeb',
+                    border: '1px solid #f59e0b',
+                    borderRadius: '0.5rem',
+                    padding: '0.75rem 1rem',
+                    marginBottom: '1rem',
+                    color: '#92400e',
+                    fontWeight: 600,
+                }}>
+                    {stockWarning}
+                </div>
+            )}
+
             <form onSubmit={handleSubmit}>
                 <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
                     {/* Patient Search */}
@@ -262,15 +286,40 @@ export default function DispenseForm({ productOptions }: DispenseFormProps) {
                         <label style={labelStyle}>Peptide *</label>
                         <select
                             value={productId}
-                            onChange={(e) => setProductId(e.target.value)}
+                            onChange={(e) => {
+                                const id = e.target.value;
+                                setProductId(id);
+                                const product = productOptions.find(p => p.value === id);
+                                if (product && product.stock <= 0) {
+                                    setStatus('Pending');
+                                    setEducationComplete(false);
+                                }
+                                setStockWarning(null);
+                            }}
                             required
                             style={inputStyle}
                         >
                             <option value="">Select peptide...</option>
                             {productOptions.map(opt => (
-                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                <option key={opt.value} value={opt.value}>
+                                    {opt.label} ({opt.stock > 0 ? `${opt.stock} in stock` : 'OUT OF STOCK'})
+                                </option>
                             ))}
                         </select>
+                        {isOutOfStock && (
+                            <div style={{
+                                marginTop: '0.5rem',
+                                padding: '0.5rem 0.75rem',
+                                background: '#fef2f2',
+                                border: '1px solid #ef4444',
+                                borderRadius: '0.375rem',
+                                color: '#dc2626',
+                                fontSize: '0.8rem',
+                                fontWeight: 600,
+                            }}>
+                                NOT IN STOCK — this will be saved as Pending. Patient cannot be dispensed until stock is available, paid, and education is complete.
+                            </div>
+                        )}
                     </div>
 
                     {/* Quantity */}
@@ -289,13 +338,22 @@ export default function DispenseForm({ productOptions }: DispenseFormProps) {
                     <div>
                         <label style={labelStyle}>Status *</label>
                         <select
-                            value={status}
-                            onChange={(e) => setStatus(e.target.value as 'Paid' | 'Pending')}
-                            style={inputStyle}
+                            value={isOutOfStock ? 'Pending' : status}
+                            onChange={(e) => {
+                                if (!isOutOfStock) setStatus(e.target.value as 'Paid' | 'Pending');
+                            }}
+                            style={{
+                                ...inputStyle,
+                                ...(isOutOfStock ? { background: '#fef2f2', borderColor: '#fca5a5', color: '#dc2626' } : {}),
+                            }}
+                            disabled={isOutOfStock}
                         >
                             <option value="Paid">Paid</option>
                             <option value="Pending">Pending</option>
                         </select>
+                        {isOutOfStock && (
+                            <span style={{ fontSize: '0.75rem', color: '#dc2626' }}>Locked to Pending — not in stock</span>
+                        )}
                     </div>
 
                     {/* Order Date */}

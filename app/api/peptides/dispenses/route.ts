@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchPeptideDispenses, fetchPeptideDispensesPaginated, createPeptideDispense, updatePeptideDispense, deletePeptideDispense } from '@/lib/peptideQueries';
+import { fetchPeptideDispenses, fetchPeptideDispensesPaginated, createPeptideDispense, updatePeptideDispense, deletePeptideDispense, checkPeptideStock } from '@/lib/peptideQueries';
 import { requireUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { generateLabelPdf } from '@/lib/pdf/labelGenerator';
@@ -58,9 +58,27 @@ export async function POST(request: Request) {
             );
         }
 
+        // Check stock before dispensing
+        const stock = await checkPeptideStock(body.product_id);
+        const requestedQty = body.quantity ? Number(body.quantity) : 1;
+        let stockWarning: string | null = null;
+
+        if (stock.quantity < requestedQty) {
+            // Out of stock — force Pending status, block Paid+education_complete
+            if (body.status === 'Paid' && body.education_complete) {
+                return NextResponse.json(
+                    { error: `Cannot dispense — this peptide is not in stock (${stock.quantity} available). Add it as Pending instead.` },
+                    { status: 400 }
+                );
+            }
+            body.status = 'Pending';
+            body.education_complete = false;
+            stockWarning = `NOT IN STOCK (${stock.quantity} available). Dispense saved as Pending.`;
+        }
+
         const dispense = await createPeptideDispense({
             product_id: body.product_id,
-            quantity: body.quantity ? Number(body.quantity) : 1,
+            quantity: requestedQty,
             patient_name: body.patient_name,
             patient_dob: body.patient_dob || undefined,
             order_date: body.order_date || null,
@@ -109,7 +127,7 @@ export async function POST(request: Request) {
             })();
         }
 
-        return NextResponse.json(dispense);
+        return NextResponse.json({ ...dispense, stock_warning: stockWarning });
     } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         console.error('Error creating peptide dispense:', { error: errMsg, body });
@@ -130,6 +148,24 @@ export async function PATCH(request: Request) {
                 { error: 'dispense_id is required' },
                 { status: 400 }
             );
+        }
+
+        // If marking as Paid + education complete, verify stock is available
+        if (body.status === 'Paid' && body.education_complete) {
+            // Look up the product_id for this dispense
+            const [dispenseRow] = await query<{ product_id: string }>(`
+                SELECT product_id FROM peptide_dispenses WHERE sale_id = $1
+            `, [body.dispense_id]);
+
+            if (dispenseRow) {
+                const stock = await checkPeptideStock(dispenseRow.product_id);
+                if (stock.quantity <= 0) {
+                    return NextResponse.json(
+                        { error: `Cannot mark as dispensed — this peptide is not in stock (${stock.quantity} available). Restock first.` },
+                        { status: 400 }
+                    );
+                }
+            }
         }
 
         await updatePeptideDispense(body.dispense_id, {

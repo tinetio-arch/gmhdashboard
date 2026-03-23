@@ -469,12 +469,27 @@ export async function findPeptideByHealthieId(healthieProductId: string): Promis
 /**
  * Get all peptide product options for dropdowns
  */
-export async function fetchPeptideProductOptions(): Promise<{ value: string; label: string }[]> {
-  const products = await query<{ product_id: string; name: string }>(`
-    SELECT product_id, name FROM peptide_products ORDER BY name
+export async function fetchPeptideProductOptions(): Promise<{ value: string; label: string; stock: number }[]> {
+  const products = await query<{ product_id: string; name: string; current_stock: string }>(`
+    SELECT
+      p.product_id,
+      p.name,
+      COALESCE(SUM(o.quantity), 0) - COALESCE(
+        (SELECT SUM(d.quantity)
+         FROM peptide_dispenses d
+         WHERE d.product_id = p.product_id
+           AND d.status = 'Paid'
+           AND d.education_complete = true),
+        0
+      ) as current_stock
+    FROM peptide_products p
+    LEFT JOIN peptide_orders o ON o.product_id = p.product_id
+    WHERE p.active = true
+    GROUP BY p.product_id, p.name
+    ORDER BY p.name
   `);
 
-  return products.map(p => ({ value: p.product_id, label: p.name }));
+  return products.map(p => ({ value: p.product_id, label: p.name, stock: Number(p.current_stock) }));
 }
 
 /**
