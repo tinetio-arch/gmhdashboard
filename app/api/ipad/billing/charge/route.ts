@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
         await requireApiUser(request, 'write');
 
         const body = await request.json();
-        const { patient_id, amount, description, stripe_account } = body;
+        const { patient_id, amount, description, stripe_account, product_id } = body;
 
         // Validate inputs
         if (!patient_id || !amount || !stripe_account) {
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
         if (stripe_account === 'healthie') {
             return await chargeViaHealthie(resolvedPatientId, patient.full_name, amount, description);
         } else {
-            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, description);
+            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, description, product_id);
         }
 
     } catch (error: any) {
@@ -198,7 +198,8 @@ async function chargeViaDirectStripe(
     patientName: string,
     patientEmail: string,
     amount: number,
-    description: string
+    description: string,
+    product_id?: string
 ) {
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
@@ -300,6 +301,41 @@ async function chargeViaDirectStripe(
 
         console.log(`[Direct Stripe] Charged ${amount} to customer ${stripeCustomerId}, payment intent: ${paymentIntent.id}, status: ${paymentIntent.status}`);
 
+        // === AUTO-CREATE PEPTIDE DISPENSE ===
+        let dispenseId = null;
+
+        if (product_id) {
+            try {
+                const productCheck = await query<{ product_id: string; name: string }>(
+                    'SELECT product_id, name FROM peptide_products WHERE product_id = $1 AND active = true',
+                    [product_id]
+                );
+
+                if (productCheck.length > 0) {
+                    const product = productCheck[0];
+                    const dispenseResult = await query<{ sale_id: number }>(
+                        `INSERT INTO peptide_dispenses
+                            (product_id, quantity, patient_name, sale_date, status, education_complete,
+                             notes, paid, stripe_payment_intent_id, amount_charged)
+                         VALUES ($1, 1, $2, CURRENT_DATE, 'Paid', true, $3, true, $4, $5)
+                         RETURNING sale_id`,
+                        [
+                            product_id,
+                            patientName || 'Unknown',
+                            `Auto-created from iPad billing. Charge: ${paymentIntent.id || 'N/A'}`,
+                            paymentIntent.id || null,
+                            amount
+                        ]
+                    );
+                    dispenseId = dispenseResult[0]?.sale_id || null;
+                    console.log(`[billing/charge] Auto-created peptide dispense #${dispenseId} for ${product.name}`);
+                }
+            } catch (dispenseError: any) {
+                // Log but don't fail — the charge already succeeded
+                console.error('[billing/charge] Failed to auto-create dispense:', dispenseError.message);
+            }
+        }
+
         return NextResponse.json({
             success: true,
             stripe_account: 'direct',
@@ -311,7 +347,8 @@ async function chargeViaDirectStripe(
             payment_method: {
                 brand: paymentMethod.card?.brand,
                 last4: paymentMethod.card?.last4
-            }
+            },
+            dispense_id: dispenseId
         });
 
     } catch (error: any) {
