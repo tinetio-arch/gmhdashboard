@@ -10218,23 +10218,383 @@ async function chargePatient() {
         return;
     }
 
-    // Will be replaced with showProductSearchModal() in Step 3
-    // For now, use the old prompt() flow but hardcode to direct
-    const amount = prompt(`Enter amount to charge ${patientName}:`);
-    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return;
-
-    const description = prompt('Description/reason for charge:');
-    if (!description) return;
-
-    await processChargeRequest(patientId, healthieId, patientName, parseFloat(amount), description, 'direct', null);
+    showProductSearchModal({
+        patientId,
+        healthieId,
+        patientName,
+        paymentMethods
+    });
 }
 
-async function processChargeRequest(patientId, healthieId, patientName, amount, description, stripeAccount, productId) {
+// === Product Search Modal ===
+
+function showProductSearchModal(patientData) {
+    const { patientId, healthieId, patientName, paymentMethods } = patientData;
+
+    const directCards = paymentMethods.filter(pm =>
+        pm.source_type === 'direct_stripe' || pm.id?.startsWith('direct_pm_')
+    );
+    const defaultCard = directCards.find(c => c.is_default) || directCards[0];
+
+    if (!defaultCard) {
+        showToast('No billing card on file. Please add a card first.', 'error');
+        return;
+    }
+
+    const modal = document.createElement('div');
+    modal.id = 'product-search-modal';
+    modal.style.cssText = `
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.7); z-index: 10000;
+        display: flex; align-items: center; justify-content: center;
+        backdrop-filter: blur(4px);
+    `;
+
+    modal.innerHTML = `
+        <div style="
+            background: var(--bg-primary, #1a1a2e); border-radius: 16px;
+            width: 90%; max-width: 500px; max-height: 85vh;
+            overflow: hidden; border: 1px solid var(--border-color, #2d2d4a);
+            display: flex; flex-direction: column;
+        ">
+            <!-- Header -->
+            <div style="padding: 20px 24px 16px; border-bottom: 1px solid var(--border-color, #2d2d4a);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-size: 18px; font-weight: 700; color: var(--text-primary, #fff);">
+                            Bill Patient
+                        </div>
+                        <div style="font-size: 13px; color: var(--text-secondary, #aaa); margin-top: 4px;">
+                            ${patientName} - Card ending ${defaultCard.last_four || '****'}
+                        </div>
+                    </div>
+                    <button onclick="document.getElementById('product-search-modal')?.remove()" style="
+                        background: none; border: none; color: var(--text-secondary, #aaa);
+                        font-size: 24px; cursor: pointer; padding: 4px;
+                    ">X</button>
+                </div>
+
+                <!-- Search Input -->
+                <div style="margin-top: 16px; position: relative;">
+                    <input
+                        type="text"
+                        id="product-search-input"
+                        placeholder="Search peptides... (e.g. bpc157, tesamorelin)"
+                        oninput="handleProductSearch(this.value)"
+                        autocomplete="off"
+                        style="
+                            width: 100%; padding: 12px 16px; padding-left: 40px;
+                            background: var(--bg-secondary, #16162a);
+                            border: 1px solid var(--border-color, #2d2d4a);
+                            border-radius: 10px; color: var(--text-primary, #fff);
+                            font-size: 15px; outline: none; box-sizing: border-box;
+                        "
+                    />
+                    <span style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 16px;">&#128269;</span>
+                </div>
+            </div>
+
+            <!-- Product Results -->
+            <div id="product-search-results" style="
+                flex: 1; overflow-y: auto; padding: 8px 16px;
+                max-height: 45vh;
+            ">
+                <div style="text-align: center; padding: 40px 20px; color: var(--text-tertiary, #666);">
+                    Type to search products or choose Custom Charge below
+                </div>
+            </div>
+
+            <!-- Footer: Custom Charge Option -->
+            <div style="padding: 16px 24px; border-top: 1px solid var(--border-color, #2d2d4a);">
+                <button onclick="showCustomChargeForm('${patientId}', '${healthieId}', '${patientName.replace(/'/g, "\\'")}')" style="
+                    width: 100%; padding: 12px;
+                    background: transparent;
+                    border: 1px dashed var(--border-color, #2d2d4a);
+                    border-radius: 8px; color: var(--text-secondary, #aaa);
+                    font-size: 13px; cursor: pointer;
+                ">
+                    Custom Charge (enter amount manually)
+                </button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    setTimeout(() => document.getElementById('product-search-input')?.focus(), 100);
+    window._currentChargePatient = patientData;
+}
+
+let _productSearchTimeout = null;
+
+function handleProductSearch(query) {
+    clearTimeout(_productSearchTimeout);
+
+    if (!query || query.length < 2) {
+        document.getElementById('product-search-results').innerHTML = `
+            <div style="text-align: center; padding: 40px 20px; color: var(--text-tertiary, #666);">
+                Type at least 2 characters to search
+            </div>
+        `;
+        return;
+    }
+
+    document.getElementById('product-search-results').innerHTML = `
+        <div style="text-align: center; padding: 20px; color: var(--text-secondary, #aaa);">
+            Searching...
+        </div>
+    `;
+
+    _productSearchTimeout = setTimeout(async () => {
+        try {
+            const resp = await fetch('/ops/api/ipad/billing/products/?q=' + encodeURIComponent(query), {
+                credentials: 'include'
+            });
+            const data = await resp.json();
+
+            if (!data.success || !data.products?.length) {
+                document.getElementById('product-search-results').innerHTML = `
+                    <div style="text-align: center; padding: 40px 20px; color: var(--text-tertiary, #666);">
+                        No products found for "${query}"
+                    </div>
+                `;
+                return;
+            }
+
+            const resultsHtml = data.products.map(p => `
+                <div onclick='selectProduct(${JSON.stringify(p).replace(/'/g, "&#39;")})' style="
+                    padding: 14px 16px; margin: 6px 0;
+                    background: var(--bg-secondary, #16162a);
+                    border: 1px solid var(--border-color, #2d2d4a);
+                    border-radius: 10px; cursor: pointer;
+                    transition: all 0.15s ease;
+                " onmouseover="this.style.borderColor='#f093fb'" onmouseout="this.style.borderColor='var(--border-color, #2d2d4a)'">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div style="flex: 1;">
+                            <div style="font-size: 14px; font-weight: 600; color: var(--text-primary, #fff);">
+                                ${p.name}
+                            </div>
+                            <div style="font-size: 11px; color: var(--text-tertiary, #666); margin-top: 4px;">
+                                ${p.supplier || 'No supplier'} ${p.category ? '- ' + p.category : ''}
+                            </div>
+                        </div>
+                        <div style="
+                            font-size: 18px; font-weight: 700; color: #f093fb;
+                            min-width: 70px; text-align: right;
+                        ">
+                            $${parseFloat(p.price || 0).toFixed(2)}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+
+            document.getElementById('product-search-results').innerHTML = resultsHtml;
+        } catch (err) {
+            console.error('Product search error:', err);
+            document.getElementById('product-search-results').innerHTML = `
+                <div style="text-align: center; padding: 20px; color: #ef4444;">
+                    Search failed. Please try again.
+                </div>
+            `;
+        }
+    }, 300);
+}
+
+function selectProduct(product) {
+    const patient = window._currentChargePatient;
+    if (!patient) return;
+
+    const modal = document.getElementById('product-search-modal');
+    if (!modal) return;
+
+    modal.querySelector('div').innerHTML = `
+        <div style="padding: 24px;">
+            <div style="font-size: 18px; font-weight: 700; color: var(--text-primary, #fff); margin-bottom: 20px;">
+                Confirm Charge
+            </div>
+
+            <div style="
+                background: var(--bg-secondary, #16162a); border-radius: 12px;
+                padding: 16px; margin-bottom: 16px;
+                border: 1px solid var(--border-color, #2d2d4a);
+            ">
+                <div style="font-size: 11px; text-transform: uppercase; color: var(--text-tertiary, #666); margin-bottom: 6px;">Patient</div>
+                <div style="font-size: 15px; color: var(--text-primary, #fff); font-weight: 600;">${patient.patientName}</div>
+            </div>
+
+            <div style="
+                background: var(--bg-secondary, #16162a); border-radius: 12px;
+                padding: 16px; margin-bottom: 16px;
+                border: 1px solid var(--border-color, #2d2d4a);
+            ">
+                <div style="font-size: 11px; text-transform: uppercase; color: var(--text-tertiary, #666); margin-bottom: 6px;">Product</div>
+                <div style="font-size: 15px; color: var(--text-primary, #fff); font-weight: 600;">${product.name}</div>
+                <div style="font-size: 12px; color: var(--text-secondary, #aaa); margin-top: 4px;">${product.supplier || ''}</div>
+            </div>
+
+            <div style="
+                background: var(--bg-secondary, #16162a); border-radius: 12px;
+                padding: 16px; margin-bottom: 16px;
+                border: 1px solid var(--border-color, #2d2d4a);
+            ">
+                <div style="font-size: 11px; text-transform: uppercase; color: var(--text-tertiary, #666); margin-bottom: 6px;">Amount</div>
+                <input type="number" id="charge-amount" value="${product.price || ''}" step="0.01" min="0.01" style="
+                    width: 100%; padding: 10px; background: var(--bg-primary, #1a1a2e);
+                    border: 1px solid var(--border-color, #2d2d4a); border-radius: 8px;
+                    color: var(--text-primary, #fff); font-size: 20px; font-weight: 700;
+                    box-sizing: border-box;
+                " />
+                <div style="font-size: 11px; color: var(--text-tertiary, #666); margin-top: 4px;">
+                    Default: $${parseFloat(product.price || 0).toFixed(2)} - edit if needed
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 12px; margin-top: 24px;">
+                <button onclick="document.getElementById('product-search-modal')?.remove()" style="
+                    flex: 1; padding: 14px; background: var(--bg-secondary, #16162a);
+                    border: 1px solid var(--border-color, #2d2d4a); border-radius: 10px;
+                    color: var(--text-secondary, #aaa); font-size: 14px; font-weight: 600; cursor: pointer;
+                ">
+                    Cancel
+                </button>
+                <button onclick="executeProductCharge('${product.product_id}', '${(product.name || '').replace(/'/g, "\\'")}', document.getElementById('charge-amount').value)" style="
+                    flex: 2; padding: 14px;
+                    background: linear-gradient(135deg, #f093fb, #f5576c);
+                    border: none; border-radius: 10px;
+                    color: white; font-size: 14px; font-weight: 700; cursor: pointer;
+                ">
+                    Charge $${parseFloat(product.price || 0).toFixed(2)}
+                </button>
+            </div>
+        </div>
+    `;
+
+    const amountInput = document.getElementById('charge-amount');
+    if (amountInput) {
+        amountInput.addEventListener('input', function() {
+            const btn = modal.querySelector('button[onclick*="executeProductCharge"]');
+            if (btn) {
+                const amt = parseFloat(this.value) || 0;
+                btn.textContent = 'Charge $' + amt.toFixed(2);
+            }
+        });
+    }
+}
+
+function showCustomChargeForm(patientId, healthieId, patientName) {
+    const modal = document.getElementById('product-search-modal');
+    if (!modal) return;
+
+    modal.querySelector('div').innerHTML = `
+        <div style="padding: 24px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+                <button onclick="document.getElementById('product-search-modal')?.remove(); showProductSearchModal(window._currentChargePatient);" style="
+                    background: none; border: none; color: var(--text-secondary, #aaa);
+                    font-size: 18px; cursor: pointer;
+                ">&#8592;</button>
+                <div style="font-size: 18px; font-weight: 700; color: var(--text-primary, #fff);">
+                    Custom Charge
+                </div>
+            </div>
+
+            <div style="margin-bottom: 16px;">
+                <label style="font-size: 12px; color: var(--text-secondary, #aaa); text-transform: uppercase;">Amount ($)</label>
+                <input type="number" id="custom-charge-amount" step="0.01" min="0.01" placeholder="0.00" style="
+                    width: 100%; padding: 12px; margin-top: 6px;
+                    background: var(--bg-secondary, #16162a);
+                    border: 1px solid var(--border-color, #2d2d4a); border-radius: 8px;
+                    color: var(--text-primary, #fff); font-size: 18px; font-weight: 700;
+                    box-sizing: border-box;
+                " />
+            </div>
+
+            <div style="margin-bottom: 24px;">
+                <label style="font-size: 12px; color: var(--text-secondary, #aaa); text-transform: uppercase;">Description</label>
+                <input type="text" id="custom-charge-description" placeholder="Reason for charge..." style="
+                    width: 100%; padding: 12px; margin-top: 6px;
+                    background: var(--bg-secondary, #16162a);
+                    border: 1px solid var(--border-color, #2d2d4a); border-radius: 8px;
+                    color: var(--text-primary, #fff); font-size: 14px;
+                    box-sizing: border-box;
+                " />
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+                <button onclick="document.getElementById('product-search-modal')?.remove()" style="
+                    flex: 1; padding: 14px; background: var(--bg-secondary, #16162a);
+                    border: 1px solid var(--border-color, #2d2d4a); border-radius: 10px;
+                    color: var(--text-secondary, #aaa); font-size: 14px; font-weight: 600; cursor: pointer;
+                ">Cancel</button>
+                <button onclick="executeCustomCharge('${patientId}', '${healthieId}', '${(patientName || '').replace(/'/g, "\\'")}')" style="
+                    flex: 2; padding: 14px;
+                    background: linear-gradient(135deg, #f093fb, #f5576c);
+                    border: none; border-radius: 10px;
+                    color: white; font-size: 14px; font-weight: 700; cursor: pointer;
+                ">Charge</button>
+            </div>
+        </div>
+    `;
+
+    setTimeout(() => document.getElementById('custom-charge-amount')?.focus(), 100);
+}
+
+async function executeCustomCharge(patientId, healthieId, patientName) {
+    const amount = parseFloat(document.getElementById('custom-charge-amount')?.value);
+    const description = document.getElementById('custom-charge-description')?.value?.trim();
+
+    if (!amount || amount <= 0) {
+        showToast('Please enter a valid amount', 'error');
+        return;
+    }
+    if (!description) {
+        showToast('Please enter a description', 'error');
+        return;
+    }
+
+    await processCharge({
+        patientId,
+        healthieId,
+        patientName,
+        amount,
+        description,
+        productId: null,
+        stripeAccount: 'direct'
+    });
+}
+
+async function executeProductCharge(productId, productName, amount) {
+    const patient = window._currentChargePatient;
+    if (!patient) return;
+
+    const chargeAmount = parseFloat(amount);
+    if (!chargeAmount || chargeAmount <= 0) {
+        showToast('Please enter a valid amount', 'error');
+        return;
+    }
+
+    await processCharge({
+        patientId: patient.patientId,
+        healthieId: patient.healthieId,
+        patientName: patient.patientName,
+        amount: chargeAmount,
+        description: productName,
+        productId: productId,
+        stripeAccount: 'direct'
+    });
+}
+
+async function processCharge({ patientId, healthieId, patientName, amount, description, productId, stripeAccount }) {
+    const modal = document.getElementById('product-search-modal');
+    if (modal) {
+        const buttons = modal.querySelectorAll('button');
+        buttons.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+    }
+
     try {
         showToast('Processing charge...', 'info');
-        const response = await apiFetch('/ops/api/ipad/billing/charge/', {
+        const response = await fetch('/ops/api/ipad/billing/charge/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({
                 patient_id: healthieId || patientId,
                 amount: amount,
@@ -10244,22 +10604,116 @@ async function processChargeRequest(patientId, healthieId, patientName, amount, 
             })
         });
 
-        if (response.success) {
-            showToast(`Charged ${patientName} $${amount.toFixed(2)} for ${description}`, 'success');
-            // Refresh payment data
-            if (patientId) {
-                await loadChartData(patientId);
+        const result = await response.json();
+
+        if (result.success) {
+            modal?.remove();
+
+            showChargeSuccess({
+                patientName,
+                amount,
+                description,
+                chargeId: result.charge_id,
+                productId: productId,
+                dispenseId: result.dispense_id,
+                paymentMethod: result.payment_method
+            });
+
+            showToast('Charged ' + patientName + ' $' + amount.toFixed(2) + ' for ' + description, 'success');
+
+            if (typeof loadPatientPaymentData === 'function') {
+                loadPatientPaymentData(healthieId || patientId);
             }
-            return response;
         } else {
-            showToast(`Charge failed: ${response.error || 'Unknown error'}`, 'error');
-            return null;
+            showToast('Charge failed: ' + (result.error || 'Unknown error'), 'error');
+            if (modal) {
+                const buttons = modal.querySelectorAll('button');
+                buttons.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
+            }
         }
     } catch (err) {
         console.error('Charge error:', err);
-        showToast('Network error — check before retrying.', 'error');
-        return null;
+        showToast('Network error - charge may not have processed. Check before retrying.', 'error');
+        if (modal) {
+            const buttons = modal.querySelectorAll('button');
+            buttons.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
+        }
     }
+}
+
+function showChargeSuccess({ patientName, amount, description, chargeId, productId, dispenseId, paymentMethod }) {
+    const isPeptide = productId != null;
+
+    const successModal = document.createElement('div');
+    successModal.id = 'charge-success-modal';
+    successModal.style.cssText = `
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.7); z-index: 10001;
+        display: flex; align-items: center; justify-content: center;
+        backdrop-filter: blur(4px);
+    `;
+
+    successModal.innerHTML = `
+        <div style="
+            background: var(--bg-primary, #1a1a2e); border-radius: 16px;
+            width: 90%; max-width: 420px; padding: 32px 24px;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            text-align: center;
+        ">
+            <div style="font-size: 48px; margin-bottom: 16px;">&#9989;</div>
+            <div style="font-size: 20px; font-weight: 700; color: #10b981; margin-bottom: 8px;">
+                Payment Successful
+            </div>
+            <div style="font-size: 14px; color: var(--text-secondary, #aaa); margin-bottom: 24px;">
+                ${patientName} - $${parseFloat(amount).toFixed(2)}
+                <br/>${description}
+                ${paymentMethod ? '<br/>Card ending ' + paymentMethod.last4 : ''}
+            </div>
+
+            ${isPeptide ? `
+                <div style="margin-bottom: 16px;">
+                    <div style="
+                        background: rgba(240, 147, 251, 0.08); border: 1px solid rgba(240, 147, 251, 0.2);
+                        border-radius: 10px; padding: 12px; margin-bottom: 12px;
+                        font-size: 12px; color: var(--text-secondary, #aaa);
+                    ">
+                        Peptide inventory updated automatically<br/>
+                        Dispense logged for ${patientName}
+                    </div>
+                    <button onclick="printPeptideLabel(${dispenseId})" style="
+                        width: 100%; padding: 14px;
+                        background: linear-gradient(135deg, #3b82f6, #2563eb);
+                        border: none; border-radius: 10px;
+                        color: white; font-size: 14px; font-weight: 600; cursor: pointer;
+                    ">
+                        Print Label
+                    </button>
+                </div>
+            ` : ''}
+
+            <button onclick="document.getElementById('charge-success-modal')?.remove()" style="
+                width: 100%; padding: 14px;
+                background: var(--bg-secondary, #16162a);
+                border: 1px solid var(--border-color, #2d2d4a);
+                border-radius: 10px; color: var(--text-primary, #fff);
+                font-size: 14px; font-weight: 600; cursor: pointer;
+            ">
+                Done
+            </button>
+        </div>
+    `;
+
+    document.body.appendChild(successModal);
+}
+
+async function printPeptideLabel(dispenseId) {
+    if (!dispenseId) {
+        showToast('No dispense ID - cannot generate label', 'error');
+        return;
+    }
+    const labelUrl = '/ops/api/ipad/billing/label/?dispense_id=' + dispenseId;
+    window.open(labelUrl, '_blank');
+    showToast('Label opened - print from new tab', 'success');
 }
 
 // sendInvoice() removed per admin request
