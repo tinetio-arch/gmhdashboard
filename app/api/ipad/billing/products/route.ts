@@ -11,25 +11,29 @@ export async function GET(request: NextRequest) {
 
   try {
     const result = await query<{
-      product_id: number;
+      product_id: string;
       name: string;
       price: number;
       cost: number;
       supplier: string;
       category: string;
+      current_stock: number;
     }>(
       `SELECT
-        product_id,
-        name,
-        sell_price as price,
-        unit_cost as cost,
-        supplier,
-        category
-      FROM peptide_products
-      WHERE active = true
-        AND REPLACE(REPLACE(REPLACE(LOWER(name), '-', ''), ' ', ''), '.', '')
+        p.product_id,
+        p.name,
+        p.sell_price as price,
+        p.unit_cost as cost,
+        p.supplier,
+        p.category,
+        COALESCE((SELECT SUM(o.quantity) FROM peptide_orders o WHERE o.product_id = p.product_id), 0)
+          - COALESCE((SELECT SUM(d.quantity) FROM peptide_dispenses d WHERE d.product_id = p.product_id AND d.status = 'Paid' AND d.education_complete = true), 0)
+          AS current_stock
+      FROM peptide_products p
+      WHERE p.active = true
+        AND REPLACE(REPLACE(REPLACE(LOWER(p.name), '-', ''), ' ', ''), '.', '')
             ILIKE '%' || REPLACE(REPLACE(REPLACE(LOWER($1), '-', ''), ' ', ''), '.', '') || '%'
-      ORDER BY name
+      ORDER BY p.name
       LIMIT 50`,
       [q || '']
     );

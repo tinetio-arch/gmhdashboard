@@ -419,7 +419,8 @@ h6 {
     background: var(--bg);
     opacity: 0.6;
     letter-spacing: 0.05em;
-    z-index: 999;
+    z-index: 1;
+    pointer-events: none;
 }
 
 /* ============================================================

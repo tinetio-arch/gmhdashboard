@@ -6515,8 +6515,13 @@ async function submitDEACheck() {
         const result = await apiFetch('/ops/api/inventory/controlled-check/', { method: 'POST', body: JSON.stringify(data) });
         closeModal('deaCheckModal');
         if (result?.success) {
-            if (result.hasDiscrepancy) showToast(`⚠️ Discrepancy: ${result.discrepancyDetails}. Inventory adjusted.`, 'info');
-            else showToast(`${deaCheckType === 'morning' ? 'Morning' : 'Evening'} count verified ✅`, 'success');
+            if (result.newInventoryDetected) {
+                showToast(`⚠️ New inventory detected — please add new vials via Inventory Management (need lot# & expiration).`, 'info');
+            } else if (result.hasDiscrepancy) {
+                showToast(`⚠️ Discrepancy: ${result.discrepancyDetails}. Inventory adjusted down.`, 'info');
+            } else {
+                showToast(`${deaCheckType === 'morning' ? 'Morning' : 'Evening'} count verified ✅`, 'success');
+            }
         } else showToast(result?.error || 'Check failed', 'error');
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
@@ -10304,6 +10309,9 @@ function showProductSearchModal(patientData) {
                 </div>
             </div>
 
+            <!-- Cart -->
+            <div id="billing-cart" style="display: none; padding: 8px 16px; border-top: 1px solid var(--border-color, #2d2d4a);"></div>
+
             <!-- Footer: Custom Charge Option -->
             <div style="padding: 16px 24px; border-top: 1px solid var(--border-color, #2d2d4a);">
                 <button onclick="showCustomChargeForm('${patientId}', '${healthieId}', '${patientName.replace(/'/g, "\\'")}')" style="
@@ -10322,6 +10330,7 @@ function showProductSearchModal(patientData) {
     document.body.appendChild(modal);
     setTimeout(() => document.getElementById('product-search-input')?.focus(), 100);
     window._currentChargePatient = patientData;
+    window._billingCart = [];
 }
 
 let _productSearchTimeout = null;
@@ -10375,6 +10384,13 @@ function handleProductSearch(query) {
                             </div>
                             <div style="font-size: 11px; color: var(--text-tertiary, #666); margin-top: 4px;">
                                 ${p.supplier || 'No supplier'} ${p.category ? '- ' + p.category : ''}
+                                <span style="margin-left: 8px; padding: 2px 6px; border-radius: 4px; font-weight: 600;
+                                    ${parseInt(p.current_stock) > 0
+                                        ? 'background: rgba(16,185,129,0.15); color: #10b981;'
+                                        : 'background: rgba(239,68,68,0.15); color: #ef4444;'
+                                    }">
+                                    ${parseInt(p.current_stock) > 0 ? parseInt(p.current_stock) + ' in stock' : 'Out of stock'}
+                                </span>
                             </div>
                         </div>
                         <div style="
@@ -10399,84 +10415,186 @@ function handleProductSearch(query) {
     }, 300);
 }
 
+// === Shopping Cart ===
+window._billingCart = [];
+
 function selectProduct(product) {
-    const patient = window._currentChargePatient;
-    if (!patient) return;
+    // Add product to cart
+    const existing = window._billingCart.find(item => item.product_id === product.product_id);
+    if (existing) {
+        existing.quantity += 1;
+        existing.amount = parseFloat(product.price || 0) * existing.quantity;
+    } else {
+        window._billingCart.push({
+            product_id: product.product_id,
+            name: product.name,
+            price: parseFloat(product.price || 0),
+            amount: parseFloat(product.price || 0),
+            quantity: 1,
+            supplier: product.supplier,
+            current_stock: parseInt(product.current_stock) || 0
+        });
+    }
+    renderCart();
+    showToast('Added ' + product.name + ' to cart', 'success');
 
-    const modal = document.getElementById('product-search-modal');
-    if (!modal) return;
-
-    modal.querySelector('div').innerHTML = `
-        <div style="padding: 24px;">
-            <div style="font-size: 18px; font-weight: 700; color: var(--text-primary, #fff); margin-bottom: 20px;">
-                Confirm Charge
-            </div>
-
-            <div style="
-                background: var(--bg-secondary, #16162a); border-radius: 12px;
-                padding: 16px; margin-bottom: 16px;
-                border: 1px solid var(--border-color, #2d2d4a);
-            ">
-                <div style="font-size: 11px; text-transform: uppercase; color: var(--text-tertiary, #666); margin-bottom: 6px;">Patient</div>
-                <div style="font-size: 15px; color: var(--text-primary, #fff); font-weight: 600;">${patient.patientName}</div>
-            </div>
-
-            <div style="
-                background: var(--bg-secondary, #16162a); border-radius: 12px;
-                padding: 16px; margin-bottom: 16px;
-                border: 1px solid var(--border-color, #2d2d4a);
-            ">
-                <div style="font-size: 11px; text-transform: uppercase; color: var(--text-tertiary, #666); margin-bottom: 6px;">Product</div>
-                <div style="font-size: 15px; color: var(--text-primary, #fff); font-weight: 600;">${product.name}</div>
-                <div style="font-size: 12px; color: var(--text-secondary, #aaa); margin-top: 4px;">${product.supplier || ''}</div>
-            </div>
-
-            <div style="
-                background: var(--bg-secondary, #16162a); border-radius: 12px;
-                padding: 16px; margin-bottom: 16px;
-                border: 1px solid var(--border-color, #2d2d4a);
-            ">
-                <div style="font-size: 11px; text-transform: uppercase; color: var(--text-tertiary, #666); margin-bottom: 6px;">Amount</div>
-                <input type="number" id="charge-amount" value="${product.price || ''}" step="0.01" min="0.01" style="
-                    width: 100%; padding: 10px; background: var(--bg-primary, #1a1a2e);
-                    border: 1px solid var(--border-color, #2d2d4a); border-radius: 8px;
-                    color: var(--text-primary, #fff); font-size: 20px; font-weight: 700;
-                    box-sizing: border-box;
-                " />
-                <div style="font-size: 11px; color: var(--text-tertiary, #666); margin-top: 4px;">
-                    Default: $${parseFloat(product.price || 0).toFixed(2)} - edit if needed
-                </div>
-            </div>
-
-            <div style="display: flex; gap: 12px; margin-top: 24px;">
-                <button onclick="document.getElementById('product-search-modal')?.remove()" style="
-                    flex: 1; padding: 14px; background: var(--bg-secondary, #16162a);
-                    border: 1px solid var(--border-color, #2d2d4a); border-radius: 10px;
-                    color: var(--text-secondary, #aaa); font-size: 14px; font-weight: 600; cursor: pointer;
-                ">
-                    Cancel
-                </button>
-                <button onclick="executeProductCharge('${product.product_id}', '${(product.name || '').replace(/'/g, "\\'")}', document.getElementById('charge-amount').value)" style="
-                    flex: 2; padding: 14px;
-                    background: linear-gradient(135deg, #f093fb, #f5576c);
-                    border: none; border-radius: 10px;
-                    color: white; font-size: 14px; font-weight: 700; cursor: pointer;
-                ">
-                    Charge $${parseFloat(product.price || 0).toFixed(2)}
-                </button>
-            </div>
+    // Clear search and refocus
+    const searchInput = document.getElementById('product-search-input');
+    if (searchInput) {
+        searchInput.value = '';
+        searchInput.focus();
+    }
+    document.getElementById('product-search-results').innerHTML = `
+        <div style="text-align: center; padding: 40px 20px; color: var(--text-tertiary, #666);">
+            Type to search products or choose Custom Charge below
         </div>
     `;
+}
 
-    const amountInput = document.getElementById('charge-amount');
-    if (amountInput) {
-        amountInput.addEventListener('input', function() {
-            const btn = modal.querySelector('button[onclick*="executeProductCharge"]');
-            if (btn) {
-                const amt = parseFloat(this.value) || 0;
-                btn.textContent = 'Charge $' + amt.toFixed(2);
-            }
+function renderCart() {
+    const cartArea = document.getElementById('billing-cart');
+    if (!cartArea) return;
+
+    const cart = window._billingCart || [];
+    if (cart.length === 0) {
+        cartArea.style.display = 'none';
+        return;
+    }
+
+    cartArea.style.display = 'block';
+    const total = cart.reduce((sum, item) => sum + item.amount, 0);
+
+    cartArea.innerHTML = `
+        <div style="font-size: 12px; font-weight: 600; color: var(--text-secondary, #aaa); text-transform: uppercase; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+            <span>Cart (${cart.length} item${cart.length > 1 ? 's' : ''})</span>
+            <button onclick="clearCart()" style="background: none; border: none; color: #ef4444; font-size: 11px; cursor: pointer; font-weight: 600;">Clear All</button>
+        </div>
+        ${cart.map((item, idx) => `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; margin-bottom: 4px;
+                background: var(--bg-secondary, #16162a); border-radius: 8px; border: 1px solid var(--border-color, #2d2d4a);">
+                <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 13px; color: var(--text-primary, #fff); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                        ${item.name}
+                    </div>
+                    <div style="font-size: 11px; color: var(--text-tertiary, #666); display: flex; align-items: center; gap: 6px;">
+                        <span style="padding: 1px 4px; border-radius: 3px; font-weight: 600;
+                            ${item.current_stock > 0 ? 'background: rgba(16,185,129,0.15); color: #10b981;' : 'background: rgba(239,68,68,0.15); color: #ef4444;'}">
+                            ${item.current_stock > 0 ? item.current_stock + ' in stock' : 'Out of stock'}
+                        </span>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                    <div style="display: flex; align-items: center; gap: 4px; background: var(--bg-primary, #1a1a2e); border-radius: 6px; padding: 2px;">
+                        <button onclick="updateCartQty(${idx}, -1)" style="width: 26px; height: 26px; background: none; border: none; color: var(--text-secondary, #aaa); font-size: 16px; cursor: pointer; border-radius: 4px;">-</button>
+                        <span style="font-size: 13px; color: var(--text-primary, #fff); font-weight: 600; min-width: 20px; text-align: center;">${item.quantity}</span>
+                        <button onclick="updateCartQty(${idx}, 1)" style="width: 26px; height: 26px; background: none; border: none; color: var(--text-secondary, #aaa); font-size: 16px; cursor: pointer; border-radius: 4px;">+</button>
+                    </div>
+                    <div style="font-size: 14px; font-weight: 700; color: #f093fb; min-width: 55px; text-align: right;">$${item.amount.toFixed(2)}</div>
+                    <button onclick="removeFromCart(${idx})" style="background: none; border: none; color: #ef4444; font-size: 14px; cursor: pointer; padding: 2px;">&#10005;</button>
+                </div>
+            </div>
+        `).join('')}
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color, #2d2d4a);">
+            <div style="font-size: 16px; font-weight: 700; color: var(--text-primary, #fff);">Total: $${total.toFixed(2)}</div>
+            <button onclick="checkoutCart()" style="
+                padding: 10px 24px;
+                background: linear-gradient(135deg, #f093fb, #f5576c);
+                border: none; border-radius: 8px;
+                color: white; font-size: 14px; font-weight: 700; cursor: pointer;
+            ">Charge $${total.toFixed(2)}</button>
+        </div>
+    `;
+}
+
+function updateCartQty(index, delta) {
+    const cart = window._billingCart;
+    if (!cart[index]) return;
+    cart[index].quantity = Math.max(1, cart[index].quantity + delta);
+    cart[index].amount = cart[index].price * cart[index].quantity;
+    renderCart();
+}
+
+function removeFromCart(index) {
+    window._billingCart.splice(index, 1);
+    renderCart();
+}
+
+function clearCart() {
+    window._billingCart = [];
+    renderCart();
+}
+
+async function checkoutCart() {
+    const patient = window._currentChargePatient;
+    const cart = window._billingCart;
+    if (!patient || cart.length === 0) return;
+
+    const total = cart.reduce((sum, item) => sum + item.amount, 0);
+    const itemNames = cart.map(item => item.quantity > 1 ? item.name + ' x' + item.quantity : item.name).join(', ');
+
+    const modal = document.getElementById('product-search-modal');
+    if (modal) {
+        const buttons = modal.querySelectorAll('button');
+        buttons.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+    }
+
+    try {
+        showToast('Processing charge...', 'info');
+        const response = await fetch('/ops/api/ipad/billing/charge/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                patient_id: patient.healthieId || patient.patientId,
+                amount: total,
+                description: itemNames,
+                stripe_account: 'direct',
+                items: cart.map(item => ({
+                    product_id: item.product_id,
+                    name: item.name,
+                    amount: item.amount,
+                    quantity: item.quantity
+                }))
+            })
         });
+
+        const result = await response.json();
+
+        if (result.success) {
+            modal?.remove();
+            window._billingCart = [];
+
+            showChargeSuccess({
+                patientName: patient.patientName,
+                amount: total,
+                description: itemNames,
+                chargeId: result.charge_id,
+                productId: cart[0]?.product_id,
+                dispenseId: result.dispense_id,
+                dispenseIds: result.dispense_ids,
+                paymentMethod: result.payment_method,
+                itemCount: cart.length
+            });
+
+            showToast('Charged ' + patient.patientName + ' $' + total.toFixed(2), 'success');
+
+            if (typeof loadPatientPaymentData === 'function') {
+                loadPatientPaymentData(patient.healthieId || patient.patientId);
+            }
+        } else {
+            showToast('Charge failed: ' + (result.error || 'Unknown error'), 'error');
+            if (modal) {
+                const buttons = modal.querySelectorAll('button');
+                buttons.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
+            }
+        }
+    } catch (err) {
+        console.error('Cart charge error:', err);
+        showToast('Network error - check before retrying.', 'error');
+        if (modal) {
+            const buttons = modal.querySelectorAll('button');
+            buttons.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
+        }
     }
 }
 
@@ -10641,8 +10759,9 @@ async function processCharge({ patientId, healthieId, patientName, amount, descr
     }
 }
 
-function showChargeSuccess({ patientName, amount, description, chargeId, productId, dispenseId, paymentMethod }) {
+function showChargeSuccess({ patientName, amount, description, chargeId, productId, dispenseId, dispenseIds, paymentMethod, itemCount }) {
     const isPeptide = productId != null;
+    const allDispenseIds = dispenseIds || (dispenseId ? [dispenseId] : []);
 
     const successModal = document.createElement('div');
     successModal.id = 'charge-success-modal';
@@ -10666,11 +10785,12 @@ function showChargeSuccess({ patientName, amount, description, chargeId, product
             </div>
             <div style="font-size: 14px; color: var(--text-secondary, #aaa); margin-bottom: 24px;">
                 ${patientName} - $${parseFloat(amount).toFixed(2)}
+                ${itemCount > 1 ? '<br/>' + itemCount + ' items' : ''}
                 <br/>${description}
                 ${paymentMethod ? '<br/>Card ending ' + paymentMethod.last4 : ''}
             </div>
 
-            ${isPeptide ? `
+            ${isPeptide && allDispenseIds.length > 0 ? `
                 <div style="margin-bottom: 16px;">
                     <div style="
                         background: rgba(240, 147, 251, 0.08); border: 1px solid rgba(240, 147, 251, 0.2);
@@ -10678,16 +10798,18 @@ function showChargeSuccess({ patientName, amount, description, chargeId, product
                         font-size: 12px; color: var(--text-secondary, #aaa);
                     ">
                         Peptide inventory updated automatically<br/>
-                        Dispense logged for ${patientName}
+                        ${allDispenseIds.length} dispense${allDispenseIds.length > 1 ? 's' : ''} logged for ${patientName}
                     </div>
-                    <button onclick="printPeptideLabel(${dispenseId})" style="
-                        width: 100%; padding: 14px;
-                        background: linear-gradient(135deg, #3b82f6, #2563eb);
-                        border: none; border-radius: 10px;
-                        color: white; font-size: 14px; font-weight: 600; cursor: pointer;
-                    ">
-                        Print Label
-                    </button>
+                    ${allDispenseIds.map(did => `
+                        <button onclick="printPeptideLabel(${did})" style="
+                            width: 100%; padding: 12px; margin-bottom: 6px;
+                            background: linear-gradient(135deg, #3b82f6, #2563eb);
+                            border: none; border-radius: 10px;
+                            color: white; font-size: 13px; font-weight: 600; cursor: pointer;
+                        ">
+                            Print Label #${did}
+                        </button>
+                    `).join('')}
                 </div>
             ` : ''}
 

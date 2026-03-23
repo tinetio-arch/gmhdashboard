@@ -20,7 +20,8 @@ export async function POST(request: NextRequest) {
         await requireApiUser(request, 'write');
 
         const body = await request.json();
-        const { patient_id, amount, description, stripe_account, product_id } = body;
+        const { patient_id, amount, description, stripe_account, product_id, items } = body;
+        // items: optional array of { product_id, name, amount, quantity } for multi-product cart checkout
 
         // Validate inputs
         if (!patient_id || !amount || !stripe_account) {
@@ -83,7 +84,7 @@ export async function POST(request: NextRequest) {
         if (stripe_account === 'healthie') {
             return await chargeViaHealthie(resolvedPatientId, patient.full_name, amount, description);
         } else {
-            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, description, product_id);
+            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, description, product_id, items);
         }
 
     } catch (error: any) {
@@ -199,7 +200,8 @@ async function chargeViaDirectStripe(
     patientEmail: string,
     amount: number,
     description: string,
-    product_id?: string
+    product_id?: string,
+    items?: Array<{ product_id: string; name: string; amount: number; quantity?: number }>
 ) {
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
@@ -301,40 +303,67 @@ async function chargeViaDirectStripe(
 
         console.log(`[Direct Stripe] Charged ${amount} to customer ${stripeCustomerId}, payment intent: ${paymentIntent.id}, status: ${paymentIntent.status}`);
 
-        // === AUTO-CREATE PEPTIDE DISPENSE ===
+        // === AUTO-CREATE PEPTIDE DISPENSES ===
         let dispenseId = null;
+        const dispenseIds: number[] = [];
 
-        if (product_id) {
+        // Build list of products to create dispenses for
+        const productsToDispense: Array<{ product_id: string; name: string; amount: number; quantity: number }> = [];
+
+        if (items && items.length > 0) {
+            // Multi-item cart checkout
+            for (const item of items) {
+                if (item.product_id) {
+                    productsToDispense.push({
+                        product_id: item.product_id,
+                        name: item.name,
+                        amount: item.amount,
+                        quantity: item.quantity || 1
+                    });
+                }
+            }
+        } else if (product_id) {
+            // Single item (backwards compatible)
+            productsToDispense.push({ product_id, name: description, amount, quantity: 1 });
+        }
+
+        for (const item of productsToDispense) {
             try {
                 const productCheck = await query<{ product_id: string; name: string }>(
                     'SELECT product_id, name FROM peptide_products WHERE product_id = $1 AND active = true',
-                    [product_id]
+                    [item.product_id]
                 );
 
                 if (productCheck.length > 0) {
                     const product = productCheck[0];
-                    const dispenseResult = await query<{ sale_id: number }>(
-                        `INSERT INTO peptide_dispenses
-                            (product_id, quantity, patient_name, sale_date, status, education_complete,
-                             notes, paid, stripe_payment_intent_id, amount_charged)
-                         VALUES ($1, 1, $2, CURRENT_DATE, 'Paid', true, $3, true, $4, $5)
-                         RETURNING sale_id`,
-                        [
-                            product_id,
-                            patientName || 'Unknown',
-                            `Auto-created from iPad billing. Charge: ${paymentIntent.id || 'N/A'}`,
-                            paymentIntent.id || null,
-                            amount
-                        ]
-                    );
-                    dispenseId = dispenseResult[0]?.sale_id || null;
-                    console.log(`[billing/charge] Auto-created peptide dispense #${dispenseId} for ${product.name}`);
+                    const qty = item.quantity || 1;
+                    for (let i = 0; i < qty; i++) {
+                        const dispenseResult = await query<{ sale_id: number }>(
+                            `INSERT INTO peptide_dispenses
+                                (product_id, quantity, patient_name, sale_date, status, education_complete,
+                                 notes, paid, stripe_payment_intent_id, amount_charged)
+                             VALUES ($1, 1, $2, CURRENT_DATE, 'Paid', true, $3, true, $4, $5)
+                             RETURNING sale_id`,
+                            [
+                                item.product_id,
+                                patientName || 'Unknown',
+                                `Auto-created from iPad billing. Charge: ${paymentIntent.id || 'N/A'}`,
+                                paymentIntent.id || null,
+                                item.amount
+                            ]
+                        );
+                        const sid = dispenseResult[0]?.sale_id || null;
+                        if (sid) dispenseIds.push(sid);
+                        console.log(`[billing/charge] Auto-created peptide dispense #${sid} for ${product.name}`);
+                    }
                 }
             } catch (dispenseError: any) {
-                // Log but don't fail — the charge already succeeded
                 console.error('[billing/charge] Failed to auto-create dispense:', dispenseError.message);
             }
         }
+
+        // For backwards compatibility, set dispenseId to the first one
+        dispenseId = dispenseIds.length > 0 ? dispenseIds[0] : null;
 
         return NextResponse.json({
             success: true,
@@ -348,7 +377,8 @@ async function chargeViaDirectStripe(
                 brand: paymentMethod.card?.brand,
                 last4: paymentMethod.card?.last4
             },
-            dispense_id: dispenseId
+            dispense_id: dispenseId,
+            dispense_ids: dispenseIds
         });
 
     } catch (error: any) {
