@@ -10330,7 +10330,9 @@ function showProductSearchModal(patientData) {
     document.body.appendChild(modal);
     setTimeout(() => document.getElementById('product-search-input')?.focus(), 100);
     window._currentChargePatient = patientData;
-    window._billingCart = [];
+    window._cartDiscountPct = 0;
+    // Load existing cart from server (may have items added by other providers)
+    loadServerCart();
 }
 
 let _productSearchTimeout = null;
@@ -10415,27 +10417,34 @@ function handleProductSearch(query) {
     }, 300);
 }
 
-// === Shopping Cart ===
+// === Shopping Cart (server-persisted per patient) ===
 window._billingCart = [];
 
-function selectProduct(product) {
-    // Add product to cart
-    const existing = window._billingCart.find(item => item.product_id === product.product_id);
-    if (existing) {
-        existing.quantity += 1;
-        existing.amount = parseFloat(product.price || 0) * existing.quantity;
-    } else {
-        window._billingCart.push({
-            product_id: product.product_id,
-            name: product.name,
-            price: parseFloat(product.price || 0),
-            amount: parseFloat(product.price || 0),
-            quantity: 1,
-            supplier: product.supplier,
-            current_stock: parseInt(product.current_stock) || 0
+async function selectProduct(product) {
+    const patient = window._currentChargePatient;
+    if (!patient) return;
+
+    // Save to server
+    try {
+        await fetch('/ops/api/ipad/billing/cart/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                patient_id: patient.healthieId || patient.patientId,
+                patient_name: patient.patientName,
+                product_id: product.product_id,
+                product_name: product.name,
+                price: parseFloat(product.price || 0),
+                quantity: 1
+            })
         });
+    } catch (err) {
+        console.error('Failed to save cart item:', err);
     }
-    renderCart();
+
+    // Reload cart from server
+    await loadServerCart();
     showToast('Added ' + product.name + ' to cart', 'success');
 
     // Clear search and refocus
@@ -10451,6 +10460,35 @@ function selectProduct(product) {
     `;
 }
 
+async function loadServerCart() {
+    const patient = window._currentChargePatient;
+    if (!patient) return;
+
+    try {
+        const resp = await fetch('/ops/api/ipad/billing/cart/?patient_id=' + encodeURIComponent(patient.healthieId || patient.patientId), {
+            credentials: 'include'
+        });
+        const data = await resp.json();
+        if (data.success && data.items) {
+            window._billingCart = data.items.map(item => ({
+                id: item.id,
+                product_id: item.product_id,
+                name: item.product_name,
+                price: parseFloat(item.price),
+                amount: parseFloat(item.price) * item.quantity,
+                quantity: item.quantity,
+                current_stock: parseInt(item.current_stock) || 0,
+                added_by: item.added_by
+            }));
+        } else {
+            window._billingCart = [];
+        }
+    } catch (err) {
+        console.error('Failed to load cart:', err);
+    }
+    renderCart();
+}
+
 function renderCart() {
     const cartArea = document.getElementById('billing-cart');
     if (!cartArea) return;
@@ -10462,7 +10500,8 @@ function renderCart() {
     }
 
     cartArea.style.display = 'block';
-    const total = cart.reduce((sum, item) => sum + item.amount, 0);
+    const subtotal = cart.reduce((sum, item) => sum + item.amount, 0);
+    const isPhil = currentUser && currentUser.email === 'admin@nowoptimal.com';
 
     cartArea.innerHTML = `
         <div style="font-size: 12px; font-weight: 600; color: var(--text-secondary, #aaa); text-transform: uppercase; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
@@ -10481,6 +10520,7 @@ function renderCart() {
                             ${item.current_stock > 0 ? 'background: rgba(16,185,129,0.15); color: #10b981;' : 'background: rgba(239,68,68,0.15); color: #ef4444;'}">
                             ${item.current_stock > 0 ? item.current_stock + ' in stock' : 'Out of stock'}
                         </span>
+                        ${item.added_by ? '<span style="color: var(--text-tertiary, #555);">by ' + item.added_by.split('@')[0] + '</span>' : ''}
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
@@ -10494,34 +10534,97 @@ function renderCart() {
                 </div>
             </div>
         `).join('')}
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color, #2d2d4a);">
-            <div style="font-size: 16px; font-weight: 700; color: var(--text-primary, #fff);">Total: $${total.toFixed(2)}</div>
-            <button onclick="checkoutCart()" style="
-                padding: 10px 24px;
-                background: linear-gradient(135deg, #f093fb, #f5576c);
-                border: none; border-radius: 8px;
-                color: white; font-size: 14px; font-weight: 700; cursor: pointer;
-            ">Charge $${total.toFixed(2)}</button>
+
+        ${isPhil ? `
+            <div style="margin-top: 8px; padding: 8px 10px; background: rgba(240,147,251,0.06); border: 1px solid rgba(240,147,251,0.2); border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label style="font-size: 12px; color: #f093fb; font-weight: 600; white-space: nowrap;">Discount %</label>
+                    <input type="number" id="cart-discount-pct" min="0" max="100" step="1" value="${window._cartDiscountPct || 0}"
+                        oninput="window._cartDiscountPct = parseInt(this.value) || 0; renderCart();"
+                        style="width: 60px; padding: 4px 8px; background: var(--bg-primary, #1a1a2e); border: 1px solid var(--border-color, #2d2d4a); border-radius: 6px; color: #f093fb; font-size: 14px; font-weight: 700; text-align: center;" />
+                    <div style="flex: 1; display: flex; gap: 4px;">
+                        ${[10, 15, 20, 25].map(pct => `
+                            <button onclick="window._cartDiscountPct = ${pct}; document.getElementById('cart-discount-pct').value = ${pct}; renderCart();"
+                                style="padding: 4px 8px; background: ${(window._cartDiscountPct || 0) === pct ? '#f093fb' : 'var(--bg-primary, #1a1a2e)'};
+                                border: 1px solid rgba(240,147,251,0.3); border-radius: 4px;
+                                color: ${(window._cartDiscountPct || 0) === pct ? '#fff' : '#f093fb'}; font-size: 11px; cursor: pointer; font-weight: 600;">${pct}%</button>
+                        `).join('')}
+                    </div>
+                </div>
+            </div>
+        ` : ''}
+
+        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color, #2d2d4a);">
+            ${(window._cartDiscountPct || 0) > 0 ? `
+                <div style="display: flex; justify-content: space-between; font-size: 13px; color: var(--text-tertiary, #666); margin-bottom: 4px;">
+                    <span>Subtotal</span><span>$${subtotal.toFixed(2)}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 13px; color: #f093fb; margin-bottom: 8px;">
+                    <span>Discount (${window._cartDiscountPct}%)</span><span>-$${(subtotal * (window._cartDiscountPct || 0) / 100).toFixed(2)}</span>
+                </div>
+            ` : ''}
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="font-size: 16px; font-weight: 700; color: var(--text-primary, #fff);">
+                    Total: $${(subtotal * (1 - (window._cartDiscountPct || 0) / 100)).toFixed(2)}
+                </div>
+                <button onclick="checkoutCart()" style="
+                    padding: 10px 24px;
+                    background: linear-gradient(135deg, #f093fb, #f5576c);
+                    border: none; border-radius: 8px;
+                    color: white; font-size: 14px; font-weight: 700; cursor: pointer;
+                ">Charge $${(subtotal * (1 - (window._cartDiscountPct || 0) / 100)).toFixed(2)}</button>
+            </div>
         </div>
     `;
 }
 
-function updateCartQty(index, delta) {
+async function updateCartQty(index, delta) {
     const cart = window._billingCart;
     if (!cart[index]) return;
-    cart[index].quantity = Math.max(1, cart[index].quantity + delta);
-    cart[index].amount = cart[index].price * cart[index].quantity;
-    renderCart();
+    const newQty = Math.max(1, cart[index].quantity + delta);
+
+    try {
+        await fetch('/ops/api/ipad/billing/cart/', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ id: cart[index].id, quantity: newQty })
+        });
+    } catch (err) {
+        console.error('Failed to update qty:', err);
+    }
+    await loadServerCart();
 }
 
-function removeFromCart(index) {
-    window._billingCart.splice(index, 1);
-    renderCart();
+async function removeFromCart(index) {
+    const cart = window._billingCart;
+    if (!cart[index]) return;
+
+    try {
+        await fetch('/ops/api/ipad/billing/cart/?id=' + cart[index].id, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+    } catch (err) {
+        console.error('Failed to remove item:', err);
+    }
+    await loadServerCart();
 }
 
-function clearCart() {
-    window._billingCart = [];
-    renderCart();
+async function clearCart() {
+    const patient = window._currentChargePatient;
+    if (!patient) return;
+
+    try {
+        await fetch('/ops/api/ipad/billing/cart/?patient_id=' + encodeURIComponent(patient.healthieId || patient.patientId), {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+    } catch (err) {
+        console.error('Failed to clear cart:', err);
+    }
+    window._cartDiscountPct = 0;
+    await loadServerCart();
 }
 
 async function checkoutCart() {
@@ -10529,8 +10632,11 @@ async function checkoutCart() {
     const cart = window._billingCart;
     if (!patient || cart.length === 0) return;
 
-    const total = cart.reduce((sum, item) => sum + item.amount, 0);
+    const subtotal = cart.reduce((sum, item) => sum + item.amount, 0);
+    const discountPct = window._cartDiscountPct || 0;
+    const total = subtotal * (1 - discountPct / 100);
     const itemNames = cart.map(item => item.quantity > 1 ? item.name + ' x' + item.quantity : item.name).join(', ');
+    const desc = discountPct > 0 ? itemNames + ' (' + discountPct + '% discount)' : itemNames;
 
     const modal = document.getElementById('product-search-modal');
     if (modal) {
@@ -10546,13 +10652,13 @@ async function checkoutCart() {
             credentials: 'include',
             body: JSON.stringify({
                 patient_id: patient.healthieId || patient.patientId,
-                amount: total,
-                description: itemNames,
+                amount: Math.round(total * 100) / 100,
+                description: desc,
                 stripe_account: 'direct',
                 items: cart.map(item => ({
                     product_id: item.product_id,
                     name: item.name,
-                    amount: item.amount,
+                    amount: Math.round(item.amount * (1 - discountPct / 100) * 100) / 100,
                     quantity: item.quantity
                 }))
             })
@@ -10561,13 +10667,21 @@ async function checkoutCart() {
         const result = await response.json();
 
         if (result.success) {
+            // Clear server cart for this patient
+            try {
+                await fetch('/ops/api/ipad/billing/cart/?patient_id=' + encodeURIComponent(patient.healthieId || patient.patientId), {
+                    method: 'DELETE', credentials: 'include'
+                });
+            } catch (e) { /* ignore */ }
+
             modal?.remove();
             window._billingCart = [];
+            window._cartDiscountPct = 0;
 
             showChargeSuccess({
                 patientName: patient.patientName,
                 amount: total,
-                description: itemNames,
+                description: desc,
                 chargeId: result.charge_id,
                 productId: cart[0]?.product_id,
                 dispenseId: result.dispense_id,
