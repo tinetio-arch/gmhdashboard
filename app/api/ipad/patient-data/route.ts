@@ -60,6 +60,20 @@ async function addVital(healthieId: string, body: any) {
         return NextResponse.json({ success: false, error: 'category and value are required' }, { status: 400 });
     }
 
+    // If healthieId looks like a UUID, resolve to actual Healthie client ID
+    if (healthieId.includes('-') && healthieId.length > 20) {
+        const [resolved] = await query<any>(
+            'SELECT healthie_client_id FROM patients WHERE patient_id::text = $1 AND healthie_client_id IS NOT NULL LIMIT 1',
+            [healthieId]
+        );
+        if (resolved?.healthie_client_id) {
+            console.log(`[iPad:PatientData] Resolved UUID ${healthieId} → Healthie ID ${resolved.healthie_client_id}`);
+            healthieId = resolved.healthie_client_id;
+        }
+    }
+
+    console.log(`[iPad:PatientData] Creating vital ${category}=${value} for Healthie ID: ${healthieId}`);
+
     const result = await healthieGraphQL<any>(`
         mutation CreateEntry($input: createEntryInput!) {
             createEntry(input: $input) {

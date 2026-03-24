@@ -99,9 +99,10 @@ export async function POST(request: NextRequest) {
 
         // Get visit date from session
         const [session] = await query<any>(
-            'SELECT encounter_date, created_at FROM scribe_sessions WHERE session_id = $1',
+            'SELECT ss.encounter_date, ss.created_at, u.display_name as provider_name FROM scribe_sessions ss LEFT JOIN users u ON ss.created_by::text = u.user_id::text WHERE ss.session_id = $1',
             [note.session_id]
         );
+        const providerName = session?.provider_name || 'Phil Schafer, NP';
         const encounterDateRaw = session?.encounter_date;
         const visitDateObj = encounterDateRaw
             ? new Date(encounterDateRaw + 'T12:00:00')
@@ -115,7 +116,7 @@ export async function POST(request: NextRequest) {
             patientName: patient?.full_name || 'Unknown',
             patientDob: patient?.dob ? new Date(patient.dob).toLocaleDateString() : null,
             visitDate,
-            provider: 'Phil Schafer, NP',
+            provider: providerName,
             docType: doc_type as any,
             content: docEntry.content,
             patientClinic: patient?.clinic || null,

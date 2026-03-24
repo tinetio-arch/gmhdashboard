@@ -254,9 +254,10 @@ export async function POST(request: NextRequest) {
         try {
             // Use encounter_date from session if available, fallback to note.created_at
             const [session] = await query<any>(
-                'SELECT encounter_date FROM scribe_sessions WHERE session_id = $1',
+                'SELECT ss.encounter_date, u.display_name as provider_name FROM scribe_sessions ss LEFT JOIN users u ON ss.created_by::text = u.user_id::text WHERE ss.session_id = $1',
                 [note.session_id]
             );
+            const providerName = session?.provider_name || 'Phil Schafer, NP';
             const encounterDateRaw = session?.encounter_date;
             // encounter_date is a DATE column returned as 'YYYY-MM-DD' string
             const visitDateObj = encounterDateRaw
@@ -270,7 +271,7 @@ export async function POST(request: NextRequest) {
                 patientDob: patient.dob ? new Date(patient.dob).toLocaleDateString() : null,
                 visitDate,
                 visitType: note.visit_type || 'follow_up',
-                provider: 'Phil Schafer, NP',
+                provider: providerName,
                 subjective: note.soap_subjective || '',
                 objective: note.soap_objective || '',
                 assessment: note.soap_assessment || '',
@@ -327,7 +328,7 @@ export async function POST(request: NextRequest) {
                         patientName: patient.full_name || 'Unknown',
                         patientDob: patient.dob ? new Date(patient.dob).toLocaleDateString() : null,
                         visitDate,
-                        provider: 'Phil Schafer, NP',
+                        provider: providerName,
                         docType: docType as any,
                         content: docEntry.content,
                         patientClinic: patient.clinic || null,

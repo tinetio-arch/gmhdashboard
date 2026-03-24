@@ -83,7 +83,7 @@ Rules:
     },
     discharge_instructions: {
         label: 'Discharge Instructions',
-        promptTemplate: (ctx) => `You are Phil Schafer, NP writing comprehensive discharge instructions for patient ${ctx.patientName}. These should be thorough, warm, and patient-friendly. Base everything on the SOAP note below.
+        promptTemplate: (ctx) => `You are ${ctx.providerName} writing comprehensive discharge instructions for patient ${ctx.patientName}. These should be thorough, warm, and patient-friendly. Base everything on the SOAP note below.
 
 **SOAP NOTE:**
 ${ctx.soapContext}
@@ -188,9 +188,10 @@ export async function POST(request: NextRequest) {
 
         // Fetch session + note + patient
         const [session] = await query<any>(`
-            SELECT ss.*, p.full_name as patient_name
+            SELECT ss.*, p.full_name as patient_name, u.display_name as provider_name
             FROM scribe_sessions ss
             LEFT JOIN patients p ON ss.patient_id::text = p.patient_id::text
+            LEFT JOIN users u ON ss.created_by::text = u.user_id::text
             WHERE ss.session_id = $1
         `, [session_id]);
 
@@ -225,7 +226,7 @@ export async function POST(request: NextRequest) {
             visitDate: visitDateStr,
             today: todayStr,
             visitType: session.visit_type || 'Follow-up',
-            providerName: 'Provider',
+            providerName: session.provider_name || 'Phil Schafer, NP',
             soapContext,
             numDays: num_days ? parseInt(num_days, 10) : undefined,
         };

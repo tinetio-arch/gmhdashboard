@@ -44,10 +44,12 @@ export async function GET(request: NextRequest) {
                 p.full_name as patient_name, p.dob as patient_dob,
                 p.phone_primary as patient_phone, p.email as patient_email,
                 p.address_line1, p.city, p.state, p.postal_code, p.clinic as patient_clinic,
-                ss.encounter_date, ss.visit_type
+                ss.encounter_date, ss.visit_type,
+                u.display_name as provider_name
             FROM scribe_notes sn
             LEFT JOIN patients p ON sn.patient_id::text = p.patient_id::text
             LEFT JOIN scribe_sessions ss ON sn.session_id = ss.session_id
+            LEFT JOIN users u ON ss.created_by::text = u.user_id::text
             WHERE sn.note_id = $1
         `, [noteId]);
 
@@ -96,7 +98,7 @@ export async function GET(request: NextRequest) {
             patientName,
             patientDob: patientDob ? new Date(patientDob).toLocaleDateString() : null,
             visitDate,
-            provider: 'Phil Schafer, NP',
+            provider: row.provider_name || 'Phil Schafer, NP',
             docType: docType as any,
             content: docEntry.content,
             patientPhone: row.patient_phone || null,

@@ -4540,7 +4540,7 @@ function renderChartPanel(content) {
                 ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border);">\ud83d\udc64</div>`}
                 <div style="flex:1;">
                     <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
-                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob ? `DOB: ${formatDateDisplay(demo.dob)} (${calcAge(demo.dob)}yo)` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob && isNaN(Number(demo.dob)) && demo.dob.includes('-') ? `DOB: ${formatDateDisplay(demo.dob)} (${calcAge(demo.dob)}yo)` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''} ${d.healthie_id ? '\u00b7 <span style="font-family:monospace; font-size:10px; opacity:0.6;">HID: ' + d.healthie_id + '</span>' : ''}</div>
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">
                     <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
@@ -8845,7 +8845,7 @@ function renderScheduleList(contentEl) {
         var s = getApptStatusStyle(st);
         var apptId = p.appointment_id || '';
         var canAdv = apptId && st !== 'Completed' && st !== 'No Show';
-        var pid = p.patient_id || '';
+        var pid = p.patient_id || p.healthie_id || '';
         var isFinalStatus = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
         var allTasksDone = apptId && isPrevisitComplete(apptId);
         var cardBg = isFinalStatus ? 'var(--card)' : allTasksDone ? 'rgba(34,197,94,0.08)' : 'var(--card)';

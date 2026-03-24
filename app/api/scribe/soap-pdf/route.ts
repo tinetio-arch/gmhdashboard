@@ -31,10 +31,12 @@ export async function GET(request: NextRequest) {
                 p.phone_primary as patient_phone, p.email as patient_email,
                 p.address_line1, p.city, p.state, p.postal_code, p.clinic as patient_clinic,
                 sn.soap_subjective, sn.soap_objective, sn.soap_assessment, sn.soap_plan,
-                sn.icd10_codes, sn.cpt_codes, sn.full_note_text, sn.evidence_citations
+                sn.icd10_codes, sn.cpt_codes, sn.full_note_text, sn.evidence_citations,
+                u.display_name as provider_name
             FROM scribe_sessions ss
             LEFT JOIN patients p ON ss.patient_id::text = p.patient_id::text
             LEFT JOIN scribe_notes sn ON ss.session_id = sn.session_id
+            LEFT JOIN users u ON ss.created_by::text = u.user_id::text
             WHERE ss.session_id = $1
         `, [sessionId]);
 
@@ -79,7 +81,7 @@ export async function GET(request: NextRequest) {
             patientDob: row.patient_dob ? new Date(row.patient_dob).toLocaleDateString() : null,
             visitDate,
             visitType: row.visit_type || 'follow_up',
-            provider: 'Phil Schafer, NP',
+            provider: row.provider_name || 'Phil Schafer, NP',
             subjective: row.soap_subjective || '',
             objective: row.soap_objective || '',
             assessment: row.soap_assessment || '',
