@@ -1,6 +1,6 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: March 18, 2026
+**Last Updated**: March 23, 2026
 **Primary AI Assistant**: Claude Code (Anthropic)
 **Sprint Period**: December 25, 2025 - March 14, 2026
 
@@ -383,7 +383,38 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 18, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 23, 2026)
+
+### March 23, 2026: 🔴 Healthie Payment Failure Detection — Critical Bug Fixes & Billing Audit
+
+**Context**: Manual audit revealed 39 active Healthie patients hadn't paid in February 2026. Investigation uncovered systemic issues in Healthie ID mapping and payment failure detection.
+
+**Root Causes Found & Fixed**:
+
+1. **Stale Healthie ID mappings (25+ patients)**: The `patients.healthie_client_id` column had archived Healthie IDs for patients who were migrated to new accounts. Payments were processing under the new IDs but our system was looking at old ones. All 25+ were remapped to correct IDs.
+
+2. **Fuzzy name duplicates (5 patients)**: Mike Kulik/Michael Kulik, James Lentz/Jamez Lentz, Skip Yost/Earle Yost, Vinny Gallegos/Vincent Gallegos, Mike Katusik/Mike Katusic — same patients with different name spellings across Healthie accounts. Merged in Healthie and mapped correctly.
+
+3. **`sync-healthie-failed-payments.ts` Bug — Wrong reactivation logic**: The script checked the LATEST `requestedPayment` status and reactivated patients from hold if it was "succeeded" — even if that payment was months old. Kyle Dreher's December payment was reactivating him in March. **Fix**: Now only auto-reactivates if payment is within the last 5 days. Older payments require manual reactivation.
+
+4. **`sync-healthie-failed-payments.ts` Bug — Wrong ID mapping**: Was joining on `healthie_clients` table (stale IDs) instead of `patients.healthie_client_id`. **Fix**: Now reads directly from `patients` table.
+
+5. **`process-healthie-webhooks.ts` Bug — billing_item.created was a no-op**: The `handleBillingItems()` function did literally nothing — just returned "processed". This meant ALL recurring package payments (billing_item.created webhooks) were silently ignored. **Fix**: Now fetches the billing item from Healthie API, checks the `offering` (package), detects success/failure, and updates patient status with package name in notes.
+
+6. **Healthie billing data never synced to Snowflake**: The `sync-healthie-billing-items.ts` script existed but the Snowflake `HEALTHIE_BILLING_ITEMS` table was empty — sync had never run. Now synced (631 items) and available for analytics.
+
+**Files Changed**:
+- `scripts/sync-healthie-failed-payments.ts` — Fixed patient mapping query + 5-day reactivation window
+- `scripts/process-healthie-webhooks.ts` — Rebuilt `handleBillingItems()` to detect payment success/failure from recurring package billing items
+
+**Operational Actions**:
+- 19 patients set to `hold_payment_research` with specific action notes (card status, package needed, merge instructions)
+- 20 patients excluded from hold (have active recurring payments)
+- Notes column updated with exact steps needed per patient
+
+**Key Lesson**: Healthie patient accounts get recreated during migrations (NowMensHealth → NowOptimal), creating duplicate accounts with different IDs. Payment cards stay on old accounts. Must check for ID mismatches and fuzzy name duplicates when auditing billing.
+
+---
 
 ### March 18, 2026: Peptide Dispense Log — Server-Side Pagination & Patient Search
 

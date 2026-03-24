@@ -235,9 +235,17 @@ async function sendHealthieChat(patientId: string, message: string): Promise<boo
 // Use sendHealthieChat instead for in-app messaging
 
 // Send SMS via GHL (DEPRECATED - use sendHealthieSms instead)
-async function sendGHLSms(phone: string, message: string) {
-  const { GHL_V2_API_KEY, GHL_LOCATION_ID } = process.env;
-  if (!GHL_V2_API_KEY || !phone) {
+// FIX(2026-03-23): Route SMS through correct GHL location based on clinic.
+// Men's Health patients send from 928-212-2772, all others from 928-277-0001.
+async function sendGHLSms(phone: string, message: string, isMensHealth: boolean = false) {
+  const apiKey = isMensHealth
+    ? (process.env.GHL_MENS_HEALTH_API_KEY || process.env.GHL_V2_API_KEY)
+    : (process.env.GHL_PRIMARY_CARE_API_KEY || process.env.GHL_V2_API_KEY);
+  const locationId = isMensHealth
+    ? (process.env.GHL_MENS_HEALTH_LOCATION_ID || process.env.GHL_LOCATION_ID)
+    : (process.env.GHL_PRIMARY_CARE_LOCATION_ID || process.env.GHL_LOCATION_ID);
+
+  if (!apiKey || !phone) {
     console.log('[Healthie Webhooks] GHL not configured or no phone, skipping SMS');
     return false;
   }
@@ -247,11 +255,11 @@ async function sendGHLSms(phone: string, message: string) {
   const fullPhone = formattedPhone.startsWith('1') ? `+${formattedPhone}` : `+1${formattedPhone}`;
 
   try {
-    // First find contact by phone
-    const searchRes = await fetch(`https://services.leadconnectorhq.com/contacts/search?query=${encodeURIComponent(fullPhone)}`, {
+    // Search for contact in the correct GHL location
+    const searchRes = await fetch(`https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&query=${encodeURIComponent(fullPhone)}&limit=1`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${GHL_V2_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Version': '2021-07-28',
       },
     });
@@ -259,16 +267,16 @@ async function sendGHLSms(phone: string, message: string) {
     const contactId = searchJson?.contacts?.[0]?.id;
 
     if (!contactId) {
-      console.log('[Healthie Webhooks] Contact not found in GHL for phone:', fullPhone);
+      console.log('[Healthie Webhooks] Contact not found in GHL for phone:', fullPhone, '(location:', isMensHealth ? 'MensHealth' : 'PrimaryCare', ')');
       return false;
     }
 
-    // Send SMS
+    // Send SMS from the correct location's number
     const smsRes = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GHL_V2_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Version': '2021-07-28',
       },
       body: JSON.stringify({
@@ -335,9 +343,176 @@ async function reactivatePatient(patientName: string, timestamp: string) {
   }
 }
 
-async function handleBillingItems() {
-  // Snowflake billing sync removed — handled by Python sync-all-to-snowflake.py every 4h
-  console.log('[Healthie Webhooks] Billing item sync handled by Python cron — skipping Node.js Snowflake path');
+// FIX(2026-03-23): handleBillingItems now fetches the billing item from Healthie,
+// detects payment success/failure, and updates patient status accordingly.
+// Previously this was a no-op, causing ALL recurring payment events to be silently ignored.
+async function handleBillingItems(resourceId?: string) {
+  if (!resourceId) {
+    console.log('[Healthie Webhooks] No resource_id for billing item — skipping');
+    return 'processed' as const;
+  }
+
+  const { HEALTHIE_API_URL = 'https://api.gethealthie.com/graphql', HEALTHIE_API_KEY } = process.env;
+  if (!HEALTHIE_API_KEY) {
+    console.error('[Healthie Webhooks] Missing HEALTHIE_API_KEY');
+    return 'processed' as const;
+  }
+
+  try {
+    // Fetch the billing item details from Healthie including the offering (package)
+    const res = await fetch(HEALTHIE_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        authorization: `Basic ${HEALTHIE_API_KEY}`,
+        authorizationsource: 'API',
+      },
+      body: JSON.stringify({
+        query: `query GetBillingItem($id: ID) {
+          billingItem(id: $id) {
+            id
+            amount_paid
+            state
+            failure_reason
+            stripe_error
+            is_recurring
+            sender { id full_name email }
+            offering { id name price billing_frequency }
+            created_at
+          }
+        }`,
+        variables: { id: resourceId },
+      }),
+    });
+
+    const json = await res.json() as any;
+    const item = json?.data?.billingItem;
+
+    if (!item) {
+      console.log(`[Healthie Webhooks] Could not fetch billing item #${resourceId}`);
+      return 'processed' as const;
+    }
+
+    const state = item.state?.toLowerCase() || '';
+    const patientName = item.sender?.full_name || 'Unknown';
+    const patientHealthieId = item.sender?.id;
+    const amount = item.amount_paid || '0';
+    const offering = item.offering;
+    const packageName = offering?.name || 'No package';
+    const isRecurring = item.is_recurring || !!offering;
+
+    // Only process billing items that are from a package (recurring membership payments)
+    if (!offering && !item.is_recurring) {
+      console.log(`[Healthie Webhooks] Billing item #${resourceId} is not from a package — skipping (${patientName}, $${amount})`);
+      return 'processed' as const;
+    }
+
+    console.log(`[Healthie Webhooks] Recurring package payment: ${patientName} — ${packageName} — $${amount} — ${state}`);
+
+    const now = new Date();
+    const timestamp = now.toLocaleString('en-US', {
+      month: '2-digit', day: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true,
+    });
+
+    // FAILED PAYMENT — put patient on hold
+    if (isDeclinedPayment(state)) {
+      const failReason = item.failure_reason || item.stripe_error || 'Card declined';
+
+      await sendTelegramAlert(`🚨 <b>RECURRING PAYMENT FAILED</b>\n\n<b>Patient:</b> ${patientName}\n<b>Package:</b> ${packageName}\n<b>Amount:</b> $${amount}\n<b>Reason:</b> ${failReason}\n\n⚠️ Patient status set to Hold - Payment Research.`);
+
+      // Update patient in DB — match by healthie_client_id first, fall back to name
+      const { Pool } = await import('pg');
+      const pool = new Pool({
+        host: process.env.DATABASE_HOST,
+        port: Number(process.env.DATABASE_PORT || 5432),
+        database: process.env.DATABASE_NAME,
+        user: process.env.DATABASE_USER,
+        password: process.env.DATABASE_PASSWORD,
+        ssl: { rejectUnauthorized: false },
+      });
+
+      const noteEntry = `[${timestamp}] RECURRING PAYMENT FAILED - $${amount} - ${packageName} - ${failReason}. Auto-set to Hold - Payment Research.`;
+
+      // Try matching by Healthie ID first (more reliable than name)
+      let result = await pool.query(`
+        UPDATE patients SET
+          alert_status = 'Hold - Payment Research',
+          status_key = 'hold_payment_research',
+          notes = CASE WHEN notes IS NULL OR notes = '' THEN $1 ELSE notes || E'\\n' || $1 END,
+          last_modified = NOW()
+        WHERE healthie_client_id = $2
+          AND status_key NOT IN ('hold_payment_research', 'inactive')
+        RETURNING patient_id, full_name as patient_name
+      `, [noteEntry, patientHealthieId]);
+
+      // Fall back to name match if Healthie ID didn't match
+      if (result.rows.length === 0 && patientName !== 'Unknown') {
+        result = await pool.query(`
+          UPDATE patients SET
+            alert_status = 'Hold - Payment Research',
+            status_key = 'hold_payment_research',
+            notes = CASE WHEN notes IS NULL OR notes = '' THEN $1 ELSE notes || E'\\n' || $1 END,
+            last_modified = NOW()
+          WHERE LOWER(full_name) = LOWER($2)
+            AND status_key NOT IN ('hold_payment_research', 'inactive')
+          RETURNING patient_id, full_name as patient_name
+        `, [noteEntry, patientName]);
+      }
+
+      if (result.rows.length > 0) {
+        console.log(`[Healthie Webhooks] ⚠️ ${result.rows[0].patient_name}: Set to HOLD (billing item ${state})`);
+      } else {
+        console.log(`[Healthie Webhooks] ⚠️ Could not find patient to hold: ${patientName} (Healthie #${patientHealthieId})`);
+      }
+
+      await pool.end();
+
+      // TODO: SMS to patient on payment failure — DISABLED until correct Healthie patient portal URL is confirmed.
+      // Enable by setting ENABLE_PAYMENT_FAILURE_SMS=true in .env.local
+      if (process.env.ENABLE_PAYMENT_FAILURE_SMS === 'true') {
+        try {
+          const healthiePatient = await fetchHealthiePatient(patientHealthieId);
+
+          if (healthiePatient && healthiePatient.active !== false && healthiePatient.phone_number) {
+            const firstName = healthiePatient.first_name || patientName.split(' ')[0];
+            const groupName = healthiePatient.active_group_membership?.group?.name || '';
+
+            let clinicName = 'NOW Optimal';
+            if (groupName.toLowerCase().includes('men')) {
+              clinicName = 'NOW Mens Health';
+            } else if (groupName.toLowerCase().includes('primary')) {
+              clinicName = 'NOW Primary Care';
+            }
+
+            const portalUrl = 'https://secure.gethealthie.com/go/nowoptimalnetwork';
+            const isMensHealth = groupName.toLowerCase().includes('men');
+            const clinicPhone = isMensHealth ? '928-212-2772' : '928-277-0001';
+            const smsMsg = `Hi ${firstName}, we noticed your ${clinicName} payment didn't go through. Please update your card here: ${portalUrl} (Log in → Settings ⚙️ → Update Payment Cards). Note: Card updates must be done in a web browser, not the mobile app. Questions? Call ${clinicPhone}. Thank you!`;
+            await sendGHLSms(healthiePatient.phone_number, smsMsg, isMensHealth);
+            console.log(`[Healthie Webhooks] 📱 Payment failure SMS sent to ${patientName}`);
+          } else {
+            console.log(`[Healthie Webhooks] ⚠️ Could not send SMS to ${patientName} — no phone or archived`);
+          }
+        } catch (smsErr) {
+          console.error(`[Healthie Webhooks] SMS error for ${patientName}:`, smsErr);
+        }
+      }
+    }
+
+    // SUCCESSFUL PAYMENT — reactivate if on hold
+    if (isSuccessfulPayment(state)) {
+      console.log(`[Healthie Webhooks] ✅ Payment succeeded for ${patientName} — ${packageName} — $${amount}`);
+
+      const reactivated = await reactivatePatient(patientName, timestamp);
+      if (reactivated) {
+        await sendTelegramAlert(`✅ <b>RECURRING PAYMENT RECEIVED</b>\n\n<b>Patient:</b> ${patientName}\n<b>Package:</b> ${packageName}\n<b>Amount:</b> $${amount}\n\n✅ Patient auto-reactivated from Hold - Payment Research.`);
+      }
+    }
+  } catch (err) {
+    console.error(`[Healthie Webhooks] Error processing billing item #${resourceId}:`, err);
+  }
+
   return 'processed' as const;
 }
 
@@ -395,7 +570,7 @@ async function handler(event: WebhookEventRow) {
       resource_id: event.resource_id,
       changed_fields: event.changed_fields,
     });
-    const result = await handleBillingItems();
+    const result = await handleBillingItems(event.resource_id);
 
     // Notify ops-billing space if configured
     await sendChatMessage(process.env.GOOGLE_CHAT_WEBHOOK_OPS_BILLING, {

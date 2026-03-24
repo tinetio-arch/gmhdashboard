@@ -12,7 +12,7 @@ import { requireUser } from '@/lib/auth';
 
 export default async function InventoryPage() {
   const user = await requireUser('write');
-  const [summary, vials, patientOptions, retiredVials] = await Promise.all([
+  const [summary, vials, patientOptions, retiredVials, emptyVials] = await Promise.all([
     fetchInventorySummary(),
     fetchInventory(),
     fetchActivePatientOptions(),
@@ -26,6 +26,24 @@ export default async function InventoryPage() {
       WHERE d.transaction_type = 'waste_retirement'
       ORDER BY d.vial_id, d.created_at DESC
       LIMIT 20
+    `).catch(() => [] as any[]),
+    query<{
+      external_id: string;
+      size_ml: string;
+      dea_drug_name: string | null;
+      lot_number: string | null;
+      expiration_date: string | null;
+      date_received: string | null;
+      status: string;
+      updated_at: string;
+    }>(`
+      SELECT external_id, size_ml, dea_drug_name, lot_number,
+             expiration_date::text, date_received::text, status, updated_at
+      FROM vials
+      WHERE status IN ('Empty', 'Archived', 'Completed')
+        AND controlled_substance = true
+      ORDER BY updated_at DESC
+      LIMIT 100
     `).catch(() => [] as any[]),
   ]);
 
@@ -92,6 +110,8 @@ export default async function InventoryPage() {
       <InventoryTable vials={vials} currentUserRole={user.role} />
 
       <RetiredVialsSection vials={retiredVials} />
+
+      <EmptyVialsSection vials={emptyVials} />
     </section>
   );
 }
@@ -124,6 +144,57 @@ function RetiredVialsSection({ vials }: { vials: any[] }) {
             </span>
           </div>
         ))}
+      </div>
+    </details>
+  );
+}
+
+function EmptyVialsSection({ vials }: { vials: any[] }) {
+  if (vials.length === 0) return null;
+  return (
+    <details style={{ marginTop: '1rem' }}>
+      <summary style={{
+        fontSize: '1.1rem', fontWeight: 600, cursor: 'pointer',
+        color: '#64748b', marginBottom: '0.75rem'
+      }}>
+        Empty / Completed Vials ({vials.length})
+      </summary>
+      <div style={{
+        display: 'grid', gap: '0.5rem',
+        background: '#f8fafc', borderRadius: '0.75rem', padding: '1rem',
+        border: '1px solid rgba(148, 163, 184, 0.22)',
+        maxHeight: '400px', overflowY: 'auto'
+      }}>
+        {vials.map((v, i) => {
+          const vendorShort = (v.dea_drug_name || '').includes('Carrie Boyd') ? 'Carrie Boyd 30mL'
+            : (v.dea_drug_name || '').includes('TopRX') ? 'TopRX 10mL'
+            : `${v.size_ml}mL`;
+          return (
+            <div key={i} style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '0.5rem 0.75rem', background: '#fff', borderRadius: '0.5rem',
+              border: '1px solid #e2e8f0', fontSize: '0.875rem'
+            }}>
+              <span>
+                <strong>{v.external_id}</strong> — {vendorShort}
+                {v.lot_number ? ` · Lot: ${v.lot_number}` : ''}
+              </span>
+              <span style={{ color: '#94a3b8', fontSize: '0.8rem' }}>
+                <span style={{
+                  display: 'inline-block', padding: '0.1rem 0.4rem', borderRadius: '0.25rem',
+                  background: v.status === 'Empty' ? '#fef2f2' : v.status === 'Archived' ? '#f5f3ff' : '#f0fdf4',
+                  color: v.status === 'Empty' ? '#dc2626' : v.status === 'Archived' ? '#7c3aed' : '#16a34a',
+                  fontSize: '0.75rem', fontWeight: 500, marginRight: '0.5rem'
+                }}>
+                  {v.status}
+                </span>
+                {v.expiration_date ? `Exp: ${v.expiration_date}` : ''}
+                {v.date_received ? ` · Rcvd: ${v.date_received}` : ''}
+                {v.updated_at ? ` · Last: ${new Date(v.updated_at).toLocaleDateString()}` : ''}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </details>
   );

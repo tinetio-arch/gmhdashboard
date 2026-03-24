@@ -16,6 +16,23 @@ export async function GET(request: NextRequest) {
 
   try {
     const url = new URL(request.url);
+    const action = url.searchParams.get('action');
+
+    // Return the next available vial ID (for auto-populating the bulk receive form)
+    if (action === 'next-id') {
+      const result = await query<{ external_id: string }>(`
+        SELECT external_id FROM vials
+        WHERE external_id ~ '^V\\d+$'
+        ORDER BY external_id DESC
+        LIMIT 1
+      `);
+      const lastId = result[0]?.external_id || 'V0000';
+      const match = lastId.match(/^V(\d+)$/);
+      const nextNum = match ? parseInt(match[1], 10) + 1 : 1;
+      const nextId = `V${nextNum.toString().padStart(4, '0')}`;
+      return NextResponse.json({ success: true, nextId });
+    }
+
     const status = url.searchParams.get('status') || 'Active';
     const limit = parseInt(url.searchParams.get('limit') || '100');
 

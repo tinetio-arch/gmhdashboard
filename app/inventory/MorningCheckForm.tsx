@@ -145,10 +145,15 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
             }
 
             // Show result
-            if (data.hasDiscrepancy) {
+            if (data.newInventoryDetected) {
                 setMessage({
                     type: 'success',
-                    text: `✅ ${isMorning ? 'Morning' : 'EOD'} check recorded. Discrepancy noted and inventory adjusted. You may now dispense.`
+                    text: `✅ ${isMorning ? 'Morning' : 'EOD'} check recorded. New inventory detected — please add new vials via Inventory Management (need lot# & expiration date). You may now dispense.`
+                });
+            } else if (data.hasDiscrepancy) {
+                setMessage({
+                    type: 'success',
+                    text: `✅ ${isMorning ? 'Morning' : 'EOD'} check recorded. Discrepancy noted and inventory adjusted down. You may now dispense.`
                 });
             } else {
                 setMessage({

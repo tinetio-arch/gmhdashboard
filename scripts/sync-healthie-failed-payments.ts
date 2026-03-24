@@ -218,17 +218,18 @@ async function fetchFailedBillingItems(): Promise<BillingItem[]> {
 }
 
 async function loadPatientMappings(): Promise<Map<string, PatientMapping>> {
-    // Get all patients with Healthie client IDs
+    // FIX(2026-03-23): Use patients.healthie_client_id directly instead of stale healthie_clients table.
+    // The healthie_clients table has old/archived IDs that don't match merged accounts.
     const rows = await dbQuery<{
         patient_id: string;
         full_name: string;
         healthie_client_id: string;
         status_key: string | null;
     }>(`
-    SELECT p.patient_id::text, p.full_name, hc.healthie_client_id, p.status_key
-    FROM patients p
-    JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id
-    WHERE hc.healthie_client_id IS NOT NULL
+    SELECT patient_id::text, full_name, healthie_client_id, status_key
+    FROM patients
+    WHERE healthie_client_id IS NOT NULL
+      AND status_key NOT IN ('inactive')
   `);
 
     const map = new Map<string, PatientMapping>();
@@ -358,10 +359,19 @@ async function main() {
                 });
             }
         } else if (PAID_STATUSES.has(status)) {
-            if (patient && patient.current_status_key === 'hold_payment_research') {
+            // FIX(2026-03-23): Only auto-reactivate if payment is within the last 5 days.
+            // Older payments require manual review before reactivation.
+            const paidAt = payment.paid_at || payment.updated_at || payment.created_at || '';
+            const paymentDate = new Date(paidAt);
+            const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+            const isRecent = paymentDate > fiveDaysAgo;
+
+            if (patient && patient.current_status_key === 'hold_payment_research' && isRecent) {
                 await reactivatePatient(patient.patient_id, patient.full_name);
                 results.patientsReactivated.push(patient.full_name);
-                console.log(`  ✅ ${patient.full_name}: REACTIVATED (payment succeeded) [requestedPayment]`);
+                console.log(`  ✅ ${patient.full_name}: REACTIVATED (payment succeeded ${paidAt.split('T')[0]}) [requestedPayment]`);
+            } else if (patient && patient.current_status_key === 'hold_payment_research' && !isRecent) {
+                console.log(`  ⏭️  ${patient.full_name}: Skipped reactivation — last payment too old (${paidAt.split('T')[0]}) [requestedPayment]`);
             }
         }
     }

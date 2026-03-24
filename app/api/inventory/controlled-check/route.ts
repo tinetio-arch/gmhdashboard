@@ -110,7 +110,8 @@ export async function POST(request: NextRequest) {
 
         let adjustmentDetails = '';
 
-        // If discrepancy found, adjust inventory to match physical count
+        // If discrepancy found, adjust inventory (downward only)
+        let newInventoryDetected = false;
         if (check.discrepancyFound) {
             console.warn('[controlled-check] DISCREPANCY DETECTED:', {
                 date: check.checkDate,
@@ -119,7 +120,7 @@ export async function POST(request: NextRequest) {
                 discrepancyMlTopRx: check.discrepancyMlTopRx
             });
 
-            // Adjust vials to match what staff says is physically there
+            // Only adjusts downward (loss/waste). If physical > system, flags new inventory.
             const adjustment = await adjustInventoryToPhysicalCount(
                 input.physicalVialsCb30ml,
                 input.physicalPartialMlCb || 0,
@@ -128,9 +129,16 @@ export async function POST(request: NextRequest) {
                 input.physicalPartialMlTopRx || 0
             );
 
+            newInventoryDetected = adjustment.newInventoryDetected;
+
             if (adjustment.cbAdjusted || adjustment.topRxAdjusted) {
                 adjustmentDetails = adjustment.details;
                 console.log('[controlled-check] Inventory adjusted to match physical count:', adjustmentDetails);
+            }
+
+            if (newInventoryDetected) {
+                adjustmentDetails = (adjustmentDetails ? adjustmentDetails + '\n' : '') + adjustment.details;
+                console.log('[controlled-check] New inventory detected — staff must add vials:', adjustment.details);
             }
         }
 
@@ -142,6 +150,10 @@ export async function POST(request: NextRequest) {
                 : null,
             inventoryAdjusted: !!adjustmentDetails,
             adjustmentDetails,
+            newInventoryDetected,
+            newInventoryMessage: newInventoryDetected
+                ? 'Physical count is higher than system. Please add new vials via Inventory Management (need lot number & expiration date).'
+                : null,
             check,
             display: formatCheckForDisplay(check)
         });

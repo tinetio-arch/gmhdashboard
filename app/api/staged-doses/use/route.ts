@@ -72,15 +72,18 @@ export async function POST(req: Request) {
       totalDispensed, dosePerSyringe, syringeCount, wasteMl
     });
 
+    // FIX(2026-03-23): Added total_amount — was missing, causing NULL "Total Volume" on staged dispenses
+    const totalAmount = totalDispensed + wasteMl;
+
     const dispenseResult = await client.query<{ dispense_id: string }>(
       `INSERT INTO dispenses (
-        patient_id, patient_name, vial_id, vial_external_id, total_dispensed_ml, 
-        dose_per_syringe_ml, syringe_count, waste_ml, prescriber, 
+        patient_id, patient_name, vial_id, vial_external_id, total_dispensed_ml,
+        dose_per_syringe_ml, syringe_count, waste_ml, total_amount, prescriber,
         dispense_date, recorded_by, notes, transaction_type
       ) VALUES (
-        $1::uuid, $2::text, $3::uuid, $4::text, $5::numeric, 
-        $6::numeric, $7::integer, $8::numeric, $9::text, 
-        $10::timestamp, $11::text, $12::text, $13::text
+        $1::uuid, $2::text, $3::uuid, $4::text, $5::numeric,
+        $6::numeric, $7::integer, $8::numeric, $9::numeric, $10::text,
+        $11::timestamp, $12::text, $13::text, $14::text
       ) RETURNING dispense_id`,
       [
         finalPatientId,
@@ -91,6 +94,7 @@ export async function POST(req: Request) {
         dosePerSyringe,
         syringeCount,
         wasteMl,
+        totalAmount,
         staged.vendor || 'Unknown',
         dispenseDate.toISOString(),
         user.name || 'System',

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { UserRole } from '@/lib/auth';
 import { withBasePath } from '@/lib/basePath';
@@ -70,6 +70,18 @@ export default function BulkReceiveForm({ onCompleted, currentUserRole }: Props)
   const [notes, setNotes] = useState('');
   const [status, setStatus] = useState<StatusState>({ type: 'idle' });
 
+  // Auto-populate the next vial ID on mount
+  useEffect(() => {
+    fetch(withBasePath('/api/inventory/vials?action=next-id'))
+      .then(r => r.json())
+      .then(data => {
+        if (data.nextId && !startingExternalId) {
+          setStartingExternalId(data.nextId);
+        }
+      })
+      .catch(() => {}); // silently fail — user can still type manually
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const loading = status.type === 'loading';
   const isReadOnly = currentUserRole === 'read';
   const isDisabled = loading || isReadOnly;
@@ -118,7 +130,11 @@ export default function BulkReceiveForm({ onCompleted, currentUserRole }: Props)
       const createdCount = Array.isArray(payload?.created) ? payload.created.length : 1;
       setStatus({ type: 'success', message: `Received ${createdCount} vial${createdCount === 1 ? '' : 's'} successfully.` });
       setNotes('');
-      setStartingExternalId('');
+      // Re-fetch next available ID for the next batch
+      fetch(withBasePath('/api/inventory/vials?action=next-id'))
+        .then(r => r.json())
+        .then(data => { if (data.nextId) setStartingExternalId(data.nextId); })
+        .catch(() => setStartingExternalId(''));
       onCompleted?.();
     } catch (error) {
       setStatus({ type: 'error', message: (error as Error).message });
@@ -197,12 +213,12 @@ export default function BulkReceiveForm({ onCompleted, currentUserRole }: Props)
               disabled={isDisabled}
             />
           </InputLabel>
-          <InputLabel label="Starting Vial ID (optional)">
+          <InputLabel label="Starting Vial ID">
             <input
               value={startingExternalId}
               onChange={(event) => setStartingExternalId(event.target.value.toUpperCase())}
               style={fieldStyle}
-              placeholder="e.g. V0006"
+              placeholder="Loading..."
               disabled={isDisabled}
             />
           </InputLabel>

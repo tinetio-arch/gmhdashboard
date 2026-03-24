@@ -340,8 +340,19 @@ export async function recordControlledSubstanceCheck(
 }
 
 /**
- * Adjust vials to match physical count
- * Called when staff reports a different count than system shows
+ * Adjust vials to match physical count (DOWNWARD ONLY)
+ *
+ * FIX(2026-03-23): Rewrote to prevent phantom volume creation.
+ * Old behavior blindly redistributed physical total across existing vials,
+ * which resurrected depleted vials and created inventory ghosts.
+ *
+ * New rules:
+ * 1. Only adjust DOWNWARD (physical < system = loss/waste)
+ * 2. If physical > system (shipment), do NOT touch vials — staff must add
+ *    new vials via inventory management (needs lot#, expiration, etc.)
+ * 3. Deduct from the LAST vial first (preserves FIFO dispensing order)
+ * 4. Never increase a vial's remaining_volume_ml
+ * 5. Always mark vials at 0ml as 'Empty'
  */
 export async function adjustInventoryToPhysicalCount(
     physicalVialsCb30ml: number,
@@ -349,13 +360,13 @@ export async function adjustInventoryToPhysicalCount(
     physicalVialsTopRx10ml: number,
     adjustedBy: string,
     physicalPartialMlTopRx: number = 0
-): Promise<{ cbAdjusted: boolean; topRxAdjusted: boolean; details: string }> {
+): Promise<{ cbAdjusted: boolean; topRxAdjusted: boolean; details: string; newInventoryDetected: boolean }> {
     const details: string[] = [];
     let cbAdjusted = false;
     let topRxAdjusted = false;
+    let newInventoryDetected = false;
 
     // ===== Carrie Boyd 30ml adjustment =====
-    // Get current CB vials sorted by external_id (oldest first)
     const cbVials = await query<{
         vial_id: string;
         external_id: string;
@@ -363,57 +374,51 @@ export async function adjustInventoryToPhysicalCount(
         size_ml: string;
     }>(`
         SELECT vial_id, external_id, remaining_volume_ml, size_ml
-        FROM vials 
-        WHERE controlled_substance = true 
+        FROM vials
+        WHERE controlled_substance = true
           AND size_ml::numeric >= 20
           AND remaining_volume_ml::numeric > 0
         ORDER BY external_id ASC
     `);
 
-    // Calculate what staff sees
     const physicalTotalCb = (physicalVialsCb30ml * 30) + physicalPartialMlCb;
     const systemTotalCb = cbVials.reduce((sum, v) => sum + parseFloat(v.remaining_volume_ml), 0);
 
-    if (Math.abs(systemTotalCb - physicalTotalCb) > 0.5) {
+    if (physicalTotalCb > systemTotalCb + 0.5) {
+        // Physical has MORE than system — new inventory received
+        // Do NOT inflate existing vials. Staff must add new vials with proper lot/expiration.
+        newInventoryDetected = true;
+        const surplus = physicalTotalCb - systemTotalCb;
+        details.push(`CB: Physical has ${surplus.toFixed(1)}ml more than system — new vials must be added via Inventory Management`);
+    } else if (systemTotalCb - physicalTotalCb > 0.5) {
+        // Physical has LESS than system — loss/waste, adjust downward
         cbAdjusted = true;
+        let mlToRemove = systemTotalCb - physicalTotalCb;
 
-        // Strategy: Keep physicalVialsCb30ml full vials, one partial, rest zero
-        let mlToDistribute = physicalTotalCb;
-
-        for (let i = 0; i < cbVials.length; i++) {
+        // Deduct from LAST vial first (preserves FIFO — the first vial is the one being dispensed from)
+        for (let i = cbVials.length - 1; i >= 0 && mlToRemove > 0.01; i--) {
             const vial = cbVials[i];
-            const sizeml = parseFloat(vial.size_ml);
-            let newRemaining = 0;
+            const currentRemaining = parseFloat(vial.remaining_volume_ml);
+            const deduction = Math.min(mlToRemove, currentRemaining);
+            const newRemaining = currentRemaining - deduction;
+            mlToRemove -= deduction;
 
-            if (mlToDistribute >= sizeml) {
-                // Full vial
-                newRemaining = sizeml;
-                mlToDistribute -= sizeml;
-            } else if (mlToDistribute > 0) {
-                // Partial vial
-                newRemaining = mlToDistribute;
-                mlToDistribute = 0;
-            }
-            // else: 0
+            // Update volume (never increases — only decreases)
+            await query(`
+                UPDATE vials
+                SET remaining_volume_ml = $1,
+                    status = CASE WHEN $1::numeric <= 0 THEN 'Empty' ELSE status END,
+                    updated_at = NOW()
+                WHERE vial_id = $2
+            `, [Math.max(0, newRemaining).toFixed(3), vial.vial_id]);
 
-            // Update if different
-            if (Math.abs(parseFloat(vial.remaining_volume_ml) - newRemaining) > 0.01) {
-                await query(`
-                    UPDATE vials 
-                    SET remaining_volume_ml = $1,
-                        updated_at = NOW()
-                    WHERE vial_id = $2
-                `, [newRemaining.toFixed(2), vial.vial_id]);
-
-                details.push(`${vial.external_id}: ${parseFloat(vial.remaining_volume_ml).toFixed(1)}ml → ${newRemaining.toFixed(1)}ml`);
-            }
+            details.push(`${vial.external_id}: ${currentRemaining.toFixed(1)}ml → ${Math.max(0, newRemaining).toFixed(1)}ml`);
         }
 
-        details.push(`CB adjusted: System had ${systemTotalCb.toFixed(1)}ml → Physical ${physicalTotalCb.toFixed(1)}ml`);
+        details.push(`CB adjusted down: System had ${systemTotalCb.toFixed(1)}ml → Physical ${physicalTotalCb.toFixed(1)}ml`);
     }
 
     // ===== TopRX 10ml adjustment =====
-    // Now supports partial volume tracking (same strategy as CB)
     const topRxVials = await query<{
         vial_id: string;
         external_id: string;
@@ -421,8 +426,8 @@ export async function adjustInventoryToPhysicalCount(
         size_ml: string;
     }>(`
         SELECT vial_id, external_id, remaining_volume_ml, size_ml
-        FROM vials 
-        WHERE controlled_substance = true 
+        FROM vials
+        WHERE controlled_substance = true
           AND size_ml::numeric < 20 AND size_ml::numeric > 0
           AND remaining_volume_ml::numeric > 0
         ORDER BY external_id ASC
@@ -431,51 +436,46 @@ export async function adjustInventoryToPhysicalCount(
     const physicalTotalTopRx = (physicalVialsTopRx10ml * 10) + physicalPartialMlTopRx;
     const systemTotalTopRx = topRxVials.reduce((sum, v) => sum + parseFloat(v.remaining_volume_ml), 0);
 
-    if (Math.abs(systemTotalTopRx - physicalTotalTopRx) > 0.5) {
+    if (physicalTotalTopRx > systemTotalTopRx + 0.5) {
+        // Physical has MORE — new inventory received
+        newInventoryDetected = true;
+        const surplus = physicalTotalTopRx - systemTotalTopRx;
+        details.push(`TopRX: Physical has ${surplus.toFixed(1)}ml more than system — new vials must be added via Inventory Management`);
+    } else if (systemTotalTopRx - physicalTotalTopRx > 0.5) {
+        // Physical has LESS — loss/waste, adjust downward
         topRxAdjusted = true;
+        let mlToRemove = systemTotalTopRx - physicalTotalTopRx;
 
-        // Distribute volume across vials: full vials first, then one partial, rest zero
-        let mlToDistribute = physicalTotalTopRx;
-
-        for (let i = 0; i < topRxVials.length; i++) {
+        for (let i = topRxVials.length - 1; i >= 0 && mlToRemove > 0.01; i--) {
             const vial = topRxVials[i];
-            const sizeml = parseFloat(vial.size_ml);
-            let newRemaining = 0;
+            const currentRemaining = parseFloat(vial.remaining_volume_ml);
+            const deduction = Math.min(mlToRemove, currentRemaining);
+            const newRemaining = currentRemaining - deduction;
+            mlToRemove -= deduction;
 
-            if (mlToDistribute >= sizeml) {
-                // Full vial
-                newRemaining = sizeml;
-                mlToDistribute -= sizeml;
-            } else if (mlToDistribute > 0) {
-                // Partial vial
-                newRemaining = mlToDistribute;
-                mlToDistribute = 0;
-            }
-            // else: 0
+            await query(`
+                UPDATE vials
+                SET remaining_volume_ml = $1,
+                    status = CASE WHEN $1::numeric <= 0 THEN 'Empty' ELSE status END,
+                    updated_at = NOW()
+                WHERE vial_id = $2
+            `, [Math.max(0, newRemaining).toFixed(3), vial.vial_id]);
 
-            if (Math.abs(parseFloat(vial.remaining_volume_ml) - newRemaining) > 0.01) {
-                await query(`
-                    UPDATE vials 
-                    SET remaining_volume_ml = $1,
-                        updated_at = NOW()
-                    WHERE vial_id = $2
-                `, [newRemaining.toFixed(2), vial.vial_id]);
-
-                details.push(`${vial.external_id}: ${parseFloat(vial.remaining_volume_ml).toFixed(1)}ml → ${newRemaining.toFixed(1)}ml`);
-            }
+            details.push(`${vial.external_id}: ${currentRemaining.toFixed(1)}ml → ${Math.max(0, newRemaining).toFixed(1)}ml`);
         }
 
-        details.push(`TopRX adjusted: System had ${systemTotalTopRx.toFixed(1)}ml → Physical ${physicalTotalTopRx.toFixed(1)}ml`);
+        details.push(`TopRX adjusted down: System had ${systemTotalTopRx.toFixed(1)}ml → Physical ${physicalTotalTopRx.toFixed(1)}ml`);
     }
 
     // Log adjustment
-    if (cbAdjusted || topRxAdjusted) {
-        console.log(`[inventory-adjustment] Adjusted by ${adjustedBy}:`, details.join('; '));
+    if (cbAdjusted || topRxAdjusted || newInventoryDetected) {
+        console.log(`[inventory-adjustment] By ${adjustedBy}:`, details.join('; '));
     }
 
     return {
         cbAdjusted,
         topRxAdjusted,
+        newInventoryDetected,
         details: details.join('\n')
     };
 }
