@@ -315,37 +315,34 @@ async function removeDiagnosis(healthieId: string, body: any) {
     }
 
     try {
-        // 1. Create a note in Healthie documenting the removal
+        // 1. Document the removal in Healthie via a journal entry
         const diagnosisText = description ? `${code} — ${description}` : code;
-        const noteResult = await healthieGraphQL<any>(`
-            mutation CreateNote($input: createNoteInput!) {
-                createNote(input: $input) {
-                    note {
-                        id
-                        content
-                        created_at
-                    }
-                    messages {
-                        field
-                        message
+        let healthieNoteId: string | null = null;
+        try {
+            const entryResult = await healthieGraphQL<any>(`
+                mutation CreateEntry($input: createEntryInput!) {
+                    createEntry(input: $input) {
+                        entry { id }
+                        messages { field message }
                     }
                 }
+            `, {
+                input: {
+                    user_id: healthieId,
+                    type: 'JournalEntry',
+                    category: 'Diagnosis Change',
+                    description: `Diagnosis Removed: ${diagnosisText}`,
+                    created_at: new Date().toISOString(),
+                }
+            });
+            healthieNoteId = entryResult?.createEntry?.entry?.id || null;
+            if (healthieNoteId) {
+                console.log(`[iPad:PatientData] Diagnosis removal documented in Healthie entry: ${healthieNoteId}`);
             }
-        `, {
-            input: {
-                user_id: healthieId,
-                content: `❌ **Diagnosis Removed**: ${diagnosisText}`,
-                include_in_charting: true,
-            }
-        });
-
-        if (noteResult.createNote?.messages?.length > 0) {
-            const errors = noteResult.createNote.messages.map((m: any) => m.message).join(', ');
-            console.error(`[iPad:PatientData] Healthie removal note failed: ${errors}`);
+        } catch (healthieErr) {
+            // Non-fatal — still proceed with local removal
+            console.warn('[iPad:PatientData] Healthie documentation failed (non-fatal):', healthieErr instanceof Error ? healthieErr.message : healthieErr);
         }
-
-        const healthieNoteId = noteResult.createNote?.note?.id;
-        console.log(`[iPad:PatientData] Diagnosis removal note created in Healthie: ${healthieNoteId}`);
 
         // 2. Also remove from local scribe_notes
         const patientRows = await query<any>(
@@ -356,55 +353,17 @@ async function removeDiagnosis(healthieId: string, body: any) {
         if (patientRows && patientRows.length > 0) {
             const patientId = patientRows[0].patient_id;
 
-            // Find scribe notes that contain this ICD-10 code
-            const notes = await query<any>(`
-                SELECT note_id, icd10_codes
-                FROM scribe_notes
-                WHERE patient_id = $1
-                  AND icd10_codes @> $2::jsonb
-                ORDER BY created_at DESC
-                LIMIT 1
-            `, [patientId, JSON.stringify([{ code }])]);
+            // Add to removed_diagnoses list on patient record
+            // This filters the diagnosis from Working Diagnoses display without modifying scribe notes
+            // (the diagnosis stays in the historical note for medical record integrity)
+            await query(`
+                UPDATE patients
+                SET removed_diagnoses = COALESCE(removed_diagnoses, '[]'::jsonb) || $1::jsonb
+                WHERE patient_id = $2
+                  AND NOT (COALESCE(removed_diagnoses, '[]'::jsonb) @> $1::jsonb)
+            `, [JSON.stringify([code]), patientId]);
 
-            if (!notes || notes.length === 0) {
-                // Try lenient search
-                const lenientNotes = await query<any>(`
-                    SELECT note_id, icd10_codes
-                    FROM scribe_notes
-                    WHERE patient_id = $1
-                      AND icd10_codes::text LIKE $2
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                `, [patientId, `%${code}%`]);
-
-                if (lenientNotes && lenientNotes.length > 0) {
-                    const currentCodes = lenientNotes[0].icd10_codes;
-                    const updatedCodes = currentCodes.filter((c: any) =>
-                        (typeof c === 'string' ? c : c.code) !== code
-                    );
-
-                    await query(`
-                        UPDATE scribe_notes
-                        SET icd10_codes = $1::jsonb
-                        WHERE note_id = $2
-                    `, [JSON.stringify(updatedCodes), lenientNotes[0].note_id]);
-
-                    console.log(`[iPad:PatientData] Removed diagnosis "${code}" from local note ${lenientNotes[0].note_id}`);
-                }
-            } else {
-                const currentCodes = notes[0].icd10_codes;
-                const updatedCodes = currentCodes.filter((c: any) =>
-                    (typeof c === 'string' ? c : c.code) !== code
-                );
-
-                await query(`
-                    UPDATE scribe_notes
-                    SET icd10_codes = $1::jsonb
-                    WHERE note_id = $2
-                `, [JSON.stringify(updatedCodes), notes[0].note_id]);
-
-                console.log(`[iPad:PatientData] Removed diagnosis "${code}" from local note ${notes[0].note_id}`);
-            }
+            console.log(`[iPad:PatientData] Added "${code}" to removed_diagnoses for patient ${patientId}`);
         }
 
         return NextResponse.json({

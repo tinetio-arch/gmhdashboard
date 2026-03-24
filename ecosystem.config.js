@@ -61,7 +61,8 @@ module.exports = {
                 PORT: 3011,
                 HEALTHIE_API_KEY: 'gh_live_SHmVYEL4hDX2o7grAgDDVvDkpvYgzRHzlZlgQOZ7WTp9KZgmAeEgJpOtB8HLMCVp',
                 HEALTHIE_API_URL: 'https://api.gethealthie.com/graphql',
-                GOOGLE_AI_API_KEY: 'AIzaSyCvqwmqxV50HWESOYNhhXl1PVYiDNYRzjg'
+                GOOGLE_AI_API_KEY: 'AIzaSyCvqwmqxV50HWESOYNhhXl1PVYiDNYRzjg',
+                NCBI_API_KEY: 'ce535ffb91bd3f1c0d293f89226f7c726d08'
             }
         },
 

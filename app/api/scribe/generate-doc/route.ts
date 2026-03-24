@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 90;
+
+// Use Claude 3.5 Haiku via Bedrock for fast doc generation
+const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
+const CLAUDE_MODEL_ID = 'us.anthropic.claude-3-5-haiku-20241022-v1:0';
 
 // Supported supplementary document types (matching Telegram bot)
 // Uses the EXACT templates from prompts_config.yaml (matching Python scribe)
@@ -11,122 +16,112 @@ const DOC_TYPES: Record<string, { label: string; promptTemplate: (ctx: DocContex
     work_note: {
         label: 'Work Excuse Note',
         promptTemplate: (ctx) => `**Task**
-Generate a brief, professional medical note for patient ${ctx.patientName} who needs time off from work.
+Generate a brief, professional medical excuse note for patient ${ctx.patientName} who needs time off from work.
+
+**Today's date:** ${ctx.today}
+**Visit date:** ${ctx.visitDate}
+${ctx.numDays ? `**Days off requested:** ${ctx.numDays} days (starting from the visit date: ${ctx.visitDate})` : ''}
 
 **SOAP NOTE:**
 ${ctx.soapContext}
 
 **Output Format:**
 
----
-
 ${ctx.visitDate}
 
 To Whom It May Concern,
 
-This letter confirms that ${ctx.patientName} was evaluated at our clinic today for a medical condition.
+This letter confirms that ${ctx.patientName} was evaluated at our clinic on ${ctx.visitDate} for a medical condition.
 
-Based on my clinical assessment, the patient requires ${ctx.numDays ? `${ctx.numDays} days` : 'time'} off from work for medical reasons.
+Based on my clinical assessment, the patient requires ${ctx.numDays ? `${ctx.numDays} days` : 'time'} off from work for medical reasons, effective ${ctx.visitDate}.
 
-The patient may return to work on ${ctx.numDays ? `[calculate exact date: ${ctx.numDays} days from ${ctx.visitDate}]` : '[calculate return date based on clinical context]'}.
+**The patient is excused from work from ${ctx.visitDate} through [calculate: ${ctx.numDays || 'N'} days from ${ctx.visitDate}, write the exact end date]. The patient may return to work on [the day after the end date].**
 
 If you have questions regarding this medical excuse, please contact our office.
 
-Sincerely,
-
-Phil Schafer, NP
-NowOptimal Network
-Phone: 928-277-0001
-Fax: 928-350-6228
-
----
-
-Keep the note to 4-6 sentences. Do NOT include specific diagnosis details (HIPAA compliant).`,
+Rules:
+1. Keep the note to 4-6 sentences
+2. Do NOT include specific diagnosis details (HIPAA compliant)
+3. The return-to-work date line and the date range MUST be wrapped in **bold** markers
+4. You MUST calculate and write out the exact calendar dates — never use brackets or placeholders
+5. Do NOT include "Sincerely" or any signature block — that is added automatically
+6. Do NOT include --- horizontal rules`,
     },
     school_note: {
         label: 'School Excuse Note',
         promptTemplate: (ctx) => `**Task**
-Generate a brief, professional medical note for student ${ctx.patientName} who needs time off from school.
+Generate a brief, professional medical excuse note for student ${ctx.patientName} who needs time off from school.
+
+**Today's date:** ${ctx.today}
+**Visit date:** ${ctx.visitDate}
+${ctx.numDays ? `**Days off requested:** ${ctx.numDays} days (starting from the visit date: ${ctx.visitDate})` : ''}
 
 **SOAP NOTE:**
 ${ctx.soapContext}
 
 **Output Format:**
-
----
 
 ${ctx.visitDate}
 
 To Whom It May Concern,
 
-This letter confirms that ${ctx.patientName} was evaluated at our medical office today.
+This letter confirms that ${ctx.patientName} was evaluated at our medical office on ${ctx.visitDate}.
 
-Based on my clinical assessment, the student requires ${ctx.numDays ? `${ctx.numDays} days` : 'time'} off from school for medical reasons.
+Based on my clinical assessment, the student requires ${ctx.numDays ? `${ctx.numDays} days` : 'time'} off from school for medical reasons, effective ${ctx.visitDate}.
 
-The student may return to school on ${ctx.numDays ? `[calculate exact date: ${ctx.numDays} days from ${ctx.visitDate}]` : '[calculate return date]'} without restrictions.
+**The student is excused from school from ${ctx.visitDate} through [calculate: ${ctx.numDays || 'N'} days from ${ctx.visitDate}, write the exact end date]. The student may return to school on [the day after the end date] without restrictions.**
 
 Please contact our office if you require any additional documentation.
 
-Sincerely,
-
-Phil Schafer, NP
-NowOptimal Network
-Phone: 928-277-0001
-Fax: 928-350-6228
-
----
-
-Keep the note brief and age-appropriate. Do NOT include specific diagnosis details (HIPAA compliant).`,
+Rules:
+1. Keep the note brief and age-appropriate
+2. Do NOT include specific diagnosis details (HIPAA compliant)
+3. The return-to-school date line and the date range MUST be wrapped in **bold** markers
+4. You MUST calculate and write out the exact calendar dates — never use brackets or placeholders
+5. Do NOT include "Sincerely" or any signature block — that is added automatically
+6. Do NOT include --- horizontal rules`,
     },
     discharge_instructions: {
         label: 'Discharge Instructions',
-        promptTemplate: (ctx) => `**Situation**
-You are an AI-powered EMR system designed to support Phil Schafer, NP in generating patient discharge instructions. Transform the SOAP note into clear, actionable discharge instructions that are patient-friendly, comprehensive, and include personalized contact information.
-
-**Task**
-Generate structured discharge instructions formatted for patient comprehension based on this SOAP note.
+        promptTemplate: (ctx) => `You are Phil Schafer, NP writing comprehensive discharge instructions for patient ${ctx.patientName}. These should be thorough, warm, and patient-friendly. Base everything on the SOAP note below.
 
 **SOAP NOTE:**
 ${ctx.soapContext}
 
-**PATIENT NAME:** ${ctx.patientName}
-
-**Output Format:**
-
----
+Write thorough discharge instructions covering ALL of the following sections. Write each section with detail — be comprehensive, not brief. Skip a section ONLY if it is completely irrelevant to this visit:
 
 **DISCHARGE INSTRUCTIONS**
 
-**[Pharmacy and Prescription Information - Include only if medications are mentioned]**
-"I sent your prescriptions to [Pharmacy Name] as you requested. Please call or text if there are any issues."
+**Prescription & Pharmacy Information:**
+If medications were prescribed or continued, explain what was sent, remind them to call/text if there are pharmacy issues. If no medications were discussed, skip this section.
 
 **Medications:**
-[List each prescribed medication with dosage, frequency, and specific instructions in plain language]
+List every medication from the SOAP note. For each one, include: the name, dosage, how often to take it, and any special instructions in plain language the patient can follow at home. Be thorough — explain what each medication is for in simple terms.
 
-**[Probiotic Support - Include only if antibiotics are prescribed]**
-Consume a daily yogurt or take a probiotic supplement to support gut health during antibiotic use.
+**Probiotic Support:**
+If antibiotics were prescribed, recommend a daily yogurt or probiotic supplement to support gut health. Otherwise skip.
 
 **Symptom Monitoring:**
-[Detail symptoms to monitor and warning signs requiring immediate medical attention]
+Detail specific symptoms the patient should watch for based on their diagnoses. Include warning signs that require immediate medical attention (e.g., ER-worthy symptoms). Be specific to their conditions.
 
-**General Health Tips:**
-[Include relevant health recommendations based on the diagnosis]
+**General Health Recommendations:**
+Provide relevant lifestyle, diet, exercise, hydration, and wellness recommendations based on the diagnoses and plan. Include practical, actionable tips.
 
 **Follow-Up:**
-[Provide specific follow-up appointment date or general timeline]
-
-**Contact Information:**
-Phil Schafer, NP
-Call or Text: 928-277-0001
-Fax: 928-350-6228
-Email: admin@granitemountainhealth.com
+State when to return and what will be checked. Include any lab work or tests that need to be done before the next visit.
 
 **Personal Note:**
 Thank you for trusting the NowOptimal Network with your care. It's my privilege to help you feel better. Please don't hesitate to reach out if you have any questions or concerns.
 
----
-
-Write in second person ("you," "your") with clear, simple language.`,
+Rules:
+1. Write in second person ("you", "your") with warm, conversational tone
+2. Use simple language a patient can understand — avoid medical jargon where possible
+3. Be thorough and comprehensive — these should be detailed enough for the patient to reference at home
+4. **CRITICAL: ONLY include information explicitly stated in the SOAP note. Do NOT add lab tests, follow-up timelines, medications, procedures, or recommendations that are not documented in the note. If the provider didn't mention lipid panels, don't add lipid panels. If the provider didn't say when to return, don't invent a return date. Stick strictly to what was documented.**
+5. Do NOT invent pharmacy names or details not in the SOAP note — if a pharmacy isn't mentioned, say "your pharmacy"
+6. Do NOT include brackets or placeholder text
+7. Do NOT include provider contact information — that is added automatically by the PDF generator
+8. Do NOT include --- horizontal rules or "Sincerely" signature blocks`,
     },
     care_plan: {
         label: 'Care Plan',
@@ -157,6 +152,7 @@ Output ONLY the care plan text. No commentary.`,
 interface DocContext {
     patientName: string;
     visitDate: string;
+    today: string;
     visitType: string;
     providerName: string;
     soapContext: string;
@@ -217,42 +213,59 @@ export async function POST(request: NextRequest) {
             ].filter(Boolean).join('\n\n')
             : session.transcript || 'No clinical context available';
 
+        // Use encounter_date if available, else session created_at
+        const encounterDate = session.encounter_date
+            ? new Date(session.encounter_date + 'T12:00:00')
+            : new Date(session.created_at);
+        const visitDateStr = encounterDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        const todayStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
         const ctx: DocContext = {
             patientName: session.patient_name || 'Patient',
-            visitDate: new Date(session.created_at).toLocaleDateString(),
+            visitDate: visitDateStr,
+            today: todayStr,
             visitType: session.visit_type || 'Follow-up',
             providerName: 'Provider',
             soapContext,
             numDays: num_days ? parseInt(num_days, 10) : undefined,
         };
 
-        // Generate via Gemini
-        const GEMINI_API_KEY = process.env.GOOGLE_AI_API_KEY;
-        if (!GEMINI_API_KEY) {
-            return NextResponse.json({ success: false, error: 'GOOGLE_AI_API_KEY not configured' }, { status: 500 });
-        }
-
+        // Generate via Claude Haiku (Bedrock)
         const prompt = docConfig.promptTemplate(ctx);
 
-        const geminiResponse = await fetch(
-            `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
-                }),
+        let generatedContent: string;
+        try {
+            const claudeRequest = {
+                anthropic_version: 'bedrock-2023-05-31',
+                max_tokens: 4096,
+                temperature: 0.3,
+                messages: [{ role: 'user', content: prompt }],
+            };
+
+            const command = new InvokeModelCommand({
+                modelId: CLAUDE_MODEL_ID,
+                contentType: 'application/json',
+                accept: 'application/json',
+                body: JSON.stringify(claudeRequest),
+            });
+
+            const response = await bedrock.send(command);
+            const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+            generatedContent = responseBody.content?.[0]?.text;
+            if (!generatedContent) {
+                console.error('[Scribe:GenerateDoc] Claude empty response:', JSON.stringify(responseBody).substring(0, 500));
+                return NextResponse.json(
+                    { success: false, error: `Failed to generate ${docConfig.label}` },
+                    { status: 502 }
+                );
             }
-        );
 
-        const geminiResult: any = await geminiResponse.json();
-        const generatedContent = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        if (!generatedContent) {
-            console.error('[Scribe:GenerateDoc] Gemini response:', JSON.stringify(geminiResult).substring(0, 500));
+            console.log(`[Scribe:GenerateDoc] Claude generated ${docConfig.label}: ${generatedContent.length} chars`);
+        } catch (aiError: any) {
+            console.error('[Scribe:GenerateDoc] Claude error:', aiError);
             return NextResponse.json(
-                { success: false, error: `Failed to generate ${docConfig.label}` },
+                { success: false, error: `AI generation failed: ${aiError.message}` },
                 { status: 502 }
             );
         }

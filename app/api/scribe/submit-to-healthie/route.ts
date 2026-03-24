@@ -4,6 +4,7 @@ import { query } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
 import { sendMessage } from '@/lib/telegram-client';
 import { generateSoapPdf } from '@/lib/pdf/soapPdfGenerator';
+import { generateDocPdf } from '@/lib/pdf/docPdfGenerator';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -67,7 +68,7 @@ export async function POST(request: NextRequest) {
         
         if (isUuid) {
             const [localPatient] = await query<any>(
-                'SELECT p.patient_id, p.full_name, p.dob, hc.healthie_client_id FROM patients p LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true WHERE p.patient_id = $1',
+                'SELECT p.patient_id, p.full_name, p.dob, p.clinic, hc.healthie_client_id FROM patients p LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true WHERE p.patient_id = $1',
                 [note.patient_id]
             );
             if (localPatient) {
@@ -79,7 +80,7 @@ export async function POST(request: NextRequest) {
         // Try lookup by healthie_client_id if not found by UUID
         if (!patient) {
             const [byHealthie] = await query<any>(
-                'SELECT p.patient_id, p.full_name, p.dob, hc.healthie_client_id FROM patients p JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true WHERE hc.healthie_client_id = $1',
+                'SELECT p.patient_id, p.full_name, p.dob, p.clinic, hc.healthie_client_id FROM patients p JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true WHERE hc.healthie_client_id = $1',
                 [note.patient_id]
             );
             if (byHealthie) {
@@ -276,6 +277,7 @@ export async function POST(request: NextRequest) {
                 plan: note.soap_plan || '',
                 icd10Codes: note.icd10_codes ? (typeof note.icd10_codes === 'string' ? JSON.parse(note.icd10_codes) : note.icd10_codes) : [],
                 cptCodes: note.cpt_codes ? (typeof note.cpt_codes === 'string' ? JSON.parse(note.cpt_codes) : note.cpt_codes) : [],
+                patientClinic: patient.clinic || null,
             });
 
             const base64Content = pdfBuffer.toString('base64');
@@ -307,7 +309,70 @@ export async function POST(request: NextRequest) {
             console.warn('[Scribe:Submit] PDF upload to Healthie failed (non-fatal):', pdfErr instanceof Error ? pdfErr.message : pdfErr);
         }
 
-        // 5.6. Write allergies to Healthie (from SOAP data)
+        // 5.6. Upload supplementary docs (work notes, discharge instructions, etc.) to Healthie
+        const docLabels: Record<string, string> = {
+            work_note: 'Work Excuse Note',
+            school_note: 'School Excuse Note',
+            discharge_instructions: 'Discharge Instructions',
+            care_plan: 'Care Plan',
+        };
+        let docsUploaded = 0;
+        try {
+            const suppDocs = note.supplementary_docs || {};
+            for (const [docType, docEntry] of Object.entries(suppDocs) as [string, any][]) {
+                if (!docEntry?.content || !docEntry?.selected) continue;
+
+                try {
+                    const docPdfBuffer = await generateDocPdf({
+                        patientName: patient.full_name || 'Unknown',
+                        patientDob: patient.dob ? new Date(patient.dob).toLocaleDateString() : null,
+                        visitDate,
+                        provider: 'Phil Schafer, NP',
+                        docType: docType as any,
+                        content: docEntry.content,
+                        patientClinic: patient.clinic || null,
+                    });
+
+                    const docBase64 = docPdfBuffer.toString('base64');
+                    const docDataUrl = `data:application/pdf;base64,${docBase64}`;
+                    const docLabel = docLabels[docType] || docType;
+                    const docFilename = `${docLabel.replace(/\s+/g, '_')}_${(patient.full_name || 'patient').replace(/\s+/g, '_')}_${visitDate.replace(/\s+/g, '_')}.pdf`;
+
+                    const docResult = await healthieGraphQL(`
+                        mutation CreateDocument($input: createDocumentInput!) {
+                            createDocument(input: $input) {
+                                document { id display_name }
+                                messages { field message }
+                            }
+                        }
+                    `, {
+                        input: {
+                            rel_user_id: String(healthiePatientId),
+                            display_name: docFilename,
+                            file_string: docDataUrl,
+                            include_in_charting: true,
+                            share_with_rel: true,
+                            description: `${docLabel} - ${visitDate}`,
+                        }
+                    });
+
+                    const docId = docResult?.createDocument?.document?.id;
+                    if (docId) {
+                        docsUploaded++;
+                        console.log(`[Scribe:Submit] ${docLabel} PDF uploaded to Healthie: ${docId} (shared with patient)`);
+                    }
+                } catch (docUploadErr) {
+                    console.warn(`[Scribe:Submit] ${docType} upload failed (non-fatal):`, docUploadErr instanceof Error ? docUploadErr.message : docUploadErr);
+                }
+            }
+            if (docsUploaded > 0) {
+                console.log(`[Scribe:Submit] Uploaded ${docsUploaded} supplementary doc(s) to Healthie`);
+            }
+        } catch (suppErr) {
+            console.warn('[Scribe:Submit] Supplementary doc upload failed (non-fatal):', suppErr instanceof Error ? suppErr.message : suppErr);
+        }
+
+        // 5.7. Write allergies to Healthie (from SOAP data)
         let allergiesCreated = 0;
         try {
             // Parse allergies from subjective text (look for "Allergies:" or "Allerg" patterns)

@@ -25,11 +25,13 @@ export async function GET(request: NextRequest) {
     try {
         // Fetch session + note + patient data
         const [row] = await query<any>(`
-            SELECT 
+            SELECT
                 ss.session_id, ss.visit_type, ss.created_at as session_date,
                 p.full_name as patient_name, p.dob as patient_dob,
+                p.phone_primary as patient_phone, p.email as patient_email,
+                p.address_line1, p.city, p.state, p.postal_code, p.clinic as patient_clinic,
                 sn.soap_subjective, sn.soap_objective, sn.soap_assessment, sn.soap_plan,
-                sn.icd10_codes, sn.cpt_codes, sn.full_note_text
+                sn.icd10_codes, sn.cpt_codes, sn.full_note_text, sn.evidence_citations
             FROM scribe_sessions ss
             LEFT JOIN patients p ON ss.patient_id::text = p.patient_id::text
             LEFT JOIN scribe_notes sn ON ss.session_id = sn.session_id
@@ -68,6 +70,10 @@ export async function GET(request: NextRequest) {
             ? new Date(row.session_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
             : new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
+        // Build patient address string
+        const addressParts = [row.address_line1, row.city, row.state, row.postal_code].filter(Boolean);
+        const patientAddress = addressParts.length > 0 ? addressParts.join(', ') : null;
+
         const pdfBuffer = await generateSoapPdf({
             patientName: row.patient_name || 'Unknown Patient',
             patientDob: row.patient_dob ? new Date(row.patient_dob).toLocaleDateString() : null,
@@ -81,6 +87,11 @@ export async function GET(request: NextRequest) {
             icd10Codes: icd10,
             cptCodes: cpt,
             fullNoteText: row.full_note_text || '',
+            patientPhone: row.patient_phone || null,
+            patientEmail: row.patient_email || null,
+            patientAddress,
+            patientClinic: row.patient_clinic || null,
+            evidenceCitations: row.evidence_citations ? (typeof row.evidence_citations === 'string' ? JSON.parse(row.evidence_citations) : row.evidence_citations) : [],
         });
 
         return new NextResponse(pdfBuffer, {

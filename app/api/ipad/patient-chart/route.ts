@@ -733,6 +733,7 @@ export async function GET(request: NextRequest) {
                 documents: documents?.documents || [],
                 vitals: mergeVitals(localVitals, entries?.entries || []),
                 scribe_history: scribeHistory || [],
+                removed_diagnoses: patient?.removed_diagnoses || [],
                 avatar_url: hp?.avatar_url || null,
                 // Financial & dispense data
                 last_payments: lastPayments || [],

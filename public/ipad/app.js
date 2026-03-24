@@ -530,6 +530,7 @@ function handleHash() {
 }
 
 function switchTab(tab) {
+    removeFloatingEditBar();
     const validTabs = ['today', 'labs', 'scribe', 'inventory', 'patients', 'ceo', 'schedule'];
     if (!validTabs.includes(tab)) tab = 'today';
     // RBAC: prevent access to tabs user doesn't have permission for
@@ -1090,6 +1091,8 @@ function getLabsPending() {
 }
 
 // ─── TOAST ──────────────────────────────────────────────────
+let _persistentToast = null;
+
 function showToast(message, type = 'info', duration = 3000) {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
@@ -1101,6 +1104,83 @@ function showToast(message, type = 'info', duration = 3000) {
         toast.style.animation = 'toast-out 0.3s ease-out forwards';
         setTimeout(() => toast.remove(), 300);
     }, duration);
+}
+
+/**
+ * Show a persistent toast with a spinner that stays until dismissPersistentToast() is called.
+ * Use for long-running operations like AI generation.
+ */
+function showPersistentToast(message, type = 'info') {
+    dismissPersistentToast(); // remove any existing one
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.id = 'persistentToast';
+    toast.innerHTML = `<div class="loading-spinner" style="width:14px; height:14px; border-width:2px; flex-shrink:0;"></div> <span id="persistentToastMsg">${message}</span> <span id="persistentToastTimer" style="font-size:11px; color:var(--text-tertiary); margin-left:4px;">0s</span>`;
+    container.appendChild(toast);
+    _persistentToast = toast;
+    // Start elapsed timer
+    const startTime = Date.now();
+    toast._timerInterval = setInterval(() => {
+        const el = document.getElementById('persistentToastTimer');
+        if (el) el.textContent = Math.floor((Date.now() - startTime) / 1000) + 's';
+    }, 1000);
+    return toast;
+}
+
+function updatePersistentToast(message) {
+    const msg = document.getElementById('persistentToastMsg');
+    if (msg) msg.innerHTML = message;
+}
+
+/**
+ * Show a detailed, scrollable edit result toast with a dismiss button.
+ * Stays until tapped or auto-dismisses after 15 seconds.
+ */
+function showEditResultToast(title, detailHtml) {
+    const container = document.getElementById('toastContainer');
+    // Remove any existing edit result toast
+    const existing = document.getElementById('editResultToast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'toast success';
+    toast.id = 'editResultToast';
+    toast.style.cssText = 'flex-direction:column; align-items:stretch; max-height:50vh; cursor:pointer; padding:12px 16px;';
+    toast.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <strong style="font-size:14px;">${title}</strong>
+            <span style="font-size:11px; color:var(--text-tertiary);">tap to dismiss</span>
+        </div>
+        <div style="overflow-y:auto; max-height:35vh; -webkit-overflow-scrolling:touch;">
+            ${detailHtml}
+        </div>
+    `;
+    toast.onclick = () => {
+        toast.style.animation = 'toast-out 0.3s ease-out forwards';
+        setTimeout(() => toast.remove(), 300);
+    };
+    container.appendChild(toast);
+
+    // Auto-dismiss after 15 seconds
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.style.animation = 'toast-out 0.3s ease-out forwards';
+            setTimeout(() => toast.remove(), 300);
+        }
+    }, 15000);
+}
+
+function dismissPersistentToast() {
+    if (_persistentToast) {
+        if (_persistentToast._timerInterval) clearInterval(_persistentToast._timerInterval);
+        _persistentToast.style.animation = 'toast-out 0.3s ease-out forwards';
+        setTimeout(() => { try { _persistentToast?.remove(); } catch(e){} }, 300);
+        _persistentToast = null;
+    }
+    // Also remove by ID in case reference was lost
+    const el = document.getElementById('persistentToast');
+    if (el) { el.style.animation = 'toast-out 0.3s ease-out forwards'; setTimeout(() => el?.remove(), 300); }
 }
 
 // ─── LOADING STATE ──────────────────────────────────────────
@@ -1829,6 +1909,9 @@ function renderScribeView(container) {
         });
         return;
     }
+
+    // Remove floating AI edit bar when not in review mode
+    if (scribeView !== 'review') removeFloatingEditBar();
 
     switch (scribeView) {
         case 'list': renderScribeList(container); break;
@@ -2961,7 +3044,7 @@ function renderScribeNote(container) {
 
 async function generateSOAPNote(regen = false) {
     if (!activeScribeSession) return;
-    showToast(regen ? 'Regenerating SOAP note with AI…' : 'Generating SOAP note with AI… this may take 30-60 seconds', 'info');
+    showPersistentToast(regen ? 'Regenerating SOAP note with AI…' : 'Generating SOAP note with AI… (30-60 sec)');
 
     try {
         // Fetch current medications from DoseSpot/prescriptions for SOAP context
@@ -3011,7 +3094,8 @@ async function generateSOAPNote(regen = false) {
                 noteData.soap_plan = noteData.soap.plan || '';
             }
             currentNote = noteData;
-            showToast('SOAP note generated!', 'success');
+            dismissPersistentToast();
+            showToast('SOAP note generated! ✅', 'success');
             await loadScribeSessions();
             activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
             scribeView = 'review';
@@ -3020,18 +3104,57 @@ async function generateSOAPNote(regen = false) {
         } else {
             const errMsg = result?.error || 'Note generation failed';
             console.error('[Scribe] Generate note error:', resp.status, errMsg);
-            // If note already exists (409), offer to view it
+            // If note already exists (409), auto-regenerate instead of showing confusing message
             if (resp.status === 409) {
-                showToast('Note already exists for this session — opening review', 'info');
-                await loadScribeSessions();
-                activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
-                scribeView = 'review';
-                renderCurrentTab();
+                if (!regen) {
+                    // User tapped Generate but note exists — auto-regenerate
+                    updatePersistentToast('Note exists — regenerating with AI…');
+                    const retryResp = await fetch('/ops/api/scribe/generate-note/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            session_id: activeScribeSession.session_id,
+                            patient_id: healthieId,
+                            visit_type: scribeVisitType || activeScribeSession.visit_type,
+                            patient_name: scribePatientName || activeScribeSession.patient_name || '',
+                            regenerate: true,
+                            current_medications: currentMedications,
+                        }),
+                        credentials: 'include',
+                    });
+                    const retryResult = await retryResp.json();
+                    if (retryResult?.success) {
+                        const noteData = retryResult.data || {};
+                        if (noteData.soap) {
+                            noteData.soap_subjective = noteData.soap.subjective || '';
+                            noteData.soap_objective = noteData.soap.objective || '';
+                            noteData.soap_assessment = noteData.soap.assessment || '';
+                            noteData.soap_plan = noteData.soap.plan || '';
+                        }
+                        currentNote = noteData;
+                        dismissPersistentToast();
+                        showToast('SOAP note regenerated! ✅', 'success');
+                        await loadScribeSessions();
+                        activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession.session_id) || activeScribeSession;
+                        scribeView = 'review';
+                        renderCurrentTab();
+                        updateBadges();
+                    } else {
+                        dismissPersistentToast();
+                        showToast(retryResult?.error || 'Regeneration failed', 'error');
+                    }
+                } else {
+                    dismissPersistentToast();
+                    showToast('Could not regenerate — please try again', 'error');
+                }
+                return;
             } else {
+                dismissPersistentToast();
                 showToast(errMsg, 'error');
             }
         }
     } catch (e) {
+        dismissPersistentToast();
         console.error('[Scribe] Generate note exception:', e);
         showToast('Note generation failed: ' + (e.message || 'network error'), 'error');
     }
@@ -3073,6 +3196,23 @@ function renderScribeReview(container) {
             </div>
         ` : ''}
 
+        ${(noteData?.evidence_citations?.length > 0) ? `
+            <div style="margin-top:12px; padding:12px; background:rgba(0,180,216,0.05); border:1px solid rgba(0,180,216,0.15); border-radius:10px;">
+                <h3 style="font-size:13px; color:var(--cyan); margin:0 0 8px;">📚 Evidence-Based References</h3>
+                <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:6px; font-style:italic;">Clinical guidelines supporting the assessment and plan:</div>
+                ${(() => {
+                    const citations = noteData.evidence_citations;
+                    const byDx = {};
+                    citations.forEach(c => { if (!byDx[c.diagnosis]) byDx[c.diagnosis] = []; byDx[c.diagnosis].push(c); });
+                    return Object.entries(byDx).map(([dx, cites]) =>
+                        '<div style="margin:6px 0;"><strong style="font-size:11px; color:var(--text-secondary);">' + dx + ':</strong>' +
+                        cites.map(c => '<div style="font-size:11px; color:var(--text-tertiary); padding:2px 0 2px 8px;">' + c.number + '. ' + (c.title || '') + ' <em>' + (c.journal || '') + '</em> ' + (c.year || '') + '. <a href="' + (c.url || '') + '" target="_blank" style="color:var(--cyan);">PMID:' + c.pmid + '</a></div>').join('') +
+                        '</div>'
+                    ).join('');
+                })()}
+            </div>
+        ` : ''}
+
         ${noteData?.cpt_codes?.length > 0 ? `
             <div class="soap-codes-section">
                 <h3>CPT Codes</h3>
@@ -3082,14 +3222,8 @@ function renderScribeReview(container) {
             </div>
         ` : ''}
 
-        <!-- AI Edit Bar -->
-        <div class="scribe-ai-edit" style="margin-top:16px; padding:12px; background:var(--surface-2); border-radius:12px; border:1px solid var(--border);">
-            <div style="display:flex; gap:8px;">
-                <input type="text" id="aiEditInput" placeholder="Tell AI what to change (e.g. 'add allergy to penicillin')…"
-                       style="flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-1); color:var(--text-primary); font-size:14px;" />
-                <button class="btn-primary" onclick="aiEditNote()" style="white-space:nowrap;">✨ AI Edit</button>
-            </div>
-        </div>
+        <!-- Spacer for floating AI edit bar -->
+        <div style="height:100px;"></div>
 
         <!-- Supplementary Docs -->
         <div style="margin-top:16px;">
@@ -3104,7 +3238,7 @@ function renderScribeReview(container) {
         </div>
 
         ${!isSubmitted ? `
-            <div class="scribe-review-actions" style="margin-top:16px;">
+            <div class="scribe-review-actions" style="margin-top:16px; padding-bottom:80px;">
                 <button class="btn-primary scribe-submit-btn" onclick="submitNoteToHealthie()">
                     📤 Submit to Healthie
                 </button>
@@ -3137,6 +3271,128 @@ function renderScribeReview(container) {
             ` : ''}
         `}
     `;
+
+    // Add floating AI edit bar (only for draft notes)
+    if (!isSubmitted) {
+        // Remove any existing floating bar
+        const existing = document.getElementById('floatingAiEdit');
+        if (existing) existing.remove();
+
+        const bar = document.createElement('div');
+        bar.id = 'floatingAiEdit';
+        bar.style.cssText = 'position:fixed; bottom:90px; left:12px; right:12px; z-index:150; padding:10px 14px; background:rgba(30,30,45,0.95); backdrop-filter:blur(12px); border-radius:14px; border:1px solid rgba(0,180,216,0.3); box-shadow:0 -4px 20px rgba(0,0,0,0.4); display:flex; gap:8px; align-items:flex-end;';
+        bar.innerHTML = `
+            <button id="aiEditMicBtn" onclick="toggleEditDictation()" style="padding:8px; background:none; border:1px solid var(--border); border-radius:8px; cursor:pointer; font-size:18px; min-width:40px; min-height:40px; display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--text-secondary); align-self:flex-end;" title="Dictate edit">🎤</button>
+            <textarea id="aiEditInput" placeholder="Dictate or type your edit…" rows="1"
+                   style="flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-1); color:var(--text-primary); font-size:14px; resize:none; max-height:120px; overflow-y:auto; line-height:1.4; font-family:inherit;"
+                   oninput="this.style.height='auto'; this.style.height=Math.min(this.scrollHeight,120)+'px';"
+                   onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();aiEditNote();}"></textarea>
+            <button onclick="aiEditNote()" style="padding:10px 16px; background:linear-gradient(135deg, var(--cyan), #0077b6); color:white; border:none; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap; align-self:flex-end;">✨ Edit</button>
+        `;
+        document.body.appendChild(bar);
+    }
+}
+
+// ==================== SPEECH-TO-TEXT FOR AI EDIT ====================
+let _editRecognition = null;
+let _editIsListening = false;
+
+function toggleEditDictation() {
+    if (_editIsListening) {
+        stopEditDictation();
+        return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        showToast('Speech recognition not supported on this browser', 'error');
+        return;
+    }
+
+    const input = document.getElementById('aiEditInput');
+    const btn = document.getElementById('aiEditMicBtn');
+    if (!input || !btn) return;
+
+    _editRecognition = new SpeechRecognition();
+    _editRecognition.continuous = true;
+    _editRecognition.interimResults = true;
+    _editRecognition.lang = 'en-US';
+
+    let finalTranscript = input.value || '';
+    let interimTranscript = '';
+
+    _editRecognition.onstart = () => {
+        _editIsListening = true;
+        btn.style.background = 'rgba(239,68,68,0.2)';
+        btn.style.borderColor = '#ef4444';
+        btn.style.color = '#ef4444';
+        btn.innerHTML = '⏹️';
+        input.placeholder = 'Listening… speak your edit instruction';
+    };
+
+    _editRecognition.onresult = (event) => {
+        interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+                finalTranscript += (finalTranscript ? ' ' : '') + transcript.trim();
+            } else {
+                interimTranscript += transcript;
+            }
+        }
+        input.value = finalTranscript + (interimTranscript ? ' ' + interimTranscript : '');
+        // Auto-expand textarea
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    };
+
+    _editRecognition.onerror = (event) => {
+        console.warn('[Speech] Error:', event.error);
+        if (event.error !== 'no-speech' && event.error !== 'aborted') {
+            showToast('Mic error: ' + event.error, 'error');
+        }
+        stopEditDictation();
+    };
+
+    _editRecognition.onend = () => {
+        // Auto-restart if still supposed to be listening (Safari stops after silence)
+        if (_editIsListening) {
+            try { _editRecognition.start(); } catch (e) { stopEditDictation(); }
+        }
+    };
+
+    try {
+        _editRecognition.start();
+    } catch (e) {
+        showToast('Could not start microphone', 'error');
+    }
+}
+
+function stopEditDictation() {
+    _editIsListening = false;
+    if (_editRecognition) {
+        try { _editRecognition.stop(); } catch (e) {}
+        _editRecognition = null;
+    }
+    const btn = document.getElementById('aiEditMicBtn');
+    const input = document.getElementById('aiEditInput');
+    if (btn) {
+        btn.style.background = 'none';
+        btn.style.borderColor = 'var(--border)';
+        btn.style.color = 'var(--text-secondary)';
+        btn.innerHTML = '🎤';
+    }
+    if (input) {
+        input.placeholder = 'Dictate or type your edit…';
+    }
+}
+
+// Clean up floating edit bar when leaving scribe review
+const _origRenderCurrentTab = typeof renderCurrentTab === 'function' ? null : null;
+function removeFloatingEditBar() {
+    stopEditDictation();
+    const bar = document.getElementById('floatingAiEdit');
+    if (bar) bar.remove();
 }
 
 function renderSOAPSection(letter, title, content) {
@@ -3237,36 +3493,70 @@ async function aiEditNote() {
     const noteId = activeScribeSession?.note_id || currentNote?.note_id;
     if (!noteId) { showToast('No note to edit', 'error'); return; }
 
-    showToast('Applying AI edit…', 'info');
+    stopEditDictation();
+    showPersistentToast('Applying AI edit…');
     try {
         const result = await apiFetch(`/ops/api/scribe/notes/${noteId}/edit-ai/`, {
             method: 'POST',
-            body: JSON.stringify({ edit_instruction: instruction })
+            body: JSON.stringify({ edit_instruction: instruction }),
+            _timeout: 45000,
         });
+        dismissPersistentToast();
         if (result?.success) {
             const n = result.data.updated_note;
-            if (currentNote) {
-                currentNote.soap_subjective = n.soap_subjective;
-                currentNote.soap_objective = n.soap_objective;
-                currentNote.soap_assessment = n.soap_assessment;
-                currentNote.soap_plan = n.soap_plan;
+            // Update all note references with fresh data from DB
+            if (n) {
+                if (currentNote) {
+                    currentNote.soap_subjective = n.soap_subjective;
+                    currentNote.soap_objective = n.soap_objective;
+                    currentNote.soap_assessment = n.soap_assessment;
+                    currentNote.soap_plan = n.soap_plan;
+                    currentNote.icd10_codes = n.icd10_codes;
+                    currentNote.full_note_text = n.full_note_text;
+                    currentNote.supplementary_docs = n.supplementary_docs;
+                }
+                // Also update activeScribeSession note data so re-render picks it up
+                if (activeScribeSession) {
+                    activeScribeSession.soap_subjective = n.soap_subjective;
+                    activeScribeSession.soap_objective = n.soap_objective;
+                    activeScribeSession.soap_assessment = n.soap_assessment;
+                    activeScribeSession.soap_plan = n.soap_plan;
+                    activeScribeSession.icd10_codes = n.icd10_codes;
+                    if (activeScribeSession.note) {
+                        activeScribeSession.note.soap_subjective = n.soap_subjective;
+                        activeScribeSession.note.soap_objective = n.soap_objective;
+                        activeScribeSession.note.soap_assessment = n.soap_assessment;
+                        activeScribeSession.note.soap_plan = n.soap_plan;
+                    }
+                }
             }
             input.value = '';
-            showToast('AI edit applied!', 'success');
-            try {
-                await loadScribeSessions();
-                activeScribeSession = scribeSessions.find(s => s.session_id === activeScribeSession?.session_id) || activeScribeSession;
-                renderCurrentTab();
-            } catch (renderErr) {
-                console.error('[Scribe:AI-Edit] Edit succeeded but re-render failed:', renderErr?.message, renderErr?.stack);
-                // Edit was saved — don't show "failed" toast, just warn
-                showToast('Edit saved — tap note to refresh view', 'info');
+
+            // Show what changed in a detailed, scrollable toast
+            const changes = result.data?.changes_summary || [];
+            if (changes.length > 0) {
+                const changeList = changes.map(c => {
+                    const lines = c.description.split('\n').map(line => {
+                        if (line.startsWith('❌')) return '<div style="color:#f87171; padding:2px 0;">' + line + '</div>';
+                        if (line.startsWith('✅')) return '<div style="color:#34d399; padding:2px 0;">' + line + '</div>';
+                        return '<div>' + line + '</div>';
+                    }).join('');
+                    return '<div style="margin:6px 0; padding:8px 10px; background:rgba(255,255,255,0.05); border-radius:8px; border-left:3px solid var(--cyan);"><strong style="font-size:13px;">' + c.section + '</strong>' + lines + '</div>';
+                }).join('');
+                showEditResultToast('AI Edit Applied ✅', changeList);
+            } else {
+                showToast('AI returned no changes — try being more specific', 'info', 5000);
             }
+
+            // Re-render immediately with updated data
+            renderCurrentTab();
         } else {
             console.error('[Scribe:AI-Edit] Server returned failure:', result?.error, JSON.stringify(result));
+            dismissPersistentToast();
             showToast(result?.error || 'AI edit failed', 'error');
         }
     } catch (e) {
+        dismissPersistentToast();
         if (e.message === 'AUTH_EXPIRED') throw e;
         console.error('[Scribe:AI-Edit] Request failed:', e?.message, e?.stack);
         showToast('AI edit failed: ' + (e?.message || 'unknown error'), 'error');
@@ -3327,7 +3617,7 @@ async function generateScribeDoc(docType) {
         }
     }
 
-    showToast(`Generating ${labels[docType] || docType}…`, 'info');
+    showToast(`Generating ${labels[docType] || docType}…`, 'info', 8000);
 
     try {
         const body = {
@@ -3344,10 +3634,26 @@ async function generateScribeDoc(docType) {
             showToast(`${labels[docType]} generated!`, 'success');
             const output = document.getElementById('scribeDocsOutput');
             if (output) {
+                const noteId = result.data?.note_id || currentNote?.note_id || activeScribeSession?.note_id;
                 output.innerHTML += `
-                    <div style="background:var(--surface-1); border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:8px;">
-                        <h4 style="margin:0 0 8px; font-size:13px; color:var(--cyan);">${labels[docType] || docType}</h4>
-                        <div style="font-size:13px; color:var(--text-secondary); white-space:pre-wrap; line-height:1.5;">${formatSOAPContent(result.data?.content || '')}</div>
+                    <div id="scribeDoc_${docType}" style="background:var(--surface-1); border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:8px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                            <h4 style="margin:0; font-size:13px; color:var(--cyan);">${labels[docType] || docType}</h4>
+                            <div style="display:flex; gap:6px;">
+                                <button onclick="previewDocPdf('${noteId}', '${docType}')" style="padding:6px 12px; background:linear-gradient(135deg, #6366f1, #4f46e5); color:white; border:none; border-radius:6px; font-size:11px; font-weight:600; cursor:pointer;">
+                                    📄 Preview PDF
+                                </button>
+                                <button onclick="uploadDocToHealthie('${noteId}', '${docType}')" style="padding:6px 12px; background:linear-gradient(135deg, #10b981, #059669); color:white; border:none; border-radius:6px; font-size:11px; font-weight:600; cursor:pointer;">
+                                    📤 Upload to Healthie
+                                </button>
+                            </div>
+                        </div>
+                        <div id="scribeDocContent_${docType}" style="font-size:13px; color:var(--text-secondary); white-space:pre-wrap; line-height:1.5;">${formatSOAPContent(result.data?.content || '')}</div>
+                        <div style="display:flex; gap:8px; margin-top:8px;">
+                            <input type="text" id="docEditInput_${docType}" placeholder="Tell AI what to change…"
+                                   style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text-primary); font-size:13px;" />
+                            <button onclick="aiEditDoc('${noteId}', '${docType}')" style="padding:8px 12px; background:var(--cyan); color:white; border:none; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">✨ Edit</button>
+                        </div>
                     </div>
                 `;
             }
@@ -3357,6 +3663,89 @@ async function generateScribeDoc(docType) {
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         showToast('Doc generation failed', 'error');
+    }
+}
+
+// ==================== PREVIEW SUPPLEMENTARY DOC PDF ====================
+function previewDocPdf(noteId, docType) {
+    if (!noteId) { showToast('No note found', 'error'); return; }
+    window.open(`/ops/api/scribe/doc-pdf/?note_id=${noteId}&doc_type=${docType}`, '_blank');
+}
+
+// ==================== AI EDIT SUPPLEMENTARY DOC ====================
+async function aiEditDoc(noteId, docType) {
+    const input = document.getElementById('docEditInput_' + docType);
+    const instruction = input?.value?.trim();
+    if (!instruction) { showToast('Enter an edit instruction', 'error'); return; }
+    if (!noteId) { showToast('No note found', 'error'); return; }
+
+    const labels = {
+        work_note: 'Work Note', school_note: 'School Note',
+        discharge_instructions: 'Discharge Instructions', care_plan: 'Care Plan'
+    };
+
+    showToast('Applying AI edit to ' + (labels[docType] || docType) + '…', 'info');
+    try {
+        const result = await apiFetch('/ops/api/scribe/notes/' + noteId + '/edit-ai/', {
+            method: 'POST',
+            body: JSON.stringify({ edit_instruction: instruction, doc_type: docType })
+        });
+        if (result?.success) {
+            input.value = '';
+            showToast('AI edit applied!', 'success');
+            // Update the displayed content
+            const contentDiv = document.getElementById('scribeDocContent_' + docType);
+            if (contentDiv && result.data?.updated_content) {
+                contentDiv.innerHTML = formatSOAPContent(result.data.updated_content);
+            }
+        } else {
+            showToast(result?.error || 'AI edit failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('AI edit failed: ' + (e?.message || 'unknown error'), 'error');
+    }
+}
+
+// ==================== UPLOAD SUPPLEMENTARY DOC TO HEALTHIE ====================
+async function uploadDocToHealthie(noteId, docType) {
+    if (!noteId) { showToast('No note found', 'error'); return; }
+
+    const labels = {
+        work_note: 'Work Note', school_note: 'School Note',
+        discharge_instructions: 'Discharge Instructions', care_plan: 'Care Plan'
+    };
+    const label = labels[docType] || docType;
+
+    if (!confirm('Upload ' + label + ' to Healthie?\n\nThis will create a PDF visible to the patient in their Healthie portal.')) {
+        return;
+    }
+
+    showToast('Uploading ' + label + ' to Healthie…', 'info');
+    try {
+        const result = await apiFetch('/ops/api/scribe/upload-doc/', {
+            method: 'POST',
+            body: JSON.stringify({ note_id: noteId, doc_type: docType })
+        });
+        if (result?.success) {
+            showToast(label + ' uploaded to Healthie! ✅ (Shared with patient)', 'success');
+            // Update button to show uploaded state
+            const docDiv = document.getElementById('scribeDoc_' + docType);
+            if (docDiv) {
+                const btn = docDiv.querySelector('button[onclick*="uploadDocToHealthie"]');
+                if (btn) {
+                    btn.innerHTML = '✅ Uploaded';
+                    btn.style.background = 'var(--surface-2)';
+                    btn.style.color = 'var(--text-secondary)';
+                    btn.disabled = true;
+                }
+            }
+        } else {
+            showToast(result?.error || 'Upload failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Upload failed: ' + (e?.message || 'unknown error'), 'error');
     }
 }
 
@@ -4013,6 +4402,8 @@ function renderChartPanel(content) {
     };
 
     // Extract working diagnoses (ICD-10 codes) from scribe history and SOAP notes
+    // Filter out any diagnoses the provider has explicitly removed
+    const removedDxCodes = new Set((d.removed_diagnoses || []).map(c => typeof c === 'string' ? c : c));
     const workingDiagnoses = [];
     const seenICD = new Set();
 
@@ -4038,7 +4429,7 @@ function renderChartPanel(content) {
             codes.forEach(codeObj => {
                 const codeStr = typeof codeObj === 'string' ? codeObj : (codeObj.code || String(codeObj));
                 const cleanCode = codeStr.trim();
-                if (cleanCode && !seenICD.has(cleanCode)) {
+                if (cleanCode && !seenICD.has(cleanCode) && !removedDxCodes.has(cleanCode)) {
                     seenICD.add(cleanCode);
                     // Priority: 1) codeObj.description, 2) lookup table, 3) extract from SOAP, 4) code itself
                     const desc = (codeObj.description && codeObj.description !== '') ? codeObj.description
@@ -4239,11 +4630,11 @@ function renderChartPanel(content) {
             </div>
             ${workingDiagnoses.length > 0 ? `
             <div style="display:flex; flex-wrap:wrap; gap:4px;">
-                ${workingDiagnoses.slice(0, 3).map(dx => `<span style="font-size:11px; padding:3px 6px 3px 8px; border-radius:6px; background:rgba(168,85,247,0.15); color:#a855f7; border:1px solid rgba(168,85,247,0.2); line-height:1.4; display:inline-flex; align-items:center; gap:6px;"><span><span style="font-family:monospace; font-weight:600;">${dx.code}</span> — ${dx.description}</span><!-- <button onclick="removeDiagnosis('${dx.code}', '${dx.description.replace(/'/g, "\\'")}')" style="background:none; border:none; color:#a855f7; cursor:pointer; padding:0; font-size:14px; line-height:1; opacity:0.6; transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'" title="Remove">✕</button> --></span>`).join('')}
+                ${workingDiagnoses.slice(0, 3).map(dx => `<span style="font-size:11px; padding:3px 6px 3px 8px; border-radius:6px; background:rgba(168,85,247,0.15); color:#a855f7; border:1px solid rgba(168,85,247,0.2); line-height:1.4; display:inline-flex; align-items:center; gap:6px;"><span><span style="font-family:monospace; font-weight:600;">${dx.code}</span> — ${dx.description}</span>${(currentUser?.role === 'admin' || currentUser?.is_provider) ? `<button onclick="removeDiagnosis('${dx.code}', '${dx.description.replace(/'/g, "\\'")}')" style="background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:#ef4444; cursor:pointer; padding:4px 7px; font-size:11px; line-height:1; border-radius:4px; margin-left:2px; min-width:24px; min-height:24px; display:inline-flex; align-items:center; justify-content:center;" title="Remove diagnosis">✕</button>` : ''}</span>`).join('')}
             </div>
             ${workingDiagnoses.length > 3 ? `
             <div id="diagnoses-expanded" class="hidden" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; padding-top:4px; border-top:1px solid rgba(168,85,247,0.1);">
-                ${workingDiagnoses.slice(3).map(dx => `<span style="font-size:11px; padding:3px 6px 3px 8px; border-radius:6px; background:rgba(168,85,247,0.15); color:#a855f7; border:1px solid rgba(168,85,247,0.2); line-height:1.4; display:inline-flex; align-items:center; gap:6px;"><span><span style="font-family:monospace; font-weight:600;">${dx.code}</span> — ${dx.description}</span><!-- <button onclick="removeDiagnosis('${dx.code}', '${dx.description.replace(/'/g, "\\'")}')" style="background:none; border:none; color:#a855f7; cursor:pointer; padding:0; font-size:14px; line-height:1; opacity:0.6; transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'" title="Remove">✕</button> --></span>`).join('')}
+                ${workingDiagnoses.slice(3).map(dx => `<span style="font-size:11px; padding:3px 6px 3px 8px; border-radius:6px; background:rgba(168,85,247,0.15); color:#a855f7; border:1px solid rgba(168,85,247,0.2); line-height:1.4; display:inline-flex; align-items:center; gap:6px;"><span><span style="font-family:monospace; font-weight:600;">${dx.code}</span> — ${dx.description}</span>${(currentUser?.role === 'admin' || currentUser?.is_provider) ? `<button onclick="removeDiagnosis('${dx.code}', '${dx.description.replace(/'/g, "\\'")}')" style="background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:#ef4444; cursor:pointer; padding:4px 7px; font-size:11px; line-height:1; border-radius:4px; margin-left:2px; min-width:24px; min-height:24px; display:inline-flex; align-items:center; justify-content:center;" title="Remove diagnosis">✕</button>` : ''}</span>`).join('')}
             </div>` : ''}` : '<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No working diagnoses</div>'}
         </div>
 
@@ -4332,17 +4723,62 @@ function renderNotesTab(container, d) {
     const patientName = (d.demographics?.full_name || 'Patient').replace(/'/g, "\\'");
     const healthieId = d.healthie_id || '';
 
+    // Check if a recording is already in progress (user navigated away and back)
+    const isCurrentlyRecording = window._inlineRecording;
+    const btnLabel = isCurrentlyRecording ? '⏹️ Stop Recording' : '🎤 Record Visit';
+    const btnBg = isCurrentlyRecording
+        ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+        : 'linear-gradient(135deg, #ef4444, #dc2626)';
+    const btnAction = isCurrentlyRecording
+        ? 'stopInlineRecording()'
+        : `startInlineRecording('${patientId}', '${patientName}', '${healthieId}')`;
+    const btnShadow = isCurrentlyRecording
+        ? '0 2px 8px rgba(245,158,11,0.3)'
+        : '0 2px 8px rgba(239,68,68,0.3)';
+
     container.innerHTML = `
         <div style="padding:8px 12px;">
             <!-- Inline Record Action -->
             <div style="margin-bottom:12px;">
-                <button id="chartRecordBtn" onclick="startInlineRecording('${patientId}', '${patientName}', '${healthieId}')" style="width:100%; padding:14px; background:linear-gradient(135deg, #ef4444, #dc2626); color:white; border:none; border-radius:10px; font-size:15px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 2px 8px rgba(239,68,68,0.3);">
-                    🎤 Record Visit
+                <button id="chartRecordBtn" onclick="${btnAction}" style="width:100%; padding:14px; background:${btnBg}; color:white; border:none; border-radius:10px; font-size:15px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:${btnShadow};">
+                    ${btnLabel}
                 </button>
             </div>
             <div id="inlineRecordingArea"></div>
         </div>
     `;
+
+    // Restore recording UI if recording is active
+    if (isCurrentlyRecording && inlineRecordingStart) {
+        const area = document.getElementById('inlineRecordingArea');
+        if (area) {
+            const elapsed = Math.floor((Date.now() - inlineRecordingStart) / 1000);
+            const min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+            const sec = String(elapsed % 60).padStart(2, '0');
+            area.innerHTML = `
+                <div style="padding:12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+                        <div style="width:10px; height:10px; border-radius:50%; background:#ef4444; animation:pulse 1.5s infinite;"></div>
+                        <span style="color:#f87171; font-weight:600; font-size:14px;">Recording</span>
+                        <span id="inlineRecTimer" style="color:var(--text-tertiary); font-size:13px; font-family:monospace; margin-left:auto;">${min}:${sec}</span>
+                    </div>
+                    <div style="font-size:11px; color:var(--text-tertiary);">Speak naturally. Press Stop when done.</div>
+                </div>
+            `;
+            // Restart the timer interval if it was lost during re-render
+            if (!inlineRecordingTimer) {
+                inlineRecordingTimer = setInterval(() => {
+                    const el = document.getElementById('inlineRecTimer');
+                    if (el) {
+                        const elapsed = Math.floor((Date.now() - inlineRecordingStart) / 1000);
+                        const min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+                        const sec = String(elapsed % 60).padStart(2, '0');
+                        el.textContent = `${min}:${sec}`;
+                    }
+                }, 1000);
+            }
+        }
+    }
 
     // Render the charting content below the action buttons
     const chartingContainer = document.createElement('div');
@@ -9886,21 +10322,25 @@ function selectICD10(code, description) {
 }
 
 async function removeDiagnosis(code, description) {
-    if (!currentPatientId || !currentPatientHealthieId) {
-        alert('No patient selected');
+    // Use chart panel context — these are always set when a chart is open
+    const healthieId = chartPanelData?.healthie_id || chartPanelPatientId;
+    if (!healthieId) {
+        showToast('No patient selected', 'error');
         return;
     }
 
     const diagnosisText = description ? `${code} — ${description}` : code;
-    if (!confirm(`Are you sure you want to remove ${diagnosisText}?`)) return;
+    if (!confirm(`Are you sure you want to remove this working diagnosis?\n\n${diagnosisText}\n\nThis will also be documented in Healthie.`)) return;
 
+    showToast('Removing diagnosis…', 'info');
     try {
         const resp = await fetch('/ops/api/ipad/patient-data/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({
                 action: 'remove_diagnosis',
-                healthie_id: currentPatientHealthieId,
+                healthie_id: healthieId,
                 code: code,
                 description: description
             })
@@ -9909,13 +10349,16 @@ async function removeDiagnosis(code, description) {
         const data = await resp.json();
         if (data.success) {
             showToast('Diagnosis removed ✅', 'success');
-            await loadChartData(chartPanelPatientId);
+            // Reload chart to refresh diagnoses
+            if (chartPanelPatientId) {
+                await loadChartData(chartPanelPatientId);
+            }
         } else {
             showToast('Failed to remove: ' + (data.error || 'Unknown error'), 'error');
         }
     } catch (error) {
         console.error('[Remove Diagnosis] Error:', error);
-        alert('Failed to remove diagnosis');
+        showToast('Failed to remove diagnosis', 'error');
     }
 }
 

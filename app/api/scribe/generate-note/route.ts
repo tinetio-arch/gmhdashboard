@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
+import { enrichWithEvidence } from '@/lib/evidence-enrichment';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120; // Claude generation can take time
 
-// Use Claude 3.5 Sonnet v2 via AWS Bedrock (us-east-2)
+// Use Claude Sonnet 4.5 via AWS Bedrock (us-east-2)
+// FIX(2026-03-23): Upgraded from Claude 3.5 Sonnet v2 which was marked LEGACY by Bedrock
 const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
-const CLAUDE_MODEL_ID = 'us.anthropic.claude-3-5-sonnet-20241022-v2:0';
+const CLAUDE_MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
 
-console.log('[Scribe:GenerateNote] AI client initialized with Claude 3.5 Sonnet v2 (Bedrock)');
+console.log('[Scribe:GenerateNote] AI client initialized with Claude Sonnet 4.5 (Bedrock)');
 
 // ==================== MEDICATION CLASSIFICATION ====================
 // FDA-approved medications that don't need disclaimer
@@ -577,7 +579,33 @@ export async function POST(request: NextRequest) {
             };
         };
 
-        const sections = parseSoapSections(aiText);
+        const rawSections = parseSoapSections(aiText);
+
+        // ==================== EVIDENCE ENRICHMENT ====================
+        // Query PubMed for clinical guidelines matching each diagnosis
+        // Appends citations to the Plan section (non-blocking — fails gracefully)
+        // Compute patient age for demographic-specific evidence search
+        let patientAge: number | null = null;
+        if (patientDob) {
+            const dob = new Date(patientDob);
+            if (!isNaN(dob.getTime())) {
+                patientAge = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+            }
+        }
+
+        // Infer gender from SOAP text if not in DB (e.g., "40-year-old male")
+        let patientGender = patient?.gender || null;
+        if (!patientGender) {
+            const subjectiveText = (rawSections.subjective || '').toLowerCase();
+            if (/\bmale\b|\bman\b|\bhe\b|\bhis\b|\bgentleman\b/.test(subjectiveText)) patientGender = 'Male';
+            else if (/\bfemale\b|\bwoman\b|\bshe\b|\bher\b|\blady\b/.test(subjectiveText)) patientGender = 'Female';
+        }
+
+        const enriched = await enrichWithEvidence(rawSections, {
+            age: patientAge,
+            gender: patientGender,
+        });
+        const sections = enriched;
 
         // Extract ICD-10 codes from assessment section
         const icd10Regex = /\(([A-Z]\d{2}(?:\.\d{1,4})?)\)/g;
@@ -594,14 +622,14 @@ export async function POST(request: NextRequest) {
         const cptCodes: any[] = [];
         const fullNote = aiText;
 
-        // 6. Store in scribe_notes
+        // 6. Store in scribe_notes (citations stored separately so AI edits don't remove them)
         const [note] = await query<any>(`
       INSERT INTO scribe_notes
         (session_id, patient_id, visit_type,
          soap_subjective, soap_objective, soap_assessment, soap_plan,
          icd10_codes, cpt_codes, full_note_text,
-         ai_model, ai_prompt_version)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ai_model, ai_prompt_version, evidence_citations)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       RETURNING *
     `, [
             session_id,
@@ -616,6 +644,7 @@ export async function POST(request: NextRequest) {
             fullNote,
             CLAUDE_MODEL_ID,
             'v2-claude',
+            JSON.stringify(enriched.citations || []),
         ]);
 
         // 7. Update session status
