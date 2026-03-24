@@ -6,9 +6,9 @@ import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedroc
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-// Use Claude 3 Haiku for AI editing (fast and accurate)
+// Use Claude 3.5 Haiku for AI editing (fast and accurate)
 const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
-const CLAUDE_MODEL_ID = 'us.anthropic.claude-3-haiku-20240307-v1:0';
+const CLAUDE_MODEL_ID = 'us.anthropic.claude-3-5-haiku-20241022-v1:0';
 
 // POST: AI-powered note editing
 // Matches Telegram bot's "Edit via AI" mode (L2067-2168)

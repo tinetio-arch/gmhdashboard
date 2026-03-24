@@ -6,11 +6,11 @@ import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedroc
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120; // Claude generation can take time
 
-// Use Claude 3 Haiku via AWS Bedrock (us-east-2)
+// Use Claude 3.5 Sonnet v2 via AWS Bedrock (us-east-2)
 const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
-const CLAUDE_MODEL_ID = 'us.anthropic.claude-3-haiku-20240307-v1:0';
+const CLAUDE_MODEL_ID = 'us.anthropic.claude-3-5-sonnet-20241022-v2:0';
 
-console.log('[Scribe:GenerateNote] AI client initialized with Claude 3 Haiku (Bedrock)');
+console.log('[Scribe:GenerateNote] AI client initialized with Claude 3.5 Sonnet v2 (Bedrock)');
 
 // ==================== MEDICATION CLASSIFICATION ====================
 // FDA-approved medications that don't need disclaimer
