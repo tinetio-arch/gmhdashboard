@@ -385,6 +385,38 @@ pm2 save
 
 ## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 23, 2026)
 
+### March 24, 2026: 🚀 ABXTac WordPress/WooCommerce E-commerce Platform Deployed
+
+**New System**: ABXTac Research Peptides e-commerce site fully deployed on EC2 instance.
+
+**Stack Installed**:
+- **PHP 8.2 + MariaDB 10.5**: New LAMP stack components
+- **WordPress 6.9.4**: Content management system
+- **WooCommerce 10.6.1**: E-commerce platform
+- **ShipStation Integration**: Order fulfillment plugin
+- **WP Offload Media**: S3 media storage to `abxtac-media` bucket
+- **Storefront Theme**: Clean WooCommerce-optimized theme
+
+**Configuration**:
+- **Domain**: https://abxtac.com (SSL via Let's Encrypt)
+- **Files**: `/var/www/abxtac/`
+- **Database**: `abxtac_wp` (MariaDB)
+- **Nginx Config**: `/etc/nginx/conf.d/abxtac.conf`
+- **PHP-FPM**: Running via systemd (not PM2)
+- **S3 Bucket**: `abxtac-media` for product images
+- **Admin Access**: https://abxtac.com/wp-admin (credentials in secure storage)
+
+**Services Status**:
+```bash
+sudo systemctl status php-fpm    # PHP processor
+sudo systemctl status mariadb    # Database
+sudo systemctl status nginx      # Web server
+```
+
+**Note**: This is separate from GMH Dashboard. WordPress/PHP stack managed by systemd, not PM2.
+
+---
+
 ### March 23, 2026: 🔴 Healthie Payment Failure Detection — Critical Bug Fixes & Billing Audit
 
 **Context**: Manual audit revealed 39 active Healthie patients hadn't paid in February 2026. Investigation uncovered systemic issues in Healthie ID mapping and payment failure detection.
