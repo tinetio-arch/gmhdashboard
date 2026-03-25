@@ -89,28 +89,65 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // FALLBACK: If patient not in local DB, use note.patient_id as Healthie ID directly
-        // This supports the 4000+ Healthie patients not synced to local patients table
+        // FALLBACK: If patient has no Healthie mapping, resolve it
         if (!healthiePatientId) {
-            healthiePatientId = note.patient_id;
-            console.log(`[Scribe:Submit] Patient not in local DB, using patient_id as Healthie ID: ${healthiePatientId}`);
-            
-            // Fetch patient name from Healthie API for PDF generation
-            try {
-                const healthieUser = await healthieGraphQL<any>(`
-                    query GetUser($id: ID!) {
-                        user(id: $id) { id first_name last_name dob }
+            // FIX(2026-03-24): If patient_id is a UUID, it's a local patient with a missing
+            // healthie_clients mapping — search Healthie by name instead of passing the UUID
+            // (which Healthie silently rejects, causing "no ID returned" errors).
+            if (isUuid && patient?.full_name) {
+                console.log(`[Scribe:Submit] Local patient ${patient.full_name} has no Healthie mapping, searching by name...`);
+                try {
+                    const searchResult = await healthieGraphQL<any>(`
+                        query SearchUser($keywords: String!) {
+                            users(keywords: $keywords, offset: 0) { id first_name last_name }
+                        }
+                    `, { keywords: patient.full_name });
+                    if (searchResult?.users?.length === 1) {
+                        healthiePatientId = searchResult.users[0].id;
+                        console.log(`[Scribe:Submit] Found Healthie ID ${healthiePatientId} for ${patient.full_name}, creating mapping...`);
+                        // Auto-create the missing mapping
+                        await query(
+                            'INSERT INTO healthie_clients (patient_id, healthie_client_id, match_method, is_active) VALUES ($1, $2, $3, true) ON CONFLICT (healthie_client_id) DO UPDATE SET patient_id = $1, updated_at = now()',
+                            [note.patient_id, healthiePatientId, 'auto_scribe_submit']
+                        );
+                    } else if (searchResult?.users?.length > 1) {
+                        console.warn(`[Scribe:Submit] Multiple Healthie matches for "${patient.full_name}", cannot auto-resolve`);
                     }
-                `, { id: healthiePatientId });
-                if (healthieUser?.user) {
-                    patient = {
-                        full_name: `${healthieUser.user.first_name || ''} ${healthieUser.user.last_name || ''}`.trim(),
-                        dob: healthieUser.user.dob,
-                    };
+                } catch (searchErr) {
+                    console.warn('[Scribe:Submit] Failed to search Healthie by name:', searchErr);
                 }
-            } catch (healthieErr) {
-                console.warn('[Scribe:Submit] Failed to fetch patient from Healthie:', healthieErr);
-                patient = { full_name: 'Unknown Patient', dob: null };
+            }
+
+            // If still no ID and patient_id is numeric, use it as a direct Healthie ID
+            // This supports the 4000+ Healthie patients not synced to local patients table
+            if (!healthiePatientId && !isUuid) {
+                healthiePatientId = note.patient_id;
+                console.log(`[Scribe:Submit] Using numeric patient_id as Healthie ID: ${healthiePatientId}`);
+            }
+
+            // Fetch patient name from Healthie API for PDF generation (if we have an ID but no patient info)
+            if (healthiePatientId && !patient) {
+                try {
+                    const healthieUser = await healthieGraphQL<any>(`
+                        query GetUser($id: ID!) {
+                            user(id: $id) { id first_name last_name dob }
+                        }
+                    `, { id: healthiePatientId });
+                    if (healthieUser?.user) {
+                        patient = {
+                            full_name: `${healthieUser.user.first_name || ''} ${healthieUser.user.last_name || ''}`.trim(),
+                            dob: healthieUser.user.dob,
+                        };
+                    }
+                } catch (healthieErr) {
+                    console.warn('[Scribe:Submit] Failed to fetch patient from Healthie:', healthieErr);
+                    patient = { full_name: 'Unknown Patient', dob: null };
+                }
+            }
+
+            // If we still have no Healthie ID, fail with a clear error
+            if (!healthiePatientId) {
+                throw new Error(`Cannot submit to Healthie: no Healthie ID found for patient ${note.patient_id}${patient?.full_name ? ` (${patient.full_name})` : ''}. Please link this patient in Healthie first.`);
             }
         }
 

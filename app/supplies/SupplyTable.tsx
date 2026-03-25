@@ -100,7 +100,7 @@ export default function SupplyTable({ initialItems, categories, locations, defau
         if (entries.length === 0) return;
         setSaving(true);
         try {
-            const res = await fetch(`${basePath}/api/supplies/use`, {
+            const res = await fetch(`${basePath}/api/supplies/use/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -138,7 +138,7 @@ export default function SupplyTable({ initialItems, categories, locations, defau
         if (entries.length === 0) return;
         setSaving(true);
         try {
-            const res = await fetch(`${basePath}/api/supplies/count`, {
+            const res = await fetch(`${basePath}/api/supplies/count/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ entries, recorded_by: userEmail }),

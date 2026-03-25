@@ -310,7 +310,7 @@ export default function AppControlClient() {
 
     async function deleteWorkflowStep(id: number) {
         try {
-            const res = await fetch(`/ops/api/admin/service-tags?id=${id}`, { method: 'DELETE' });
+            const res = await fetch(`/ops/api/admin/service-tags/?id=${id}`, { method: 'DELETE' });
             if (!res.ok) throw new Error();
             setSuccessMsg('Step removed');
             await loadWorkflowConfigs();

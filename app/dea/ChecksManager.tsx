@@ -40,7 +40,7 @@ export default function ChecksManager({
         if (!confirm('Delete this EOD check? This cannot be undone.')) return;
         setDeletingId(checkId);
         try {
-            const res = await fetch(`${basePath}/api/checks/${checkId}`, { method: 'DELETE' });
+            const res = await fetch(`${basePath}/api/checks/${checkId}/`, { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json();
                 alert(data.error || 'Failed to delete check');

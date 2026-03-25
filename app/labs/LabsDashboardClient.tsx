@@ -271,7 +271,7 @@ export default function LabsDashboardClient({ reviewQueue: initialQueue, ordersQ
 
         setLoadingId(order.id);
         try {
-            const response = await fetch(`/ops/api/labs/order/${order.id}/approve`, {
+            const response = await fetch(`/ops/api/labs/order/${order.id}/approve/`, {
                 method: 'POST'
             });
             const result = await response.json();
@@ -304,7 +304,7 @@ export default function LabsDashboardClient({ reviewQueue: initialQueue, ordersQ
 
         setLoadingId(order.id);
         try {
-            const response = await fetch(`/ops/api/labs/orders/${order.id}`, {
+            const response = await fetch(`/ops/api/labs/orders/${order.id}/`, {
                 method: 'DELETE'
             });
             const result = await response.json();

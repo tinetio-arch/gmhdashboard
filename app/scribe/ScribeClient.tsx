@@ -301,7 +301,7 @@ function NewSession({ patients, onCreated, onBack, setError, setLoading, loading
                 formData.append('audio', audioFile);
             }
 
-            const res = await fetch(`${basePath}/api/scribe/transcribe`, { method: 'POST', body: formData });
+            const res = await fetch(`${basePath}/api/scribe/transcribe/`, { method: 'POST', body: formData });
             const data = await res.json();
             if (!data.success) throw new Error(data.error || 'Failed to create session');
 
@@ -516,7 +516,7 @@ function SessionDetail({ session, setSession, onBack, setError, setSuccess, setL
         if (session.status === 'transcribing') {
             const id = setInterval(async () => {
                 try {
-                    const res = await fetch(`${basePath}/api/scribe/transcribe?session_id=${session.session_id}`);
+                    const res = await fetch(`${basePath}/api/scribe/transcribe/?session_id=${session.session_id}`);
                     const data = await res.json();
                     if (data.success && data.data.status === 'transcribed') {
                         setSession({ ...session, status: 'transcribed', transcript: data.data.transcript });
@@ -538,7 +538,7 @@ function SessionDetail({ session, setSession, onBack, setError, setSuccess, setL
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch(`${basePath}/api/scribe/generate-note`, {
+            const res = await fetch(`${basePath}/api/scribe/generate-note/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: session.session_id, visit_type: session.visit_type }),
@@ -569,7 +569,7 @@ function SessionDetail({ session, setSession, onBack, setError, setSuccess, setL
         if (!session.note_id) return;
         setLoading(true);
         try {
-            const res = await fetch(`${basePath}/api/scribe/notes/${session.note_id}`, {
+            const res = await fetch(`${basePath}/api/scribe/notes/${session.note_id}/`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ [section]: editText }),
@@ -591,7 +591,7 @@ function SessionDetail({ session, setSession, onBack, setError, setSuccess, setL
         if (!session.note_id || !aiEditInstruction.trim()) return;
         setLoading(true);
         try {
-            const res = await fetch(`${basePath}/api/scribe/notes/${session.note_id}/edit-ai`, {
+            const res = await fetch(`${basePath}/api/scribe/notes/${session.note_id}/edit-ai/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ edit_instruction: aiEditInstruction, section }),
@@ -621,7 +621,7 @@ function SessionDetail({ session, setSession, onBack, setError, setSuccess, setL
     const generateDoc = async (docType: DocType) => {
         setLoading(true);
         try {
-            const res = await fetch(`${basePath}/api/scribe/generate-doc`, {
+            const res = await fetch(`${basePath}/api/scribe/generate-doc/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: session.session_id, doc_type: docType }),
@@ -646,7 +646,7 @@ function SessionDetail({ session, setSession, onBack, setError, setSuccess, setL
         if (!confirm('Submit this SOAP note to Healthie? This will create/update the patient\'s clinical record.')) return;
         setLoading(true);
         try {
-            const res = await fetch(`${basePath}/api/scribe/submit-to-healthie`, {
+            const res = await fetch(`${basePath}/api/scribe/submit-to-healthie/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ note_id: session.note_id }),

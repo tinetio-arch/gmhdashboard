@@ -3677,6 +3677,23 @@ curl -I http://localhost:3011/ops/api/auth/quickbooks/
 
 **Fix**: Rebuild application (`npm run build && pm2 restart gmh-dashboard`)
 
+### iPad "Connection Failed" on POST Requests (308 Redirect)
+
+**Symptom**: iPad Safari shows "connection failed" when submitting SOAP notes or other POST requests
+
+**Cause**: Next.js `trailingSlash: true` returns HTTP 308 when a POST request lacks a trailing slash. iPad Safari drops the POST body during the 308 redirect, causing the request to fail silently on the client side. No server-side errors appear in logs because the request never reaches the route handler.
+
+**Fix**: Always include trailing slashes in client-side `fetch()` URLs for POST endpoints:
+```typescript
+// ❌ WRONG — triggers 308 redirect, iPad drops POST body
+fetch(`${basePath}/api/scribe/submit-to-healthie`, { method: 'POST', ... });
+
+// ✅ CORRECT — goes directly to the route, no redirect
+fetch(`${basePath}/api/scribe/submit-to-healthie/`, { method: 'POST', ... });
+```
+
+**History**: Same bug class as the Jan 28, 2026 Healthie webhook 308 fix (line 1593). Fixed in ScribeClient.tsx on March 24, 2026 for all 4 POST endpoints (transcribe, generate-note, generate-doc, submit-to-healthie).
+
 ### Redirect Loop (ERR_TOO_MANY_REDIRECTS)
 
 **Symptom**: Browser shows "redirected too many times"
