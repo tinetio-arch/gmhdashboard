@@ -1,6 +1,6 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: March 23, 2026
+**Last Updated**: March 25, 2026
 **Primary AI Assistant**: Claude Code (Anthropic)
 **Sprint Period**: December 25, 2025 - March 14, 2026
 
@@ -294,6 +294,21 @@ pm2 reset <service>     # Reset restart counter after fixing
 ├── public/robots.txt                  # SEO robots.txt
 ├── .env.local                         # Healthie config (Location 13029260)
 └── Port: 3005                         # Nginx proxy to nowmenshealth.care
+
+/home/ec2-user/abxtac-website/            # ABX TAC peptide site [NEW Mar 2026]
+├── app/                                # Next.js 14 app router
+│   ├── page.tsx                        # Home - hero, peptide explainer, stacks
+│   ├── shop/page.tsx                   # 10 peptide stacks + à la carte
+│   ├── peptides/page.tsx               # Peptide therapy deep dives, FAQ
+│   ├── about/page.tsx                  # About, NOW Optimal Network
+│   ├── cart/page.tsx                   # Cart (WooCommerce integration TBD)
+│   └── globals.css                     # Dark tactical theme (#050505, #3A7D32)
+├── components/Header.tsx               # Nav + wellness banner
+├── components/Footer.tsx               # Quality promise, network links
+├── lib/woocommerce.ts                  # WooCommerce REST API client
+├── public/abxtac-logo-white.png        # Snake X logo (white-on-transparent)
+├── .env.local                          # WooCommerce API keys
+└── Port: 3009                          # Nginx proxy to abxtac.com
 ```
 
 ### PM2 Services
@@ -325,6 +340,7 @@ pm2 reset <service>     # Reset restart counter after fixing
 | email-triage | N/A | ✅ | Email classification service |
 | fax-processor | N/A | ✅ | Incoming fax processor (S3 → Google Chat + Dashboard) |
 | uptime-monitor | N/A | ✅ | PM2 service + website health monitoring |
+| abxtac-website | 3009 | ✅ | ABX TAC peptide e-commerce (abxtac.com) — headless Next.js + WooCommerce |
 
 **Essential PM2 Commands:**
 ```bash
@@ -3334,6 +3350,7 @@ pm2 startup                              # Generate startup script
 - `nowprimary-website` (port 3004) - Primary Care site
 - `nowmenshealth-website` (port 3005) - Men's Health site
 - `nowoptimal-website` (port 3008) - NowOptimal parent site
+- `abxtac-website` (port 3009) - ABX TAC peptide e-commerce (abxtac.com)
 - `uptime-monitor` - PM2 service and website health monitoring
 
 ### Environment Variables
@@ -4364,6 +4381,7 @@ Formatting functions: `formatBloodPressure()`, `formatWeight()`, `formatHeight()
 | NOW Primary Care | nowprimary.care | 3001 | `nowprimary` | Next.js |
 | NOW Men's Health | nowmenshealth.care | 3002 | `nowmenshealth` | Next.js |
 | NOW Mental Health | nowmentalhealth.care | 3003 | `nowmentalhealth` | Next.js |
+| ABX TAC | abxtac.com | 3009 | `abxtac-website` | Next.js (headless WooCommerce) |
 
 **Ecosystem Config**: `/var/www/nowoptimal-websites/ecosystem.config.js`  
 **Deploy Script**: `/var/www/nowoptimal-websites/deploy.sh`
@@ -4401,6 +4419,20 @@ Formatting functions: `formatBloodPressure()`, `formatWeight()`, `formatHeight()
 | Green | `#00A550` | `--tw-gradient-from` | CTA gradient start |
 | Light Blue | `#E8F0F5` | — | Background / light surface |
 | Cyan | `#25C6CA` | — | Accent (from NOWOptimal logo) |
+
+#### ABX TAC (Peptide E-Commerce)
+| Role | Hex | CSS Variable | Description |
+|------|-----|-------------|-------------|
+| Primary BG | `#050505` | `--bg-primary` | Deep black background |
+| Secondary BG | `#0A0A0A` | `--bg-secondary` | Card/section background |
+| Green | `#3A7D32` | `--green-primary` | Primary accent, tactical green |
+| Green Dark | `#2D5A27` | `--green-dark` | Dosage bands, buttons |
+| Green Light | `#4CAF50` | `--green-light` | Highlights, badges |
+| Card BG | `#111111` | `--bg-card` | Elevated card surfaces |
+| Text White | `#FFFFFF` | — | Primary text |
+| Text Gray | `#D0D0D0` | — | Body text, descriptions |
+| Text Muted | `#999999` | — | Secondary text |
+| Fonts | Rajdhani (tactical) · Share Tech Mono (mono) · Inter (body) |
 
 #### Mobile App Chameleon Themes (from `themes.ts`)
 
@@ -4440,6 +4472,19 @@ Formatting functions: `formatBloodPressure()`, `formatWeight()`, `formatHeight()
 ├── lib/
 │   └── healthie-booking.ts → Healthie GraphQL client
 └── .env.local              → API keys (HEALTHIE_API_KEY, etc.)
+
+/home/ec2-user/abxtac-website/         → ABX TAC peptide store [NEW Mar 2026]
+├── app/                               → Headless Next.js 14 (TypeScript + Tailwind)
+│   ├── page.tsx                       → Homepage (hero, peptide explainer, stacks)
+│   ├── shop/                          → 10 curated peptide stacks + à la carte
+│   ├── peptides/                      → Peptide therapy info, FAQ
+│   ├── about/                         → About, NOW Network links
+│   └── globals.css                    → Dark tactical theme
+├── components/                        → Header (wellness banner), Footer
+├── lib/woocommerce.ts                 → WooCommerce REST API client
+├── public/abxtac-logo-white.png       → Brand logo
+├── .env.local                         → WooCommerce API keys (TBD)
+└── Port: 3009                         → Nginx split: /* → Next.js, /wp-* → WordPress
 ```
 
 ### NowPrimary.Care Healthie Booking Integration

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { healthieGraphQL } from '@/lib/healthieApi';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -10,11 +11,13 @@ const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
 
 /**
  * GET /api/ipad/schedule?provider_id=12088269
- * Fetches today's Healthie appointments, optionally filtered by provider.
- * 
+ * Fetches Healthie appointments, optionally filtered by provider and date range.
+ *
  * Query params:
  *   - provider_id (optional): Healthie provider ID to filter by
  *   - date (optional): Override date (YYYY-MM-DD), defaults to today (Phoenix TZ)
+ *   - start_date (optional): Range start (YYYY-MM-DD) — if set, fetches each day in range
+ *   - end_date (optional): Range end (YYYY-MM-DD) — required with start_date
  */
 export async function GET(request: NextRequest) {
     try {
@@ -29,12 +32,30 @@ export async function GET(request: NextRequest) {
         const { searchParams } = new URL(request.url);
         const providerId = searchParams.get('provider_id') || null;
         const dateOverride = searchParams.get('date') || null;
+        const startDate = searchParams.get('start_date') || null;
+        const endDate = searchParams.get('end_date') || null;
 
         const todayStr = dateOverride || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
 
-        // DIAGNOSTIC: Log environment
-        console.log('[iPad Schedule] HEALTHIE_API_KEY present:', !!HEALTHIE_API_KEY, 'length:', HEALTHIE_API_KEY?.length || 0);
-        console.log('[iPad Schedule] HEALTHIE_API_URL:', HEALTHIE_API_URL);
+        // Build list of days to fetch
+        let daysToFetch: string[] = [];
+        if (startDate && endDate) {
+            const start = new Date(startDate + 'T00:00:00');
+            const end = new Date(endDate + 'T00:00:00');
+            // Cap at 31 days to prevent abuse
+            const maxDays = 31;
+            let d = new Date(start);
+            let count = 0;
+            while (d <= end && count < maxDays) {
+                daysToFetch.push(d.toISOString().split('T')[0]);
+                d.setDate(d.getDate() + 1);
+                count++;
+            }
+        } else {
+            daysToFetch = [todayStr];
+        }
+
+        console.log('[iPad Schedule] Fetching', daysToFetch.length, 'day(s):', daysToFetch[0], daysToFetch.length > 1 ? '...' + daysToFetch[daysToFetch.length - 1] : '');
 
         // Build GraphQL query — try multiple approaches to find today's appointments
         let appointments: any[] = [];
@@ -64,8 +85,8 @@ export async function GET(request: NextRequest) {
                 }
             }`;
 
-        // Fetch appointments for each provider in parallel
-        const fetchProviderAppts = async (provId: string) => {
+        // Fetch appointments for a provider on a specific day
+        const fetchProviderAppts = async (provId: string, day: string) => {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 15000);
             try {
@@ -78,7 +99,7 @@ export async function GET(request: NextRequest) {
                     },
                     body: JSON.stringify({
                         query: appointmentQuery,
-                        variables: { providerId: provId, day: todayStr },
+                        variables: { providerId: provId, day },
                     }),
                     signal: controller.signal,
                     cache: 'no-store',
@@ -96,10 +117,17 @@ export async function GET(request: NextRequest) {
         };
 
         try {
-            const results = await Promise.all(PROVIDER_IDS.map(fetchProviderAppts));
+            // Fetch all days x all providers in parallel (capped to avoid overwhelming API)
+            const fetchPromises: Promise<any[]>[] = [];
+            for (const day of daysToFetch) {
+                for (const provId of PROVIDER_IDS) {
+                    fetchPromises.push(fetchProviderAppts(provId, day));
+                }
+            }
+            const allResults = await Promise.all(fetchPromises);
             // Combine and deduplicate by appointment ID
             const seenIds = new Set<string>();
-            for (const provAppts of results) {
+            for (const provAppts of allResults) {
                 for (const appt of provAppts) {
                     if (!seenIds.has(appt.id)) {
                         seenIds.add(appt.id);
@@ -107,7 +135,7 @@ export async function GET(request: NextRequest) {
                     }
                 }
             }
-            console.log(`[iPad Schedule] Fetched ${appointments.length} appointments for ${todayStr} across ${PROVIDER_IDS.length} providers`);
+            console.log(`[iPad Schedule] Fetched ${appointments.length} appointments for ${daysToFetch.length} day(s) across ${PROVIDER_IDS.length} providers`);
         } catch (err: any) {
             console.warn('[iPad Schedule] Fetch error:', err.message);
             return NextResponse.json({ success: true, patients: [], error: 'Could not reach Healthie — try again' });
@@ -222,6 +250,185 @@ export async function GET(request: NextRequest) {
         console.error('[iPad Schedule] Error:', error);
         return NextResponse.json(
             { error: error instanceof Error ? error.message : 'Failed to load schedule' },
+            { status: 500 }
+        );
+    }
+}
+
+/**
+ * POST /api/ipad/schedule
+ * Create a new appointment in Healthie or fetch appointment types.
+ *
+ * Body:
+ *   - action: 'create' | 'get_appointment_types' | 'search_patients'
+ *
+ *   For 'create':
+ *     - patient_id: string (Healthie user ID)
+ *     - provider_id: string (Healthie provider ID)
+ *     - appointment_type_id: string
+ *     - datetime: string (ISO 8601)
+ *     - length: number (minutes, optional)
+ *     - location: string (optional)
+ *     - contact_type: string (optional, e.g. 'In-Person', 'Telehealth')
+ *
+ *   For 'get_appointment_types':
+ *     (no extra params)
+ *
+ *   For 'search_patients':
+ *     - search: string
+ */
+export async function POST(request: NextRequest) {
+    try {
+        await requireApiUser(request, 'write');
+    } catch (error) {
+        if (error instanceof UnauthorizedError)
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        throw error;
+    }
+
+    try {
+        const body = await request.json();
+        const { action } = body;
+
+        if (action === 'get_appointment_types') {
+            // FIX(2026-03-25): Healthie removed is_visible from AppointmentType; use clients_can_book
+            const data = await healthieGraphQL<{
+                appointmentTypes: Array<{
+                    id: string;
+                    name: string;
+                    length: number;
+                    available_contact_types: string[];
+                    clients_can_book: boolean;
+                }>;
+            }>(`
+                query GetAppointmentTypes {
+                    appointmentTypes {
+                        id name length
+                        available_contact_types
+                        clients_can_book
+                    }
+                }
+            `);
+
+            const types = (data.appointmentTypes || [])
+                .map(t => ({
+                    id: t.id,
+                    name: t.name,
+                    length: t.length,
+                    contact_types: t.available_contact_types || [],
+                }));
+
+            return NextResponse.json({ success: true, appointment_types: types });
+        }
+
+        if (action === 'search_patients') {
+            const { search } = body;
+            if (!search?.trim()) {
+                return NextResponse.json({ error: 'search is required' }, { status: 400 });
+            }
+
+            // Search local DB first for fast results
+            const patients = await query<any>(
+                `SELECT p.patient_id, p.full_name, p.email, p.phone, p.status_key,
+                        hc.healthie_client_id
+                 FROM patients p
+                 LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id::text AND hc.is_active = true
+                 WHERE p.full_name ILIKE $1 OR p.email ILIKE $1
+                 ORDER BY p.full_name
+                 LIMIT 20`,
+                [`%${search.trim()}%`]
+            );
+
+            return NextResponse.json({
+                success: true,
+                patients: patients.map((p: any) => ({
+                    patient_id: p.patient_id,
+                    healthie_id: p.healthie_client_id || null,
+                    full_name: p.full_name,
+                    email: p.email,
+                    phone: p.phone,
+                    status: p.status_key,
+                })),
+            });
+        }
+
+        if (action === 'create') {
+            const { patient_id, provider_id, appointment_type_id, datetime, length, location, contact_type } = body;
+
+            if (!patient_id || !provider_id || !appointment_type_id || !datetime) {
+                return NextResponse.json({
+                    error: 'patient_id, provider_id, appointment_type_id, and datetime are required'
+                }, { status: 400 });
+            }
+
+            const data = await healthieGraphQL<{
+                createAppointment: {
+                    appointment: {
+                        id: string;
+                        date: string;
+                        appointment_type: { name: string } | null;
+                        provider: { full_name: string } | null;
+                    } | null;
+                    messages: Array<{ field: string; message: string }>;
+                };
+            }>(`
+                mutation CreateAppointment(
+                    $patientId: String!,
+                    $providerId: String!,
+                    $typeId: String!,
+                    $datetime: String!,
+                    $location: String,
+                    $contactType: String
+                ) {
+                    createAppointment(input: {
+                        user_id: $patientId,
+                        other_party_id: $providerId,
+                        appointment_type_id: $typeId,
+                        datetime: $datetime,
+                        location: $location,
+                        contact_type: $contactType
+                    }) {
+                        appointment {
+                            id date
+                            appointment_type { name }
+                            provider { full_name }
+                        }
+                        messages { field message }
+                    }
+                }
+            `, {
+                patientId: patient_id,
+                providerId: provider_id,
+                typeId: appointment_type_id,
+                datetime,
+                location: location || null,
+                contactType: contact_type || null,
+            });
+
+            if (data.createAppointment?.messages?.length) {
+                const errMsg = data.createAppointment.messages.map(m => m.message).join(', ');
+                return NextResponse.json({ error: errMsg }, { status: 400 });
+            }
+
+            const appt = data.createAppointment?.appointment;
+            console.log('[iPad Schedule] Created appointment:', appt?.id, 'for patient', patient_id);
+
+            return NextResponse.json({
+                success: true,
+                appointment: appt ? {
+                    id: appt.id,
+                    date: appt.date,
+                    type: appt.appointment_type?.name || 'Appointment',
+                    provider: appt.provider?.full_name || '',
+                } : null,
+            });
+        }
+
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    } catch (error) {
+        console.error('[iPad Schedule] POST Error:', error);
+        return NextResponse.json(
+            { error: error instanceof Error ? error.message : 'Failed to process request' },
             { status: 500 }
         );
     }

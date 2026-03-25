@@ -233,6 +233,39 @@ function sanitize(str) {
         .replace(/\//g, '&#x2F;'); // Extra protection for URLs
 }
 
+// FIX(2026-03-25): Healthie messages contain HTML (<p>, <br>, &nbsp;).
+// Safely render message content: allow basic formatting, strip dangerous tags.
+function renderHealthieMessage(html) {
+    if (!html) return '';
+    var str = String(html);
+    // Decode common HTML entities first
+    str = str.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#039;/g, "'");
+    // Convert block tags to line breaks
+    str = str.replace(/<br\s*\/?>/gi, '\n');
+    str = str.replace(/<\/p>\s*<p[^>]*>/gi, '\n\n');
+    str = str.replace(/<\/?(p|div|h[1-6]|li|tr)[^>]*>/gi, '\n');
+    // Strip all remaining HTML tags
+    str = str.replace(/<[^>]+>/g, '');
+    // Clean up whitespace
+    str = str.replace(/\n{3,}/g, '\n\n').trim();
+    // Now sanitize the plain text for safe HTML insertion, but preserve line breaks
+    str = sanitize(str);
+    str = str.replace(/\n/g, '<br>');
+    return str;
+}
+
+// Convert Healthie HTML to plain text (for previews)
+function healthieToPlainText(html) {
+    if (!html) return '';
+    var str = String(html);
+    str = str.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    str = str.replace(/<br\s*\/?>/gi, ' ');
+    str = str.replace(/<\/?(p|div|h[1-6]|li|tr)[^>]*>/gi, ' ');
+    str = str.replace(/<[^>]+>/g, '');
+    str = str.replace(/\s{2,}/g, ' ').trim();
+    return str;
+}
+
 // ─── INIT ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
     updateClock();
@@ -429,8 +462,8 @@ function applyRolePermissions() {
         scribeTab.style.display = 'none';
     }
 
-    // Add Schedule tab for providers/admins (prevent duplicates)
-    if ((perms.can_use_scribe || perms.can_view_ceo_dashboard) && nav && !nav.querySelector('[data-tab="schedule"]')) {
+    // Add Schedule tab for all staff (prevent duplicates)
+    if (nav && !nav.querySelector('[data-tab="schedule"]')) {
         const scheduleTab = document.createElement('button');
         scheduleTab.className = 'tab-item';
         scheduleTab.dataset.tab = 'schedule';
@@ -447,6 +480,28 @@ function applyRolePermissions() {
             nav.insertBefore(scheduleTab, labsTab.nextSibling);
         } else {
             nav.appendChild(scheduleTab);
+        }
+    }
+
+    // Add Messages tab for all staff (prevent duplicates)
+    if (nav && !nav.querySelector('[data-tab="messages"]')) {
+        const messagesTab = document.createElement('button');
+        messagesTab.className = 'tab-item';
+        messagesTab.dataset.tab = 'messages';
+        messagesTab.innerHTML = `
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span class="tab-label">Messages</span>
+            <span class="tab-badge hidden" id="messagesBadge">0</span>
+        `;
+        messagesTab.addEventListener('click', () => { window.location.hash = '#messages'; });
+        // Insert before Patients tab
+        const patientsTabForMsg = nav.querySelector('[data-tab="patients"]');
+        if (patientsTabForMsg) {
+            nav.insertBefore(messagesTab, patientsTabForMsg);
+        } else {
+            nav.appendChild(messagesTab);
         }
     }
 
@@ -531,14 +586,14 @@ function handleHash() {
 
 function switchTab(tab) {
     removeFloatingEditBar();
-    const validTabs = ['today', 'labs', 'scribe', 'inventory', 'patients', 'ceo', 'schedule'];
+    const validTabs = ['today', 'labs', 'scribe', 'inventory', 'patients', 'ceo', 'schedule', 'messages'];
     if (!validTabs.includes(tab)) tab = 'today';
     // RBAC: prevent access to tabs user doesn't have permission for
     if (currentUser?.permissions) {
         // CEO tab — Phil Schafer ONLY
         if (tab === 'ceo' && currentUser.email !== 'admin@nowoptimal.com') tab = 'today';
         if (tab === 'scribe' && !currentUser.permissions.can_use_scribe) tab = 'today';
-        if (tab === 'schedule' && !currentUser.permissions.can_use_scribe) tab = 'today';
+        // Schedule and Messages tabs available to all authenticated users
     }
     currentTab = tab;
 
@@ -600,6 +655,7 @@ function renderCurrentTab() {
         case 'patients': renderPatientsView(view); break;
         case 'ceo': renderCEODashboard(view); break;
         case 'schedule': renderScheduleView(view); break;
+        case 'messages': renderMessagesView(view); break;
     }
 
     main.appendChild(view);
@@ -3355,6 +3411,8 @@ function toggleEditDictation() {
     };
 
     _editRecognition.onend = () => {
+        // Sync finalTranscript with what's actually in the input (user may have edited/deleted)
+        finalTranscript = input.value || '';
         // Auto-restart if still supposed to be listening (Safari stops after silence)
         if (_editIsListening) {
             try { _editRecognition.start(); } catch (e) { stopEditDictation(); }
@@ -8565,51 +8623,492 @@ function renderCEODashboard(container) {
 // ─── PROVIDER SCHEDULE TAB ──────────────────────────────────
 var scheduleProviderFilter = 'all';
 var scheduleAllData = [];
+var scheduleViewMode = 'day';
+var scheduleSelectedDate = new Date();
+var scheduleAppointmentTypes = [];
+
+function getWeekRange(date) {
+    var d = new Date(date);
+    var day = d.getDay();
+    var start = new Date(d);
+    start.setDate(d.getDate() - day);
+    var end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return { start: start, end: end };
+}
+
+function getMonthRange(date) {
+    var d = new Date(date);
+    var start = new Date(d.getFullYear(), d.getMonth(), 1);
+    var end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    return { start: start, end: end };
+}
+
+function getPhoenixDateStr(date) {
+    return date.toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+}
 
 async function renderScheduleView(container) {
-    var today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-    console.log('[Schedule] renderScheduleView - setting HTML...');
+    // Reset to today if the date is somehow invalid
+    if (isNaN(scheduleSelectedDate.getTime())) scheduleSelectedDate = new Date();
+
+    console.log('[Schedule] renderScheduleView - mode:', scheduleViewMode);
     container.innerHTML = '<div style="padding: 0 4px;">' +
-        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
+        // Header row
+        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">' +
         '<div><h1 style="font-size:24px; margin:0; color:var(--text-primary);">Schedule</h1>' +
-        '<p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0.">' + today + '</p></div>' +
-        '<button onclick="loadScheduleData(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>' +
+        '<p id="scheduleDateLabel" style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;"></p></div>' +
+        '<div style="display:flex; gap:6px;">' +
+        '<button onclick="showAddToScheduleModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ Add Patient</button>' +
+        '<button onclick="loadScheduleForRange(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻</button>' +
+        '</div></div>' +
+        // View mode toggle + date nav
+        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">' +
+        '<div style="display:flex; gap:4px;">' +
+        '<button onclick="setScheduleViewMode(\'day\')" id="schedModeDay" style="padding:5px 12px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary);">Day</button>' +
+        '<button onclick="setScheduleViewMode(\'week\')" id="schedModeWeek" style="padding:5px 12px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary);">Week</button>' +
+        '<button onclick="setScheduleViewMode(\'month\')" id="schedModeMonth" style="padding:5px 12px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary);">Month</button>' +
         '</div>' +
+        '<div style="display:flex; align-items:center; gap:8px;">' +
+        '<button onclick="scheduleNavPrev()" style="padding:4px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:14px; cursor:pointer;">‹</button>' +
+        '<button onclick="scheduleNavToday()" style="padding:4px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">Today</button>' +
+        '<button onclick="scheduleNavNext()" style="padding:4px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:14px; cursor:pointer;">›</button>' +
+        '</div></div>' +
+        // Provider tabs
         '<div id="scheduleProviderTabs" style="display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap;"></div>' +
+        // Content
         '<div id="scheduleContent"><div class="loading-spinner" style="margin:40px auto;"></div></div>' +
         '</div>';
 
-    // CRITICAL FIX: Wait for DOM to process innerHTML before calling loadScheduleData
-    console.log('[Schedule] Waiting for DOM to update...');
     await new Promise(resolve => setTimeout(resolve, 50));
+    updateScheduleViewModeButtons();
+    updateScheduleDateLabel();
 
-    // Verify element exists
-    var verifyEl = document.getElementById('scheduleContent');
-    console.log('[Schedule] scheduleContent element exists:', !!verifyEl);
-
-    // Load previsit tasks from server (shared across all iPads)
+    // Load previsit tasks from server
     await loadPrevisitTasks();
 
-    // Auto-refresh previsit tasks every 15 seconds so provider sees staff updates
+    // Auto-refresh previsit tasks every 15 seconds
     if (window._previsitPollTimer) clearInterval(window._previsitPollTimer);
     window._previsitPollTimer = setInterval(async function() {
         if (currentTab !== 'schedule') { clearInterval(window._previsitPollTimer); return; }
         await loadPrevisitTasks();
         var contentEl = document.getElementById('scheduleContent');
         if (contentEl && scheduleAllData.length > 0) {
-            renderScheduleList(contentEl);
-            var provMap = new Map();
-            scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
-            renderProviderTabs([...provMap.values()]);
+            renderScheduleContent(contentEl);
         }
     }, 15000);
 
+    var verifyEl = document.getElementById('scheduleContent');
     if (verifyEl) {
-        await loadScheduleData();
+        await loadScheduleForRange();
     } else {
-        console.error('[Schedule] CRITICAL: scheduleContent not found after DOM wait!');
         await new Promise(resolve => setTimeout(resolve, 200));
-        await loadScheduleData();
+        await loadScheduleForRange();
+    }
+}
+
+function updateScheduleViewModeButtons() {
+    ['Day', 'Week', 'Month'].forEach(function(m) {
+        var btn = document.getElementById('schedMode' + m);
+        if (!btn) return;
+        var active = scheduleViewMode === m.toLowerCase();
+        btn.style.background = active ? 'rgba(0,212,255,0.15)' : 'var(--surface)';
+        btn.style.borderColor = active ? 'var(--cyan)' : 'var(--border-light)';
+        btn.style.color = active ? 'var(--cyan)' : 'var(--text-secondary)';
+    });
+}
+
+function updateScheduleDateLabel() {
+    var el = document.getElementById('scheduleDateLabel');
+    if (!el) return;
+    var d = scheduleSelectedDate;
+    if (scheduleViewMode === 'day') {
+        el.textContent = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    } else if (scheduleViewMode === 'week') {
+        var r = getWeekRange(d);
+        el.textContent = r.start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' - ' + r.end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } else {
+        el.textContent = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    }
+}
+
+function setScheduleViewMode(mode) {
+    scheduleViewMode = mode;
+    updateScheduleViewModeButtons();
+    updateScheduleDateLabel();
+    loadScheduleForRange(true);
+}
+
+function scheduleNavPrev() {
+    if (scheduleViewMode === 'day') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() - 1);
+    else if (scheduleViewMode === 'week') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() - 7);
+    else scheduleSelectedDate.setMonth(scheduleSelectedDate.getMonth() - 1);
+    updateScheduleDateLabel();
+    loadScheduleForRange(true);
+}
+
+function scheduleNavNext() {
+    if (scheduleViewMode === 'day') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() + 1);
+    else if (scheduleViewMode === 'week') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() + 7);
+    else scheduleSelectedDate.setMonth(scheduleSelectedDate.getMonth() + 1);
+    updateScheduleDateLabel();
+    loadScheduleForRange(true);
+}
+
+function scheduleNavToday() {
+    scheduleSelectedDate = new Date();
+    updateScheduleDateLabel();
+    loadScheduleForRange(true);
+}
+
+async function loadScheduleForRange(forceRefresh) {
+    var contentEl = document.getElementById('scheduleContent');
+    if (!contentEl) return;
+    contentEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+
+    var startDate, endDate;
+    if (scheduleViewMode === 'day') {
+        startDate = getPhoenixDateStr(scheduleSelectedDate);
+        endDate = startDate;
+    } else if (scheduleViewMode === 'week') {
+        var wr = getWeekRange(scheduleSelectedDate);
+        startDate = getPhoenixDateStr(wr.start);
+        endDate = getPhoenixDateStr(wr.end);
+    } else {
+        var mr = getMonthRange(scheduleSelectedDate);
+        startDate = getPhoenixDateStr(mr.start);
+        endDate = getPhoenixDateStr(mr.end);
+    }
+
+    try {
+        var url = '/ops/api/ipad/schedule/?start_date=' + startDate + '&end_date=' + endDate;
+        var resp = await fetch(url, { credentials: 'include' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        scheduleAllData = data.patients || [];
+        // Also update global for Today tab if viewing today
+        var todayStr = getPhoenixDateStr(new Date());
+        if (startDate === todayStr && endDate === todayStr && scheduleAllData.length > 0) {
+            healthieAppointments = scheduleAllData.map(function(p) {
+                return { id: p.appointment_id || '', patient_id: p.patient_id || p.healthie_id || '', patient_name: p.full_name || '', appointment_type: p.appointment_type || '', status: p.appointment_status || 'scheduled', appointment_status: p.appointment_status || 'scheduled', time: p.time || '', provider: p.provider || '' };
+            });
+        }
+        var provMap = new Map();
+        scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
+        renderProviderTabs([...provMap.values()]);
+        renderScheduleContent(contentEl);
+    } catch (e) {
+        console.error('[Schedule] Load error:', e);
+        contentEl.innerHTML = '<div class="empty-state-card"><h3>Could not load schedule</h3><p>' + (e.message || 'Error') + '</p><button onclick="loadScheduleForRange(true)" class="btn-primary" style="margin-top:8px;">Try Again</button></div>';
+    }
+}
+
+function renderScheduleContent(contentEl) {
+    if (scheduleViewMode === 'day') {
+        renderScheduleList(contentEl);
+    } else if (scheduleViewMode === 'week') {
+        renderScheduleWeekView(contentEl);
+    } else {
+        renderScheduleMonthView(contentEl);
+    }
+}
+
+function renderScheduleWeekView(contentEl) {
+    var filtered = scheduleProviderFilter === 'all' ? scheduleAllData : scheduleAllData.filter(function(p) { return (p.provider || 'Unknown') === scheduleProviderFilter; });
+    var wr = getWeekRange(scheduleSelectedDate);
+
+    // Group by date
+    var byDate = {};
+    for (var i = 0; i < 7; i++) {
+        var d = new Date(wr.start);
+        d.setDate(wr.start.getDate() + i);
+        byDate[getPhoenixDateStr(d)] = [];
+    }
+    filtered.forEach(function(p) {
+        // Healthie dates: "2026-03-25 09:15:00 -0700" — extract YYYY-MM-DD
+        var apptDate = '';
+        if (p.date) {
+            var match = p.date.match(/^(\d{4}-\d{2}-\d{2})/);
+            apptDate = match ? match[1] : '';
+            if (!apptDate) {
+                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }); } catch(e) {}
+            }
+        }
+        if (byDate[apptDate] !== undefined) {
+            byDate[apptDate].push(p);
+        }
+    });
+
+    var todayStr = getPhoenixDateStr(new Date());
+    var html = '<div style="display:flex; flex-direction:column; gap:8px;">';
+    Object.keys(byDate).sort().forEach(function(dateStr) {
+        var dayAppts = byDate[dateStr];
+        var d = new Date(dateStr + 'T12:00:00');
+        var dayLabel = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        var isToday = dateStr === todayStr;
+        html += '<div style="background:var(--card); border:1px solid ' + (isToday ? 'rgba(0,212,255,0.3)' : 'var(--border-light)') + '; border-radius:10px; padding:12px;' + (isToday ? ' border-left:3px solid var(--cyan);' : '') + '">';
+        html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
+        html += '<div style="font-size:13px; font-weight:600; color:' + (isToday ? 'var(--cyan)' : 'var(--text-primary)') + ';">' + dayLabel + (isToday ? ' (Today)' : '') + '</div>';
+        html += '<span style="font-size:11px; color:var(--text-tertiary);">' + dayAppts.length + ' appt' + (dayAppts.length !== 1 ? 's' : '') + '</span>';
+        html += '</div>';
+        if (dayAppts.length === 0) {
+            html += '<div style="font-size:12px; color:var(--text-tertiary); padding:4px 0;">No appointments</div>';
+        } else {
+            dayAppts.sort(function(a, b) { return parseHealthieDate(a.date).getTime() - parseHealthieDate(b.date).getTime(); });
+            dayAppts.forEach(function(p) {
+                var st = getApptStatusStyle(p.appointment_status || 'Pending');
+                var pid = p.patient_id || p.healthie_id || '';
+                html += '<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-top:1px solid rgba(255,255,255,0.04);">';
+                html += '<div style="display:flex; align-items:center; gap:8px; min-width:0; flex:1;">';
+                html += '<span style="font-size:12px; font-weight:500; color:var(--text-primary); min-width:52px;">' + (p.time || 'TBD') + '</span>';
+                html += '<span style="font-size:13px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.full_name || 'Unknown') + '</span>';
+                html += '<span style="font-size:11px; color:var(--text-tertiary);">' + (p.appointment_type || '') + '</span>';
+                html += '</div>';
+                html += '<div style="display:flex; align-items:center; gap:4px; flex-shrink:0;">';
+                if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\'' + pid + '\', \'' + (p.full_name || '').replace(/'/g, '') + '\')" style="padding:3px 8px; border-radius:5px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:10px; cursor:pointer;">📋</button>';
+                html += '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:' + st.bg + '; color:' + st.color + ';">' + (p.appointment_status || 'Pending') + '</span>';
+                html += '</div></div>';
+            });
+        }
+        html += '</div>';
+    });
+    html += '</div>';
+    contentEl.innerHTML = html;
+}
+
+function renderScheduleMonthView(contentEl) {
+    var filtered = scheduleProviderFilter === 'all' ? scheduleAllData : scheduleAllData.filter(function(p) { return (p.provider || 'Unknown') === scheduleProviderFilter; });
+    var mr = getMonthRange(scheduleSelectedDate);
+    var todayStr = getPhoenixDateStr(new Date());
+
+    // Group by date
+    var byDate = {};
+    filtered.forEach(function(p) {
+        var apptDate = '';
+        if (p.date) {
+            var match = p.date.match(/^(\d{4}-\d{2}-\d{2})/);
+            apptDate = match ? match[1] : '';
+            if (!apptDate) {
+                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }); } catch(e) {}
+            }
+        }
+        if (!byDate[apptDate]) byDate[apptDate] = [];
+        byDate[apptDate].push(p);
+    });
+
+    // Build calendar grid
+    var firstDay = new Date(mr.start);
+    var startDayOfWeek = firstDay.getDay();
+    var daysInMonth = mr.end.getDate();
+
+    var html = '<div style="margin-bottom:6px;">';
+    // Day headers
+    html += '<div style="display:grid; grid-template-columns:repeat(7, 1fr); gap:2px; margin-bottom:4px;">';
+    ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach(function(d) {
+        html += '<div style="text-align:center; font-size:10px; color:var(--text-tertiary); font-weight:600; padding:4px 0;">' + d + '</div>';
+    });
+    html += '</div>';
+
+    // Calendar cells
+    html += '<div style="display:grid; grid-template-columns:repeat(7, 1fr); gap:2px;">';
+    // Empty cells for start
+    for (var e = 0; e < startDayOfWeek; e++) {
+        html += '<div style="min-height:60px;"></div>';
+    }
+    for (var day = 1; day <= daysInMonth; day++) {
+        var cellDate = new Date(scheduleSelectedDate.getFullYear(), scheduleSelectedDate.getMonth(), day);
+        var cellStr = getPhoenixDateStr(cellDate);
+        var dayAppts = byDate[cellStr] || [];
+        var isToday = cellStr === todayStr;
+        var cellBg = isToday ? 'rgba(0,212,255,0.1)' : dayAppts.length > 0 ? 'var(--card)' : 'transparent';
+        var cellBorder = isToday ? 'rgba(0,212,255,0.4)' : dayAppts.length > 0 ? 'var(--border-light)' : 'rgba(255,255,255,0.03)';
+
+        html += '<div onclick="scheduleSelectedDate=new Date(' + cellDate.getFullYear() + ',' + cellDate.getMonth() + ',' + cellDate.getDate() + '); setScheduleViewMode(\'day\')" style="min-height:60px; background:' + cellBg + '; border:1px solid ' + cellBorder + '; border-radius:6px; padding:4px; cursor:pointer; overflow:hidden;" title="' + dayAppts.length + ' appointments">';
+        html += '<div style="font-size:11px; font-weight:' + (isToday ? '700' : '500') + '; color:' + (isToday ? 'var(--cyan)' : 'var(--text-primary)') + '; margin-bottom:2px;">' + day + '</div>';
+        if (dayAppts.length > 0) {
+            html += '<div style="font-size:9px; color:var(--cyan); font-weight:600;">' + dayAppts.length + ' appt' + (dayAppts.length > 1 ? 's' : '') + '</div>';
+            // Show first 2 names
+            dayAppts.slice(0, 2).forEach(function(p) {
+                html += '<div style="font-size:8px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.time || '') + ' ' + (p.full_name || '').split(' ')[0] + '</div>';
+            });
+            if (dayAppts.length > 2) html += '<div style="font-size:8px; color:var(--text-tertiary);">+' + (dayAppts.length - 2) + ' more</div>';
+        }
+        html += '</div>';
+    }
+    html += '</div></div>';
+
+    // Summary below calendar
+    html += '<div style="margin-top:10px; padding:12px; background:var(--card); border:1px solid var(--border-light); border-radius:10px;">';
+    html += '<div style="font-size:13px; font-weight:600; color:var(--text-primary); margin-bottom:6px;">' + filtered.length + ' total appointments this month</div>';
+    // Group by type
+    var typeCount = {};
+    filtered.forEach(function(p) { var t = p.appointment_type || 'Other'; typeCount[t] = (typeCount[t] || 0) + 1; });
+    Object.keys(typeCount).sort().forEach(function(t) {
+        html += '<div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:var(--text-secondary);">' + t + '</span><span style="color:var(--text-tertiary);">' + typeCount[t] + '</span></div>';
+    });
+    html += '</div>';
+
+    contentEl.innerHTML = html;
+}
+
+// ─── ADD PATIENT TO SCHEDULE MODAL ──────────────────────────
+
+async function showAddToScheduleModal() {
+    var existing = document.getElementById('addScheduleModal');
+    if (existing) existing.remove();
+
+    // Load appointment types if not cached
+    if (scheduleAppointmentTypes.length === 0) {
+        try {
+            var data = await apiFetch('/ops/api/ipad/schedule/', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'get_appointment_types' })
+            });
+            scheduleAppointmentTypes = data.appointment_types || [];
+        } catch (e) {
+            console.error('[Schedule] Failed to load appointment types:', e);
+        }
+    }
+
+    var typeOptions = scheduleAppointmentTypes.map(function(t) {
+        return '<option value="' + t.id + '" data-length="' + (t.length || 30) + '">' + sanitize(t.name) + ' (' + (t.length || 30) + 'min)</option>';
+    }).join('');
+
+    var providerOptions = '<option value="12088269">Phil Schafer NP</option><option value="12093125">Dr. Aaron Whitten</option>';
+
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="addScheduleModal" class="modal-overlay visible" style="display:flex; z-index:10001;">
+            <div class="modal" style="max-width:440px; padding:24px; max-height:90vh; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <h3 style="margin:0; font-size:18px; color:var(--text-primary);">Add to Schedule</h3>
+                    <button onclick="document.getElementById('addScheduleModal').remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+                </div>
+
+                <!-- Patient Search -->
+                <div style="margin-bottom:14px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Patient *</label>
+                    <input id="addSchedPatientSearch" type="text" placeholder="Search by name..." oninput="searchPatientsForSchedule(this.value)" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                    <div id="addSchedPatientResults" style="max-height:120px; overflow-y:auto; margin-top:4px;"></div>
+                </div>
+                <input id="addSchedPatientId" type="hidden" value="">
+                <div id="addSchedSelectedPatient" style="display:none; padding:8px 12px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); border-radius:8px; margin-bottom:14px; font-size:13px; color:var(--cyan);"></div>
+
+                <!-- Provider -->
+                <div style="margin-bottom:14px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Provider *</label>
+                    <select id="addSchedProvider" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                        ${providerOptions}
+                    </select>
+                </div>
+
+                <!-- Appointment Type -->
+                <div style="margin-bottom:14px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Appointment Type *</label>
+                    <select id="addSchedType" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                        <option value="">Select type...</option>
+                        ${typeOptions}
+                    </select>
+                </div>
+
+                <!-- Date & Time -->
+                <div style="display:flex; gap:10px; margin-bottom:14px;">
+                    <div style="flex:1;">
+                        <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Date *</label>
+                        <input id="addSchedDate" type="date" value="${getPhoenixDateStr(scheduleSelectedDate)}" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                    </div>
+                    <div style="flex:1;">
+                        <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Time *</label>
+                        <input id="addSchedTime" type="time" value="09:00" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                    </div>
+                </div>
+
+                <!-- Contact Type -->
+                <div style="margin-bottom:16px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Contact Type</label>
+                    <div style="display:flex; gap:8px;">
+                        <button onclick="document.getElementById('addSchedContactType').value='In Person'; this.style.background='rgba(0,212,255,0.15)'; this.style.borderColor='var(--cyan)'; this.style.color='var(--cyan)'; this.nextElementSibling.style.background='var(--surface)'; this.nextElementSibling.style.borderColor='var(--border-light)'; this.nextElementSibling.style.color='var(--text-secondary)';" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--cyan); background:rgba(0,212,255,0.15); color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;">In-Person</button>
+                        <button onclick="document.getElementById('addSchedContactType').value='Secure Videochat'; this.style.background='rgba(0,212,255,0.15)'; this.style.borderColor='var(--cyan)'; this.style.color='var(--cyan)'; this.previousElementSibling.style.background='var(--surface)'; this.previousElementSibling.style.borderColor='var(--border-light)'; this.previousElementSibling.style.color='var(--text-secondary)';" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;">Telehealth</button>
+                    </div>
+                    <input id="addSchedContactType" type="hidden" value="In Person">
+                </div>
+
+                <button onclick="submitAddToSchedule()" id="addSchedBtn" style="width:100%; padding:12px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:8px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer; font-family:inherit;">Add to Schedule</button>
+            </div>
+        </div>
+    `);
+}
+
+var _schedSearchTimeout = null;
+function searchPatientsForSchedule(searchQuery) {
+    clearTimeout(_schedSearchTimeout);
+    if (!searchQuery || searchQuery.length < 2) { document.getElementById('addSchedPatientResults').innerHTML = ''; return; }
+    _schedSearchTimeout = setTimeout(async function() {
+        try {
+            var data = await apiFetch('/ops/api/ipad/schedule/', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'search_patients', search: searchQuery })
+            });
+            var resultsEl = document.getElementById('addSchedPatientResults');
+            if (!resultsEl) return;
+            var pts = data.patients || [];
+            if (pts.length === 0) {
+                resultsEl.innerHTML = '<div style="padding:8px; font-size:12px; color:var(--text-tertiary);">No patients found</div>';
+                return;
+            }
+            resultsEl.innerHTML = pts.map(function(p) {
+                return '<div onclick="selectPatientForSchedule(\'' + (p.healthie_id || '') + '\', \'' + sanitize(p.full_name) + '\')" style="padding:8px 10px; cursor:pointer; border-radius:6px; font-size:13px; color:var(--text-primary);" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">' + sanitize(p.full_name) + (p.healthie_id ? '' : ' <span style=\\"color:#ef4444; font-size:10px;\\">(no Healthie ID)</span>') + '</div>';
+            }).join('');
+        } catch (e) { console.error('[Schedule] Patient search error:', e); }
+    }, 300);
+}
+
+function selectPatientForSchedule(healthieId, name) {
+    if (!healthieId) { showToast('Patient has no Healthie ID — cannot schedule', 'error'); return; }
+    document.getElementById('addSchedPatientId').value = healthieId;
+    document.getElementById('addSchedSelectedPatient').style.display = 'block';
+    document.getElementById('addSchedSelectedPatient').textContent = '✓ ' + name;
+    document.getElementById('addSchedPatientResults').innerHTML = '';
+    document.getElementById('addSchedPatientSearch').value = name;
+}
+
+async function submitAddToSchedule() {
+    var patientId = document.getElementById('addSchedPatientId').value;
+    var providerId = document.getElementById('addSchedProvider').value;
+    var typeId = document.getElementById('addSchedType').value;
+    var dateVal = document.getElementById('addSchedDate').value;
+    var timeVal = document.getElementById('addSchedTime').value;
+    var contactType = document.getElementById('addSchedContactType').value;
+
+    if (!patientId) { showToast('Please select a patient', 'error'); return; }
+    if (!typeId) { showToast('Please select appointment type', 'error'); return; }
+    if (!dateVal || !timeVal) { showToast('Please select date and time', 'error'); return; }
+
+    // Construct datetime in Phoenix timezone (MST = UTC-7)
+    var datetime = dateVal + 'T' + timeVal + ':00-07:00';
+
+    var btn = document.getElementById('addSchedBtn');
+    btn.textContent = 'Scheduling...'; btn.disabled = true;
+
+    try {
+        var data = await apiFetch('/ops/api/ipad/schedule/', {
+            method: 'POST',
+            body: JSON.stringify({
+                action: 'create',
+                patient_id: patientId,
+                provider_id: providerId,
+                appointment_type_id: typeId,
+                datetime: datetime,
+                contact_type: contactType
+            })
+        });
+        document.getElementById('addScheduleModal')?.remove();
+        showToast('Appointment created successfully!', 'success');
+        // Refresh schedule
+        await loadScheduleForRange(true);
+    } catch (e) {
+        console.error('[Schedule] Create error:', e);
+        showToast('Failed: ' + (e.message || 'Error'), 'error');
+        btn.textContent = 'Add to Schedule'; btn.disabled = false;
     }
 }
 
@@ -8828,7 +9327,7 @@ function getApptStatusStyle(st) {
 function renderScheduleList(contentEl) {
     var filtered = scheduleProviderFilter === 'all' ? scheduleAllData : scheduleAllData.filter(function(p) { return (p.provider || 'Unknown') === scheduleProviderFilter; });
     if (filtered.length === 0) { contentEl.innerHTML = '<div class="empty-state-card"><h3>No appointments</h3><p>No appointments for this provider today.</p></div>'; return; }
-    filtered.sort(function(a, b) { return new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime(); });
+    filtered.sort(function(a, b) { return parseHealthieDate(a.date).getTime() - parseHealthieDate(b.date).getTime(); });
 
     var activeAppts = filtered.filter(function(p) { return p.appointment_status !== 'Completed' && p.appointment_status !== 'No Show' && p.appointment_status !== 'Cancelled'; });
     var readyCount = activeAppts.filter(function(p) { return p.appointment_id && isPrevisitComplete(p.appointment_id); }).length;
@@ -11397,13 +11896,400 @@ async function printPeptideLabel(dispenseId) {
 
 // sendInvoice() removed per admin request
 
+// ─── HEALTHIE MESSAGES TAB ──────────────────────────────────
+var messagesConversations = [];
+var messagesCurrentConvo = null;
+var messagesCurrentConvoName = null;
+var messagesCurrentMessages = [];
+var messagesLoading = false;
+
+async function renderMessagesView(container) {
+    container.innerHTML = '<div style="padding: 0 4px;">' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
+        '<div><h1 style="font-size:24px; margin:0; color:var(--text-primary);">Messages</h1>' +
+        '<p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;">Healthie Messaging</p></div>' +
+        '<div style="display:flex; gap:6px;">' +
+        '<button onclick="loadMessagesConversations(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>' +
+        '<button onclick="showNewConversationModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ New</button>' +
+        '</div></div>' +
+        '<div id="messagesContainer"><div class="loading-spinner" style="margin:40px auto;"></div></div>' +
+        '</div>';
+
+    await new Promise(resolve => setTimeout(resolve, 50));
+    await loadMessagesConversations();
+
+    // Auto-refresh every 30 seconds
+    if (window._messagesPollTimer) clearInterval(window._messagesPollTimer);
+    window._messagesPollTimer = setInterval(async function() {
+        if (currentTab !== 'messages') { clearInterval(window._messagesPollTimer); return; }
+        if (!messagesCurrentConvo) {
+            await loadMessagesConversations();
+        } else {
+            await loadConversationMessages(messagesCurrentConvo, true);
+        }
+    }, 30000);
+}
+
+async function loadMessagesConversations(force) {
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    if (!force && messagesConversations.length > 0) {
+        renderConversationList(containerEl);
+        return;
+    }
+    containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+    try {
+        var data = await apiFetch('/ops/api/ipad/messages/');
+        messagesConversations = data.conversations || [];
+        // Update badge
+        var unreadCount = messagesConversations.filter(function(c) { return c.unread; }).length;
+        var badge = document.getElementById('messagesBadge');
+        if (badge) {
+            if (unreadCount > 0) { badge.textContent = unreadCount; badge.classList.remove('hidden'); }
+            else { badge.classList.add('hidden'); }
+        }
+        renderConversationList(containerEl);
+    } catch (e) {
+        console.error('[Messages] Load error:', e);
+        containerEl.innerHTML = '<div class="empty-state-card"><h3>Could not load messages</h3><p>' + (e.message || 'Network error') + '</p><button onclick="loadMessagesConversations(true)" class="btn-primary" style="margin-top:8px;">Try Again</button></div>';
+    }
+}
+
+function renderConversationList(containerEl) {
+    if (messagesConversations.length === 0) {
+        containerEl.innerHTML = '<div class="empty-state-card"><div class="empty-state-icon">💬</div><h3>No Conversations</h3><p>No active conversations found.</p></div>';
+        return;
+    }
+    var html = '';
+    messagesConversations.forEach(function(c) {
+        var timeStr = c.updated_at ? formatRelativeTime(c.updated_at) : '';
+        var unreadDot = c.unread ? '<div style="width:8px; height:8px; border-radius:50%; background:#22d3ee; flex-shrink:0;"></div>' : '';
+        var plainMsg = healthieToPlainText(c.last_message || '');
+        var preview = plainMsg.substring(0, 80);
+        if (plainMsg.length > 80) preview += '...';
+        html += '<div onclick="openConversation(\'' + c.id + '\')" style="background:var(--card); border:1px solid ' + (c.unread ? 'rgba(34,211,238,0.3)' : 'var(--border-light)') + '; border-radius:12px; padding:14px 16px; margin-bottom:8px; cursor:pointer; transition:background 0.15s;" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'var(--card)\'">';
+        html += '<div style="display:flex; align-items:center; justify-content:space-between;">';
+        html += '<div style="display:flex; align-items:center; gap:10px; flex:1; min-width:0;">';
+        html += unreadDot;
+        html += '<div style="width:40px; height:40px; border-radius:10px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--cyan); flex-shrink:0;">💬</div>';
+        html += '<div style="min-width:0; flex:1;">';
+        html += '<div style="font-size:14px; font-weight:' + (c.unread ? '700' : '500') + '; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + sanitize(c.name) + '</div>';
+        if (preview) html += '<div style="font-size:12px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px;">' + sanitize(preview) + '</div>';
+        html += '</div></div>';
+        html += '<div style="text-align:right; flex-shrink:0; margin-left:8px;">';
+        html += '<div style="font-size:11px; color:var(--text-tertiary);">' + timeStr + '</div>';
+        if (c.member_count > 2) html += '<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">' + c.member_count + ' members</div>';
+        html += '</div></div></div>';
+    });
+    containerEl.innerHTML = html;
+}
+
+// FIX(2026-03-25): Healthie dates like "2026-03-25 11:11:36 -0700" don't parse in Safari.
+// Normalize to ISO 8601 so all browsers handle it.
+function parseHealthieDate(dateStr) {
+    if (!dateStr) return new Date(NaN);
+    // "2026-03-25 11:11:36 -0700" → "2026-03-25T11:11:36-07:00"
+    var s = String(dateStr).trim();
+    // Replace first space (between date and time) with T
+    s = s.replace(/^(\d{4}-\d{2}-\d{2})\s+/, '$1T');
+    // Fix timezone: " -0700" → "-07:00"
+    s = s.replace(/\s+([+-])(\d{2})(\d{2})$/, '$1$2:$3');
+    var d = new Date(s);
+    return isNaN(d.getTime()) ? new Date(dateStr) : d;
+}
+
+function formatRelativeTime(dateStr) {
+    var d = parseHealthieDate(dateStr);
+    var now = new Date();
+    var diffMs = now.getTime() - d.getTime();
+    var diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'now';
+    if (diffMin < 60) return diffMin + 'm ago';
+    var diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return diffHr + 'h ago';
+    var diffDays = Math.floor(diffHr / 24);
+    if (diffDays < 7) return diffDays + 'd ago';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+async function openConversation(convoId) {
+    messagesCurrentConvo = convoId;
+    // Cache the conversation name from the list so we have it when messages load
+    var cached = (messagesConversations || []).find(function(c) { return c.id === convoId; });
+    messagesCurrentConvoName = cached ? cached.name : null;
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+    await loadConversationMessages(convoId);
+}
+
+async function loadConversationMessages(convoId, silent) {
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    if (!silent) containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+    try {
+        var data = await apiFetch('/ops/api/ipad/messages/?conversation_id=' + convoId);
+        messagesCurrentMessages = data.messages || [];
+        renderConversationThread(containerEl, data.conversation, messagesCurrentMessages);
+    } catch (e) {
+        console.error('[Messages] Thread load error:', e);
+        containerEl.innerHTML = '<div class="empty-state-card"><h3>Could not load conversation</h3><p>' + (e.message || 'Error') + '</p></div>';
+    }
+}
+
+function renderConversationThread(containerEl, convo, messages) {
+    // Use cached name from conversation list if server returned generic name
+    var convoName = (messagesCurrentConvoName ? sanitize(messagesCurrentConvoName) : null) || (convo ? sanitize(convo.name) : 'Conversation');
+    var html = '';
+    // Header with back button
+    html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--border-light);">';
+    html += '<button onclick="messagesCurrentConvo=null; loadMessagesConversations(true);" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">← Back</button>';
+    html += '<div style="font-size:16px; font-weight:600; color:var(--text-primary); flex:1;">' + convoName + '</div>';
+    html += '<button onclick="loadConversationMessages(\'' + (convo?.id || '') + '\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:12px; cursor:pointer;">↻</button>';
+    html += '</div>';
+
+    // Messages list
+    html += '<div id="messagesThread" style="flex:1; overflow-y:auto; max-height:calc(100vh - 280px); padding:4px 0;">';
+    if (messages.length === 0) {
+        html += '<div style="text-align:center; color:var(--text-tertiary); padding:40px 0; font-size:14px;">No messages yet</div>';
+    } else {
+        messages.forEach(function(msg) {
+            var timeStr = msg.created_at ? parseHealthieDate(msg.created_at).toLocaleString('en-US', {
+                month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix'
+            }) : '';
+            var isProvider = (msg.sender_name || '').toLowerCase().includes('whitten') || (msg.sender_name || '').toLowerCase().includes('schafer');
+            var align = isProvider ? 'flex-end' : 'flex-start';
+            var bubbleBg = isProvider ? 'rgba(0,212,255,0.15)' : 'var(--surface)';
+            var bubbleBorder = isProvider ? 'rgba(0,212,255,0.2)' : 'var(--border-light)';
+
+            html += '<div style="display:flex; flex-direction:column; align-items:' + align + '; margin-bottom:10px;">';
+            html += '<div style="font-size:10px; color:var(--text-tertiary); margin-bottom:3px;">' + sanitize(msg.sender_name) + ' · ' + timeStr + '</div>';
+            html += '<div style="max-width:80%; padding:10px 14px; border-radius:12px; background:' + bubbleBg + '; border:1px solid ' + bubbleBorder + '; font-size:14px; color:var(--text-primary); line-height:1.5; word-wrap:break-word;">';
+            html += renderHealthieMessage(msg.content);
+            if (msg.has_attachment) html += '<div style="margin-top:6px; font-size:11px; color:var(--cyan);">📎 Attachment</div>';
+            html += '</div></div>';
+        });
+    }
+    html += '</div>';
+
+    // Compose bar
+    html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border-light); display:flex; gap:8px; align-items:flex-end;">';
+    html += '<button id="msgMicBtn" onclick="toggleSpeechToText()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Speech to text">🎙️</button>';
+    html += '<textarea id="msgComposeInput" rows="2" placeholder="Type or tap 🎙️ to dictate..." style="flex:1; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; outline:none;" onkeydown="if(event.key===\'Enter\' && !event.shiftKey){event.preventDefault(); sendMessageInConvo();}"></textarea>';
+    html += '<button onclick="sendMessageInConvo()" style="padding:10px 18px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:10px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer; white-space:nowrap;">Send</button>';
+    html += '</div>';
+
+    containerEl.innerHTML = html;
+
+    // Scroll to bottom
+    var thread = document.getElementById('messagesThread');
+    if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+async function sendMessageInConvo() {
+    var input = document.getElementById('msgComposeInput');
+    if (!input) return;
+    var content = input.value.trim();
+    if (!content || !messagesCurrentConvo) return;
+
+    input.disabled = true;
+    input.value = 'Sending...';
+
+    try {
+        await apiFetch('/ops/api/ipad/messages/', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'send', conversation_id: messagesCurrentConvo, content: content })
+        });
+        input.value = '';
+        input.disabled = false;
+        await loadConversationMessages(messagesCurrentConvo);
+        showToast('Message sent', 'success');
+    } catch (e) {
+        console.error('[Messages] Send error:', e);
+        input.value = content;
+        input.disabled = false;
+        showToast('Failed to send: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// Speech-to-text — shared helper. No cached state. Only appends final results
+// to the input. You can freely delete/edit the textarea without interference.
+function _startDictation(inputId, btnId, onStop) {
+    var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) { showToast('Speech recognition not supported', 'error'); return null; }
+    var input = document.getElementById(inputId);
+    var btn = document.getElementById(btnId);
+    if (!input || !btn) return null;
+
+    var rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = false; // only fire when words are final — no overwrites
+    rec.lang = 'en-US';
+    rec._active = true;
+
+    rec.onresult = function(event) {
+        for (var i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+                var text = event.results[i][0].transcript.trim();
+                if (text) {
+                    // Just append to whatever is currently in the box
+                    var cur = input.value;
+                    input.value = cur + (cur && !cur.endsWith(' ') ? ' ' : '') + text;
+                }
+            }
+        }
+    };
+    rec.onerror = function(e) {
+        if (e.error === 'not-allowed') showToast('Microphone access denied', 'error');
+        else if (e.error !== 'no-speech' && e.error !== 'aborted') showToast('Mic error: ' + e.error, 'error');
+        rec._active = false;
+        if (onStop) onStop();
+    };
+    rec.onend = function() {
+        // Safari kills recognition after silence — restart if still active
+        if (rec._active) {
+            try { rec.start(); } catch(e) { rec._active = false; if (onStop) onStop(); }
+        }
+    };
+    try {
+        rec.start();
+        btn.style.background = 'rgba(239,68,68,0.2)';
+        btn.style.borderColor = '#ef4444';
+        btn.style.color = '#ef4444';
+        input.placeholder = 'Listening — speak now...';
+    } catch(e) { showToast('Could not start microphone', 'error'); return null; }
+    return rec;
+}
+
+function _stopDictation(rec, inputId, btnId, defaults) {
+    if (rec) { rec._active = false; try { rec.stop(); } catch(e) {} }
+    var btn = document.getElementById(btnId);
+    var input = document.getElementById(inputId);
+    if (btn) { btn.style.background = defaults.bg || 'var(--surface)'; btn.style.borderColor = defaults.border || 'var(--border-light)'; btn.style.color = defaults.color || 'var(--text-secondary)'; if (defaults.text) btn.textContent = defaults.text; }
+    if (input) input.placeholder = defaults.placeholder || 'Type a message...';
+}
+
+// Message compose mic
+var _msgRec = null;
+function toggleSpeechToText() {
+    if (_msgRec && _msgRec._active) { _stopDictation(_msgRec, 'msgComposeInput', 'msgMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' }); _msgRec = null; return; }
+    _msgRec = _startDictation('msgComposeInput', 'msgMicBtn', function() {
+        _stopDictation(_msgRec, 'msgComposeInput', 'msgMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' }); _msgRec = null;
+    });
+}
+function stopSpeechToText() {
+    _stopDictation(_msgRec, 'msgComposeInput', 'msgMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' }); _msgRec = null;
+}
+
+// New conversation modal mic
+var _newConvoRec = null;
+function toggleNewConvoSpeech() {
+    if (_newConvoRec && _newConvoRec._active) { _stopDictation(_newConvoRec, 'newConvoMessage', 'newConvoMicBtn', { bg: 'none', text: '🎙️', placeholder: 'Type or tap 🎙️ to dictate...' }); _newConvoRec = null; return; }
+    _newConvoRec = _startDictation('newConvoMessage', 'newConvoMicBtn', function() {
+        _stopDictation(_newConvoRec, 'newConvoMessage', 'newConvoMicBtn', { bg: 'none', text: '🎙️', placeholder: 'Type or tap 🎙️ to dictate...' }); _newConvoRec = null;
+    });
+    if (_newConvoRec) { var b = document.getElementById('newConvoMicBtn'); if (b) b.textContent = '⏹️'; }
+}
+function stopNewConvoSpeech() {
+    _stopDictation(_newConvoRec, 'newConvoMessage', 'newConvoMicBtn', { bg: 'none', text: '🎙️', placeholder: 'Type or tap 🎙️ to dictate...' }); _newConvoRec = null;
+}
+
+function showNewConversationModal() {
+    var existing = document.getElementById('newConvoModal');
+    if (existing) existing.remove();
+
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="newConvoModal" class="modal-overlay visible" style="display:flex; z-index:10001;">
+            <div class="modal" style="max-width:420px; padding:24px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <h3 style="margin:0; font-size:18px; color:var(--text-primary);">New Conversation</h3>
+                    <button onclick="document.getElementById('newConvoModal').remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Search Patient</label>
+                    <input id="newConvoPatientSearch" type="text" placeholder="Patient name..." oninput="searchPatientsForConvo(this.value)" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                    <div id="newConvoPatientResults" style="max-height:150px; overflow-y:auto; margin-top:6px;"></div>
+                </div>
+                <input id="newConvoRecipientId" type="hidden" value="">
+                <div id="newConvoSelectedPatient" style="display:none; padding:8px 12px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); border-radius:8px; margin-bottom:12px; font-size:13px; color:var(--cyan);"></div>
+                <div style="margin-bottom:12px;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                        <label style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em;">Message</label>
+                        <button id="newConvoMicBtn" onclick="toggleNewConvoSpeech()" style="padding:2px 8px; background:none; border:1px solid var(--border-light); border-radius:6px; font-size:14px; cursor:pointer;" title="Dictate message">🎙️</button>
+                    </div>
+                    <textarea id="newConvoMessage" rows="3" placeholder="Type or tap 🎙️ to dictate..." style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; outline:none; box-sizing:border-box;"></textarea>
+                </div>
+                <button onclick="createNewConversation()" id="newConvoBtn" style="width:100%; padding:12px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:8px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer;">Create & Send</button>
+            </div>
+        </div>
+    `);
+}
+
+var _convoSearchTimeout = null;
+function searchPatientsForConvo(query) {
+    clearTimeout(_convoSearchTimeout);
+    if (!query || query.length < 2) { document.getElementById('newConvoPatientResults').innerHTML = ''; return; }
+    _convoSearchTimeout = setTimeout(async function() {
+        try {
+            // FIX(2026-03-25): Search Healthie users directly so all patients are findable
+            var data = await apiFetch('/ops/api/ipad/messages/', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'search_patients', search: query })
+            });
+            var resultsEl = document.getElementById('newConvoPatientResults');
+            if (!resultsEl) return;
+            var pts = data.patients || [];
+            if (pts.length === 0) {
+                resultsEl.innerHTML = '<div style="padding:8px; font-size:12px; color:var(--text-tertiary);">No patients found</div>';
+                return;
+            }
+            resultsEl.innerHTML = pts.map(function(p) {
+                return '<div onclick="selectPatientForConvo(\'' + (p.healthie_id || '') + '\', \'' + sanitize(p.full_name) + '\')" style="padding:8px 10px; cursor:pointer; border-radius:6px; font-size:13px; color:var(--text-primary);" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">' + sanitize(p.full_name) + (p.email ? ' <span style="color:var(--text-tertiary); font-size:10px;">' + sanitize(p.email) + '</span>' : '') + '</div>';
+            }).join('');
+        } catch (e) { console.error('[Messages] Patient search error:', e); }
+    }, 300);
+}
+
+function selectPatientForConvo(healthieId, name) {
+    if (!healthieId) { showToast('Patient has no Healthie ID', 'error'); return; }
+    document.getElementById('newConvoRecipientId').value = healthieId;
+    document.getElementById('newConvoSelectedPatient').style.display = 'block';
+    document.getElementById('newConvoSelectedPatient').textContent = '✓ ' + name;
+    document.getElementById('newConvoPatientResults').innerHTML = '';
+    document.getElementById('newConvoPatientSearch').value = name;
+}
+
+async function createNewConversation() {
+    var recipientId = document.getElementById('newConvoRecipientId').value;
+    var content = document.getElementById('newConvoMessage').value.trim();
+    if (!recipientId) { showToast('Please select a patient', 'error'); return; }
+    var btn = document.getElementById('newConvoBtn');
+    btn.textContent = 'Creating...'; btn.disabled = true;
+    try {
+        var data = await apiFetch('/ops/api/ipad/messages/', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'create', recipient_id: recipientId, content: content })
+        });
+        document.getElementById('newConvoModal')?.remove();
+        showToast('Conversation created', 'success');
+        if (data.conversation?.id) {
+            await openConversation(data.conversation.id);
+        } else {
+            await loadMessagesConversations(true);
+        }
+    } catch (e) {
+        console.error('[Messages] Create error:', e);
+        showToast('Failed: ' + (e.message || 'Error'), 'error');
+        btn.textContent = 'Create & Send'; btn.disabled = false;
+    }
+}
+
 // Start scribe/recording directly from patient chart panel
 function startScribeFromChart(patientId, patientName) {
     if (!patientId) {
         showToast('No patient selected', 'error');
         return;
     }
-    // Switch to scribe tab and pre-fill patient
     window.location.hash = '#scribe';
     setTimeout(() => {
         const scribeSearch = document.getElementById('scribePatientSearch') || document.querySelector('#view-scribe input[type="text"]');
@@ -11414,4 +12300,3 @@ function startScribeFromChart(patientId, patientName) {
         showToast(`Switched to Scribe for ${patientName}`, 'info');
     }, 300);
 }
-

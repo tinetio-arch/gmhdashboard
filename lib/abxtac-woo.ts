@@ -542,6 +542,66 @@ ABXTac Team`;
       throw error;
     }
   }
+
+  // ─── COUPON MANAGEMENT (for provider-verified tier discounts) ────────
+
+  /**
+   * Find a coupon by code. Returns null if not found.
+   */
+  async getCouponByCode(code: string): Promise<any | null> {
+    try {
+      const response = await this.client.get('/coupons', {
+        params: { code, per_page: 1 }
+      });
+      return response.data[0] || null;
+    } catch (error: any) {
+      console.error(`Error fetching coupon ${code}:`, error.response?.data || error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Create a new coupon.
+   */
+  async createCoupon(payload: Record<string, any>): Promise<any> {
+    try {
+      const response = await this.client.post('/coupons', payload);
+      return response.data;
+    } catch (error: any) {
+      // If duplicate, return null instead of throwing
+      if (error.response?.data?.code === 'woocommerce_rest_coupon_code_already_exists') {
+        return null;
+      }
+      console.error('Error creating coupon:', error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Update an existing coupon.
+   */
+  async updateCoupon(couponId: number, payload: Record<string, any>): Promise<any> {
+    try {
+      const response = await this.client.put(`/coupons/${couponId}`, payload);
+      return response.data;
+    } catch (error: any) {
+      console.error(`Error updating coupon #${couponId}:`, error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Create or update a coupon — idempotent upsert by code.
+   */
+  async syncCoupon(payload: Record<string, any>): Promise<{ action: 'created' | 'updated'; coupon: any }> {
+    const existing = await this.getCouponByCode(payload.code);
+    if (existing) {
+      const coupon = await this.updateCoupon(existing.id, payload);
+      return { action: 'updated', coupon };
+    }
+    const coupon = await this.createCoupon(payload);
+    return { action: 'created', coupon };
+  }
 }
 
 // Export singleton instance if environment variables are set
