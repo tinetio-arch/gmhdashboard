@@ -1,20 +1,29 @@
-import { createGHLClient } from './ghl';
+import { healthieGraphQL } from './healthieApi';
 import { patientsService } from './patients';
 
 /**
  * Scheduling domain module
  * ------------------------
- * Abstracts GoHighLevel appointment creation/rescheduling so higher layers
- * can request follow-ups without dealing with raw API payloads.
+ * Creates/reschedules/cancels appointments in Healthie EHR.
+ *
+ * MIGRATED (2026-03-25): Switched from GHL calendar to Healthie GraphQL.
+ * GHL is no longer used for scheduling — only for CRM/SMS.
  */
+
+// Default provider: Dr. Aaron Whitten
+const DEFAULT_PROVIDER_ID = '12093125';
 
 export type AppointmentDetails = {
   patientId: string;
-  calendarId: string;
+  /** Healthie appointment_type_id (e.g. '504725' for Initial Male HRT Consult) */
   appointmentTypeId?: string;
+  /** Healthie provider ID (defaults to Dr. Whitten 12093125) */
+  providerId?: string;
   startAt: string; // ISO8601
   endAt?: string;
   notes?: string;
+  location?: string;
+  contactType?: string;
 };
 
 export type AppointmentRecord = AppointmentDetails & {
@@ -28,59 +37,116 @@ export interface SchedulingService {
   cancel(appointmentId: string, reason?: string): Promise<void>;
 }
 
-function requireGhl() {
-  const client = createGHLClient();
-  if (!client) {
-    throw new Error('GHL client not configured.');
-  }
-  return client;
-}
-
 export const schedulingService: SchedulingService = {
   async schedule(details) {
-    const ghlClient = requireGhl();
     const patient = await patientsService.getById(details.patientId);
     if (!patient) {
       throw new Error(`Patient ${details.patientId} not found.`);
     }
-    const contactId = await patientsService.ensureGhlContact(details.patientId);
 
-    const response = await ghlClient.createAppointment({
-      contactId,
-      calendarId: details.calendarId,
-      appointmentTypeId: details.appointmentTypeId,
-      startTime: details.startAt,
-      endTime: details.endAt,
-      notes: details.notes,
+    // Resolve Healthie client ID
+    const healthieClientId = (patient as any).healthie_client_id;
+    if (!healthieClientId) {
+      throw new Error(`Patient ${details.patientId} has no Healthie client ID. Cannot create appointment.`);
+    }
+
+    const providerId = details.providerId || DEFAULT_PROVIDER_ID;
+
+    const data = await healthieGraphQL<{
+      createAppointment: {
+        appointment: { id: string; date: string } | null;
+        messages: Array<{ field: string; message: string }>;
+      };
+    }>(`
+      mutation CreateAppointment(
+        $patientId: String!,
+        $providerId: String!,
+        $typeId: String!,
+        $datetime: String!,
+        $notes: String,
+        $location: String,
+        $contactType: String
+      ) {
+        createAppointment(input: {
+          user_id: $patientId,
+          other_party_id: $providerId,
+          appointment_type_id: $typeId,
+          datetime: $datetime,
+          notes: $notes,
+          location: $location,
+          contact_type: $contactType
+        }) {
+          appointment { id date }
+          messages { field message }
+        }
+      }
+    `, {
+      patientId: healthieClientId,
+      providerId,
+      typeId: details.appointmentTypeId || '511073', // Fallback: Migrated Appointment type
+      datetime: details.startAt,
+      notes: details.notes || null,
+      location: details.location || null,
+      contactType: details.contactType || null,
     });
+
+    if (data.createAppointment?.messages?.length) {
+      const errMsg = data.createAppointment.messages.map(m => m.message).join(', ');
+      throw new Error(`Healthie createAppointment failed: ${errMsg}`);
+    }
+
+    const appt = data.createAppointment?.appointment;
+    if (!appt) {
+      throw new Error('Healthie createAppointment returned no appointment.');
+    }
+
+    console.log(`[scheduling] Created Healthie appointment ${appt.id} for patient ${details.patientId}`);
 
     return {
       ...details,
-      appointmentId: response.id,
+      appointmentId: appt.id,
       status: 'scheduled',
     };
   },
 
   async reschedule(appointmentId, newDetails) {
-    const ghlClient = requireGhl();
-    const updates: Record<string, unknown> = {};
-    if (newDetails.startAt) updates.startTime = newDetails.startAt;
-    if (newDetails.endAt) updates.endTime = newDetails.endAt;
-    if (newDetails.notes) updates.notes = newDetails.notes;
+    const variables: Record<string, unknown> = { id: appointmentId };
+    if (newDetails.startAt) variables.datetime = newDetails.startAt;
+    if (newDetails.notes) variables.notes = newDetails.notes;
+    if (newDetails.providerId) variables.other_party_id = newDetails.providerId;
 
-    if (Object.keys(updates).length === 0) {
-      return;
+    if (Object.keys(variables).length <= 1) {
+      return; // Nothing to update besides ID
     }
 
-    await ghlClient.rescheduleAppointment(appointmentId, updates);
+    await healthieGraphQL(`
+      mutation RescheduleAppointment($input: updateAppointmentInput!) {
+        updateAppointment(input: $input) {
+          appointment { id date }
+          messages { field message }
+        }
+      }
+    `, { input: variables });
+
+    console.log(`[scheduling] Rescheduled Healthie appointment ${appointmentId}`);
   },
 
   async cancel(appointmentId, reason) {
-    const ghlClient = requireGhl();
-    await ghlClient.cancelAppointment(appointmentId);
-    if (reason) {
-      console.info(`[scheduling] Appointment ${appointmentId} cancelled: ${reason}`);
-    }
+    await healthieGraphQL(`
+      mutation CancelAppointment($input: updateAppointmentInput!) {
+        updateAppointment(input: $input) {
+          appointment { id pm_status }
+          messages { field message }
+        }
+      }
+    `, {
+      input: {
+        id: appointmentId,
+        pm_status: 'Cancelled',
+        other_cancellation_reason: reason || undefined,
+      },
+    });
+
+    console.log(`[scheduling] Cancelled Healthie appointment ${appointmentId}${reason ? ': ' + reason : ''}`);
   },
 };
-

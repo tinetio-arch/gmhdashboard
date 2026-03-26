@@ -3365,84 +3365,20 @@ function toggleEditDictation() {
         return;
     }
 
-    const input = document.getElementById('aiEditInput');
-    const btn = document.getElementById('aiEditMicBtn');
-    if (!input || !btn) return;
-
-    _editRecognition = new SpeechRecognition();
-    _editRecognition.continuous = true;
-    _editRecognition.interimResults = true;
-    _editRecognition.lang = 'en-US';
-
-    let finalTranscript = input.value || '';
-    let interimTranscript = '';
-
-    _editRecognition.onstart = () => {
+    // Use shared dictation helper — only appends final words, never overwrites
+    _editRecognition = _startDictation('aiEditInput', 'aiEditMicBtn', function() { stopEditDictation(); });
+    if (_editRecognition) {
         _editIsListening = true;
-        btn.style.background = 'rgba(239,68,68,0.2)';
-        btn.style.borderColor = '#ef4444';
-        btn.style.color = '#ef4444';
-        btn.innerHTML = '⏹️';
-        input.placeholder = 'Listening… speak your edit instruction';
-    };
-
-    _editRecognition.onresult = (event) => {
-        interimTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            const transcript = event.results[i][0].transcript;
-            if (event.results[i].isFinal) {
-                finalTranscript += (finalTranscript ? ' ' : '') + transcript.trim();
-            } else {
-                interimTranscript += transcript;
-            }
-        }
-        input.value = finalTranscript + (interimTranscript ? ' ' + interimTranscript : '');
-        // Auto-expand textarea
-        input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-    };
-
-    _editRecognition.onerror = (event) => {
-        console.warn('[Speech] Error:', event.error);
-        if (event.error !== 'no-speech' && event.error !== 'aborted') {
-            showToast('Mic error: ' + event.error, 'error');
-        }
-        stopEditDictation();
-    };
-
-    _editRecognition.onend = () => {
-        // Sync finalTranscript with what's actually in the input (user may have edited/deleted)
-        finalTranscript = input.value || '';
-        // Auto-restart if still supposed to be listening (Safari stops after silence)
-        if (_editIsListening) {
-            try { _editRecognition.start(); } catch (e) { stopEditDictation(); }
-        }
-    };
-
-    try {
-        _editRecognition.start();
-    } catch (e) {
-        showToast('Could not start microphone', 'error');
     }
 }
 
 function stopEditDictation() {
     _editIsListening = false;
-    if (_editRecognition) {
-        try { _editRecognition.stop(); } catch (e) {}
-        _editRecognition = null;
-    }
-    const btn = document.getElementById('aiEditMicBtn');
-    const input = document.getElementById('aiEditInput');
-    if (btn) {
-        btn.style.background = 'none';
-        btn.style.borderColor = 'var(--border)';
-        btn.style.color = 'var(--text-secondary)';
-        btn.innerHTML = '🎤';
-    }
-    if (input) {
-        input.placeholder = 'Dictate or type your edit…';
-    }
+    _stopDictation(_editRecognition, 'aiEditInput', 'aiEditMicBtn', {
+        bg: 'none', border: 'var(--border)', color: 'var(--text-secondary)',
+        text: '🎤', placeholder: 'Dictate or type your edit…'
+    });
+    _editRecognition = null;
 }
 
 // Clean up floating edit bar when leaving scribe review
@@ -4181,6 +4117,250 @@ function toggleInterestingPanel() {
     }
 }
 
+// ============ GROUP & TAG MANAGEMENT ============
+
+// Cache for groups list
+let _cachedGroups = null;
+
+async function fetchGroups() {
+    if (_cachedGroups) return _cachedGroups;
+    try {
+        const resp = await fetch('/ops/api/ipad/patient?action=groups', { credentials: 'include' });
+        const data = await resp.json();
+        if (data.success) {
+            _cachedGroups = data.groups;
+            return data.groups;
+        }
+    } catch (e) {
+        console.error('[Tags] Failed to fetch groups:', e);
+    }
+    return [];
+}
+
+function getChartHealthieId() {
+    return chartPanelData?.healthie_id || null;
+}
+
+async function showGroupPicker() {
+    const healthieId = getChartHealthieId();
+    if (!healthieId) return showToast('No Healthie ID found', 'error');
+
+    const groups = await fetchGroups();
+    if (!groups.length) return showToast('Failed to load groups', 'error');
+
+    const currentGroup = document.getElementById('patientGroupDisplay')?.textContent?.trim() || '';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'groupPickerOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    overlay.innerHTML = `
+        <div style="background:var(--surface-1,#1a1d23);border-radius:12px;padding:16px;min-width:280px;max-width:360px;border:1px solid var(--border,#333);">
+            <div style="font-size:13px;font-weight:600;color:var(--text-primary,#fff);margin-bottom:12px;">Change Patient Group</div>
+            <div style="font-size:10px;color:var(--text-tertiary,#888);margin-bottom:10px;">Current: <strong style="color:var(--cyan,#00d4ff);">${currentGroup || 'None'}</strong></div>
+            <div style="display:flex;flex-direction:column;gap:4px;max-height:300px;overflow-y:auto;">
+                ${groups.map(g => `
+                    <button onclick="changePatientGroup('${g.id}', '${g.name.replace(/'/g, "\\'")}')"
+                        style="text-align:left;padding:10px 12px;border-radius:8px;border:1px solid ${g.name === currentGroup ? 'var(--cyan,#00d4ff)' : 'var(--border,#333)'};
+                        background:${g.name === currentGroup ? 'rgba(0,212,255,0.1)' : 'var(--surface-2,#252830)'};
+                        color:var(--text-primary,#fff);font-size:12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+                        <span style="font-weight:${g.name === currentGroup ? '600' : '400'};">${g.name}</span>
+                        <span style="font-size:10px;color:var(--text-tertiary,#888);">${g.count} pts</span>
+                    </button>
+                `).join('')}
+            </div>
+            <button onclick="document.getElementById('groupPickerOverlay').remove()" style="width:100%;margin-top:10px;padding:8px;border-radius:8px;background:var(--surface-2,#252830);border:1px solid var(--border,#333);color:var(--text-secondary,#ccc);font-size:11px;cursor:pointer;">Cancel</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+async function changePatientGroup(groupId, groupName) {
+    const healthieId = getChartHealthieId();
+    if (!healthieId) return;
+
+    document.getElementById('groupPickerOverlay')?.remove();
+    showToast('Changing group...', 'info');
+
+    try {
+        const resp = await fetch('/ops/api/ipad/patient', {
+            method: 'PATCH',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'change_group', healthie_id: healthieId, group_id: groupId }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            const display = document.getElementById('patientGroupDisplay');
+            if (display) display.textContent = groupName;
+            showToast(`Group changed to ${groupName}`, 'success');
+        } else {
+            showToast('Failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (e) {
+        console.error('[Tags] changePatientGroup error:', e);
+        showToast('Failed to change group', 'error');
+    }
+}
+
+// Common service tags for quick-add
+const COMMON_TAGS = ['pelleting', 'weight-loss', 'peptides', 'iv-therapy', 'telehealth', 'first-responder'];
+
+async function showTagPicker() {
+    const healthieId = getChartHealthieId();
+    if (!healthieId) return showToast('No Healthie ID found', 'error');
+
+    const overlay = document.createElement('div');
+    overlay.id = 'tagPickerOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    overlay.innerHTML = `
+        <div style="background:var(--surface-1,#1a1d23);border-radius:12px;padding:16px;min-width:280px;max-width:360px;border:1px solid var(--border,#333);">
+            <div style="font-size:13px;font-weight:600;color:var(--text-primary,#fff);margin-bottom:12px;">Add Tag</div>
+            <div style="font-size:10px;color:var(--text-tertiary,#888);margin-bottom:10px;">Quick tags (service access):</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
+                ${COMMON_TAGS.map(tag => `
+                    <button onclick="addTagToPatient('${tag}')"
+                        style="padding:6px 12px;border-radius:6px;background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.3);color:#a855f7;font-size:11px;font-weight:500;cursor:pointer;">
+                        ${tag}
+                    </button>
+                `).join('')}
+            </div>
+            <div style="font-size:10px;color:var(--text-tertiary,#888);margin-bottom:6px;">Or enter custom tag:</div>
+            <div style="display:flex;gap:6px;">
+                <input id="customTagInput" type="text" placeholder="Custom tag name..."
+                    style="flex:1;padding:8px 10px;border-radius:8px;background:var(--surface-2,#252830);border:1px solid var(--border,#333);color:var(--text-primary,#fff);font-size:12px;outline:none;"
+                    onkeydown="if(event.key==='Enter'){addTagToPatient(this.value);}" />
+                <button onclick="addTagToPatient(document.getElementById('customTagInput').value)"
+                    style="padding:8px 14px;border-radius:8px;background:linear-gradient(135deg,#a855f7,#7c3aed);border:none;color:white;font-size:11px;font-weight:600;cursor:pointer;">Add</button>
+            </div>
+            <button onclick="document.getElementById('tagPickerOverlay').remove()" style="width:100%;margin-top:10px;padding:8px;border-radius:8px;background:var(--surface-2,#252830);border:1px solid var(--border,#333);color:var(--text-secondary,#ccc);font-size:11px;cursor:pointer;">Cancel</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+async function addTagToPatient(tagName) {
+    tagName = (tagName || '').trim().toLowerCase();
+    if (!tagName) return;
+
+    const healthieId = getChartHealthieId();
+    if (!healthieId) return;
+
+    document.getElementById('tagPickerOverlay')?.remove();
+    showToast(`Adding tag "${tagName}"...`, 'info');
+
+    try {
+        const resp = await fetch('/ops/api/ipad/patient', {
+            method: 'PATCH',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'add_tag', healthie_id: healthieId, tag_name: tagName }),
+        });
+        const data = await resp.json();
+        if (data.success && data.tag) {
+            // Add tag badge to the UI
+            const section = document.getElementById('patientTagsSection');
+            if (section) {
+                const addBtn = section.querySelector('[onclick="showTagPicker()"]');
+                const badge = document.createElement('span');
+                badge.className = 'patient-tag-badge';
+                badge.dataset.tagId = data.tag.id;
+                badge.dataset.tagName = data.tag.name;
+                badge.style.cssText = 'font-size:9px;padding:2px 6px;border-radius:4px;background:rgba(168,85,247,0.15);color:#a855f7;cursor:pointer;display:inline-flex;align-items:center;gap:3px;';
+                badge.onclick = () => confirmRemoveTag(data.tag.id, data.tag.name);
+                badge.innerHTML = `${data.tag.name} <span style="opacity:0.5;">\u00d7</span>`;
+                badge.title = 'Click to remove';
+                if (addBtn) addBtn.parentNode.insertBefore(badge, addBtn);
+            }
+            showToast(`Tag "${tagName}" added`, 'success');
+        } else {
+            showToast('Failed to add tag', 'error');
+        }
+    } catch (e) {
+        console.error('[Tags] addTagToPatient error:', e);
+        showToast('Failed to add tag', 'error');
+    }
+}
+
+function confirmRemoveTag(tagId, tagName) {
+    if (confirm(`Remove tag "${tagName}" from this patient?`)) {
+        removeTagFromPatient(tagId, tagName);
+    }
+}
+
+async function removeTagFromPatient(tagId, tagName) {
+    const healthieId = getChartHealthieId();
+    if (!healthieId) return;
+
+    showToast(`Removing tag "${tagName}"...`, 'info');
+
+    try {
+        const resp = await fetch('/ops/api/ipad/patient', {
+            method: 'PATCH',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'remove_tag', healthie_id: healthieId, tag_id: tagId }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            // Remove badge from UI
+            const badge = document.querySelector(`.patient-tag-badge[data-tag-id="${tagId}"]`);
+            if (badge) badge.remove();
+            showToast(`Tag "${tagName}" removed`, 'success');
+        } else {
+            showToast('Failed to remove tag', 'error');
+        }
+    } catch (e) {
+        console.error('[Tags] removeTagFromPatient error:', e);
+        showToast('Failed to remove tag', 'error');
+    }
+}
+
+// ============ PROVIDER VIDEO CALL ============
+
+async function startProviderVideoCall(appointmentId, patientName) {
+    showToast('Connecting video call...', 'info');
+
+    try {
+        // Fetch video session from Healthie via our API
+        const resp = await fetch('/ops/api/ipad/patient?action=video_session&appointment_id=' + appointmentId, { credentials: 'include' });
+        const data = await resp.json();
+
+        if (data.success && data.session) {
+            const session = data.session;
+
+            if (session.zoomJoinUrl) {
+                // Zoom URL available — open in new tab
+                window.open(session.zoomJoinUrl, '_blank');
+                showToast('Opening Zoom call with ' + patientName, 'success');
+            } else {
+                // Healthie native video — open Healthie video room
+                // The video room URL pattern for Healthie native video
+                // FIX(2026-03-25): Was pointing to staging URL causing 404
+                const videoUrl = 'https://secure.gethealthie.com/video_calls/' + appointmentId;
+                window.open(videoUrl, '_blank', 'width=800,height=600,toolbar=no,menubar=no');
+                showToast('Starting video call with ' + patientName, 'success');
+            }
+        } else {
+            // Fallback — try Healthie video room directly
+            const videoUrl = 'https://secure.gethealthie.com/video_calls/' + appointmentId;
+            window.open(videoUrl, '_blank', 'width=800,height=600,toolbar=no,menubar=no');
+            showToast('Opening video session...', 'info');
+        }
+    } catch (e) {
+        console.error('[Video] startProviderVideoCall error:', e);
+        // Fallback — open Healthie video room
+        const videoUrl = 'https://secure.gethealthie.com/video_calls/' + appointmentId;
+        window.open(videoUrl, '_blank', 'width=800,height=600,toolbar=no,menubar=no');
+        showToast('Opening video session (fallback)...', 'info');
+    }
+}
+
+// ============ END GROUP & TAG MANAGEMENT ============
+
 async function saveInterestingFacts() {
     const input = document.getElementById('interestingInput');
     const text = input?.value?.trim() || '';
@@ -4612,7 +4792,7 @@ function renderChartPanel(content) {
                 ${demo.height ? `<div><span style="color:var(--text-tertiary);">Height:</span> <span style="color:var(--text-secondary);">${demo.height}</span></div>` : ''}
                 ${demo.weight ? `<div><span style="color:var(--text-tertiary);">Weight:</span> <span style="color:var(--text-secondary);">${demo.weight}</span></div>` : ''}
                 ${demo.regimen ? `<div><span style="color:var(--text-tertiary);">Regimen:</span> <span style="color:var(--text-secondary);">${demo.regimen}</span></div>` : ''}
-                ${demo.client_type_key || demo.user_group ? `<div><span style="color:var(--text-tertiary);">Group:</span> <span style="color:var(--text-secondary);">${demo.user_group || demo.client_type_key}</span></div>` : ''}
+                <div><span style="color:var(--text-tertiary);">Group:</span> <span id="patientGroupDisplay" style="color:var(--cyan); cursor:pointer; text-decoration:underline dotted; font-weight:500;" onclick="showGroupPicker()" title="Click to change group">${demo.user_group || demo.client_type_key || 'None'}</span></div>
             </div>
             ${demo.address_line1 || demo.city ? `
             <div style="padding:2px 0 4px; font-size:11px;">
@@ -4624,10 +4804,12 @@ function renderChartPanel(content) {
                 <span style="color:var(--text-tertiary);">Insurance:</span>
                 <span style="color:var(--text-secondary);">${demo.insurance.payer_name || 'None'}${demo.insurance.plan_name ? ' — ' + demo.insurance.plan_name : ''}${demo.insurance.member_id ? ' (ID: ' + demo.insurance.member_id + ')' : ''}</span>
             </div>` : ''}
-            ${demo.tags && demo.tags.length > 0 ? `
-            <div style="display:flex; flex-wrap:wrap; gap:3px; padding:2px 0 6px;">
-                ${demo.tags.map(t => `<span style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7;">${t.name}</span>`).join('')}
-            </div>` : ''}
+            <div id="patientTagsSection" style="padding:2px 0 6px;">
+                <div style="display:flex; flex-wrap:wrap; gap:3px; align-items:center;">
+                    ${(demo.tags || []).map(t => `<span class="patient-tag-badge" data-tag-id="${t.id}" data-tag-name="${t.name}" style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7; cursor:pointer; display:inline-flex; align-items:center; gap:3px;" onclick="confirmRemoveTag('${t.id}', '${t.name}')" title="Click to remove">${t.name} <span style="opacity:0.5;">\u00d7</span></span>`).join('')}
+                    <span onclick="showTagPicker()" style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(0,212,255,0.1); color:var(--cyan); cursor:pointer; border:1px dashed rgba(0,212,255,0.3);" title="Add tag">+ Tag</span>
+                </div>
+            </div>
         </div>
 
         <!-- INTERESTING FACTS (collapsible panel) -->
@@ -5809,51 +5991,61 @@ function renderChartingTab(container, d) {
 // Shows: Patient intake/medical forms (NOT SOAP notes — those go in Charting)
 function renderFormsTab(container, d) {
     const allForms = d.healthie_chart_notes || [];
-    // Sanitize form answer text — strip 'Invalid Date' from displayed content
-    const cleanAnswer = (txt) => (txt || '').replace(/Invalid Date/gi, '').replace(/\s{2,}/g, ' ').trim() || '—';
+    const cleanAnswer = (txt) => (txt || '').replace(/Invalid Date/gi, '').replace(/&nbsp;/gi, ' ').replace(/<[^>]+>/g, '').replace(/\s{2,}/g, ' ').trim() || '—';
     // Filter OUT SOAP/chart notes — keep only patient-filled forms (intake, consent, history, etc.)
     const patientForms = allForms.filter(n => {
         const name = (n.name || '').toLowerCase();
         return !name.includes('soap') && !name.includes('chart note') && !name.includes('progress note') && !name.includes('visit note') && !name.includes('encounter');
     });
 
-    container.innerHTML = `
-        <!-- Patient Forms (intake, consent, medical history, etc.) -->
-        <div class="chart-section${patientForms.length === 0 ? '' : ''}">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>📝 Patient Forms (${patientForms.length})</span>
-                <span class="chart-chevron">›</span>
-            </div>
-            <div class="chart-section-body">
-                ${patientForms.length > 0 ? patientForms.slice(0, 15).map(n => `
-                    <div class="chart-lab-card">
-                        <div class="chart-lab-name">${n.name || 'Form'}</div>
-                        <div class="chart-lab-detail">${formatDateDisplay(n.created_at)}</div>
-                        ${n.form_answers?.length > 0 ? `<div class="chart-med-detail" style="margin-top:4px">${n.form_answers.slice(0, 2).map(a => `${a.label}: ${cleanAnswer(a.displayed_answer || a.answer).substring(0, 80)}`).join('; ')}${n.form_answers.length > 2 ? '…' : ''}</div>` : ''}
-                        ${n.form_answers?.length > 0 ? `
-                        <div class="chart-note-full" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
-                            ${n.form_answers.map(a => `
-                                <div style="margin-bottom:6px;">
-                                    <div style="font-size:10px; text-transform:uppercase; color:var(--text-tertiary); font-weight:600;">${a.label || 'Field'}</div>
-                                    <div style="font-size:12px; color:var(--text-secondary); white-space:pre-wrap;">${cleanAnswer(a.displayed_answer || a.answer)}</div>
-                                </div>
-                            `).join('')}
-                        </div>` : ''}
-                    </div>
-                `).join('') : '<div class="chart-empty">No patient forms on file</div>'}
-            </div>
-        </div>
+    // Sort: intake forms first, then by date (newest)
+    const isIntake = (name) => {
+        const n = (name || '').toLowerCase();
+        return n.includes('intake') || n.includes('new patient') || n.includes('patient history') || n.includes('health history') || n.includes('medical history');
+    };
+    patientForms.sort((a, b) => {
+        const aIntake = isIntake(a.name) ? 0 : 1;
+        const bIntake = isIntake(b.name) ? 0 : 1;
+        if (aIntake !== bIntake) return aIntake - bIntake;
+        return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+    });
 
-        ${patientForms.length === 0 ? '<div class="chart-empty" style="padding:24px; text-align:center;">No patient forms on file</div>' : ''}
+    container.innerHTML = `
+        ${patientForms.length > 0 ? patientForms.slice(0, 20).map((n, idx) => {
+            const intake = isIntake(n.name);
+            // Auto-expand first intake form
+            const expanded = intake && idx === 0;
+            return `
+            <div class="chart-lab-card" data-form-idx="${idx}" style="margin:6px 12px; padding:12px 14px; border-radius:10px; background:var(--surface); border:1px solid ${intake ? 'rgba(0,212,255,0.25)' : 'var(--border-light)'}; ${intake ? 'border-left:3px solid var(--cyan);' : ''} cursor:pointer;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                    <div>
+                        <div style="font-size:14px; font-weight:600; color:${intake ? 'var(--cyan)' : 'var(--text-primary)'};">${intake ? '⭐ ' : ''}${n.name || 'Form'}</div>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${formatDateDisplay(n.created_at)}${n.form_answers?.length ? ' · ' + n.form_answers.length + ' fields' : ''}</div>
+                    </div>
+                    <span style="font-size:14px; color:var(--text-tertiary); transition:transform 0.2s;" class="form-chevron">${expanded ? '▼' : '▶'}</span>
+                </div>
+                ${!expanded && n.form_answers?.length > 0 ? `<div style="margin-top:6px; font-size:12px; color:var(--text-tertiary); line-height:1.4;">${n.form_answers.slice(0, 3).map(a => '<b>' + (a.label || '') + ':</b> ' + cleanAnswer(a.displayed_answer || a.answer).substring(0, 60)).join(' · ')}${n.form_answers.length > 3 ? ' …' : ''}</div>` : ''}
+                <div class="chart-note-full" style="display:${expanded ? 'block' : 'none'}; margin-top:10px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.06);">
+                    ${(n.form_answers || []).map(a => `
+                        <div style="margin-bottom:10px;">
+                            <div style="font-size:11px; text-transform:uppercase; color:var(--cyan); font-weight:700; letter-spacing:0.04em; margin-bottom:2px;">${a.label || 'Field'}</div>
+                            <div style="font-size:13px; color:var(--text-primary); line-height:1.5; white-space:pre-wrap;">${cleanAnswer(a.displayed_answer || a.answer)}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>`;
+        }).join('') : '<div class="chart-empty" style="padding:24px; text-align:center;">No patient forms on file</div>'}
     `;
 
-    // Make form cards clickable to expand
+    // Make form cards clickable to expand/collapse
     container.querySelectorAll('.chart-lab-card').forEach(card => {
         const full = card.querySelector('.chart-note-full');
+        const chevron = card.querySelector('.form-chevron');
         if (full) {
-            card.style.cursor = 'pointer';
             card.addEventListener('click', () => {
-                full.style.display = full.style.display === 'none' ? 'block' : 'none';
+                const showing = full.style.display !== 'none';
+                full.style.display = showing ? 'none' : 'block';
+                if (chevron) chevron.textContent = showing ? '▶' : '▼';
             });
         }
     });
@@ -8626,6 +8818,48 @@ var scheduleAllData = [];
 var scheduleViewMode = 'day';
 var scheduleSelectedDate = new Date();
 var scheduleAppointmentTypes = [];
+var _moveAppt = null; // appointment being moved: { id, name, time, date, provider_id }
+
+function startMoveAppt(apptId, name, time, date, providerId) {
+    _moveAppt = { id: apptId, name: name, time: time, date: date, provider_id: providerId };
+    var contentEl = document.getElementById('scheduleContent');
+    if (contentEl) renderScheduleContent(contentEl);
+}
+
+function cancelMoveAppt() {
+    _moveAppt = null;
+    var contentEl = document.getElementById('scheduleContent');
+    if (contentEl) renderScheduleContent(contentEl);
+}
+
+async function executeMoveAppt(newDate, newTime, newProviderId) {
+    if (!_moveAppt) return;
+    var datetime = newDate + 'T' + newTime + ':00-07:00';
+    var newProvName = newProviderId === '12093125' ? 'Dr. Whitten' : 'Phil Schafer';
+    var newLoc = newProviderId === '12093125'
+        ? 'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301'
+        : 'NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1';
+    var timeLabel = formatSlotTime(parseInt(newTime.split(':')[0]), parseInt(newTime.split(':')[1]));
+
+    if (!confirm('Reschedule ' + _moveAppt.name + '\\n\\nFrom: ' + _moveAppt.time + ' on ' + _moveAppt.date + '\\nTo: ' + timeLabel + ' on ' + newDate + ' with ' + newProvName + '\\n\\nProceed?')) return;
+
+    try {
+        var data = await apiFetch('/ops/api/ipad/appointment-status/', {
+            method: 'PUT',
+            body: JSON.stringify({
+                appointment_id: _moveAppt.id,
+                datetime: datetime,
+                provider_id: newProviderId,
+                location: newLoc
+            })
+        });
+        showToast(_moveAppt.name + ' rescheduled to ' + timeLabel, 'success');
+        _moveAppt = null;
+        await loadScheduleForRange(true);
+    } catch (e) {
+        showToast('Failed to reschedule: ' + (e.message || 'Error'), 'error');
+    }
+}
 
 function getWeekRange(date) {
     var d = new Date(date);
@@ -8805,7 +9039,7 @@ async function loadScheduleForRange(forceRefresh) {
 
 function renderScheduleContent(contentEl) {
     if (scheduleViewMode === 'day') {
-        renderScheduleList(contentEl);
+        renderScheduleDayGrid(contentEl);
     } else if (scheduleViewMode === 'week') {
         renderScheduleWeekView(contentEl);
     } else {
@@ -8953,7 +9187,7 @@ function renderScheduleMonthView(contentEl) {
 
 // ─── ADD PATIENT TO SCHEDULE MODAL ──────────────────────────
 
-async function showAddToScheduleModal() {
+async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderId) {
     var existing = document.getElementById('addScheduleModal');
     if (existing) existing.remove();
 
@@ -8974,7 +9208,11 @@ async function showAddToScheduleModal() {
         return '<option value="' + t.id + '" data-length="' + (t.length || 30) + '">' + sanitize(t.name) + ' (' + (t.length || 30) + 'min)</option>';
     }).join('');
 
-    var providerOptions = '<option value="12088269">Phil Schafer NP</option><option value="12093125">Dr. Aaron Whitten</option>';
+    var providerOptions = '<option value="12088269"' + (prefillProviderId === '12088269' ? ' selected' : '') + '>Phil Schafer NP</option><option value="12093125"' + (prefillProviderId === '12093125' ? ' selected' : '') + '>Dr. Aaron Whitten</option>';
+    // Default location based on provider
+    var defaultLocation = prefillProviderId === '12093125'
+        ? 'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301'
+        : 'NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1';
 
     document.body.insertAdjacentHTML('beforeend', `
         <div id="addScheduleModal" class="modal-overlay visible" style="display:flex; z-index:10001;">
@@ -9014,11 +9252,11 @@ async function showAddToScheduleModal() {
                 <div style="display:flex; gap:10px; margin-bottom:14px;">
                     <div style="flex:1;">
                         <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Date *</label>
-                        <input id="addSchedDate" type="date" value="${getPhoenixDateStr(scheduleSelectedDate)}" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                        <input id="addSchedDate" type="date" value="${prefillDate || getPhoenixDateStr(scheduleSelectedDate)}" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
                     </div>
                     <div style="flex:1;">
                         <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Time *</label>
-                        <input id="addSchedTime" type="time" value="09:00" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                        <input id="addSchedTime" type="time" value="${prefillTime || '09:00'}" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
                     </div>
                 </div>
 
@@ -9032,10 +9270,40 @@ async function showAddToScheduleModal() {
                     <input id="addSchedContactType" type="hidden" value="In Person">
                 </div>
 
+                <!-- Location -->
+                <div style="margin-bottom:16px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Location</label>
+                    <select id="addSchedLocation" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+                        <option value="NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1" ${defaultLocation.includes('NowPrimary') ? 'selected' : ''}>NowPrimary - Room 1</option>
+                        <option value="NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 2">NowPrimary - Room 2</option>
+                        <option value="NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301" ${defaultLocation.includes('NowMensHealth') ? 'selected' : ''}>NowMensHealth</option>
+                        <option value="In Person">In Person (other)</option>
+                        <option value="Healthie Video Call">Video Call</option>
+                        <option value="Phone Call">Phone Call</option>
+                    </select>
+                </div>
+
                 <button onclick="submitAddToSchedule()" id="addSchedBtn" style="width:100%; padding:12px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:8px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer; font-family:inherit;">Add to Schedule</button>
             </div>
         </div>
     `);
+    // Pre-select provider and location if passed from split view slot click
+    var provSel = document.getElementById('addSchedProvider');
+    var locSel = document.getElementById('addSchedLocation');
+    if (provSel && prefillProviderId) {
+        provSel.value = prefillProviderId;
+        if (locSel) {
+            if (prefillProviderId === '12093125') locSel.value = 'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301';
+            else locSel.value = 'NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1';
+        }
+    }
+    // Auto-switch location when provider changes
+    if (provSel && locSel) {
+        provSel.addEventListener('change', function() {
+            if (this.value === '12093125') locSel.value = 'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301';
+            else locSel.value = 'NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1';
+        });
+    }
 }
 
 var _schedSearchTimeout = null;
@@ -9044,7 +9312,8 @@ function searchPatientsForSchedule(searchQuery) {
     if (!searchQuery || searchQuery.length < 2) { document.getElementById('addSchedPatientResults').innerHTML = ''; return; }
     _schedSearchTimeout = setTimeout(async function() {
         try {
-            var data = await apiFetch('/ops/api/ipad/schedule/', {
+            // Search Healthie users directly so all patients are findable
+            var data = await apiFetch('/ops/api/ipad/messages/', {
                 method: 'POST',
                 body: JSON.stringify({ action: 'search_patients', search: searchQuery })
             });
@@ -9056,7 +9325,7 @@ function searchPatientsForSchedule(searchQuery) {
                 return;
             }
             resultsEl.innerHTML = pts.map(function(p) {
-                return '<div onclick="selectPatientForSchedule(\'' + (p.healthie_id || '') + '\', \'' + sanitize(p.full_name) + '\')" style="padding:8px 10px; cursor:pointer; border-radius:6px; font-size:13px; color:var(--text-primary);" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">' + sanitize(p.full_name) + (p.healthie_id ? '' : ' <span style=\\"color:#ef4444; font-size:10px;\\">(no Healthie ID)</span>') + '</div>';
+                return '<div onclick="selectPatientForSchedule(\'' + (p.healthie_id || '') + '\', \'' + sanitize(p.full_name).replace(/\'/g, '') + '\')" style="padding:8px 10px; cursor:pointer; border-radius:6px; font-size:13px; color:var(--text-primary);" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">' + sanitize(p.full_name) + (p.email ? ' <span style="color:var(--text-tertiary); font-size:10px;">' + sanitize(p.email) + '</span>' : '') + '</div>';
             }).join('');
         } catch (e) { console.error('[Schedule] Patient search error:', e); }
     }, 300);
@@ -9078,6 +9347,7 @@ async function submitAddToSchedule() {
     var dateVal = document.getElementById('addSchedDate').value;
     var timeVal = document.getElementById('addSchedTime').value;
     var contactType = document.getElementById('addSchedContactType').value;
+    var location = document.getElementById('addSchedLocation')?.value || '';
 
     if (!patientId) { showToast('Please select a patient', 'error'); return; }
     if (!typeId) { showToast('Please select appointment type', 'error'); return; }
@@ -9098,7 +9368,8 @@ async function submitAddToSchedule() {
                 provider_id: providerId,
                 appointment_type_id: typeId,
                 datetime: datetime,
-                contact_type: contactType
+                contact_type: contactType,
+                location: location
             })
         });
         document.getElementById('addScheduleModal')?.remove();
@@ -9324,6 +9595,277 @@ function getApptStatusStyle(st) {
     }
 }
 
+function renderScheduleDayGrid(contentEl) {
+    var allFiltered = scheduleProviderFilter === 'all' ? scheduleAllData : scheduleAllData.filter(function(p) { return (p.provider || 'Unknown') === scheduleProviderFilter; });
+    var isSplit = scheduleProviderFilter === 'all';
+
+    // Providers for split columns
+    var PROVIDERS = [
+        { id: '12088269', name: 'Phil Schafer NP', short: 'Phil', color: getProviderColor('schafer') },
+        { id: '12093125', name: 'Aaron Whitten', short: 'Dr. Whitten', color: getProviderColor('whitten') }
+    ];
+
+    // Clinic hours: 7 AM to 6 PM in 30-min slots
+    var START_HOUR = 7, END_HOUR = 18;
+    var slots = [];
+    for (var h = START_HOUR; h < END_HOUR; h++) {
+        slots.push({ hour: h, min: 0, label: formatSlotTime(h, 0) });
+        slots.push({ hour: h, min: 30, label: formatSlotTime(h, 30) });
+    }
+
+    // Build slot maps per provider
+    function buildSlotMap(appts) {
+        var map = {};
+        appts.forEach(function(p) {
+            if (!p.date) return;
+            var d = parseHealthieDate(p.date);
+            if (isNaN(d.getTime())) return;
+            var key = padTwo(d.getHours()) + ':' + padTwo(d.getMinutes() < 30 ? 0 : 30);
+            if (!map[key]) map[key] = [];
+            map[key].push(p);
+        });
+        return map;
+    }
+
+    var now = new Date();
+    var nowHr = now.getHours(), nowMn = now.getMinutes();
+    var dateStr = getPhoenixDateStr(scheduleSelectedDate);
+    var isToday = dateStr === getPhoenixDateStr(new Date());
+
+    // Summary stats
+    var checkedIn = allFiltered.filter(function(p) { return p.appointment_status === 'Checked In'; }).length;
+    var html = '<div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;">';
+    html += '<span style="font-size:14px; color:var(--text-secondary);">' + allFiltered.length + ' appointments</span>';
+    if (checkedIn > 0) html += '<span style="font-size:11px; padding:3px 10px; border-radius:6px; background:rgba(34,211,238,0.1); color:#22d3ee;">' + checkedIn + ' checked in</span>';
+    // Legend
+    html += '<div style="margin-left:auto; display:flex; gap:12px; align-items:center;">';
+    html += '<span style="display:flex; align-items:center; gap:4px; font-size:11px;"><span style="width:8px; height:8px; border-radius:2px; background:#22d3ee;"></span><span style="color:#22d3ee;">Phil</span></span>';
+    html += '<span style="display:flex; align-items:center; gap:4px; font-size:11px;"><span style="width:8px; height:8px; border-radius:2px; background:#a855f7;"></span><span style="color:#c084fc;">Dr. Whitten</span></span>';
+    html += '<span style="display:flex; align-items:center; gap:4px; font-size:11px;"><span style="padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.2); color:#fbbf24; font-size:9px; font-weight:700;">NEW</span> New Patient</span>';
+    html += '<span style="display:flex; align-items:center; gap:4px; font-size:11px;"><span style="width:8px; height:8px; border-radius:2px; background:#3b82f6;"></span><span style="color:#93c5fd;">Video/Phone</span></span>';
+    html += '</div></div>';
+
+    // Move mode banner
+    if (_moveAppt) {
+        html += '<div style="padding:10px 16px; margin-bottom:10px; background:rgba(251,191,36,0.15); border:1px solid rgba(251,191,36,0.4); border-radius:10px; display:flex; align-items:center; justify-content:space-between;">';
+        html += '<div style="font-size:13px; color:#fbbf24; font-weight:600;">Moving: ' + sanitize(_moveAppt.name) + ' <span style="font-weight:400; color:var(--text-tertiary);">(' + _moveAppt.time + ')</span> — tap a slot to place, or navigate days with arrows</div>';
+        html += '<button onclick="cancelMoveAppt()" style="padding:6px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Cancel</button>';
+        html += '</div>';
+    }
+
+    if (isSplit) {
+        // ─── SPLIT VIEW: two provider columns ───
+        var provData = PROVIDERS.map(function(prov) {
+            var appts = allFiltered.filter(function(p) { return (p.provider_id || '') === prov.id; });
+            return { prov: prov, appts: appts, slotMap: buildSlotMap(appts) };
+        });
+
+        html += '<div style="display:flex; gap:0; border:1px solid var(--border-light); border-radius:10px; overflow:hidden;">';
+        // Time column
+        html += '<div style="flex-shrink:0; width:55px;">';
+        html += '<div style="height:36px; border-bottom:1px solid var(--border-light); border-right:1px solid var(--border-light);"></div>';
+        slots.forEach(function(slot) {
+            var isHalf = slot.min === 30;
+            var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
+            html += '<div style="height:56px; display:flex; align-items:center; padding:0 6px; font-size:11px; font-weight:' + (isHalf ? '400' : '600') + '; color:' + (isCur ? 'var(--cyan)' : 'var(--text-tertiary)') + '; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + '; border-right:1px solid var(--border-light);' + (isCur ? ' background:rgba(0,212,255,0.06);' : '') + '">';
+            html += isHalf ? '' : slot.label;
+            html += '</div>';
+        });
+        html += '</div>';
+
+        // Provider columns
+        provData.forEach(function(pd, colIdx) {
+            var isLast = colIdx === provData.length - 1;
+            html += '<div style="flex:1; min-width:0;' + (!isLast ? ' border-right:2px solid var(--border-light);' : '') + '">';
+            // Column header
+            html += '<div style="height:36px; display:flex; align-items:center; justify-content:center; gap:6px; border-bottom:1px solid var(--border-light); background:' + pd.prov.color.bg + ';">';
+            html += '<span style="width:8px; height:8px; border-radius:2px; background:' + pd.prov.color.border + ';"></span>';
+            html += '<span style="font-size:13px; font-weight:700; color:' + pd.prov.color.text + ';">' + pd.prov.short + '</span>';
+            html += '<span style="font-size:10px; color:var(--text-tertiary);">(' + pd.appts.length + ')</span>';
+            html += '</div>';
+
+            slots.forEach(function(slot) {
+                var key = padTwo(slot.hour) + ':' + padTwo(slot.min);
+                var appts = pd.slotMap[key] || [];
+                var isHalf = slot.min === 30;
+                var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
+                var isPast = isToday && (slot.hour < nowHr || (slot.hour === nowHr && slot.min + 30 <= nowMn));
+                var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
+
+                html += '<div style="min-height:56px; padding:3px 5px; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + '; display:flex; flex-direction:column; justify-content:center; gap:2px;' + (isCur ? ' background:rgba(0,212,255,0.04);' : '') + (isPast ? ' opacity:0.45;' : '') + '">';
+
+                if (appts.length > 0) {
+                    appts.forEach(function(p) {
+                        var st = p.appointment_status || 'Scheduled';
+                        var sty = getApptStatusStyle(st);
+                        var pid = p.patient_id || p.healthie_id || '';
+                        var apptId = p.appointment_id || '';
+                        var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
+                        var lc = getLocationColor(p.location);
+                        var isNew = isNewPatientAppt(p.appointment_type);
+                        var isTele = isTelehealthAppt(p.location, p.contact_type);
+
+                        html += '<div style="display:flex; align-items:center; gap:4px; padding:3px 6px; border-radius:6px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border-left:3px solid ' + (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : lc.border)) + '; min-width:0; cursor:default;' + (isFinal ? ' opacity:0.6;' : '') + '">';
+                        // Name + badges
+                        html += '<div style="flex:1; min-width:0; overflow:hidden;">';
+                        html += '<div style="display:flex; align-items:center; gap:4px;">';
+                        if (isNew) html += '<span style="font-size:8px; font-weight:700; padding:1px 4px; border-radius:3px; background:rgba(251,191,36,0.2); color:#fbbf24; flex-shrink:0;">NEW</span>';
+                        if (isTele) html += '<span style="font-size:8px; flex-shrink:0;">📹</span>';
+                        html += '<span style="font-size:12px; font-weight:600; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + sanitize(p.full_name || '?') + '</span>';
+                        html += '</div>';
+                        html += '<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.time || '') + ' · ' + abbreviateType(p.appointment_type) + '</div>';
+                        html += '</div>';
+                        // Action buttons
+                        html += '<div style="display:flex; gap:3px; flex-shrink:0;">';
+                        if (!isFinal && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + dateStr + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:9px; cursor:pointer;" title="Move/reschedule">↔</button>';
+                        if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:9px; cursor:pointer;">📋</button>';
+                        if (isTele && !isFinal && apptId) html += '<button onclick="event.stopPropagation(); startProviderVideoCall(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 6px; border-radius:4px; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.35); color:#60a5fa; font-size:9px; font-weight:600; cursor:pointer;" title="Start video call">📹 Video</button>';
+                        if (!isFinal && apptId) {
+                            html += '<div style="position:relative; display:inline-block;">';
+                            html += '<span onclick="event.stopPropagation(); toggleStatusMenu(\x27sm_' + apptId + '\x27)" style="font-size:9px; padding:2px 6px; border-radius:4px; background:' + sty.bg + '; color:' + sty.color + '; font-weight:600; cursor:pointer;">' + abbreviateStatus(st) + ' ▾</span>';
+                            html += '<div id="sm_' + apptId + '" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:var(--card); border:1px solid var(--border-light); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.3); z-index:100; min-width:120px;">';
+                            [{ l:'✅ Check In',v:'Checked In',s:st==='Scheduled'||st==='Confirmed'},
+                             { l:'🟣 In Progress',v:'In Progress',s:st==='Checked In'},
+                             { l:'✅ Done',v:'Completed',s:st==='In Progress'||st==='Checked In'},
+                             { l:'🚫 No Show',v:'No Show',s:st!=='No Show'&&st!=='Completed'},
+                             { l:'❌ Cancel',v:'Cancelled',s:st!=='Cancelled'&&st!=='Completed'&&st!=='No Show'}
+                            ].forEach(function(o){if(!o.s)return;html+='<div onclick="event.stopPropagation(); updateApptStatus(\x27'+apptId+'\x27, \x27'+o.v+'\x27)" style="padding:8px 12px; font-size:11px; cursor:pointer; border-bottom:1px solid var(--border);">'+o.l+'</div>';});
+                            html += '</div></div>';
+                        } else {
+                            html += '<span style="font-size:9px; padding:2px 6px; border-radius:4px; background:' + sty.bg + '; color:' + sty.color + ';">' + abbreviateStatus(st) + '</span>';
+                        }
+                        html += '</div></div>';
+                    });
+                } else {
+                    // Empty — clickable
+                    if (_moveAppt) {
+                        html += '<div onclick="executeMoveAppt(\'' + dateStr + '\', \'' + timeKey + '\', \'' + pd.prov.id + '\')" style="display:flex; align-items:center; justify-content:center; height:100%; cursor:pointer; border-radius:6px; background:rgba(251,191,36,0.06);" onmouseover="this.style.background=\'rgba(251,191,36,0.15)\'" onmouseout="this.style.background=\'rgba(251,191,36,0.06)\'">';
+                        html += '<span style="font-size:10px; color:#fbbf24; font-weight:600;">Place here</span>';
+                        html += '</div>';
+                    } else {
+                        html += '<div onclick="showAddToScheduleModal(\'' + dateStr + '\', \'' + timeKey + '\', \'' + pd.prov.id + '\')" style="display:flex; align-items:center; justify-content:center; height:100%; cursor:pointer; border-radius:6px;" onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'transparent\'">';
+                        html += '<span style="font-size:10px; color:var(--text-tertiary); opacity:0.5;">+</span>';
+                        html += '</div>';
+                    }
+                }
+                html += '</div>';
+            });
+            html += '</div>';
+        });
+        html += '</div>';
+    } else {
+        // ─── SINGLE PROVIDER VIEW ───
+        var slotMap = buildSlotMap(allFiltered);
+        html += '<div style="border:1px solid var(--border-light); border-radius:10px; overflow:hidden;">';
+        slots.forEach(function(slot) {
+            var key = padTwo(slot.hour) + ':' + padTwo(slot.min);
+            var appts = slotMap[key] || [];
+            var isHalf = slot.min === 30;
+            var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
+            var isPast = isToday && (slot.hour < nowHr || (slot.hour === nowHr && slot.min + 30 <= nowMn));
+            var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
+
+            html += '<div style="display:flex; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + ';' + (isCur ? ' background:rgba(0,212,255,0.06);' : '') + (isPast ? ' opacity:0.5;' : '') + '">';
+            html += '<div style="width:60px; padding:6px 8px; font-size:11px; font-weight:' + (isHalf ? '400' : '600') + '; color:' + (isCur ? 'var(--cyan)' : 'var(--text-tertiary)') + '; border-right:1px solid var(--border-light); display:flex; align-items:center;">' + (isHalf ? '' : slot.label) + '</div>';
+            html += '<div style="flex:1; min-height:44px; padding:3px 6px; display:flex; flex-direction:column; gap:2px; justify-content:center;">';
+            if (appts.length > 0) {
+                appts.forEach(function(p) {
+                    var st = p.appointment_status || 'Scheduled';
+                    var sty = getApptStatusStyle(st);
+                    var pid = p.patient_id || p.healthie_id || '';
+                    var apptId = p.appointment_id || '';
+                    var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
+                    var pc = getProviderColor(p.provider);
+                    var lc = getLocationColor(p.location);
+                    var isNew = isNewPatientAppt(p.appointment_type);
+                    var isTele = isTelehealthAppt(p.location, p.contact_type);
+
+                    html += '<div style="display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:8px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border:1px solid ' + (isFinal ? 'rgba(255,255,255,0.06)' : (isTele ? 'rgba(59,130,246,0.3)' : lc.border)) + '; border-left:3px solid ' + (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : pc.border)) + ';">';
+                    html += '<div style="flex:1; min-width:0;">';
+                    html += '<div style="display:flex; align-items:center; gap:4px;">';
+                    if (isNew) html += '<span style="font-size:8px; font-weight:700; padding:1px 4px; border-radius:3px; background:rgba(251,191,36,0.2); color:#fbbf24;">NEW</span>';
+                    if (isTele) html += '<span style="font-size:9px;">📹</span>';
+                    html += '<span style="font-size:13px; font-weight:600; color:var(--text-primary);">' + sanitize(p.full_name || '?') + '</span>';
+                    html += '</div>';
+                    html += '<div style="font-size:10px; color:var(--text-tertiary);">' + (p.time || '') + ' · ' + (p.appointment_type || '') + '</div>';
+                    html += '</div>';
+                    html += '<div style="display:flex; gap:4px; flex-shrink:0;">';
+                    if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:10px; cursor:pointer;">📋</button>';
+                    html += '<span style="font-size:10px; padding:3px 8px; border-radius:5px; background:' + sty.bg + '; color:' + sty.color + '; font-weight:600;">' + st + '</span>';
+                    html += '</div></div>';
+                });
+                html += '<div onclick="showAddToScheduleModal(\'' + dateStr + '\', \'' + timeKey + '\')" style="font-size:10px; color:var(--text-tertiary); cursor:pointer; padding:1px 8px; text-align:right;" onmouseover="this.style.color=\'var(--cyan)\'" onmouseout="this.style.color=\'var(--text-tertiary)\'">+ book</div>';
+            } else {
+                if (_moveAppt) {
+                    html += '<div onclick="executeMoveAppt(\'' + dateStr + '\', \'' + timeKey + '\', \'' + (scheduleProviderFilter !== 'all' ? (scheduleAllData[0]?.provider_id || '') : '') + '\')" style="display:flex; align-items:center; justify-content:center; height:100%; cursor:pointer; border-radius:6px; min-height:30px; background:rgba(251,191,36,0.06);" onmouseover="this.style.background=\'rgba(251,191,36,0.15)\'" onmouseout="this.style.background=\'rgba(251,191,36,0.06)\'"><span style="font-size:11px; color:#fbbf24; font-weight:600;">Place here</span></div>';
+                } else {
+                    html += '<div onclick="showAddToScheduleModal(\'' + dateStr + '\', \'' + timeKey + '\')" style="display:flex; align-items:center; justify-content:center; height:100%; cursor:pointer; border-radius:6px; min-height:30px;" onmouseover="this.style.background=\'rgba(0,212,255,0.04)\'" onmouseout="this.style.background=\'transparent\'"><span style="font-size:11px; color:var(--text-tertiary);">+ Book</span></div>';
+                }
+            }
+            html += '</div></div>';
+        });
+        html += '</div>';
+    }
+
+    contentEl.innerHTML = html;
+}
+
+// Location color coding for schedule
+function getLocationColor(location) {
+    var loc = (location || '').toLowerCase();
+    if (loc.includes('nowprimary'))    return { bg: 'rgba(34,197,94,0.08)', border: 'rgba(34,197,94,0.25)' };    // green - primary care
+    if (loc.includes('nowmenshealth')) return { bg: 'rgba(59,130,246,0.08)', border: 'rgba(59,130,246,0.25)' };   // blue - mens health
+    if (loc.includes('video') || loc.includes('phone')) return { bg: 'rgba(59,130,246,0.06)', border: 'rgba(59,130,246,0.2)' }; // light blue - telehealth
+    return { bg: 'var(--surface)', border: 'rgba(255,255,255,0.06)' };
+}
+
+function isNewPatientAppt(type) {
+    var t = (type || '').toLowerCase();
+    return t.includes('initial') || t.includes('new patient') || t.includes('new consult');
+}
+
+function isTelehealthAppt(location, contactType) {
+    var loc = (location || '').toLowerCase();
+    var ct = (contactType || '').toLowerCase();
+    return ct.includes('video') || ct.includes('telehealth') ||
+           loc.includes('video') || loc.includes('phone') || loc.includes('telemedicine') || loc.includes('telehealth');
+}
+
+function abbreviateType(type) {
+    if (!type) return '';
+    // Shorten long appointment type names for compact view
+    return type.replace('Repeat Pelleting Procedure', 'Pellet')
+               .replace('Initial Female Hormone Replacement Therapy Consult', 'Initial HRT (F)')
+               .replace('Initial Male Hormone Replacement Consult', 'Initial HRT (M)')
+               .replace('Initial Primary Care Consult - Physical & Lab Review', 'Initial PCP')
+               .replace('NMH General TRT Telemedicine Appt', 'TRT Tele')
+               .replace('NMH TRT Supply Refill', 'TRT Refill')
+               .replace('In-Person Sick Visit', 'Sick Visit')
+               .replace('Allergy Injection Consult', 'Allergy Inj');
+}
+
+function abbreviateStatus(st) {
+    var map = { 'Scheduled': 'Sched', 'Confirmed': 'Conf', 'Checked In': 'In', 'In Progress': 'Active', 'Completed': 'Done', 'No Show': 'NS', 'Cancelled': 'Cxl' };
+    return map[st] || st;
+}
+
+// Provider color coding for schedule
+function getProviderColor(providerName) {
+    var name = (providerName || '').toLowerCase();
+    if (name.includes('whitten')) return { bg: 'rgba(168,85,247,0.10)', border: '#a855f7', text: '#c084fc', dot: '#a855f7' };  // purple
+    if (name.includes('schafer')) return { bg: 'rgba(34,211,238,0.10)', border: '#22d3ee', text: '#22d3ee', dot: '#22d3ee' };  // cyan
+    return { bg: 'rgba(251,191,36,0.10)', border: '#fbbf24', text: '#fbbf24', dot: '#fbbf24' };  // amber fallback
+}
+
+function formatSlotTime(h, m) {
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    var hr = h > 12 ? h - 12 : (h === 0 ? 12 : h);
+    return hr + (m > 0 ? ':' + padTwo(m) : '') + ' ' + ampm;
+}
+
+function padTwo(n) { return n < 10 ? '0' + n : '' + n; }
+
+// Legacy list view (kept for reference)
 function renderScheduleList(contentEl) {
     var filtered = scheduleProviderFilter === 'all' ? scheduleAllData : scheduleAllData.filter(function(p) { return (p.provider || 'Unknown') === scheduleProviderFilter; });
     if (filtered.length === 0) { contentEl.innerHTML = '<div class="empty-state-card"><h3>No appointments</h3><p>No appointments for this provider today.</p></div>'; return; }
@@ -9362,6 +9904,7 @@ function renderScheduleList(contentEl) {
         if (showProv && p.provider) html += ' &middot; <span style="color:var(--text-secondary);">' + p.provider + '</span>';
         html += '</div></div></div>';
         html += '<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">';
+        if (!isFinalStatus && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + getPhoenixDateStr(scheduleSelectedDate) + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:11px; font-weight:600; cursor:pointer;" title="Move/reschedule">↔ Move</button>';
         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Open chart">📋 Chart</button>';
         // Status badge + dropdown for status changes
         var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
@@ -11939,7 +12482,13 @@ async function loadMessagesConversations(force) {
     }
     containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
     try {
-        var data = await apiFetch('/ops/api/ipad/messages/');
+        // Phil (admin) sees all conversations; everyone else sees only their own
+        var isPhilAdmin = currentUser && (currentUser.email === 'admin@granitemountainhealth.com' || currentUser.email === 'admin@nowoptimal.com');
+        var msgUrl = '/ops/api/ipad/messages/';
+        if (!isPhilAdmin && currentUser?.healthie_provider_id) {
+            msgUrl += '?provider_id=' + currentUser.healthie_provider_id;
+        }
+        var data = await apiFetch(msgUrl);
         messagesConversations = data.conversations || [];
         // Update badge
         var unreadCount = messagesConversations.filter(function(c) { return c.unread; }).length;
@@ -11978,7 +12527,11 @@ function renderConversationList(containerEl) {
         html += '</div></div>';
         html += '<div style="text-align:right; flex-shrink:0; margin-left:8px;">';
         html += '<div style="font-size:11px; color:var(--text-tertiary);">' + timeStr + '</div>';
-        if (c.member_count > 2) html += '<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">' + c.member_count + ' members</div>';
+        if (c.members && c.members.length > 1) {
+            html += '<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;" title="' + c.members.map(sanitize).join(', ') + '">' + c.members.length + ': ' + c.members.map(function(n) { return n.split(' ')[0]; }).join(', ') + '</div>';
+        } else if (c.member_count > 2) {
+            html += '<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">' + c.member_count + ' members</div>';
+        }
         html += '</div></div></div>';
     });
     containerEl.innerHTML = html;
@@ -12045,6 +12598,7 @@ function renderConversationThread(containerEl, convo, messages) {
     html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--border-light);">';
     html += '<button onclick="messagesCurrentConvo=null; loadMessagesConversations(true);" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">← Back</button>';
     html += '<div style="font-size:16px; font-weight:600; color:var(--text-primary); flex:1;">' + convoName + '</div>';
+    html += '<button onclick="showAddStaffToConvo(\'' + (convo?.id || messagesCurrentConvo || '') + '\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">+ Staff</button>';
     html += '<button onclick="loadConversationMessages(\'' + (convo?.id || '') + '\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:12px; cursor:pointer;">↻</button>';
     html += '</div>';
 
@@ -12063,7 +12617,10 @@ function renderConversationThread(containerEl, convo, messages) {
             var bubbleBorder = isProvider ? 'rgba(0,212,255,0.2)' : 'var(--border-light)';
 
             html += '<div style="display:flex; flex-direction:column; align-items:' + align + '; margin-bottom:10px;">';
-            html += '<div style="font-size:10px; color:var(--text-tertiary); margin-bottom:3px;">' + sanitize(msg.sender_name) + ' · ' + timeStr + '</div>';
+            html += '<div style="display:flex; align-items:center; gap:6px;' + (isProvider ? ' flex-direction:row-reverse;' : '') + '">';
+            html += '<div style="font-size:10px; color:var(--text-tertiary);">' + sanitize(msg.sender_name) + ' · ' + timeStr + '</div>';
+            html += '<button onclick="deleteMessage(\'' + msg.id + '\')" style="background:none; border:none; color:var(--text-tertiary); font-size:10px; cursor:pointer; padding:0 2px; opacity:0.5;" title="Delete message">✕</button>';
+            html += '</div>';
             html += '<div style="max-width:80%; padding:10px 14px; border-radius:12px; background:' + bubbleBg + '; border:1px solid ' + bubbleBorder + '; font-size:14px; color:var(--text-primary); line-height:1.5; word-wrap:break-word;">';
             html += renderHealthieMessage(msg.content);
             if (msg.has_attachment) html += '<div style="margin-top:6px; font-size:11px; color:var(--cyan);">📎 Attachment</div>';
@@ -12109,6 +12666,82 @@ async function sendMessageInConvo() {
         input.value = content;
         input.disabled = false;
         showToast('Failed to send: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+var _cachedStaff = null;
+async function showAddStaffToConvo(convoId) {
+    if (!convoId) return;
+    if (!_cachedStaff) {
+        try {
+            var data = await apiFetch('/ops/api/ipad/messages/', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'get_staff' })
+            });
+            _cachedStaff = data.staff || [];
+        } catch (e) {
+            showToast('Failed to load staff: ' + (e.message || 'Error'), 'error');
+            return;
+        }
+    }
+
+    var existing = document.getElementById('addStaffModal');
+    if (existing) existing.remove();
+
+    var staffHtml = _cachedStaff.map(function(s) {
+        return '<label style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; border-bottom:1px solid var(--border-light);" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">' +
+            '<input type="checkbox" class="staffCheckbox" value="' + s.id + '" data-name="' + sanitize(s.name).replace(/"/g, '') + '" style="width:18px; height:18px; accent-color:var(--cyan);">' +
+            '<span style="font-size:14px; color:var(--text-primary);">' + sanitize(s.name) + '</span></label>';
+    }).join('');
+
+    document.body.insertAdjacentHTML('beforeend',
+        '<div id="addStaffModal" class="modal-overlay visible" style="display:flex; z-index:10001;">' +
+        '<div class="modal" style="max-width:380px; padding:24px;">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">' +
+        '<h3 style="margin:0; font-size:18px; color:var(--text-primary);">Add Staff to Conversation</h3>' +
+        '<button onclick="document.getElementById(\'addStaffModal\').remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>' +
+        '</div>' +
+        '<div style="max-height:300px; overflow-y:auto;">' + staffHtml + '</div>' +
+        '<button onclick="addSelectedStaffToConvo(\'' + convoId + '\')" style="width:100%; margin-top:14px; padding:12px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:8px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer;">Add Selected</button>' +
+        '</div></div>'
+    );
+}
+
+async function addSelectedStaffToConvo(convoId) {
+    var checkboxes = document.querySelectorAll('#addStaffModal .staffCheckbox:checked');
+    if (checkboxes.length === 0) { showToast('Select at least one staff member', 'error'); return; }
+    var names = [];
+    var failed = [];
+    for (var i = 0; i < checkboxes.length; i++) {
+        var cb = checkboxes[i];
+        try {
+            await apiFetch('/ops/api/ipad/messages/', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'add_member', conversation_id: convoId, user_id: cb.value })
+            });
+            names.push(cb.getAttribute('data-name'));
+        } catch (e) {
+            failed.push(cb.getAttribute('data-name'));
+        }
+    }
+    document.getElementById('addStaffModal')?.remove();
+    if (names.length > 0) showToast(names.join(', ') + ' added', 'success');
+    if (failed.length > 0) showToast('Failed to add: ' + failed.join(', '), 'error');
+}
+
+async function deleteMessage(noteId) {
+    if (!noteId) return;
+    if (!confirm('Delete this message?')) return;
+    try {
+        await apiFetch('/ops/api/ipad/messages/', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'delete', note_id: noteId })
+        });
+        showToast('Message deleted', 'success');
+        if (messagesCurrentConvo) await loadConversationMessages(messagesCurrentConvo);
+    } catch (e) {
+        console.error('[Messages] Delete error:', e);
+        showToast('Failed to delete: ' + (e.message || 'Error'), 'error');
     }
 }
 

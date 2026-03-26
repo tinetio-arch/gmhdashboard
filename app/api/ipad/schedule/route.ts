@@ -202,6 +202,7 @@ export async function GET(request: NextRequest) {
                 date: appt.date || '',
                 length: appt.length || null,
                 location: appt.location || '',
+                contact_type: appt.contact_type || 'In Person',
             };
         });
 

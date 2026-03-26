@@ -27,6 +27,7 @@ export async function GET(request: NextRequest) {
         const { searchParams } = new URL(request.url);
         const conversationId = searchParams.get('conversation_id');
         const patientId = searchParams.get('patient_id');
+        const providerId = searchParams.get('provider_id');
         const offset = parseInt(searchParams.get('offset') || '0', 10);
 
         // If conversation_id provided, fetch messages for that conversation
@@ -110,6 +111,32 @@ export async function GET(request: NextRequest) {
                 }
             }`
             // FIX(2026-03-25): Healthie removed provider_scope and includes_provider from schema
+            : providerId
+            ? `query GetProviderConversations($providerId: ID, $offset: Int) {
+                conversationMemberships(
+                    provider_id: $providerId,
+                    offset: $offset,
+                    read_status: "all",
+                    active_status: "active"
+                ) {
+                    id
+                    conversation_id
+                    display_name
+                    display_other_user_name
+                    viewed
+                    convo {
+                        id name
+                        owner { id full_name }
+                        last_message_content
+                        updated_at
+                        conversation_memberships_count
+                        dietitian_id
+                        conversation_memberships {
+                            display_name
+                        }
+                    }
+                }
+            }`
             : `query GetAllConversations($offset: Int) {
                 conversationMemberships(
                     offset: $offset,
@@ -128,12 +155,16 @@ export async function GET(request: NextRequest) {
                         updated_at
                         conversation_memberships_count
                         dietitian_id
+                        conversation_memberships {
+                            display_name
+                        }
                     }
                 }
             }`;
 
         const variables: Record<string, unknown> = { offset };
         if (patientId) variables.patientId = patientId;
+        if (providerId) variables.providerId = providerId;
 
         const data = await healthieGraphQL<{
             conversationMemberships: Array<{
@@ -150,6 +181,7 @@ export async function GET(request: NextRequest) {
                     updated_at: string;
                     conversation_memberships_count: number;
                     dietitian_id: string | null;
+                    conversation_memberships: Array<{ display_name: string | null }>;
                 } | null;
             }>;
         }>(queryStr, variables);
@@ -164,6 +196,9 @@ export async function GET(request: NextRequest) {
                 updated_at: m.convo!.updated_at,
                 unread: !m.viewed,
                 member_count: m.convo!.conversation_memberships_count || 0,
+                members: (m.convo!.conversation_memberships || [])
+                    .map(cm => cm.display_name)
+                    .filter(Boolean),
                 owner_name: m.convo!.owner?.full_name || '',
             }));
 
@@ -244,6 +279,71 @@ export async function POST(request: NextRequest) {
                     created_at: data.createNote.note.created_at,
                 } : null,
             });
+
+        } else if (action === 'add_member') {
+            const { conversation_id, user_id } = body;
+            if (!conversation_id || !user_id) {
+                return NextResponse.json({ error: 'conversation_id and user_id are required' }, { status: 400 });
+            }
+
+            const data = await healthieGraphQL<{
+                updateConversation: {
+                    conversation: { id: string } | null;
+                    messages: Array<{ field: string; message: string }>;
+                };
+            }>(`
+                mutation AddMember($convId: ID, $userId: String) {
+                    updateConversation(input: {
+                        id: $convId,
+                        simple_added_users: $userId
+                    }) {
+                        conversation { id }
+                        messages { field message }
+                    }
+                }
+            `, { convId: conversation_id, userId: user_id });
+
+            if (data.updateConversation?.messages?.length) {
+                const errMsg = data.updateConversation.messages.map(m => m.message).join(', ');
+                return NextResponse.json({ error: errMsg }, { status: 400 });
+            }
+
+            return NextResponse.json({ success: true });
+
+        } else if (action === 'get_staff') {
+            const data = await healthieGraphQL<{
+                organizationMembers: Array<{
+                    id: string;
+                    first_name: string | null;
+                    last_name: string | null;
+                }>;
+            }>(`
+                query { organizationMembers(page_size: 50) { id first_name last_name } }
+            `);
+
+            const staff = (data.organizationMembers || []).map(m => ({
+                id: m.id,
+                name: `${m.first_name || ''} ${m.last_name || ''}`.trim() || 'Unknown',
+            }));
+
+            return NextResponse.json({ success: true, staff });
+
+        } else if (action === 'delete') {
+            const { note_id } = body;
+            if (!note_id) {
+                return NextResponse.json({ error: 'note_id is required' }, { status: 400 });
+            }
+
+            await healthieGraphQL(`
+                mutation DeleteNote($id: ID) {
+                    deleteNote(input: { id: $id }) {
+                        note { id }
+                        messages { field message }
+                    }
+                }
+            `, { id: note_id });
+
+            return NextResponse.json({ success: true });
 
         } else if (action === 'create') {
             const { recipient_id, content, subject } = body;

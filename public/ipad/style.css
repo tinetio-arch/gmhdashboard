@@ -3505,10 +3505,12 @@ h6 {
 .chart-panel-content {
     flex: 1;
     overflow-y: auto;
+    overflow-y: scroll; /* force scrollbar on iOS */
     -webkit-overflow-scrolling: touch;
     padding: 12px 0;
-    padding-bottom: 0;
+    padding-bottom: calc(40px + env(safe-area-inset-bottom, 20px));
     min-height: 0;
+    overscroll-behavior: contain;
 }
 
 /* ─── CHART PANEL MINIMIZE/EXPAND STATES ─────────────────── */
@@ -3640,11 +3642,16 @@ h6 {
     gap: 2px;
     padding: 2px 8px;
     margin: 0 8px 8px;
-    background: rgba(0, 0, 0, 0.15);
+    background: rgba(0, 0, 0, 0.4);
     border-radius: 8px;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
 }
 .chart-tab-nav::-webkit-scrollbar {
     display: none;

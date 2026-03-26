@@ -614,9 +614,10 @@ export class GHLClient {
   }
 
   /**
-   * Create an appointment (Calendar API).
+   * @deprecated GHL calendars disabled 2026-03-25. All scheduling now goes through Healthie.
+   * Use schedulingService from lib/scheduling.ts instead.
    */
-  async createAppointment(appointment: {
+  async createAppointment(_appointment: {
     contactId: string;
     calendarId: string;
     appointmentTypeId?: string;
@@ -625,34 +626,21 @@ export class GHLClient {
     notes?: string;
     timeZone?: string;
   }): Promise<{ id: string }> {
-    return this.request<{ id: string }>(
-      'POST',
-      this.withLocationPath('/appointments/'),
-      {
-        contactId: appointment.contactId,
-        calendarId: appointment.calendarId,
-        appointmentTypeId: appointment.appointmentTypeId,
-        startTime: appointment.startTime,
-        endTime: appointment.endTime,
-        notes: appointment.notes,
-        timeZone: appointment.timeZone,
-      }
-    );
+    throw new Error('GHL calendar scheduling is disabled. Use Healthie via lib/scheduling.ts instead.');
   }
 
-  async rescheduleAppointment(appointmentId: string, updates: { startTime?: string; endTime?: string; notes?: string }) {
-    return this.request(
-      'PUT',
-      this.withLocationPath(`/appointments/${appointmentId}`),
-      updates
-    );
+  /**
+   * @deprecated GHL calendars disabled 2026-03-25. Use Healthie via lib/scheduling.ts instead.
+   */
+  async rescheduleAppointment(_appointmentId: string, _updates: { startTime?: string; endTime?: string; notes?: string }) {
+    throw new Error('GHL calendar scheduling is disabled. Use Healthie via lib/scheduling.ts instead.');
   }
 
-  async cancelAppointment(appointmentId: string): Promise<void> {
-    await this.request(
-      'DELETE',
-      this.withLocationPath(`/appointments/${appointmentId}`)
-    );
+  /**
+   * @deprecated GHL calendars disabled 2026-03-25. Use Healthie via lib/scheduling.ts instead.
+   */
+  async cancelAppointment(_appointmentId: string): Promise<void> {
+    throw new Error('GHL calendar scheduling is disabled. Use Healthie via lib/scheduling.ts instead.');
   }
 
   /**
