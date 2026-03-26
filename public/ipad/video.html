@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Video Call — GMH Ops</title>
+    <script src="https://static.opentok.com/v2/js/opentok.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0C141D;
+            color: #fff;
+            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .video-header {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            z-index: 10;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            background: linear-gradient(180deg, rgba(12,20,29,0.9) 0%, transparent 100%);
+        }
+        .video-header .info {
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .video-header .info .patient-name { color: #00D4FF; }
+        .video-header .info .status { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+        .video-header .timer { font-size: 18px; font-weight: 600; color: #60a5fa; font-variant-numeric: tabular-nums; }
+
+        #subscriber {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: #111827;
+        }
+        #subscriber video { object-fit: cover; }
+
+        #publisher {
+            position: absolute;
+            bottom: 100px; right: 20px;
+            width: 180px; height: 135px;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid rgba(255,255,255,0.15);
+            z-index: 5;
+            background: #1e293b;
+        }
+        #publisher video { object-fit: cover; }
+
+        .controls {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            z-index: 10;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            padding: 20px;
+            background: linear-gradient(0deg, rgba(12,20,29,0.9) 0%, transparent 100%);
+        }
+        .ctrl-btn {
+            width: 56px; height: 56px;
+            border-radius: 50%;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            cursor: pointer;
+            transition: transform 0.15s, opacity 0.15s;
+        }
+        .ctrl-btn:active { transform: scale(0.9); }
+        .ctrl-btn.mute { background: rgba(255,255,255,0.15); color: #fff; }
+        .ctrl-btn.mute.active { background: rgba(239,68,68,0.3); color: #f87171; }
+        .ctrl-btn.video-toggle { background: rgba(255,255,255,0.15); color: #fff; }
+        .ctrl-btn.video-toggle.active { background: rgba(239,68,68,0.3); color: #f87171; }
+        .ctrl-btn.end { background: #ef4444; color: #fff; width: 64px; height: 64px; font-size: 26px; }
+
+        .waiting {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 3;
+            background: #0C141D;
+        }
+        .waiting .spinner {
+            width: 48px; height: 48px;
+            border: 3px solid rgba(0,212,255,0.2);
+            border-top-color: #00D4FF;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .waiting .msg { font-size: 16px; color: #94a3b8; }
+        .waiting .patient-label { font-size: 20px; font-weight: 700; color: #00D4FF; margin-bottom: 8px; }
+
+        .error-state {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 20;
+            background: #0C141D;
+        }
+        .error-state .icon { font-size: 48px; margin-bottom: 12px; }
+        .error-state .title { font-size: 18px; font-weight: 700; color: #f87171; margin-bottom: 8px; }
+        .error-state .detail { font-size: 13px; color: #94a3b8; max-width: 400px; text-align: center; margin-bottom: 20px; }
+        .error-state button { padding: 10px 24px; border-radius: 8px; background: rgba(0,212,255,0.15); border: 1px solid rgba(0,212,255,0.3); color: #00D4FF; font-size: 14px; font-weight: 600; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <!-- Waiting state -->
+    <div class="waiting" id="waitingState">
+        <div class="spinner"></div>
+        <div class="patient-label" id="waitingPatient">Connecting...</div>
+        <div class="msg" id="waitingMsg">Initializing video session</div>
+    </div>
+
+    <!-- Error state (hidden) -->
+    <div class="error-state" id="errorState" style="display:none;">
+        <div class="icon">&#9888;</div>
+        <div class="title" id="errorTitle">Connection Error</div>
+        <div class="detail" id="errorDetail"></div>
+        <button onclick="window.close()">Close</button>
+    </div>
+
+    <!-- Video containers -->
+    <div id="subscriber"></div>
+    <div id="publisher"></div>
+
+    <!-- Header overlay -->
+    <div class="video-header" id="videoHeader" style="display:none;">
+        <div class="info">
+            <div><span class="patient-name" id="headerPatient"></span></div>
+            <div class="status" id="headerStatus">Connecting...</div>
+        </div>
+        <div class="timer" id="callTimer">00:00</div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls" id="controls" style="display:none;">
+        <button class="ctrl-btn mute" id="muteBtn" onclick="toggleMute()" title="Mute/Unmute">&#x1F50A;</button>
+        <button class="ctrl-btn end" id="endBtn" onclick="endCall()" title="End Call">&#x1F4F5;</button>
+        <button class="ctrl-btn video-toggle" id="videoBtn" onclick="toggleVideo()" title="Camera On/Off">&#x1F4F7;</button>
+    </div>
+
+    <script>
+        var session = null;
+        var publisher = null;
+        var subscriber = null;
+        var isMuted = false;
+        var isVideoOff = false;
+        var timerInterval = null;
+        var callStartTime = null;
+
+        // Parse URL params
+        var params = new URLSearchParams(window.location.search);
+        var appointmentId = params.get('appointment_id') || '';
+        var patientName = decodeURIComponent(params.get('patient_name') || 'Patient');
+
+        document.getElementById('waitingPatient').textContent = patientName;
+
+        function showError(title, detail) {
+            document.getElementById('waitingState').style.display = 'none';
+            document.getElementById('errorState').style.display = 'flex';
+            document.getElementById('errorTitle').textContent = title;
+            document.getElementById('errorDetail').textContent = detail;
+        }
+
+        function showVideo() {
+            document.getElementById('waitingState').style.display = 'none';
+            document.getElementById('videoHeader').style.display = 'flex';
+            document.getElementById('controls').style.display = 'flex';
+            document.getElementById('headerPatient').textContent = patientName;
+        }
+
+        function startTimer() {
+            callStartTime = Date.now();
+            timerInterval = setInterval(function() {
+                var elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+                var min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+                var sec = String(elapsed % 60).padStart(2, '0');
+                document.getElementById('callTimer').textContent = min + ':' + sec;
+            }, 1000);
+        }
+
+        function toggleMute() {
+            if (!publisher) return;
+            isMuted = !isMuted;
+            publisher.publishAudio(!isMuted);
+            var btn = document.getElementById('muteBtn');
+            btn.classList.toggle('active', isMuted);
+            btn.innerHTML = isMuted ? '&#x1F507;' : '&#x1F50A;';
+        }
+
+        function toggleVideo() {
+            if (!publisher) return;
+            isVideoOff = !isVideoOff;
+            publisher.publishVideo(!isVideoOff);
+            var btn = document.getElementById('videoBtn');
+            btn.classList.toggle('active', isVideoOff);
+            btn.innerHTML = isVideoOff ? '&#x1F6AB;' : '&#x1F4F7;';
+        }
+
+        function endCall() {
+            if (timerInterval) clearInterval(timerInterval);
+            if (session) {
+                session.disconnect();
+            }
+            window.close();
+            // Fallback if window.close() is blocked
+            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0C141D;color:#94a3b8;font-family:sans-serif;font-size:18px;">Call ended. You can close this window.</div>';
+        }
+
+        // Fetch video session from API
+        async function initCall() {
+            try {
+                document.getElementById('waitingMsg').textContent = 'Fetching video session...';
+
+                var resp = await fetch('/ops/api/ipad/patient?action=video_session&appointment_id=' + appointmentId, { credentials: 'include' });
+                if (!resp.ok) {
+                    showError('API Error', 'Failed to fetch video session (HTTP ' + resp.status + ')');
+                    return;
+                }
+
+                var data = await resp.json();
+                if (!data.success || !data.session) {
+                    showError('Session Error', data.error || 'No video session returned');
+                    return;
+                }
+
+                var s = data.session;
+
+                // Zoom fallback
+                if (s.zoomJoinUrl) {
+                    window.location.href = s.zoomJoinUrl;
+                    return;
+                }
+
+                // Healthie native video via Vonage/OpenTok
+                if (!s.sessionId || !s.token) {
+                    showError('No Video Session',
+                        'This appointment does not have a video session. Make sure the appointment type is set to "Healthie Video Call". Contact type: ' + (s.contactType || 'unknown'));
+                    return;
+                }
+
+                document.getElementById('waitingMsg').textContent = 'Connecting to video...';
+                connectVonage(s.vonageApiKey, s.sessionId, s.token);
+
+            } catch (e) {
+                console.error('[Video] initCall error:', e);
+                showError('Connection Error', e.message || 'Failed to initialize video call');
+            }
+        }
+
+        function connectVonage(apiKey, sessionId, token) {
+            if (typeof OT === 'undefined') {
+                showError('SDK Error', 'Vonage Video SDK failed to load. Check your internet connection.');
+                return;
+            }
+
+            session = OT.initSession(apiKey, sessionId);
+
+            // Publish local camera
+            publisher = OT.initPublisher('publisher', {
+                insertMode: 'append',
+                width: '100%',
+                height: '100%',
+                resolution: '640x480',
+                frameRate: 30,
+                mirror: true,
+                style: { buttonDisplayMode: 'off' }
+            }, function(err) {
+                if (err) {
+                    console.error('[Video] Publisher error:', err);
+                    showError('Camera Error', 'Could not access camera/microphone. Please check permissions. Error: ' + err.message);
+                    return;
+                }
+            });
+
+            // When patient joins
+            session.on('streamCreated', function(event) {
+                document.getElementById('headerStatus').textContent = 'Connected';
+                subscriber = session.subscribe(event.stream, 'subscriber', {
+                    insertMode: 'append',
+                    width: '100%',
+                    height: '100%',
+                    style: { buttonDisplayMode: 'off' }
+                }, function(err) {
+                    if (err) console.error('[Video] Subscribe error:', err);
+                });
+                startTimer();
+            });
+
+            // When patient leaves
+            session.on('streamDestroyed', function(event) {
+                document.getElementById('headerStatus').textContent = 'Patient disconnected';
+                if (timerInterval) clearInterval(timerInterval);
+            });
+
+            session.on('sessionDisconnected', function(event) {
+                document.getElementById('headerStatus').textContent = 'Disconnected';
+                if (timerInterval) clearInterval(timerInterval);
+            });
+
+            // Connect
+            session.connect(token, function(err) {
+                if (err) {
+                    console.error('[Video] Session connect error:', err);
+                    showError('Connection Failed', 'Could not connect to video session. Error: ' + err.message);
+                    return;
+                }
+
+                // Publish local stream
+                session.publish(publisher, function(err) {
+                    if (err) {
+                        console.error('[Video] Publish error:', err);
+                        showError('Publish Error', 'Could not publish video stream. Error: ' + err.message);
+                        return;
+                    }
+                    showVideo();
+                    document.getElementById('headerStatus').textContent = 'Waiting for patient...';
+                });
+            });
+        }
+
+        // Start
+        if (!appointmentId) {
+            showError('Missing Appointment', 'No appointment_id provided in URL.');
+        } else {
+            initCall();
+        }
+    </script>
+</body>
+</html>

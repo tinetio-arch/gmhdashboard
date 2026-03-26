@@ -384,6 +384,7 @@ export async function POST(request: NextRequest) {
                     createAppointment(input: {
                         user_id: $patientId,
                         other_party_id: $providerId,
+                        providers: $providerId,
                         appointment_type_id: $typeId,
                         datetime: $datetime,
                         location: $location,

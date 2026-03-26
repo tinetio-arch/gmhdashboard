@@ -1696,18 +1696,33 @@ function renderLabsView(container) {
     const approved = allLabs.filter(l => l.status === 'approved' || l.status === 'reviewed');
     const normalPending = pending.filter(l => !l.critical && !l.is_critical);
 
-    const filteredLabs = activeLabFilter === 'pending' ? pending
+    // Apply search filter
+    const labSearch = (window._labSearchQuery || '').toLowerCase();
+    let filteredLabs = activeLabFilter === 'pending' ? pending
         : activeLabFilter === 'approved' ? approved
             : allLabs;
+    if (labSearch) {
+        filteredLabs = filteredLabs.filter(l => {
+            const name = (l.patient_name || l.patientName || '').toLowerCase();
+            const testType = (l.test_type || l.testType || l.panel_name || '').toLowerCase();
+            return name.includes(labSearch) || testType.includes(labSearch);
+        });
+    }
 
     container.innerHTML = `
         <h1 style="font-size:28px; margin-bottom:20px;">Lab Results</h1>
+        <div style="margin-bottom:12px;">
+            <input type="text" id="labSearchInput" placeholder="Search by patient name or panel type..."
+                value="${sanitize(window._labSearchQuery || '')}"
+                oninput="window._labSearchQuery = this.value; renderCurrentTab();"
+                style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
+        </div>
         <div class="labs-header">
-            <button class="labs-header-tab ${activeLabFilter === 'pending' ? 'active' : ''}" 
+            <button class="labs-header-tab ${activeLabFilter === 'pending' ? 'active' : ''}"
                     onclick="setLabFilter('pending')">Review Queue (${pending.length})</button>
-            <button class="labs-header-tab ${activeLabFilter === 'approved' ? 'active' : ''}" 
+            <button class="labs-header-tab ${activeLabFilter === 'approved' ? 'active' : ''}"
                     onclick="setLabFilter('approved')">Approved (${approved.length})</button>
-            <button class="labs-header-tab ${activeLabFilter === 'all' ? 'active' : ''}" 
+            <button class="labs-header-tab ${activeLabFilter === 'all' ? 'active' : ''}"
                     onclick="setLabFilter('all')">History</button>
             ${normalPending.length > 0 && activeLabFilter === 'pending' ? `
                 <button class="batch-approve-btn" onclick="batchApproveNormal()">
@@ -1718,10 +1733,14 @@ function renderLabsView(container) {
         <div class="stagger-in" id="labsList">
             ${filteredLabs.map(l => renderLabCard(l)).join('')}
             ${filteredLabs.length === 0 ? renderEmptyState('🧪',
-        activeLabFilter === 'pending' ? 'No labs pending review' : 'No lab results',
-        activeLabFilter === 'pending' ? 'All caught up!' : '') : ''}
+        labSearch ? 'No results for "' + sanitize(labSearch) + '"'
+        : activeLabFilter === 'pending' ? 'No labs pending review' : 'No lab results',
+        activeLabFilter === 'pending' && !labSearch ? 'All caught up!' : '') : ''}
         </div>
     `;
+    // Restore focus to search input if it was active
+    const si = document.getElementById('labSearchInput');
+    if (si && labSearch) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
 }
 
 function setLabFilter(filter) {
@@ -4321,42 +4340,14 @@ async function removeTagFromPatient(tagId, tagName) {
 
 // ============ PROVIDER VIDEO CALL ============
 
+// FIX(2026-03-26): Opens native Vonage/OpenTok video page instead of broken Healthie portal URL.
+// Healthie portal URLs (secure.gethealthie.com/video_calls/) require Healthie login which iPad doesn't have.
+// Now uses session_id + generated_token from Healthie API with Vonage Web SDK.
 async function startProviderVideoCall(appointmentId, patientName) {
-    showToast('Connecting video call...', 'info');
-
-    try {
-        // Fetch video session from Healthie via our API
-        const resp = await fetch('/ops/api/ipad/patient?action=video_session&appointment_id=' + appointmentId, { credentials: 'include' });
-        const data = await resp.json();
-
-        if (data.success && data.session) {
-            const session = data.session;
-
-            if (session.zoomJoinUrl) {
-                // Zoom URL available — open in new tab
-                window.open(session.zoomJoinUrl, '_blank');
-                showToast('Opening Zoom call with ' + patientName, 'success');
-            } else {
-                // Healthie native video — open Healthie video room
-                // The video room URL pattern for Healthie native video
-                // FIX(2026-03-25): Was pointing to staging URL causing 404
-                const videoUrl = 'https://secure.gethealthie.com/video_calls/' + appointmentId;
-                window.open(videoUrl, '_blank', 'width=800,height=600,toolbar=no,menubar=no');
-                showToast('Starting video call with ' + patientName, 'success');
-            }
-        } else {
-            // Fallback — try Healthie video room directly
-            const videoUrl = 'https://secure.gethealthie.com/video_calls/' + appointmentId;
-            window.open(videoUrl, '_blank', 'width=800,height=600,toolbar=no,menubar=no');
-            showToast('Opening video session...', 'info');
-        }
-    } catch (e) {
-        console.error('[Video] startProviderVideoCall error:', e);
-        // Fallback — open Healthie video room
-        const videoUrl = 'https://secure.gethealthie.com/video_calls/' + appointmentId;
-        window.open(videoUrl, '_blank', 'width=800,height=600,toolbar=no,menubar=no');
-        showToast('Opening video session (fallback)...', 'info');
-    }
+    showToast('Launching video call...', 'info');
+    var encodedName = encodeURIComponent(patientName || 'Patient');
+    var videoUrl = '/ops/ipad/video.html?appointment_id=' + appointmentId + '&patient_name=' + encodedName;
+    window.open(videoUrl, '_blank', 'width=900,height=700,toolbar=no,menubar=no');
 }
 
 // ============ END GROUP & TAG MANAGEMENT ============
@@ -8649,12 +8640,12 @@ async function submitPeptideDispense(patientId, patientName) {
 }
 
 // ─── PRINT LABEL ────────────────────────────────────────────
+// FIX(2026-03-26): Matches dashboard TransactionsTable.tsx and DispenseHistory.tsx exactly
 function printLabel(patientId, patientName, medication, options = {}) {
     const med = medication || 'Testosterone Cypionate';
     const type = options.type || (med.toLowerCase().includes('testosterone') ? 'testosterone' : 'peptide');
 
-    // FIX(2026-03-19): Match dashboard label format exactly
-    // Append 200mg/ml for testosterone if not already present
+    // Match dashboard: testosterone always shows "Testosterone Cypionate 200mg/ml"
     let labelMed = med;
     if (type === 'testosterone' && !med.includes('200mg') && !med.includes('200 mg')) {
         labelMed = 'Testosterone Cypionate 200mg/ml';
@@ -8666,16 +8657,22 @@ function printLabel(patientId, patientName, medication, options = {}) {
     const patientData = allPatients.find(p => String(p.id || p.patient_id) === String(patientId)) || {};
     const dob = options.dob || demo.dob || demo.date_of_birth || patientData.dob || patientData.date_of_birth || '';
     const formattedDob = dob ? formatDateDisplay(dob) : '';
-
-    // Format expiration date if provided
     const expDate = options.expDate ? formatDateDisplay(options.expDate) : '';
+
+    // Match dashboard: dosage for testosterone uses regimen, peptides use label_directions
+    let dosage = options.dosage || '';
+    if (!dosage && type === 'testosterone') {
+        const regimen = demo.regimen || patientData.regimen || '';
+        dosage = regimen || (options.amountDispensed ? options.amountDispensed + 'mL SUBQ Weekly' : 'Use as directed');
+    }
+    // For peptides, dosage is auto-generated by the PDF generator from medication name if empty
 
     const params = new URLSearchParams({
         type,
         patientName: patientName || '',
         patientDob: formattedDob,
         medication: labelMed,
-        dosage: options.dosage || 'Use as directed',
+        dosage: dosage,
         provider: 'Dr. Aaron Whitten NMD - DEA: MW6359574',
         dateDispensed: new Date().toLocaleDateString('en-US', { timeZone: 'America/Phoenix' }),
         lotNumber: options.lotNumber || '',
@@ -11127,41 +11124,18 @@ function promptPrintLabel(info) {
     }, 15000);
 }
 
+// FIX(2026-03-26): Use proper PDF label generator instead of old HTML format
 function openPrintLabelWindow(info) {
     if (!info) return;
-    const printWindow = window.open('', '_blank', 'width=400,height=350');
-    if (!printWindow) {
-        showToast('Pop-up blocked — allow pop-ups for this site to print labels', 'warning');
-        return;
-    }
-    const html = `<!DOCTYPE html>
-<html><head><title>Dispense Label</title>
-<style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 16px; }
-    .label { border: 2px solid #000; padding: 16px; max-width: 350px; margin: 0 auto; }
-    .label h2 { margin: 0 0 8px; font-size: 16px; text-align: center; border-bottom: 1px solid #000; padding-bottom: 6px; }
-    .row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
-    .row .lbl { font-weight: 700; }
-    .footer { margin-top: 10px; font-size: 10px; color: #666; text-align: center; border-top: 1px solid #ccc; padding-top: 6px; }
-    @media print { body { margin: 0; padding: 4px; } .no-print { display: none; } }
-</style></head><body>
-<div class="label">
-    <h2>GMH Controlled Substance Dispense</h2>
-    <div class="row"><span class="lbl">Patient:</span><span>${info.patientName}</span></div>
-    <div class="row"><span class="lbl">Medication:</span><span>${info.drugName}</span></div>
-    <div class="row"><span class="lbl">Dose:</span><span>${info.dosePerSyringe} mL × ${info.syringes} syringe${info.syringes > 1 ? 's' : ''}</span></div>
-    <div class="row"><span class="lbl">Total Dispensed:</span><span>${info.totalDose} mL</span></div>
-    <div class="row"><span class="lbl">Waste:</span><span>${info.totalWaste} mL</span></div>
-    <div class="row"><span class="lbl">Total Removal:</span><span>${info.totalRemoval} mL</span></div>
-    <div class="row"><span class="lbl">Vial ID:</span><span>${info.vialExternalId}</span></div>
-    <div class="row"><span class="lbl">Date:</span><span>${info.date}</span></div>
-    <div class="footer">Granite Mountain Health — DEA Controlled Substance Record</div>
-</div>
-<div class="no-print" style="text-align:center; margin-top:12px;">
-    <button onclick="window.print()" style="padding:8px 24px; font-size:14px; cursor:pointer;">🖨️ Print</button>
-</div>
-</body></html>`;
-    printWindow.document.write(html);
+    // Use the same PDF label system as the dashboard
+    printLabel(window._qdPatientId, info.patientName, info.drugName, {
+        dosage: info.dosePerSyringe + 'mL x ' + info.syringes + ' syringe(s)',
+        volume: String(info.totalDose),
+        vialNumber: info.vialExternalId,
+        amountDispensed: String(info.totalDose),
+        lotNumber: info.lotNumber || '',
+        expDate: info.expDate || ''
+    });
     printWindow.document.close();
     // Auto-trigger print dialog
     printWindow.onload = () => { printWindow.print(); };

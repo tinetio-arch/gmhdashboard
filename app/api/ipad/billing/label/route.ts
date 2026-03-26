@@ -14,6 +14,7 @@ export async function GET(request: NextRequest) {
     }
 
     try {
+        // FIX(2026-03-26): Pull label_directions from peptide_products for accurate dosing
         const result = await query<{
             sale_id: number;
             patient_name: string;
@@ -21,10 +22,11 @@ export async function GET(request: NextRequest) {
             sale_date: string;
             product_name: string;
             category: string;
+            label_directions: string | null;
         }>(`
             SELECT
                 d.sale_id, d.patient_name, d.patient_dob, d.sale_date,
-                p.name as product_name, p.category
+                p.name as product_name, p.category, p.label_directions
             FROM peptide_dispenses d
             JOIN peptide_products p ON p.product_id = d.product_id
             WHERE d.sale_id = $1
@@ -41,7 +43,7 @@ export async function GET(request: NextRequest) {
             patientName: dispense.patient_name,
             patientDob: dispense.patient_dob || '',
             medication: dispense.product_name,
-            dosage: 'See provider instructions',
+            dosage: dispense.label_directions || '',
             lotNumber: 'N/A',
             volume: '',
             dateDispensed: dispense.sale_date

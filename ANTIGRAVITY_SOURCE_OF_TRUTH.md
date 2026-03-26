@@ -1,6 +1,6 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: March 25, 2026
+**Last Updated**: March 26, 2026
 **Primary AI Assistant**: Claude Code (Anthropic)
 **Sprint Period**: December 25, 2025 - March 14, 2026
 
@@ -4386,6 +4386,23 @@ Frontend (React Native / Expo):
 
 > **Slot availability**: Do NOT pass `location_id` to `availableSlotsForRange` — causes field error
 
+> [!CAUTION]
+> **`createAppointment` dual-provider bug (Fixed March 26, 2026)**:
+> Healthie **auto-adds the API key owner as a provider** on every appointment created via API. If the API key belongs to Provider A and you create an appointment for Provider B using `providers: providerBId`, the appointment gets BOTH providers.
+>
+> **FIX**: Always use BOTH `other_party_id` AND `providers` in createAppointment:
+> ```javascript
+> input: {
+>   user_id: patientId,           // The patient
+>   other_party_id: providerId,   // Explicit single provider (from patient's perspective)
+>   providers: providerId,        // Override to prevent API key owner auto-add
+>   appointment_type_id: typeId,
+>   // ... other fields
+> }
+> ```
+> **Files fixed**: `lambda-booking/src/healthie.js`, `nowmenshealth-website/lib/healthie-booking.ts`
+> **Files to check**: Any code that calls `createAppointment` mutation — verify it uses `other_party_id`.
+
 ### CDK vs. Live Infrastructure
 
 | Lambda | CDK Timeout | Live Override |
@@ -4570,6 +4587,51 @@ BookingWidget → /api/healthie/book (POST) → createClient + createAppointment
 > [!IMPORTANT]
 > Do NOT pass `appointment_location_id` to `availableSlotsForRange` — it causes a field error. Only pass `provider_id` and `appointment_type_id`.
 
+### Website Redesign — March 26, 2026 (Editorial Style)
+
+> **Scope**: NowMentalHealth.Care, NowPrimary.Care, NowOptimal.com all redesigned to match an editorial, photography-driven style inspired by Recovery in the Pines. Consistent brand identity across all 3 sites.
+
+**Design System (shared across all 3 sites):**
+- **Fonts**: Playfair Display (serif, headings) + Inter (sans, body) via `next/font/google`
+- **Layout**: Full-bleed hero images with overlays, journey/path sections, service cards with photos, dark testimonial sections, side-by-side content with images, dark navy footers
+- **Photography**: Unsplash images (free commercial use) stored in `public/images/`
+- **Light Theme**: All sites use light cream/white backgrounds with dark text
+- **Responsive**: Mobile-first, glass-morphism sticky headers, mobile hamburger menus
+
+| Site | Background | Primary Accent | Button Dark | Footer | Status |
+|------|-----------|---------------|------------|--------|--------|
+| NowMentalHealth.Care | `#FBF7F4` cream | `#C2703E` terracotta | `#2D3A4A` navy | `#2D3A4A` navy | ✅ Live |
+| NowPrimary.Care | `#F8FAFC` slate | `#00A550` green | `#060F6A` navy | `#060F6A` navy | ✅ Live |
+| NowOptimal.com | `#F8FAFC` slate | `#0891B2` teal | `#0A0E1A` navy | `#0A0E1A` navy | ✅ Live |
+
+**NowMentalHealth.Care** — `/home/ec2-user/nowmentalhealth-website/`
+- Port: 3003, PM2: `nowmentalhealth-website`
+- 11 visit types (no Spravato), real pricing in BookingWidget
+- Terracotta warm color scheme, emotional photography
+- Services: Initial Consult (Free), Therapy ($150), Medication Management ($99), Ketamine Consult (Free), Ketamine IV ($450), Group Screening (Free), Group Session ($75), Psychiatric Follow-Up Telehealth ($75)
+
+**NowPrimary.Care** — `/home/ec2-user/nowprimarycare-website/`
+- Port: 3008, PM2: `nowprimary-website`
+- Navy/green color scheme, Healthie booking integration preserved
+- Full editorial redesign with photos, journey section, service spotlights
+
+**NowOptimal.com** — `/home/ec2-user/nowoptimal-website/`
+- Port: 3007, PM2: `nowoptimal-website`
+- Teal/gold accents on light background (was dark theme)
+- Brand hub linking to all sub-brands with colored accent bars
+- No booking — just brand navigation and network overview
+
+**Files changed per site**: layout.tsx, globals.css, tailwind.config, page.tsx, Header.tsx, Footer.tsx, public/images/*
+
+**PM2 Port Corrections** (actual live ports differ from old SOT):
+| PM2 Name | Actual Port | Nginx Proxy |
+|----------|-------------|-------------|
+| nowmentalhealth-website | 3003 | nowmentalhealth.care |
+| nowmenshealth-website | 3004 | nowmenshealth.care |
+| nowoptimal-website | 3007 | nowoptimal.com |
+| nowprimary-website | 3008 | nowprimary.care |
+| abxtac-website | 3009 | abxtac.com |
+
 ---
 
 ## 🏢 Brand & Group Architecture (March 25, 2026 — Telehealth Restructure)
@@ -4643,13 +4705,17 @@ These groups currently exist but should be converted to **tags** on patients in 
 
 > **Theme Preview**: `/home/ec2-user/.tmp/longevity-theme-preview.html`
 
-#### NOW Mental Health
+#### NOW Mental Health (Website updated March 26, 2026)
 | Role | Hex | Usage |
 |------|-----|-------|
-| Primary | `#7C3AED` | Buttons, accents, mobile app |
-| Dark | `#4C1D95` | Nav, headers |
-| Light | `#A78BFA` | Hover, highlights |
-| Background | `#0F0A1E` | App dark theme |
+| Primary | `#C2703E` | Buttons, accents, website terracotta |
+| Dark | `#9A5530` | CTAs, gradients |
+| Light | `#E8A87C` | Hover, highlights |
+| Navy | `#2D3A4A` | Footer, quote sections, dark buttons |
+| Background | `#FBF7F4` | Website light theme (editorial) |
+| Mobile Primary | `#7C3AED` | Mobile app stays purple |
+
+> **Website redesign**: Editorial style with Playfair Display serif headings, Unsplash photography, warm terracotta accents on light cream background. Footer uses dark navy `#2D3A4A`. All 11 visit types with real pricing. No Spravato.
 
 #### ABX TAC
 | Role | Hex | Usage |

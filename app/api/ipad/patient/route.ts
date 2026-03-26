@@ -62,16 +62,20 @@ export async function GET(request: NextRequest) {
                 return NextResponse.json({ error: 'appointment_id is required' }, { status: 400 });
             }
 
+            // FIX(2026-03-26): Query session_id + generated_token for Vonage/OpenTok video
             const data = await healthieGraphQL(`query GetVideoSession($id: ID) {
                 appointment(id: $id) {
                     id
                     date
                     pm_status
                     contact_type
+                    session_id
+                    generated_token
                     zoom_join_url
                     zoom_meeting_id
                     provider { id first_name last_name }
                     attendees { id first_name last_name }
+                    user { id first_name last_name }
                 }
             }`, { id: appointmentId });
 
@@ -80,6 +84,7 @@ export async function GET(request: NextRequest) {
                 return NextResponse.json({ error: 'Appointment not found' }, { status: 404 });
             }
 
+            const user = appt.user;
             return NextResponse.json({
                 success: true,
                 session: {
@@ -88,9 +93,14 @@ export async function GET(request: NextRequest) {
                     status: appt.pm_status,
                     contactType: appt.contact_type,
                     provider: appt.provider ? `${appt.provider.first_name} ${appt.provider.last_name}` : null,
+                    patientName: user ? `${user.first_name} ${user.last_name}` : null,
+                    // Vonage/OpenTok native video (Healthie Video Call)
+                    sessionId: appt.session_id || null,
+                    token: appt.generated_token || null,
+                    vonageApiKey: '45624682',
+                    // Zoom fallback
                     zoomJoinUrl: appt.zoom_join_url || null,
                     zoomMeetingId: appt.zoom_meeting_id || null,
-                    vonageApiKey: '45624682',
                 },
             });
         }
