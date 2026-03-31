@@ -4,13 +4,13 @@
  * POST - Record incoming shipment
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { fetchPeptideOrders, createPeptideOrder } from '@/lib/peptideQueries';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
-        await requireUser('read');
+        await requireApiUser(request, 'read');
         const orders = await fetchPeptideOrders();
         return NextResponse.json(orders);
     } catch (error) {
@@ -23,9 +23,9 @@ export async function GET() {
     }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
     try {
-        const user = await requireUser('write');
+        const user = await requireApiUser(request, 'write');
         const body = await request.json();
 
         // Validate required fields

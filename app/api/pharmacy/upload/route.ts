@@ -3,11 +3,11 @@
  * Handles PDF uploads to S3 and optionally to Healthie patient charts
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { updatePharmacyOrder, getPharmacyOrder, PharmacyType } from '@/lib/specialtyOrderQueries';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 
 const VALID_PHARMACIES: PharmacyType[] = ['tirzepatide', 'farmakaio', 'olympia', 'toprx', 'carrieboyd'];
 const BUCKET_NAME = 'gmh-specialty-orders';
@@ -25,9 +25,9 @@ const s3Client = new S3Client({
 });
 
 // GET - Get presigned URL for viewing PDF
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
     try {
-        await requireUser('read');
+        await requireApiUser(request, 'read');
         const { searchParams } = new URL(request.url);
         const s3Key = searchParams.get('s3_key');
 
@@ -49,9 +49,9 @@ export async function GET(request: Request) {
 }
 
 // POST - Upload PDF to S3 and optionally to Healthie
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const formData = await request.formData();
 
         const orderId = formData.get('order_id') as string;

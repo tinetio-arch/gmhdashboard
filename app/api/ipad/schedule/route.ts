@@ -311,15 +311,107 @@ export async function POST(request: NextRequest) {
                 }
             `);
 
+            // Map appointment types to their clinic/brand groups based on name patterns
+            const getClinicGroup = (name: string): string => {
+                const nameLower = name.toLowerCase();
+
+                // Men's Health patterns
+                if (nameLower.includes('male hormone') ||
+                    nameLower.includes('nmh ') ||
+                    nameLower.includes('trt ') ||
+                    nameLower.includes('mens health')) {
+                    return 'NowMensHealth.Care';
+                }
+
+                // Primary Care patterns
+                if (nameLower.includes('primary care') ||
+                    nameLower.includes('sick visit') ||
+                    nameLower.includes('sick consult') ||
+                    nameLower.includes('sports physical') ||
+                    nameLower.includes('medical clearance') ||
+                    nameLower.includes('tb test') ||
+                    nameLower.includes('wound care') ||
+                    nameLower.includes('allergy') ||
+                    nameLower.includes('injection') ||
+                    nameLower.includes('nowprimary') ||
+                    nameLower.includes('female hormone')) {
+                    return 'NowPrimary.Care';
+                }
+
+                // Longevity patterns
+                if (nameLower.includes('pelleting') ||
+                    nameLower.includes('evexipel') ||
+                    nameLower.includes('weight loss') ||
+                    nameLower.includes('longevity') ||
+                    nameLower.includes('iv therapy') ||
+                    nameLower.includes('peptide')) {
+                    return 'NowLongevity.Care';
+                }
+
+                // Mental Health patterns
+                if (nameLower.includes('mental health') ||
+                    nameLower.includes('therapy') ||
+                    nameLower.includes('psychiatric') ||
+                    nameLower.includes('ketamine')) {
+                    return 'NowMentalHealth.Care';
+                }
+
+                // ABX TAC patterns
+                if (nameLower.includes('abx tac')) {
+                    return 'ABXTAC';
+                }
+
+                // Default to General if no match
+                return 'General';
+            };
+
+            // Group appointment types by clinic
+            const groupedTypes: Record<string, Array<any>> = {};
+
+            (data.appointmentTypes || []).forEach(t => {
+                const clinicGroup = getClinicGroup(t.name);
+
+                if (!groupedTypes[clinicGroup]) {
+                    groupedTypes[clinicGroup] = [];
+                }
+
+                groupedTypes[clinicGroup].push({
+                    id: t.id,
+                    name: t.name,
+                    length: t.length,
+                    contact_types: t.available_contact_types || [],
+                    clinic_group: clinicGroup,
+                });
+            });
+
+            // Sort groups alphabetically, but put General last
+            const sortedGroups = Object.keys(groupedTypes).sort((a, b) => {
+                if (a === 'General') return 1;
+                if (b === 'General') return -1;
+                return a.localeCompare(b);
+            });
+
+            // Build the response with grouped types
+            const groupedResponse = sortedGroups.map(group => ({
+                group_name: group,
+                appointment_types: groupedTypes[group].sort((a, b) => a.name.localeCompare(b.name))
+            }));
+
+            // Also include flat array for backwards compatibility
             const types = (data.appointmentTypes || [])
                 .map(t => ({
                     id: t.id,
                     name: t.name,
                     length: t.length,
                     contact_types: t.available_contact_types || [],
+                    clinic_group: getClinicGroup(t.name),
                 }));
 
-            return NextResponse.json({ success: true, appointment_types: types });
+            return NextResponse.json({
+                success: true,
+                appointment_types: types,
+                grouped_appointment_types: groupedResponse
+            });
         }
 
         if (action === 'search_patients') {

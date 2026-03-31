@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -24,8 +24,8 @@ function toCsv(rows: Record<string, unknown>[]): string {
     return lines.join('\n');
 }
 
-export async function GET(request: Request) {
-    await requireUser('write');
+export async function GET(request: NextRequest) {
+    await requireApiUser(request, 'write');
 
     const { searchParams } = new URL(request.url);
     const startDate = searchParams.get('startDate');

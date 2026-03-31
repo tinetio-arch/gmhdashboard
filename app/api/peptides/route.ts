@@ -3,13 +3,13 @@
  * GET - Fetch all peptides with calculated inventory
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { fetchPeptideInventory, fetchPeptideInventorySummary, fetchPeptideProductOptions, createPeptideProduct, deactivatePeptideProduct, reactivatePeptideProduct, updatePeptideProduct } from '@/lib/peptideQueries';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
     try {
-        await requireUser('read');
+        await requireApiUser(request, 'read');
 
         const url = new URL(request.url);
         const action = url.searchParams.get('action');
@@ -39,9 +39,9 @@ export async function GET(request: Request) {
     }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const body = await request.json();
 
         if (!body.name || !body.category) {

@@ -285,14 +285,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadAllData();
 
     // ✅ AUTO-REFRESH: Schedule tab refreshes every 5 minutes
+    // FIX(2026-03-31): Use loadScheduleForRange instead of renderCurrentTab to avoid
+    // destroying the entire DOM (which causes jarring resets and loses provider filter UI state)
     setInterval(async () => {
         if (currentTab === 'schedule' && isConnected && !isLoading) {
-            console.log('[Auto-Refresh] Reloading schedule...');
+            console.log('[Auto-Refresh] Refreshing schedule data in place...');
             try {
-                await loadHealthieAppointments();
-                if (currentTab === 'schedule') {
-                    renderCurrentTab();
-                }
+                await loadScheduleForRange(true);
             } catch (e) {
                 console.warn('[Auto-Refresh] Failed:', e);
             }
@@ -4343,10 +4342,11 @@ async function removeTagFromPatient(tagId, tagName) {
 // FIX(2026-03-26): Opens native Vonage/OpenTok video page instead of broken Healthie portal URL.
 // Healthie portal URLs (secure.gethealthie.com/video_calls/) require Healthie login which iPad doesn't have.
 // Now uses session_id + generated_token from Healthie API with Vonage Web SDK.
-async function startProviderVideoCall(appointmentId, patientName) {
+// FIX(2026-03-31): Pass patient_id to video page for chart access and scribe recording
+async function startProviderVideoCall(appointmentId, patientName, patientId) {
     showToast('Launching video call...', 'info');
     var encodedName = encodeURIComponent(patientName || 'Patient');
-    var videoUrl = '/ops/ipad/video.html?appointment_id=' + appointmentId + '&patient_name=' + encodedName;
+    var videoUrl = '/ops/ipad/video.html?appointment_id=' + appointmentId + '&patient_name=' + encodedName + '&patient_id=' + encodeURIComponent(patientId || '');
     window.open(videoUrl, '_blank', 'width=900,height=700,toolbar=no,menubar=no');
 }
 
@@ -9035,7 +9035,11 @@ async function loadScheduleForRange(forceRefresh) {
 }
 
 function renderScheduleContent(contentEl) {
-    if (scheduleViewMode === 'day') {
+    // FIX(2026-03-31): When a single provider is selected, use the list view
+    // which includes the pre-visit checklist. Grid view for "All" providers.
+    if (scheduleViewMode === 'day' && scheduleProviderFilter !== 'all') {
+        renderScheduleList(contentEl);
+    } else if (scheduleViewMode === 'day') {
         renderScheduleDayGrid(contentEl);
     } else if (scheduleViewMode === 'week') {
         renderScheduleWeekView(contentEl);
@@ -9201,9 +9205,62 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
         }
     }
 
-    var typeOptions = scheduleAppointmentTypes.map(function(t) {
-        return '<option value="' + t.id + '" data-length="' + (t.length || 30) + '">' + sanitize(t.name) + ' (' + (t.length || 30) + 'min)</option>';
-    }).join('');
+    // Brand-grouped appointment type dropdown with color coding
+    var BRAND_TYPES = {
+        'mens_health': {
+            label: "Men's Health",
+            color: '#DC2626',
+            ids: ['504725','504732','504734','504735','504736','505645','511049']
+        },
+        'primary_care': {
+            label: 'Primary Care',
+            color: '#060F6A',
+            ids: ['504726','504716','504718','504719','504741','504743','505646','505648','505649','504759','504760','511050']
+        },
+        'longevity': {
+            label: 'Longevity',
+            color: '#6B8F71',
+            ids: ['504727','504728','504729','504730','504731','504717','505647']
+        },
+        'mental_health': {
+            label: 'Mental Health',
+            color: '#7C3AED',
+            ids: []
+        },
+        'other': {
+            label: 'Other',
+            color: '#888888',
+            ids: []
+        }
+    };
+
+    // Build a lookup: type ID → brand key
+    var typeBrandMap = {};
+    Object.keys(BRAND_TYPES).forEach(function(bk) {
+        BRAND_TYPES[bk].ids.forEach(function(tid) { typeBrandMap[tid] = bk; });
+    });
+
+    // Group appointment types by brand
+    var grouped = {};
+    Object.keys(BRAND_TYPES).forEach(function(bk) { grouped[bk] = []; });
+    scheduleAppointmentTypes.forEach(function(t) {
+        var bk = typeBrandMap[t.id] || 'other';
+        if (!grouped[bk]) grouped[bk] = [];
+        grouped[bk].push(t);
+    });
+
+    // Build optgroup HTML with brand colors
+    var typeOptions = '';
+    ['mens_health', 'primary_care', 'longevity', 'mental_health', 'other'].forEach(function(bk) {
+        var brand = BRAND_TYPES[bk];
+        var types = grouped[bk] || [];
+        if (types.length === 0) return;
+        typeOptions += '<optgroup label="━━ ' + brand.label + ' ━━" style="color:' + brand.color + '; font-weight:700; font-size:13px;">';
+        types.forEach(function(t) {
+            typeOptions += '<option value="' + t.id + '" data-length="' + (t.length || 30) + '" style="color:var(--text-primary); font-weight:400; padding-left:8px;">  ' + sanitize(t.name) + ' (' + (t.length || 30) + 'min)</option>';
+        });
+        typeOptions += '</optgroup>';
+    });
 
     var providerOptions = '<option value="12088269"' + (prefillProviderId === '12088269' ? ' selected' : '') + '>Phil Schafer NP</option><option value="12093125"' + (prefillProviderId === '12093125' ? ' selected' : '') + '>Dr. Aaron Whitten</option>';
     // Default location based on provider
@@ -9274,6 +9331,7 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
                         <option value="NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1" ${defaultLocation.includes('NowPrimary') ? 'selected' : ''}>NowPrimary - Room 1</option>
                         <option value="NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 2">NowPrimary - Room 2</option>
                         <option value="NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301" ${defaultLocation.includes('NowMensHealth') ? 'selected' : ''}>NowMensHealth</option>
+                        <option value="NowLongevity.Care - 404 S. Montezuma, Prescott, AZ 86303">NowLongevity</option>
                         <option value="In Person">In Person (other)</option>
                         <option value="Healthie Video Call">Video Call</option>
                         <option value="Phone Call">Phone Call</option>
@@ -9414,7 +9472,7 @@ async function loadScheduleData(forceRefresh) {
         var provMap = new Map();
         scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
         renderProviderTabs([...provMap.values()]);
-        renderScheduleList(contentEl);
+        renderScheduleContent(contentEl);
         return;
     }
 
@@ -9472,7 +9530,9 @@ async function loadScheduleData(forceRefresh) {
         var provMap = new Map();
         scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
         renderProviderTabs([...provMap.values()]);
-        renderScheduleList(contentEl);
+        // FIX(2026-03-31): Was calling renderScheduleList (legacy); use renderScheduleContent
+        // to dispatch to the correct day/week/month view mode
+        renderScheduleContent(contentEl);
         console.log('[Schedule] Render complete');
     } catch (e) {
         console.error('[Schedule] Error:', e);
@@ -9504,7 +9564,9 @@ function filterScheduleByProvider(providerName) {
     scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
     renderProviderTabs([...provMap.values()]);
     var contentEl = document.getElementById('scheduleContent');
-    if (contentEl) renderScheduleList(contentEl);
+    // FIX(2026-03-31): Was calling renderScheduleList (legacy flat list) instead of
+    // renderScheduleContent which dispatches to the correct day/week/month view
+    if (contentEl) renderScheduleContent(contentEl);
 }
 
 // ==================== PRE-VISIT CHECKLIST (Server-synced) ====================
@@ -9550,9 +9612,9 @@ async function togglePrevisitTask(apptId, taskKey) {
         previsitServerData[apptId] = (previsitServerData[apptId] || []).filter(function(t) { return t.key !== taskKey; });
     }
 
-    // Re-render
+    // Re-render — use renderScheduleContent to stay in current view mode
     var contentEl = document.getElementById('scheduleContent');
-    if (contentEl) renderScheduleList(contentEl);
+    if (contentEl) renderScheduleContent(contentEl);
     var provMap = new Map();
     scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
     renderProviderTabs([...provMap.values()]);
@@ -9634,12 +9696,14 @@ function renderScheduleDayGrid(contentEl) {
     var html = '<div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;">';
     html += '<span style="font-size:14px; color:var(--text-secondary);">' + allFiltered.length + ' appointments</span>';
     if (checkedIn > 0) html += '<span style="font-size:11px; padding:3px 10px; border-radius:6px; background:rgba(34,211,238,0.1); color:#22d3ee;">' + checkedIn + ' checked in</span>';
-    // Legend
-    html += '<div style="margin-left:auto; display:flex; gap:12px; align-items:center;">';
-    html += '<span style="display:flex; align-items:center; gap:4px; font-size:11px;"><span style="width:8px; height:8px; border-radius:2px; background:#22d3ee;"></span><span style="color:#22d3ee;">Phil</span></span>';
-    html += '<span style="display:flex; align-items:center; gap:4px; font-size:11px;"><span style="width:8px; height:8px; border-radius:2px; background:#a855f7;"></span><span style="color:#c084fc;">Dr. Whitten</span></span>';
-    html += '<span style="display:flex; align-items:center; gap:4px; font-size:11px;"><span style="padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.2); color:#fbbf24; font-size:9px; font-weight:700;">NEW</span> New Patient</span>';
-    html += '<span style="display:flex; align-items:center; gap:4px; font-size:11px;"><span style="width:8px; height:8px; border-radius:2px; background:#3b82f6;"></span><span style="color:#93c5fd;">Video/Phone</span></span>';
+    // Legend — Brand colors + indicators
+    html += '<div style="margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">';
+    html += '<span style="display:flex; align-items:center; gap:3px; font-size:10px;"><span style="width:8px; height:8px; border-radius:2px; background:#DC2626;"></span><span style="color:#DC2626;">MensHealth</span></span>';
+    html += '<span style="display:flex; align-items:center; gap:3px; font-size:10px;"><span style="width:8px; height:8px; border-radius:2px; background:#060F6A;"></span><span style="color:#6875d5;">Primary</span></span>';
+    html += '<span style="display:flex; align-items:center; gap:3px; font-size:10px;"><span style="width:8px; height:8px; border-radius:2px; background:#6B8F71;"></span><span style="color:#6B8F71;">Longevity</span></span>';
+    html += '<span style="display:flex; align-items:center; gap:3px; font-size:10px;"><span style="width:8px; height:8px; border-radius:2px; background:#7C3AED;"></span><span style="color:#7C3AED;">Mental</span></span>';
+    html += '<span style="display:flex; align-items:center; gap:3px; font-size:10px;"><span style="width:8px; height:8px; border-radius:2px; background:#3b82f6;"></span><span style="color:#93c5fd;">Telehealth</span></span>';
+    html += '<span style="display:flex; align-items:center; gap:3px; font-size:10px;"><span style="padding:1px 4px; border-radius:3px; background:rgba(251,191,36,0.2); color:#fbbf24; font-size:8px; font-weight:700;">NEW</span></span>';
     html += '</div></div>';
 
     // Move mode banner
@@ -9698,7 +9762,7 @@ function renderScheduleDayGrid(contentEl) {
                         var pid = p.patient_id || p.healthie_id || '';
                         var apptId = p.appointment_id || '';
                         var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
-                        var lc = getLocationColor(p.location);
+                        var lc = getLocationColor(p.location, p.appointment_type);
                         var isNew = isNewPatientAppt(p.appointment_type);
                         var isTele = isTelehealthAppt(p.location, p.contact_type);
 
@@ -9716,7 +9780,7 @@ function renderScheduleDayGrid(contentEl) {
                         html += '<div style="display:flex; gap:3px; flex-shrink:0;">';
                         if (!isFinal && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + dateStr + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:9px; cursor:pointer;" title="Move/reschedule">↔</button>';
                         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:9px; cursor:pointer;">📋</button>';
-                        if (isTele && !isFinal && apptId) html += '<button onclick="event.stopPropagation(); startProviderVideoCall(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 6px; border-radius:4px; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.35); color:#60a5fa; font-size:9px; font-weight:600; cursor:pointer;" title="Start video call">📹 Video</button>';
+                        if (isTele && !isFinal && apptId) html += '<button onclick="event.stopPropagation(); startProviderVideoCall(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + pid + '\x27)" style="padding:2px 6px; border-radius:4px; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.35); color:#60a5fa; font-size:9px; font-weight:600; cursor:pointer;" title="Start video call">📹 Video</button>';
                         if (!isFinal && apptId) {
                             html += '<div style="position:relative; display:inline-block;">';
                             html += '<span onclick="event.stopPropagation(); toggleStatusMenu(\x27sm_' + apptId + '\x27)" style="font-size:9px; padding:2px 6px; border-radius:4px; background:' + sty.bg + '; color:' + sty.color + '; font-weight:600; cursor:pointer;">' + abbreviateStatus(st) + ' ▾</span>';
@@ -9773,7 +9837,7 @@ function renderScheduleDayGrid(contentEl) {
                     var apptId = p.appointment_id || '';
                     var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
                     var pc = getProviderColor(p.provider);
-                    var lc = getLocationColor(p.location);
+                    var lc = getLocationColor(p.location, p.appointment_type);
                     var isNew = isNewPatientAppt(p.appointment_type);
                     var isTele = isTelehealthAppt(p.location, p.contact_type);
 
@@ -9808,12 +9872,42 @@ function renderScheduleDayGrid(contentEl) {
 }
 
 // Location color coding for schedule
-function getLocationColor(location) {
+function getLocationColor(location, appointmentType) {
     var loc = (location || '').toLowerCase();
-    if (loc.includes('nowprimary'))    return { bg: 'rgba(34,197,94,0.08)', border: 'rgba(34,197,94,0.25)' };    // green - primary care
-    if (loc.includes('nowmenshealth')) return { bg: 'rgba(59,130,246,0.08)', border: 'rgba(59,130,246,0.25)' };   // blue - mens health
-    if (loc.includes('video') || loc.includes('phone')) return { bg: 'rgba(59,130,246,0.06)', border: 'rgba(59,130,246,0.2)' }; // light blue - telehealth
-    return { bg: 'var(--surface)', border: 'rgba(255,255,255,0.06)' };
+    var apptType = (appointmentType || '').toLowerCase();
+
+    // Brand detection: location first, then appointment type name
+    // Men's Health (Red) — McCormick location or MH-specific types
+    if (loc.includes('nowmenshealth') || loc.includes('mccormick') ||
+        apptType.includes('male hormone') || apptType.includes('nmh ') ||
+        apptType.includes('trt') || apptType.includes('mens health'))
+        return { bg: 'rgba(220,38,38,0.08)', border: 'rgba(220,38,38,0.35)', brandLabel: "Men's Health" };
+
+    // Primary Care (Navy/Green) — Montezuma location or PC-specific types
+    if (loc.includes('nowprimary') || loc.includes('montezuma') ||
+        apptType.includes('primary care') || apptType.includes('sick visit') ||
+        apptType.includes('sports physical') || apptType.includes('medical clearance') ||
+        apptType.includes('tb test') || apptType.includes('allergy') ||
+        apptType.includes('female hormone') || apptType.includes('injection') ||
+        apptType.includes('membership'))
+        return { bg: 'rgba(6,15,106,0.08)', border: 'rgba(6,15,106,0.35)', brandLabel: 'Primary Care' };
+
+    // Longevity (Sage Green) — pelleting, weight loss, IV therapy, peptide
+    if (apptType.includes('pellet') || apptType.includes('weight loss') ||
+        apptType.includes('iv therapy') || apptType.includes('longevity') ||
+        apptType.includes('peptide'))
+        return { bg: 'rgba(107,143,113,0.10)', border: 'rgba(107,143,113,0.40)', brandLabel: 'Longevity' };
+
+    // Mental Health (Purple)
+    if (apptType.includes('mental health') || apptType.includes('therapy') ||
+        apptType.includes('ketamine') || apptType.includes('psychiatric'))
+        return { bg: 'rgba(124,58,237,0.08)', border: 'rgba(124,58,237,0.35)', brandLabel: 'Mental Health' };
+
+    // Telehealth fallback
+    if (loc.includes('video') || loc.includes('phone'))
+        return { bg: 'rgba(59,130,246,0.06)', border: 'rgba(59,130,246,0.2)', brandLabel: 'Telehealth' };
+
+    return { bg: 'var(--surface)', border: 'rgba(255,255,255,0.06)', brandLabel: '' };
 }
 
 function isNewPatientAppt(type) {
@@ -10005,7 +10099,7 @@ async function updateApptStatus(appointmentId, newStatus) {
     if (todayAppt) { todayAppt.status = newStatus; todayAppt.appointment_status = newStatus; }
 
     var contentEl = document.getElementById('scheduleContent');
-    if (contentEl) renderScheduleList(contentEl);
+    if (contentEl) renderScheduleContent(contentEl);
     var provMap = new Map();
     scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
     renderProviderTabs([...provMap.values()]);
@@ -10025,7 +10119,7 @@ async function updateApptStatus(appointmentId, newStatus) {
         // Rollback
         if (appt && prev) appt.appointment_status = prev;
         if (todayAppt && prev) { todayAppt.status = prev; todayAppt.appointment_status = prev; }
-        if (contentEl) renderScheduleList(contentEl);
+        if (contentEl) renderScheduleContent(contentEl);
         showToast('Status update failed: ' + e.message, 'error');
     }
 }

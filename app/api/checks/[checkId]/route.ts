@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 
 // DELETE /api/checks/:checkId — admin-only deletion of EOD checks
@@ -8,7 +8,7 @@ export async function DELETE(
     { params }: { params: { checkId: string } }
 ) {
     try {
-        const user = await requireUser('admin');
+        const user = await requireApiUser(request, 'admin');
         const { checkId } = params;
 
         if (!checkId || typeof checkId !== 'string') {

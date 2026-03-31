@@ -4,13 +4,13 @@
  * POST - Record sale (manual or from webhook)
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { fetchPeptideSales, createPeptideSale } from '@/lib/peptideQueries';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
-        await requireUser('read');
+        await requireApiUser(request, 'read');
         const sales = await fetchPeptideSales();
         return NextResponse.json(sales);
     } catch (error) {
@@ -22,9 +22,9 @@ export async function GET() {
     }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
     try {
-        const user = await requireUser('write');
+        const user = await requireApiUser(request, 'write');
         const body = await request.json();
 
         // Validate required fields

@@ -7,14 +7,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchPeptideDispenses, fetchPeptideDispensesPaginated, createPeptideDispense, updatePeptideDispense, deletePeptideDispense, checkPeptideStock } from '@/lib/peptideQueries';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { generateLabelPdf } from '@/lib/pdf/labelGenerator';
 import { uploadLabelToHealthie } from '@/lib/healthieUploadLabel';
 
 export async function GET(request: NextRequest) {
     try {
-        await requireUser('read');
+        await requireApiUser(request,'read');
         const { searchParams } = new URL(request.url);
         const patient = searchParams.get('patient') || undefined;
         const status = searchParams.get('status') as 'Paid' | 'Pending' | undefined;
@@ -45,9 +45,9 @@ export async function GET(request: NextRequest) {
     }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request,'write');
         const body = await request.json();
 
         // Validate required fields
@@ -138,9 +138,9 @@ export async function POST(request: Request) {
     }
 }
 
-export async function PATCH(request: Request) {
+export async function PATCH(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request,'write');
         const body = await request.json();
 
         if (!body.dispense_id) {
@@ -187,9 +187,9 @@ export async function PATCH(request: Request) {
     }
 }
 
-export async function DELETE(request: Request) {
+export async function DELETE(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request,'write');
         const body = await request.json();
 
         if (!body.dispense_id) {

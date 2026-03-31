@@ -14,8 +14,12 @@
             color: #fff;
             font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
             height: 100vh;
+            height: 100dvh;
             overflow: hidden;
+            position: relative;
         }
+
+        /* ─── Header ─── */
         .video-header {
             position: absolute;
             top: 0; left: 0; right: 0;
@@ -23,17 +27,16 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 12px 20px;
-            background: linear-gradient(180deg, rgba(12,20,29,0.9) 0%, transparent 100%);
+            padding: 8px 16px;
+            padding-top: max(8px, env(safe-area-inset-top));
+            background: linear-gradient(180deg, rgba(12,20,29,0.92) 0%, rgba(12,20,29,0.6) 70%, transparent 100%);
         }
-        .video-header .info {
-            font-size: 14px;
-            font-weight: 600;
-        }
+        .video-header .info { font-size: 13px; font-weight: 600; }
         .video-header .info .patient-name { color: #00D4FF; }
-        .video-header .info .status { font-size: 11px; color: #94a3b8; margin-top: 2px; }
-        .video-header .timer { font-size: 18px; font-weight: 600; color: #60a5fa; font-variant-numeric: tabular-nums; }
+        .video-header .info .status { font-size: 10px; color: #94a3b8; margin-top: 1px; }
+        .video-header .timer { font-size: 16px; font-weight: 600; color: #60a5fa; font-variant-numeric: tabular-nums; }
 
+        /* ─── Video containers ─── */
         #subscriber {
             position: absolute;
             top: 0; left: 0;
@@ -44,9 +47,9 @@
 
         #publisher {
             position: absolute;
-            bottom: 100px; right: 20px;
-            width: 180px; height: 135px;
-            border-radius: 12px;
+            top: 56px; right: 12px;
+            width: 140px; height: 105px;
+            border-radius: 10px;
             overflow: hidden;
             border: 2px solid rgba(255,255,255,0.15);
             z-index: 5;
@@ -54,6 +57,7 @@
         }
         #publisher video { object-fit: cover; }
 
+        /* ─── Controls bar — bottom, always visible ─── */
         .controls {
             position: absolute;
             bottom: 0; left: 0; right: 0;
@@ -61,28 +65,189 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            gap: 20px;
-            padding: 20px;
-            background: linear-gradient(0deg, rgba(12,20,29,0.9) 0%, transparent 100%);
+            gap: 12px;
+            padding: 12px 16px;
+            padding-bottom: max(12px, env(safe-area-inset-bottom));
+            background: linear-gradient(0deg, rgba(12,20,29,0.95) 0%, rgba(12,20,29,0.7) 70%, transparent 100%);
+            flex-wrap: wrap;
         }
         .ctrl-btn {
-            width: 56px; height: 56px;
+            width: 48px; height: 48px;
             border-radius: 50%;
             border: none;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 22px;
+            font-size: 18px;
             cursor: pointer;
             transition: transform 0.15s, opacity 0.15s;
+            position: relative;
+            flex-shrink: 0;
         }
         .ctrl-btn:active { transform: scale(0.9); }
-        .ctrl-btn.mute { background: rgba(255,255,255,0.15); color: #fff; }
-        .ctrl-btn.mute.active { background: rgba(239,68,68,0.3); color: #f87171; }
-        .ctrl-btn.video-toggle { background: rgba(255,255,255,0.15); color: #fff; }
-        .ctrl-btn.video-toggle.active { background: rgba(239,68,68,0.3); color: #f87171; }
-        .ctrl-btn.end { background: #ef4444; color: #fff; width: 64px; height: 64px; font-size: 26px; }
+        .ctrl-btn .btn-label {
+            position: absolute;
+            bottom: -14px;
+            font-size: 8px;
+            color: #94a3b8;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+        .ctrl-btn.default { background: rgba(255,255,255,0.12); color: #fff; }
+        .ctrl-btn.default.active { background: rgba(239,68,68,0.3); color: #f87171; }
+        .ctrl-btn.end { background: #ef4444; color: #fff; width: 52px; height: 52px; font-size: 22px; }
+        .ctrl-btn.scribe { background: rgba(34,197,94,0.2); color: #4ade80; }
+        .ctrl-btn.scribe.active { background: rgba(239,68,68,0.3); color: #f87171; animation: pulse-red 1.5s ease-in-out infinite; }
+        .ctrl-btn.chart { background: rgba(0,212,255,0.15); color: #00D4FF; }
+        .ctrl-btn.share { background: rgba(168,85,247,0.2); color: #c084fc; }
+        .ctrl-btn.share.active { background: rgba(168,85,247,0.4); color: #e9d5ff; }
 
+        @keyframes pulse-red {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); }
+            50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
+        }
+
+        /* ─── Scribe recording indicator ─── */
+        .scribe-indicator {
+            position: absolute;
+            top: 8px; left: 50%;
+            transform: translateX(-50%);
+            z-index: 15;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: rgba(239,68,68,0.2);
+            border: 1px solid rgba(239,68,68,0.4);
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #f87171;
+        }
+        .scribe-indicator.active { display: flex; }
+        .scribe-indicator .dot {
+            width: 8px; height: 8px;
+            background: #ef4444;
+            border-radius: 50%;
+            animation: pulse-dot 1s ease-in-out infinite;
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* ─── Chart drawer ─── */
+        .chart-drawer {
+            position: absolute;
+            top: 0; right: -400px;
+            width: 380px;
+            max-width: 85vw;
+            height: 100%;
+            background: #0f1923;
+            border-left: 1px solid rgba(255,255,255,0.1);
+            z-index: 20;
+            display: flex;
+            flex-direction: column;
+            transition: right 0.3s ease;
+            overflow: hidden;
+        }
+        .chart-drawer.open { right: 0; }
+        .chart-drawer-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            flex-shrink: 0;
+        }
+        .chart-drawer-header h3 { font-size: 14px; color: #00D4FF; margin: 0; }
+        .chart-drawer-close {
+            width: 28px; height: 28px;
+            border-radius: 6px;
+            background: rgba(239,68,68,0.2);
+            border: 1px solid rgba(239,68,68,0.3);
+            color: #f87171;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .chart-drawer-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            -webkit-overflow-scrolling: touch;
+        }
+        .chart-drawer-body .section {
+            margin-bottom: 14px;
+        }
+        .chart-drawer-body .section-title {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #64748b;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+        .chart-drawer-body .card {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 8px;
+            padding: 10px;
+            font-size: 12px;
+            color: #cbd5e1;
+            line-height: 1.5;
+        }
+        .chart-drawer-body .med-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            font-size: 11px;
+        }
+        .chart-drawer-body .med-name { color: #e2e8f0; font-weight: 500; }
+        .chart-drawer-body .med-dose { color: #94a3b8; }
+        .chart-drawer-body .allergy-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: rgba(239,68,68,0.15);
+            color: #f87171;
+            font-size: 10px;
+            margin: 2px 4px 2px 0;
+        }
+        .chart-drawer-body .vital-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+            font-size: 11px;
+        }
+        .chart-drawer-body .note-card {
+            padding: 8px;
+            margin-bottom: 6px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 6px;
+            border-left: 2px solid rgba(0,212,255,0.3);
+        }
+        .chart-drawer-body .note-date { font-size: 9px; color: #64748b; }
+        .chart-drawer-body .note-content { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+        .chart-loading-small {
+            text-align: center;
+            padding: 30px;
+            color: #64748b;
+            font-size: 12px;
+        }
+        .chart-loading-small .spinner {
+            width: 24px; height: 24px;
+            border: 2px solid rgba(0,212,255,0.2);
+            border-top-color: #00D4FF;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 8px;
+        }
+
+        /* ─── Waiting / Error states ─── */
         .waiting {
             position: absolute;
             top: 0; left: 0; right: 0; bottom: 0;
@@ -102,8 +267,8 @@
             margin-bottom: 16px;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .waiting .msg { font-size: 16px; color: #94a3b8; }
-        .waiting .patient-label { font-size: 20px; font-weight: 700; color: #00D4FF; margin-bottom: 8px; }
+        .waiting .msg { font-size: 14px; color: #94a3b8; }
+        .waiting .patient-label { font-size: 18px; font-weight: 700; color: #00D4FF; margin-bottom: 8px; }
 
         .error-state {
             position: absolute;
@@ -141,6 +306,13 @@
     <div id="subscriber"></div>
     <div id="publisher"></div>
 
+    <!-- Scribe recording indicator (top center) -->
+    <div class="scribe-indicator" id="scribeIndicator">
+        <div class="dot"></div>
+        <span>Scribe Recording</span>
+        <span id="scribeTimer">00:00</span>
+    </div>
+
     <!-- Header overlay -->
     <div class="video-header" id="videoHeader" style="display:none;">
         <div class="info">
@@ -150,14 +322,41 @@
         <div class="timer" id="callTimer">00:00</div>
     </div>
 
-    <!-- Controls -->
+    <!-- Controls — compact, iPad-safe -->
     <div class="controls" id="controls" style="display:none;">
-        <button class="ctrl-btn mute" id="muteBtn" onclick="toggleMute()" title="Mute/Unmute">&#x1F50A;</button>
-        <button class="ctrl-btn end" id="endBtn" onclick="endCall()" title="End Call">&#x1F4F5;</button>
-        <button class="ctrl-btn video-toggle" id="videoBtn" onclick="toggleVideo()" title="Camera On/Off">&#x1F4F7;</button>
+        <button class="ctrl-btn default" id="muteBtn" onclick="toggleMute()" title="Mute">
+            &#x1F50A;<span class="btn-label">Mute</span>
+        </button>
+        <button class="ctrl-btn default" id="videoBtn" onclick="toggleVideo()" title="Camera">
+            &#x1F4F7;<span class="btn-label">Camera</span>
+        </button>
+        <button class="ctrl-btn share" id="shareBtn" onclick="toggleScreenShare()" title="Share Screen">
+            &#x1F4BB;<span class="btn-label">Share</span>
+        </button>
+        <button class="ctrl-btn scribe" id="scribeBtn" onclick="toggleScribe()" title="Scribe">
+            &#x1F3A4;<span class="btn-label">Scribe</span>
+        </button>
+        <button class="ctrl-btn chart" id="chartBtn" onclick="toggleChart()" title="Chart">
+            &#x1F4CB;<span class="btn-label">Chart</span>
+        </button>
+        <button class="ctrl-btn end" id="endBtn" onclick="endCall()" title="End Call">
+            &#x1F4F5;<span class="btn-label" style="color:#fca5a5;">End</span>
+        </button>
+    </div>
+
+    <!-- Chart drawer (right side) -->
+    <div class="chart-drawer" id="chartDrawer">
+        <div class="chart-drawer-header">
+            <h3 id="chartDrawerTitle">Patient Chart</h3>
+            <button class="chart-drawer-close" onclick="toggleChart()">&#x2715;</button>
+        </div>
+        <div class="chart-drawer-body" id="chartDrawerBody">
+            <div class="chart-loading-small"><div class="spinner"></div>Loading chart...</div>
+        </div>
     </div>
 
     <script>
+        // ─── State ───
         var session = null;
         var publisher = null;
         var subscriber = null;
@@ -166,13 +365,32 @@
         var timerInterval = null;
         var callStartTime = null;
 
+        // Scribe state
+        var scribeRecording = false;
+        var scribeMediaRecorder = null;
+        var scribeAudioChunks = [];
+        var scribeStream = null;
+        var scribeStartTime = null;
+        var scribeTimerInterval = null;
+        var scribeMimeType = '';
+
+        // Screen share state
+        var screenPublisher = null;
+        var isScreenSharing = false;
+
+        // Chart state
+        var chartOpen = false;
+        var chartDataLoaded = false;
+
         // Parse URL params
         var params = new URLSearchParams(window.location.search);
         var appointmentId = params.get('appointment_id') || '';
         var patientName = decodeURIComponent(params.get('patient_name') || 'Patient');
+        var patientId = params.get('patient_id') || '';
 
         document.getElementById('waitingPatient').textContent = patientName;
 
+        // ─── Error / Show helpers ───
         function showError(title, detail) {
             document.getElementById('waitingState').style.display = 'none';
             document.getElementById('errorState').style.display = 'flex';
@@ -187,6 +405,7 @@
             document.getElementById('headerPatient').textContent = patientName;
         }
 
+        // ─── Call Timer ───
         function startTimer() {
             callStartTime = Date.now();
             timerInterval = setInterval(function() {
@@ -197,13 +416,17 @@
             }, 1000);
         }
 
+        // ═══════════════════════════════════════════
+        // CORE VIDEO CONTROLS (preserved from original)
+        // ═══════════════════════════════════════════
+
         function toggleMute() {
             if (!publisher) return;
             isMuted = !isMuted;
             publisher.publishAudio(!isMuted);
             var btn = document.getElementById('muteBtn');
             btn.classList.toggle('active', isMuted);
-            btn.innerHTML = isMuted ? '&#x1F507;' : '&#x1F50A;';
+            btn.innerHTML = (isMuted ? '&#x1F507;' : '&#x1F50A;') + '<span class="btn-label">' + (isMuted ? 'Unmute' : 'Mute') + '</span>';
         }
 
         function toggleVideo() {
@@ -212,20 +435,438 @@
             publisher.publishVideo(!isVideoOff);
             var btn = document.getElementById('videoBtn');
             btn.classList.toggle('active', isVideoOff);
-            btn.innerHTML = isVideoOff ? '&#x1F6AB;' : '&#x1F4F7;';
+            btn.innerHTML = (isVideoOff ? '&#x1F6AB;' : '&#x1F4F7;') + '<span class="btn-label">' + (isVideoOff ? 'Cam Off' : 'Camera') + '</span>';
         }
 
         function endCall() {
+            // Stop scribe if recording
+            if (scribeRecording) stopScribe();
+            // Stop screen share if active
+            if (isScreenSharing) stopScreenShare();
+            // Stop call timer
             if (timerInterval) clearInterval(timerInterval);
-            if (session) {
-                session.disconnect();
-            }
+            // Disconnect Vonage session
+            if (session) session.disconnect();
             window.close();
             // Fallback if window.close() is blocked
             document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0C141D;color:#94a3b8;font-family:sans-serif;font-size:18px;">Call ended. You can close this window.</div>';
         }
 
-        // Fetch video session from API
+        // ═══════════════════════════════════════════
+        // SCREEN SHARING (Vonage OT.initPublisher with screen source)
+        // ═══════════════════════════════════════════
+
+        function toggleScreenShare() {
+            if (isScreenSharing) {
+                stopScreenShare();
+            } else {
+                startScreenShare();
+            }
+        }
+
+        function startScreenShare() {
+            if (!session || isScreenSharing) return;
+
+            // Check browser support
+            if (!OT.checkScreenSharingCapability) {
+                // Fallback: try directly
+                doScreenShare();
+                return;
+            }
+
+            OT.checkScreenSharingCapability(function(response) {
+                if (!response.supported) {
+                    alert('Screen sharing is not supported in this browser.');
+                    return;
+                }
+                doScreenShare();
+            });
+        }
+
+        function doScreenShare() {
+            screenPublisher = OT.initPublisher('subscriber', {
+                insertMode: 'append',
+                width: '100%',
+                height: '100%',
+                videoSource: 'screen',
+                publishAudio: false,
+                maxResolution: { width: 1920, height: 1080 },
+                style: { buttonDisplayMode: 'off' }
+            }, function(err) {
+                if (err) {
+                    console.error('[Video] Screen share init error:', err);
+                    // User cancelled the screen picker or permission denied
+                    if (err.code !== 1500) {
+                        alert('Screen share error: ' + err.message);
+                    }
+                    screenPublisher = null;
+                    return;
+                }
+
+                session.publish(screenPublisher, function(pubErr) {
+                    if (pubErr) {
+                        console.error('[Video] Screen share publish error:', pubErr);
+                        screenPublisher.destroy();
+                        screenPublisher = null;
+                        return;
+                    }
+                    isScreenSharing = true;
+                    var btn = document.getElementById('shareBtn');
+                    btn.classList.add('active');
+                    btn.innerHTML = '&#x1F4BB;<span class="btn-label">Stop Share</span>';
+                    document.getElementById('headerStatus').textContent = 'Sharing screen...';
+                });
+
+                // Auto-stop when user stops sharing via browser UI
+                screenPublisher.on('mediaStopped', function() {
+                    stopScreenShare();
+                });
+            });
+        }
+
+        function stopScreenShare() {
+            if (screenPublisher) {
+                session.unpublish(screenPublisher);
+                screenPublisher.destroy();
+                screenPublisher = null;
+            }
+            isScreenSharing = false;
+            var btn = document.getElementById('shareBtn');
+            btn.classList.remove('active');
+            btn.innerHTML = '&#x1F4BB;<span class="btn-label">Share</span>';
+            document.getElementById('headerStatus').textContent = 'Connected';
+        }
+
+        // ═══════════════════════════════════════════
+        // SCRIBE RECORDING (captures iPad mic → uploads to scribe API)
+        // Uses same audio capture approach as the main scribe system
+        // ═══════════════════════════════════════════
+
+        function getRecordingMimeType() {
+            var candidates = [
+                'audio/webm;codecs=opus',
+                'audio/webm',
+                'audio/mp4;codecs=mp4a.40.2',
+                'audio/mp4',
+                'audio/ogg;codecs=opus',
+                'audio/wav'
+            ];
+            for (var i = 0; i < candidates.length; i++) {
+                try {
+                    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(candidates[i])) {
+                        return candidates[i];
+                    }
+                } catch (e) { /* skip */ }
+            }
+            return '';
+        }
+
+        function toggleScribe() {
+            if (scribeRecording) {
+                stopScribe();
+            } else {
+                startScribe();
+            }
+        }
+
+        async function startScribe() {
+            if (scribeRecording) return;
+            if (!patientId) {
+                alert('No patient ID available. Cannot start scribe recording.');
+                return;
+            }
+
+            try {
+                scribeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                scribeMimeType = getRecordingMimeType();
+                var opts = scribeMimeType ? { mimeType: scribeMimeType } : {};
+                scribeMediaRecorder = new MediaRecorder(scribeStream, opts);
+                scribeAudioChunks = [];
+
+                scribeMediaRecorder.ondataavailable = function(e) {
+                    if (e.data && e.data.size > 0) scribeAudioChunks.push(e.data);
+                };
+
+                scribeMediaRecorder.onstop = function() {
+                    handleScribeComplete();
+                };
+
+                scribeMediaRecorder.start(1000); // 1-second chunks
+                scribeRecording = true;
+                scribeStartTime = Date.now();
+
+                // Update UI
+                var btn = document.getElementById('scribeBtn');
+                btn.classList.add('active');
+                btn.innerHTML = '&#x23F9;<span class="btn-label">Stop Scribe</span>';
+                document.getElementById('scribeIndicator').classList.add('active');
+
+                // Start scribe timer
+                scribeTimerInterval = setInterval(function() {
+                    var elapsed = Math.floor((Date.now() - scribeStartTime) / 1000);
+                    var min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+                    var sec = String(elapsed % 60).padStart(2, '0');
+                    document.getElementById('scribeTimer').textContent = min + ':' + sec;
+
+                    // Auto-stop at 60 minutes (same as main scribe)
+                    if (elapsed >= 3600) {
+                        stopScribe();
+                    }
+                }, 1000);
+
+                console.log('[VideoScribe] Recording started, MIME:', scribeMimeType || 'default');
+            } catch (err) {
+                console.error('[VideoScribe] Failed to start:', err);
+                alert('Could not access microphone for scribe: ' + err.message);
+            }
+        }
+
+        function stopScribe() {
+            if (!scribeRecording || !scribeMediaRecorder) return;
+            scribeRecording = false;
+            if (scribeTimerInterval) clearInterval(scribeTimerInterval);
+
+            // Stop MediaRecorder (triggers onstop → handleScribeComplete)
+            if (scribeMediaRecorder.state !== 'inactive') {
+                scribeMediaRecorder.stop();
+            }
+
+            // Release mic stream
+            if (scribeStream) {
+                scribeStream.getTracks().forEach(function(t) { t.stop(); });
+                scribeStream = null;
+            }
+
+            // Update UI immediately
+            var btn = document.getElementById('scribeBtn');
+            btn.classList.remove('active');
+            btn.innerHTML = '&#x1F3A4;<span class="btn-label">Scribe</span>';
+            document.getElementById('scribeIndicator').classList.remove('active');
+            document.getElementById('headerStatus').textContent = 'Uploading scribe...';
+        }
+
+        async function handleScribeComplete() {
+            if (scribeAudioChunks.length === 0) {
+                console.warn('[VideoScribe] No audio chunks captured');
+                document.getElementById('headerStatus').textContent = 'Connected';
+                return;
+            }
+
+            var mimeForBlob = scribeMimeType || 'audio/webm';
+            var blob = new Blob(scribeAudioChunks, { type: mimeForBlob });
+            scribeAudioChunks = [];
+
+            console.log('[VideoScribe] Audio blob:', blob.size, 'bytes, type:', mimeForBlob);
+
+            // Determine file extension
+            var ext = 'webm';
+            if (mimeForBlob.includes('mp4') || mimeForBlob.includes('m4a')) ext = 'mp4';
+            else if (mimeForBlob.includes('ogg')) ext = 'ogg';
+            else if (mimeForBlob.includes('wav')) ext = 'wav';
+
+            var filename = 'video-scribe-' + Date.now() + '.' + ext;
+
+            // Build FormData — same format as main scribe system
+            var formData = new FormData();
+            formData.append('audio', blob, filename);
+            formData.append('patient_id', patientId);
+            formData.append('visit_type', 'telehealth');
+            formData.append('patient_name', patientName);
+            formData.append('appointment_id', appointmentId);
+            formData.append('encounter_date', new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }));
+
+            try {
+                var resp = await fetch('/ops/api/scribe/transcribe/', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'include'
+                });
+
+                if (!resp.ok) {
+                    var errData = await resp.json().catch(function() { return {}; });
+                    throw new Error(errData.error || 'HTTP ' + resp.status);
+                }
+
+                var data = await resp.json();
+                console.log('[VideoScribe] Upload success:', data);
+                document.getElementById('headerStatus').textContent = 'Scribe uploaded - transcribing...';
+
+                // Show success with session link
+                setTimeout(function() {
+                    document.getElementById('headerStatus').textContent = 'Connected';
+                }, 5000);
+            } catch (err) {
+                console.error('[VideoScribe] Upload failed:', err);
+                document.getElementById('headerStatus').textContent = 'Scribe upload failed!';
+
+                // Store blob for manual download recovery
+                window._pendingScribeBlob = blob;
+                window._pendingScribeFilename = filename;
+
+                setTimeout(function() {
+                    if (confirm('Scribe upload failed: ' + err.message + '\n\nDownload the audio file to save it?')) {
+                        downloadPendingScribe();
+                    }
+                    document.getElementById('headerStatus').textContent = 'Connected';
+                }, 500);
+            }
+        }
+
+        function downloadPendingScribe() {
+            var blob = window._pendingScribeBlob;
+            var filename = window._pendingScribeFilename || 'scribe-backup.webm';
+            if (!blob) return;
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // ═══════════════════════════════════════════
+        // PATIENT CHART DRAWER
+        // ═══════════════════════════════════════════
+
+        function toggleChart() {
+            var drawer = document.getElementById('chartDrawer');
+            chartOpen = !chartOpen;
+            drawer.classList.toggle('open', chartOpen);
+
+            if (chartOpen && !chartDataLoaded) {
+                loadChartData();
+            }
+        }
+
+        async function loadChartData() {
+            if (!patientId) {
+                document.getElementById('chartDrawerBody').innerHTML = '<div class="chart-loading-small">No patient ID available</div>';
+                return;
+            }
+
+            document.getElementById('chartDrawerTitle').textContent = patientName;
+            document.getElementById('chartDrawerBody').innerHTML = '<div class="chart-loading-small"><div class="spinner"></div>Loading chart...</div>';
+
+            try {
+                var resp = await fetch('/ops/api/ipad/patient-chart/?patient_id=' + encodeURIComponent(patientId), { credentials: 'include' });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                var data = await resp.json();
+                if (!data.success) throw new Error(data.error || 'Failed to load chart');
+
+                chartDataLoaded = true;
+                renderChart(data.data);
+            } catch (err) {
+                console.error('[VideoChart] Load error:', err);
+                document.getElementById('chartDrawerBody').innerHTML =
+                    '<div class="chart-loading-small">Failed to load chart: ' + err.message +
+                    '<br><button onclick="chartDataLoaded=false; loadChartData()" style="margin-top:8px; padding:6px 12px; border-radius:6px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); color:#00D4FF; cursor:pointer;">Retry</button></div>';
+            }
+        }
+
+        function renderChart(d) {
+            var body = document.getElementById('chartDrawerBody');
+            var html = '';
+
+            // Demographics
+            var demo = d.demographics || {};
+            html += '<div class="section">';
+            html += '<div class="section-title">Demographics</div>';
+            html += '<div class="card">';
+            html += '<div style="font-weight:600; color:#e2e8f0; margin-bottom:4px;">' + esc(demo.full_name || patientName) + '</div>';
+            if (demo.dob) html += '<div>DOB: ' + esc(demo.dob) + '</div>';
+            if (demo.email) html += '<div>' + esc(demo.email) + '</div>';
+            if (demo.phone) html += '<div>' + esc(demo.phone) + '</div>';
+            if (demo.group_name) html += '<div>Group: <span style="color:#00D4FF;">' + esc(demo.group_name) + '</span></div>';
+            html += '</div></div>';
+
+            // Allergies
+            var allergies = d.allergies || [];
+            if (allergies.length > 0) {
+                html += '<div class="section">';
+                html += '<div class="section-title">Allergies</div>';
+                html += '<div class="card">';
+                allergies.forEach(function(a) {
+                    html += '<span class="allergy-tag">' + esc(a.name || a) + '</span>';
+                });
+                html += '</div></div>';
+            }
+
+            // Medications
+            var meds = d.medications || [];
+            if (meds.length > 0) {
+                html += '<div class="section">';
+                html += '<div class="section-title">Medications (' + meds.length + ')</div>';
+                html += '<div class="card">';
+                meds.slice(0, 15).forEach(function(m) {
+                    html += '<div class="med-item">';
+                    html += '<span class="med-name">' + esc(m.name || m.drug_name || '') + '</span>';
+                    html += '<span class="med-dose">' + esc(m.dosage || m.strength || '') + '</span>';
+                    html += '</div>';
+                });
+                if (meds.length > 15) html += '<div style="font-size:10px; color:#64748b; padding-top:4px;">+' + (meds.length - 15) + ' more</div>';
+                html += '</div></div>';
+            }
+
+            // Vitals
+            var vitals = d.vitals || [];
+            if (vitals.length > 0) {
+                html += '<div class="section">';
+                html += '<div class="section-title">Recent Vitals</div>';
+                html += '<div class="card">';
+                vitals.slice(0, 8).forEach(function(v) {
+                    html += '<div class="vital-row">';
+                    html += '<span style="color:#94a3b8;">' + esc(v.metric_stat || v.category || '') + '</span>';
+                    html += '<span style="color:#e2e8f0; font-weight:500;">' + esc(String(v.value || v.answer || '')) + '</span>';
+                    html += '</div>';
+                });
+                html += '</div></div>';
+            }
+
+            // Recent chart notes
+            var notes = d.chart_notes || [];
+            if (notes.length > 0) {
+                html += '<div class="section">';
+                html += '<div class="section-title">Recent Notes (' + notes.length + ')</div>';
+                notes.slice(0, 5).forEach(function(n) {
+                    html += '<div class="note-card">';
+                    html += '<div class="note-date">' + esc(n.created_at || n.date || '') + '</div>';
+                    html += '<div class="note-content">' + esc((n.content || n.note || '').substring(0, 200)) + '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+
+            // Recent appointments
+            var appts = d.appointments || [];
+            if (appts.length > 0) {
+                html += '<div class="section">';
+                html += '<div class="section-title">Recent Appointments</div>';
+                html += '<div class="card">';
+                appts.slice(0, 5).forEach(function(a) {
+                    html += '<div style="padding:3px 0; border-bottom:1px solid rgba(255,255,255,0.04); font-size:11px;">';
+                    html += '<span style="color:#94a3b8;">' + esc(a.date || '') + '</span> ';
+                    html += '<span style="color:#e2e8f0;">' + esc(a.appointment_type || a.type || '') + '</span>';
+                    if (a.pm_status) html += ' <span style="color:#64748b;">(' + esc(a.pm_status) + ')</span>';
+                    html += '</div>';
+                });
+                html += '</div></div>';
+            }
+
+            if (!html) html = '<div class="chart-loading-small">No chart data available</div>';
+            body.innerHTML = html;
+        }
+
+        function esc(str) {
+            if (!str) return '';
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(str));
+            return div.innerHTML;
+        }
+
+        // ═══════════════════════════════════════════
+        // VONAGE/OPENTOK VIDEO SESSION (preserved from original)
+        // ═══════════════════════════════════════════
+
         async function initCall() {
             try {
                 document.getElementById('waitingMsg').textContent = 'Fetching video session...';
@@ -337,7 +978,7 @@
             });
         }
 
-        // Start
+        // ─── Start ───
         if (!appointmentId) {
             showError('Missing Appointment', 'No appointment_id provided in URL.');
         } else {

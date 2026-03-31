@@ -1411,6 +1411,37 @@ CRITICAL SERVER RULE: This EC2 server has NO working IPv6. Any command that atte
 
 ---
 
+### March 31, 2026 - iPad Appointment Type Dropdown Grouping
+
+**Change**: Updated `/api/ipad/schedule` endpoint to group appointment types by clinic/brand in the dropdown.
+
+**Details**: The appointment type dropdown on the iPad now groups appointments by clinic:
+- **NowMensHealth.Care**: Male hormone, TRT, men's health appointments
+- **NowPrimary.Care**: Primary care, sick visits, physicals, female hormone
+- **NowLongevity.Care**: Pelleting, weight loss, IV therapy, peptides
+- **NowMentalHealth.Care**: Mental health, therapy, psychiatric, ketamine
+- **ABXTAC**: ABX TAC peptide consultations
+- **General**: Any unmatched appointment types
+
+**Files Modified**:
+- `/home/ec2-user/gmhdashboard/app/api/ipad/schedule/route.ts` - Added `getClinicGroup()` function and `grouped_appointment_types` response field
+
+**API Response**: Now includes both flat array (backwards compatible) and grouped structure:
+```json
+{
+  "appointment_types": [...],  // Flat array with clinic_group field
+  "grouped_appointment_types": [
+    {
+      "group_name": "NowMensHealth.Care",
+      "appointment_types": [...]
+    },
+    ...
+  ]
+}
+```
+
+---
+
 ### Testosterone Inventory & Controlled Substance System
 
 **The inventory system tracks testosterone vials, dispenses, staged (prefilled) doses, DEA compliance records, and controlled substance checks.**
@@ -3001,6 +3032,19 @@ HEALTHIE_WEIGHT_LOSS_GROUP_ID=TBD
 - Snowflake logging for audit trail
 - Email threading and conversation tracking
 
+> [!IMPORTANT]
+> **GHL Authentication: Private Integration Tokens (NOT OAuth)**
+> GHL uses location-scoped Private Integration Tokens (PITs), NOT OAuth2. These tokens do NOT expire.
+> - Men's Health: `GHL_MENS_HEALTH_API_KEY` (pit-d5e53eeb-***) → Location `0dpAFAovcFXbe0G5TUFr`
+> - Primary Care: `GHL_PRIMARY_CARE_API_KEY` (pit-9383d96a-***) → Location `NyfcCiwUMdmXafnUMML8`
+> Do NOT implement OAuth token refresh for GHL — it is unnecessary and will break things.
+>
+> **Automated GHL Sync (Added March 31, 2026)**
+> Cron endpoint: `GET /api/cron/ghl-sync/` (x-cron-secret auth)
+> Runs every 2 hours at :30 — syncs pending, stale, and error patients to GHL.
+> Uses `getPatientsNeedingSync(200)` → `syncMultiplePatients()` with 200ms rate limiting.
+> File: `app/api/cron/ghl-sync/route.ts`
+
 ---
 
 ## 🔔 Alert & Notification System
@@ -4587,6 +4631,14 @@ BookingWidget → /api/healthie/book (POST) → createClient + createAppointment
 > [!IMPORTANT]
 > Do NOT pass `appointment_location_id` to `availableSlotsForRange` — it causes a field error. Only pass `provider_id` and `appointment_type_id`.
 
+> [!WARNING]
+> **Appointment Type Pricing CLEARED (March 31, 2026)**
+> All 22 appointment types that had pricing values ($50–$450) were cleared to prevent Healthie from auto-generating invoices when patients are booked. This was discovered after patient Jacob McKenney was auto-charged $180 on top of his $140/month subscription when booked into "Male HRT Follow-Up - Telehealth".
+>
+> **Root cause**: Healthie's `pricing` field on appointment types triggers automatic `requested_payment` creation (invoice_type: "appointment") when a patient is booked. This is native Healthie behavior — not controlled by our code.
+>
+> **Rule**: Do NOT set pricing on appointment types unless you intentionally want Healthie to auto-invoice patients at booking. Subscription billing should be handled through offerings/packages, not appointment type pricing.
+
 ### Website Redesign — March 26, 2026 (Editorial Style)
 
 > **Scope**: NowMentalHealth.Care, NowPrimary.Care, NowOptimal.com all redesigned to match an editorial, photography-driven style inspired by Recovery in the Pines. Consistent brand identity across all 3 sites.
@@ -4771,6 +4823,8 @@ These groups currently exist but should be converted to **tags** on patients in 
 | `511049` | NMH Mens Health Annual Lab Draw | 15 min | — | Men's Health |
 | `511050` | NowPrimary.Care Annual Lab Draw | 15 min | — | Primary Care |
 | `511073` | Migrated Appointment | 15 min | — | System (hidden) |
+| `520702` | Male HRT Follow-Up | 30 min | — | Men's Health |
+| `520703` | PC Follow-Up | 30 min | — | Primary Care |
 
 ### Telehealth Appointment Types — TO CREATE
 
