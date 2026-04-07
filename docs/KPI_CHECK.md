@@ -1,6 +1,6 @@
 # KPI Health Check
 
-**Run at**: 2026-04-06 22:58:24 MST
+**Run at**: 2026-04-07 07:05:17 MST
 
 | Status | KPI | Current | Target |
 |---|---|---|---|
@@ -9,8 +9,8 @@
 | WARN | GHL Sync Rate | 99% | 100% |
 | FAIL | Pending Lab Reviews | 25 | 0 |
 | PASS | Peptide SKUs at Zero | 0 | 0 |
-| WARN | Disk Usage | 73% | < 75% |
-| PASS | Dashboard Restarts | 0 | < 5 |
+| FAIL | Disk Usage | 89% | < 75% |
+| WARN | Dashboard Restarts | 7 | < 5 |
 | PASS | PM2 All Online | 0 offline | 0 |
 
 ---

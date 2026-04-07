@@ -23,6 +23,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query, getPool } from '@/lib/db';
 import Stripe from 'stripe';
+import { resolvePatientId } from '@/lib/ipad-patient-resolver';
 
 export const maxDuration = 30;
 
@@ -147,11 +148,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'patient_id and items are required' }, { status: 400 });
     }
 
+    // FIX(2026-04-07): Resolve patient_id — may be UUID or Healthie numeric ID
+    const resolvedId = await resolvePatientId(patient_id);
+    if (!resolvedId) {
+      return NextResponse.json({ error: 'Patient not found for ID: ' + patient_id }, { status: 404 });
+    }
+
     // Step 1: Get patient details
     const [patient] = await query<any>(
       `SELECT patient_id, full_name, email, phone_primary, address, city, state, zip, stripe_customer_id
        FROM patients WHERE patient_id = $1`,
-      [patient_id]
+      [resolvedId]
     );
 
     if (!patient) {

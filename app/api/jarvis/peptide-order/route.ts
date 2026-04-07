@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
         let patientName = 'Unknown Patient';
         try {
             const [found] = await query<{ patient_name: string }>(
-                `SELECT COALESCE(first_name || ' ' || last_name, first_name, 'Unknown') as patient_name
+                `SELECT COALESCE(full_name, 'Unknown') as patient_name
                  FROM patients WHERE healthie_client_id = $1 LIMIT 1`,
                 [healthieId]
             );
@@ -41,9 +41,9 @@ export async function POST(request: NextRequest) {
         const patient = { patient_name: patientName };
 
         // Create a pending dispense record for staff review
-        const [dispense] = await query<{ dispense_id: string }>(
+        const [dispense] = await query<{ sale_id: string }>(
             `INSERT INTO peptide_dispenses (
-                product_id, patient_name, quantity, status, education_complete, notes
+                product_id, patient_name, quantity, status, education_complete, notes, healthie_client_id, sale_date
             )
             SELECT
                 p.product_id,
@@ -51,16 +51,19 @@ export async function POST(request: NextRequest) {
                 1,
                 'Pending',
                 false,
-                $3
+                $3,
+                $4,
+                CURRENT_DATE
             FROM peptide_products p
             WHERE LOWER(p.name) LIKE LOWER($1)
               AND p.active = true
             LIMIT 1
-            RETURNING dispense_id`,
+            RETURNING sale_id`,
             [
                 `%${peptideName}%`,
                 patient.patient_name,
                 `Patient-requested via ${requestedVia || 'JARVIS'} (Healthie ID: ${healthieId})`,
+                healthieId,
             ]
         );
 
@@ -95,7 +98,7 @@ export async function POST(request: NextRequest) {
                         { key: 'Patient', value: patient.patient_name },
                         { key: 'Healthie ID', value: healthieId },
                         { key: 'Peptide', value: peptideName },
-                        { key: 'Dispense ID', value: dispense.dispense_id },
+                        { key: 'Dispense ID', value: dispense.sale_id },
                         { key: 'Status', value: 'Pending — needs staff review' },
                     ],
                 }],
@@ -104,7 +107,7 @@ export async function POST(request: NextRequest) {
 
         return NextResponse.json({
             success: true,
-            dispenseId: dispense.dispense_id,
+            dispenseId: dispense.sale_id,
             message: 'Request submitted for review',
         });
 

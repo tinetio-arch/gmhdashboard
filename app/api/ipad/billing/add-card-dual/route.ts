@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { resolvePatientId } from '@/lib/ipad-patient-resolver';
 
 /**
  * POST /api/ipad/billing/add-card-dual
@@ -43,19 +44,8 @@ export async function POST(request: NextRequest) {
         const Stripe = require('stripe');
         const stripe = new Stripe(stripeSecretKey);
 
-        // FIX(2026-03-19): Resolve patient_id — may be UUID or Healthie numeric ID
-        let resolvedPatientId = patient_id;
-        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patient_id);
-        if (!isUuid) {
-            const [resolved] = await query<{ patient_id: string }>(
-                `SELECT p.patient_id FROM patients p
-                 LEFT JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text AND hc.is_active = true
-                 WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1
-                 LIMIT 1`,
-                [patient_id]
-            );
-            if (resolved) resolvedPatientId = resolved.patient_id;
-        }
+        // FIX(2026-04-07): Use shared resolver — handles UUID/Healthie ID and auto-creates if needed
+        const resolvedPatientId = await resolvePatientId(patient_id) || patient_id;
 
         // Get patient info
         const patientRows = await query<{

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
+import { resolvePatientId, isUUID } from '@/lib/ipad-patient-resolver';
 
 /**
  * GET /api/ipad/patient/[id]/payments
@@ -13,18 +14,35 @@ export async function GET(
 ) {
     try {
         await requireApiUser(request, 'read');
-        const patientId = params.id;
+        const rawId = params.id;
 
-        // Look up Healthie client ID
-        const rows = await query(
-            `SELECT hc.healthie_client_id, p.full_name
-             FROM patients p
-             LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true
-             WHERE p.patient_id = $1::uuid
-             LIMIT 1`,
-            [patientId]
-        );
-        const healthieClientId = (rows as any[])[0]?.healthie_client_id;
+        // FIX(2026-04-07): Resolve ID — may be UUID or Healthie numeric ID
+        const patientId = await resolvePatientId(rawId) || rawId;
+
+        // Look up Healthie client ID using resolved UUID
+        let rows: any[] = [];
+        if (isUUID(patientId)) {
+            rows = await query(
+                `SELECT hc.healthie_client_id, p.full_name
+                 FROM patients p
+                 LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true
+                 WHERE p.patient_id = $1::uuid
+                 LIMIT 1`,
+                [patientId]
+            );
+        }
+        // Fallback: try healthie_client_id directly
+        if (rows.length === 0) {
+            rows = await query(
+                `SELECT hc.healthie_client_id, p.full_name
+                 FROM patients p
+                 LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true
+                 WHERE p.healthie_client_id = $1 OR hc.healthie_client_id = $1
+                 LIMIT 1`,
+                [rawId]
+            );
+        }
+        const healthieClientId = (rows as any[])[0]?.healthie_client_id || (isUUID(rawId) ? null : rawId);
         const patientName = (rows as any[])[0]?.full_name || '';
 
         if (!healthieClientId) {

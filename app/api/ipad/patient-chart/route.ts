@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 import Stripe from 'stripe';
+import { resolvePatientId, isUUID } from '@/lib/ipad-patient-resolver';
 
 export const dynamic = 'force-dynamic';
 
@@ -130,9 +131,28 @@ export async function GET(request: NextRequest) {
         }
         if (!healthieId) healthieId = patientId; // last resort fallback
 
-        // REMOVED(2026-04-02): Auto-provision was creating sparse patient records with no
-        // payment_method, clinic, regimen, or added_by — causing 29+ ghost patients since Mar 19.
-        // Patients must be created manually through the dashboard with all required fields.
+        // FIX(2026-04-07): Re-enabled auto-provision via shared resolver. Unlike the old approach
+        // (which created sparse records), resolvePatientId fetches full demographics from Healthie
+        // (name, email, DOB, gender, phone, address) before creating the local record.
+        if (!patient && !isUUID(patientId)) {
+            const autoResolvedId = await resolvePatientId(patientId);
+            if (autoResolvedId) {
+                const rows = await query<any>(`
+                    SELECT p.*, psl.display_name as status_display
+                    FROM patients p
+                    LEFT JOIN patient_status_lookup psl ON p.status_key = psl.status_key
+                    WHERE p.patient_id = $1::uuid
+                `, [autoResolvedId]);
+                patient = rows?.[0] || null;
+                if (patient) {
+                    const hcRows = await query<any>(
+                        'SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1',
+                        [patient.patient_id]
+                    );
+                    healthieId = hcRows?.[0]?.healthie_client_id || healthieId;
+                }
+            }
+        }
 
         // ✅ Enhanced demographics with GMH dashboard fields
         const localData: any = {

@@ -49,10 +49,10 @@ export interface ABXTacCustomerAccess {
 }
 
 export const TIER_DISCOUNTS: Record<ABXTacTier, number> = {
-  heal: 40,
+  heal: 20,
   optimize: 30,
-  thrive: 20,
-  full: 20,  // Full access gets same discount as Thrive + unlocks entire catalog
+  thrive: 40,
+  full: 40,  // Full access gets same discount as Thrive + unlocks entire catalog
 };
 
 const TIER_RANK: Record<ABXTacTier, number> = {

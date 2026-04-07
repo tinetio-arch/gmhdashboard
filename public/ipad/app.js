@@ -155,6 +155,87 @@ async function checkForPendingTranscriptions() {
     }
 }
 
+// FIX(2026-04-07): Recover orphaned video scribe blobs that survived in IndexedDB
+// after page close/crash during video calls
+async function recoverVideoScribeBlobs() {
+    try {
+        const db = await new Promise((resolve, reject) => {
+            const req = indexedDB.open('gmh_scribe_backup', 1);
+            req.onupgradeneeded = (e) => { e.target.result.createObjectStore('pending_audio', { keyPath: 'id' }); };
+            req.onsuccess = (e) => resolve(e.target.result);
+            req.onerror = (e) => reject(e.target.error);
+        });
+
+        const tx = db.transaction('pending_audio', 'readonly');
+        const store = tx.objectStore('pending_audio');
+        const allKeys = await new Promise((resolve, reject) => {
+            const req = store.getAllKeys();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+
+        if (allKeys.length === 0) return;
+        console.log(`[Video Scribe Recovery] Found ${allKeys.length} orphaned audio blob(s) in IndexedDB`);
+
+        for (const key of allKeys) {
+            const record = await new Promise((resolve, reject) => {
+                const rtx = db.transaction('pending_audio', 'readonly');
+                const req = rtx.objectStore('pending_audio').get(key);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+
+            if (!record || !record.blob) continue;
+
+            // Skip if older than 24 hours (stale)
+            if (record.timestamp && Date.now() - record.timestamp > 24 * 60 * 60 * 1000) {
+                console.log(`[Video Scribe Recovery] Skipping stale blob: ${key} (${new Date(record.timestamp).toLocaleString()})`);
+                const dtx = db.transaction('pending_audio', 'readwrite');
+                dtx.objectStore('pending_audio').delete(key);
+                continue;
+            }
+
+            console.log(`[Video Scribe Recovery] Uploading orphaned blob: ${key} for patient ${record.patient_name || record.patient_id}`);
+            showToast(`Recovering lost video recording for ${record.patient_name || 'patient'}...`, 'info');
+
+            try {
+                const fd = new FormData();
+                fd.append('audio', record.blob, key);
+                fd.append('patient_id', record.patient_id || '');
+                fd.append('visit_type', record.visit_type || 'telehealth');
+                fd.append('patient_name', record.patient_name || '');
+                fd.append('appointment_id', record.appointment_id || '');
+                fd.append('encounter_date', new Date(record.timestamp).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }));
+
+                const resp = await fetch('/ops/api/scribe/transcribe/', { method: 'POST', body: fd, credentials: 'include' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data.success) {
+                        console.log(`[Video Scribe Recovery] ✅ Uploaded orphaned blob: ${key}`);
+                        showToast(`✅ Recovered video recording for ${record.patient_name || 'patient'}!`, 'success');
+                        // Clean up from IndexedDB
+                        const dtx = db.transaction('pending_audio', 'readwrite');
+                        dtx.objectStore('pending_audio').delete(key);
+                        // Reload scribe sessions to show the new one
+                        scribeLoaded = false;
+                        await loadScribeSessions();
+                    }
+                } else {
+                    console.error(`[Video Scribe Recovery] Upload failed for ${key}: HTTP ${resp.status}`);
+                    showToast(`⚠️ Failed to recover recording for ${record.patient_name || 'patient'}`, 'error');
+                }
+            } catch (uploadErr) {
+                console.error(`[Video Scribe Recovery] Upload error for ${key}:`, uploadErr);
+            }
+        }
+    } catch (err) {
+        // Non-fatal — IndexedDB might not exist yet
+        if (err?.name !== 'NotFoundError') {
+            console.warn('[Video Scribe Recovery] Check failed:', err);
+        }
+    }
+}
+
 async function retryTranscription(sessionId) {
     showToast('Checking transcription status...', 'info');
     try {
@@ -1998,6 +2079,8 @@ async function loadScribeSessions() {
 
         // ✅ AUTO-RECOVERY: Check for stuck transcriptions
         await checkForPendingTranscriptions();
+        // ✅ AUTO-RECOVERY: Check for orphaned video scribe blobs in IndexedDB
+        await recoverVideoScribeBlobs();
     } catch (e) {
         scribeLoaded = true; // mark as attempted even on failure
         if (e.message === 'AUTH_EXPIRED') throw e;

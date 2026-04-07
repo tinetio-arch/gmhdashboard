@@ -4,6 +4,7 @@ import { query } from '@/lib/db';
 import { createHealthieClient } from '@/lib/healthie';
 import { uploadSimpleReceiptToHealthie } from '@/lib/simpleReceiptUpload';
 import { v4 as uuidv4 } from 'uuid';
+import { resolvePatientId } from '@/lib/ipad-patient-resolver';
 
 /**
  * POST /api/ipad/billing/charge
@@ -47,21 +48,10 @@ export async function POST(request: NextRequest) {
             }, { status: 400 });
         }
 
-        // FIX(2026-03-19): Resolve patient_id — may be UUID or Healthie numeric ID
-        let resolvedPatientId = patient_id;
-        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patient_id);
-        if (!isUuid) {
-            const [resolved] = await query<{ patient_id: string }>(
-                `SELECT p.patient_id FROM patients p
-                 LEFT JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text AND hc.is_active = true
-                 WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1
-                 LIMIT 1`,
-                [patient_id]
-            );
-            if (!resolved) {
-                return NextResponse.json({ success: false, error: 'Patient not found for ID: ' + patient_id }, { status: 404 });
-            }
-            resolvedPatientId = resolved.patient_id;
+        // FIX(2026-04-07): Use shared resolver — handles UUID/Healthie ID and auto-creates if needed
+        const resolvedPatientId = await resolvePatientId(patient_id);
+        if (!resolvedPatientId) {
+            return NextResponse.json({ success: false, error: 'Patient not found for ID: ' + patient_id }, { status: 404 });
         }
 
         // Get patient info

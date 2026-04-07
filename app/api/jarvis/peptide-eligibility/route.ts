@@ -72,9 +72,17 @@ export async function GET(request: NextRequest) {
 
         // 2. Check ABXTac tier access for shipping eligibility
         let canShip = false;
-        let tier = null;
+        let tier: string | null = null;
         let tierExpired = false;
 
+        // All NowMensHealth.Care patients automatically get Heal tier (20% off + full catalog)
+        const isMensHealth = clinic.includes('men') || clinic.includes('nowmenshealth');
+        if (isMensHealth) {
+            canShip = true;
+            tier = 'heal';
+        }
+
+        // Check for upgraded tier in abxtac_customer_access (Optimize/Thrive packages)
         try {
             const [access] = await query<{
                 tier: string;
@@ -87,11 +95,14 @@ export async function GET(request: NextRequest) {
                 LIMIT 1
             `, [patient.email, healthieId]);
 
-            if (access) {
-                tier = access.tier;
+            if (access && access.provider_verified) {
                 const expiresAt = new Date(access.tier_expires_at);
                 tierExpired = expiresAt < new Date();
-                canShip = access.provider_verified && !tierExpired;
+                if (!tierExpired) {
+                    // Use the higher tier (package tier overrides default Heal)
+                    tier = access.tier;
+                    canShip = true;
+                }
             }
         } catch {
             // abxtac_customer_access table may not exist — that's OK

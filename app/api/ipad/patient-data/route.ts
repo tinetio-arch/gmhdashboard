@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { healthieGraphQL } from '@/lib/healthieApi';
 import { query } from '@/lib/db';
+import { resolvePatientId, resolveHealthieId } from '@/lib/ipad-patient-resolver';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,17 +65,8 @@ async function addVital(healthieId: string, body: any) {
         return NextResponse.json({ success: false, error: 'category and value are required' }, { status: 400 });
     }
 
-    // If healthieId looks like a UUID, resolve to actual Healthie client ID
-    if (healthieId.includes('-') && healthieId.length > 20) {
-        const [resolved] = await query<any>(
-            'SELECT healthie_client_id FROM patients WHERE patient_id::text = $1 AND healthie_client_id IS NOT NULL LIMIT 1',
-            [healthieId]
-        );
-        if (resolved?.healthie_client_id) {
-            console.log(`[iPad:PatientData] Resolved UUID ${healthieId} → Healthie ID ${resolved.healthie_client_id}`);
-            healthieId = resolved.healthie_client_id;
-        }
-    }
+    // FIX(2026-04-07): Use unified resolver — handles UUID or Healthie ID
+    healthieId = await resolveHealthieId(healthieId);
 
     console.log(`[iPad:PatientData] Creating vital ${category}=${value} for Healthie ID: ${healthieId}`);
 
@@ -122,17 +114,10 @@ async function addVital(healthieId: string, body: any) {
 async function addAllergy(healthieId: string, body: any) {
     const { name, severity, reaction, category, is_nkda, entered_by } = body;
 
-    // Resolve patient_id from healthie_id
-    const [patient] = await query<{ patient_id: string }>(
-        `SELECT p.patient_id FROM patients p
-         LEFT JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text AND hc.is_active = true
-         WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1 OR p.patient_id::text = $1
-         LIMIT 1`,
-        [healthieId]
-    );
-    const patientId = patient?.patient_id;
+    // FIX(2026-04-07): Use unified resolver — auto-creates patient if only in Healthie
+    const patientId = await resolvePatientId(healthieId);
     if (!patientId) {
-        return NextResponse.json({ success: false, error: 'Patient not found' }, { status: 404 });
+        return NextResponse.json({ success: false, error: 'Patient not found in local DB or Healthie' }, { status: 404 });
     }
 
     // NKDA: mark patient as having no known allergies
@@ -310,9 +295,11 @@ async function addDiagnosis(healthieId: string, body: any) {
         return NextResponse.json({ success: false, error: 'code and description are required' }, { status: 400 });
     }
 
+    // FIX(2026-04-07): Resolve both IDs — Healthie ID for API calls, patient_id for local storage
+    const resolvedHealthieId = await resolveHealthieId(healthieId);
+    const patientId = await resolvePatientId(healthieId);
+
     // 1. Add diagnosis as a properly formatted Chart Note in Healthie
-    // Healthie doesn't have a separate "Problem List" API - diagnoses are stored as chart notes or attached to encounters
-    // We'll create a prominently formatted note that will appear in the patient's chart
     try {
         const noteContent = `🏥 ACTIVE DIAGNOSIS\n\nICD-10 Code: ${code}\nDescription: ${description}\n\nAdded: ${new Date().toLocaleDateString('en-US')}\nStatus: Active`;
 
@@ -332,7 +319,7 @@ async function addDiagnosis(healthieId: string, body: any) {
             }
         `, {
             input: {
-                user_id: healthieId,
+                user_id: resolvedHealthieId,
                 content: noteContent,
                 include_in_charting: true,
             }
@@ -348,13 +335,7 @@ async function addDiagnosis(healthieId: string, body: any) {
         console.log(`[iPad:PatientData] Diagnosis note created in Healthie: ${healthieNoteId}`);
 
         // 2. Also store in local scribe_notes for quick retrieval and display
-        const patientRows = await query<any>(
-            'SELECT patient_id FROM healthie_clients WHERE healthie_client_id = $1 AND is_active = true LIMIT 1',
-            [healthieId]
-        );
-
-        if (patientRows && patientRows.length > 0) {
-            const patientId = patientRows[0].patient_id;
+        if (patientId) {
             await query(`
                 INSERT INTO scribe_notes (
                     session_id,
@@ -401,6 +382,10 @@ async function removeDiagnosis(healthieId: string, body: any) {
         return NextResponse.json({ success: false, error: 'code is required' }, { status: 400 });
     }
 
+    // FIX(2026-04-07): Use unified resolvers
+    const resolvedHealthieId = await resolveHealthieId(healthieId);
+    const patientId = await resolvePatientId(healthieId);
+
     try {
         // 1. Document the removal in Healthie via a journal entry
         const diagnosisText = description ? `${code} — ${description}` : code;
@@ -415,7 +400,7 @@ async function removeDiagnosis(healthieId: string, body: any) {
                 }
             `, {
                 input: {
-                    user_id: healthieId,
+                    user_id: resolvedHealthieId,
                     type: 'JournalEntry',
                     category: 'Diagnosis Change',
                     description: `Diagnosis Removed: ${diagnosisText}`,
@@ -431,14 +416,8 @@ async function removeDiagnosis(healthieId: string, body: any) {
             console.warn('[iPad:PatientData] Healthie documentation failed (non-fatal):', healthieErr instanceof Error ? healthieErr.message : healthieErr);
         }
 
-        // 2. Also remove from local scribe_notes
-        const patientRows = await query<any>(
-            'SELECT patient_id FROM healthie_clients WHERE healthie_client_id = $1 AND is_active = true LIMIT 1',
-            [healthieId]
-        );
-
-        if (patientRows && patientRows.length > 0) {
-            const patientId = patientRows[0].patient_id;
+        // 2. Also remove from local records
+        if (patientId) {
 
             // Add to removed_diagnoses list on patient record
             // This filters the diagnosis from Working Diagnoses display without modifying scribe notes

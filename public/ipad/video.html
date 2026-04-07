@@ -402,14 +402,44 @@
             b.nextElementSibling.textContent = isVideoOff ? 'Cam Off' : 'Camera';
         }
 
-        function endCall() {
-            if (scribeRecording) stopScribe();
+        // FIX(2026-04-07): endCall must WAIT for scribe upload before closing.
+        // Previously, stopScribe() queued async work but window.close() ran immediately,
+        // destroying the page context before handleScribeComplete() could upload the audio.
+        // This caused at least 2 lost transcriptions.
+        var _scribeUploadComplete = null; // Promise that resolves when upload finishes
+
+        async function endCall() {
             if (isScreenSharing) stopScreenShare();
             if (timerInterval) clearInterval(timerInterval);
             if (session) session.disconnect();
+
+            if (scribeRecording) {
+                setStatus('Saving recording — please wait...');
+                stopScribe();
+                // Wait for handleScribeComplete to finish uploading
+                if (_scribeUploadComplete) {
+                    try { await _scribeUploadComplete; } catch(e) { console.error('[Video] Scribe upload error during endCall:', e); }
+                }
+                // Extra safety: wait for any pending fetch
+                await new Promise(function(r) { setTimeout(r, 1500); });
+            }
+
+            showCallEnded();
+        }
+
+        function showCallEnded() {
             window.close();
             document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;position:fixed;top:0;left:0;right:0;bottom:0;background:#0C141D;color:#94a3b8;font-size:16px;">Call ended. You can close this tab.</div>';
         }
+
+        // Prevent accidental navigation while scribe is recording or uploading
+        window.addEventListener('beforeunload', function(e) {
+            if (scribeRecording || _scribeUploadComplete) {
+                e.preventDefault();
+                e.returnValue = 'Scribe recording is still uploading. Are you sure you want to leave?';
+                return e.returnValue;
+            }
+        });
 
         // ═══════════════════════════════════════
         // SCREEN SHARING
@@ -559,7 +589,11 @@
                 scribeMediaRecorder.ondataavailable = function(e) {
                     if (e.data && e.data.size > 0) scribeAudioChunks.push(e.data);
                 };
-                scribeMediaRecorder.onstop = handleScribeComplete;
+                scribeMediaRecorder.onstop = function() {
+                    // Default handler for manual stop (not via endCall)
+                    // stopScribe() may override this with a promise-wrapped version
+                    handleScribeComplete();
+                };
                 scribeMediaRecorder.start(1000);
 
                 scribeRecording = true;
@@ -589,6 +623,15 @@
             if (!scribeRecording || !scribeMediaRecorder) return;
             scribeRecording = false;
             if (scribeTimerInterval) clearInterval(scribeTimerInterval);
+
+            // FIX(2026-04-07): Create a promise that resolves when upload completes.
+            // endCall() awaits this so the page stays alive until the audio is safely uploaded.
+            _scribeUploadComplete = new Promise(function(resolve, reject) {
+                scribeMediaRecorder.onstop = function() {
+                    handleScribeComplete().then(resolve).catch(reject);
+                };
+            });
+
             if (scribeMediaRecorder.state !== 'inactive') scribeMediaRecorder.stop();
             if (scribeStream) { scribeStream.getTracks().forEach(function(t){t.stop();}); scribeStream = null; }
 
@@ -597,7 +640,46 @@
             b.innerHTML = '&#x1F3A4;';
             document.getElementById('scribeLabel').textContent = 'Scribe';
             document.getElementById('scribeBanner').classList.remove('active');
-            setStatus('Uploading scribe...');
+            setStatus('Saving recording...');
+        }
+
+        // FIX(2026-04-07): IndexedDB backup for audio blobs — survives page close/crash
+        var SCRIBE_DB_NAME = 'gmh_scribe_backup';
+        var SCRIBE_STORE = 'pending_audio';
+
+        function openScribeDB() {
+            return new Promise(function(resolve, reject) {
+                var req = indexedDB.open(SCRIBE_DB_NAME, 1);
+                req.onupgradeneeded = function(e) { e.target.result.createObjectStore(SCRIBE_STORE, { keyPath: 'id' }); };
+                req.onsuccess = function(e) { resolve(e.target.result); };
+                req.onerror = function(e) { reject(e.target.error); };
+            });
+        }
+
+        async function backupBlobToIDB(blob, metadata) {
+            try {
+                var db = await openScribeDB();
+                var tx = db.transaction(SCRIBE_STORE, 'readwrite');
+                tx.objectStore(SCRIBE_STORE).put({
+                    id: metadata.filename,
+                    blob: blob,
+                    patient_id: metadata.patient_id,
+                    patient_name: metadata.patient_name,
+                    appointment_id: metadata.appointment_id,
+                    visit_type: 'telehealth',
+                    timestamp: Date.now()
+                });
+                console.log('[VideoScribe] Blob backed up to IndexedDB:', metadata.filename);
+            } catch(e) { console.warn('[VideoScribe] IndexedDB backup failed:', e); }
+        }
+
+        async function clearIDBBackup(filename) {
+            try {
+                var db = await openScribeDB();
+                var tx = db.transaction(SCRIBE_STORE, 'readwrite');
+                tx.objectStore(SCRIBE_STORE).delete(filename);
+                console.log('[VideoScribe] Cleared IndexedDB backup:', filename);
+            } catch(e) { /* non-fatal */ }
         }
 
         async function handleScribeComplete() {
@@ -616,9 +698,12 @@
             else if (mime.includes('wav')) ext = 'wav';
             var filename = 'video-scribe-' + Date.now() + '.' + ext;
 
-            // Save for retry (same pattern as main scribe)
+            // Save to memory for retry
             window._pendingBlob = blob;
             window._pendingFilename = filename;
+
+            // FIX(2026-04-07): Also back up to IndexedDB — survives page close/crash
+            await backupBlobToIDB(blob, { filename: filename, patient_id: patientId, patient_name: patientName, appointment_id: appointmentId });
 
             var fd = new FormData();
             fd.append('audio', blob, filename);
@@ -634,8 +719,9 @@
                 var data = await resp.json();
                 console.log('[VideoScribe] Upload OK:', data);
 
-                // Clear backup on success
+                // Clear backups on success
                 window._pendingBlob = null;
+                await clearIDBBackup(filename);
 
                 if (data.success && data.data) {
                     var sid = data.data.session_id;

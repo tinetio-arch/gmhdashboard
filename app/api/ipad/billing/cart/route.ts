@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { resolvePatientId } from '@/lib/ipad-patient-resolver';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,10 +10,12 @@ export async function GET(request: NextRequest) {
   try {
     await requireApiUser(request, 'read');
 
-    const patientId = request.nextUrl.searchParams.get('patient_id');
-    if (!patientId) {
+    const rawPatientId = request.nextUrl.searchParams.get('patient_id');
+    if (!rawPatientId) {
       return NextResponse.json({ error: 'patient_id required' }, { status: 400 });
     }
+    // FIX(2026-04-07): Resolve patient_id — may be UUID or Healthie numeric ID
+    const patientId = await resolvePatientId(rawPatientId) || rawPatientId;
     const items = await query<{
       id: number;
       product_id: string;
@@ -45,11 +48,14 @@ export async function POST(request: NextRequest) {
   try {
     const user = await requireApiUser(request, 'write');
     const body = await request.json();
-    const { patient_id, patient_name, product_id, product_name, price, quantity } = body;
+    const { patient_id: rawPid, patient_name, product_id, product_name, price, quantity } = body;
 
-    if (!patient_id || !product_id || !product_name || !price) {
+    if (!rawPid || !product_id || !product_name || !price) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
+
+    // FIX(2026-04-07): Resolve patient_id — may be UUID or Healthie numeric ID
+    const patient_id = await resolvePatientId(rawPid) || rawPid;
 
     // Check if this product is already in the cart
     const existing = await query<{ id: number; quantity: number }>(
@@ -111,11 +117,13 @@ export async function DELETE(request: NextRequest) {
   try {
     await requireApiUser(request, 'write');
 
-    const patientId = request.nextUrl.searchParams.get('patient_id');
+    const rawPatientId = request.nextUrl.searchParams.get('patient_id');
     const itemId = request.nextUrl.searchParams.get('id');
     if (itemId) {
       await query('DELETE FROM patient_billing_cart WHERE id = $1', [itemId]);
-    } else if (patientId) {
+    } else if (rawPatientId) {
+      // FIX(2026-04-07): Resolve patient_id — may be UUID or Healthie numeric ID
+      const patientId = await resolvePatientId(rawPatientId) || rawPatientId;
       await query('DELETE FROM patient_billing_cart WHERE patient_id = $1', [patientId]);
     } else {
       return NextResponse.json({ error: 'patient_id or id required' }, { status: 400 });
