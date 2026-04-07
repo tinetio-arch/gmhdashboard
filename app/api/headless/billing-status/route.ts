@@ -30,8 +30,10 @@ export async function GET(request: NextRequest) {
             full_name: string;
             status_key: string;
             payment_method_key: string;
+            client_type_key: string;
+            healthie_group_name: string | null;
         }>(`
-            SELECT patient_id, full_name, status_key, payment_method_key
+            SELECT patient_id, full_name, status_key, payment_method_key, client_type_key, healthie_group_name
             FROM patients WHERE healthie_client_id = $1
             LIMIT 1
         `, [healthieId]);
@@ -45,6 +47,7 @@ export async function GET(request: NextRequest) {
 
         const patient = patientResult.rows[0];
         const patientId = patient.patient_id;
+        const isProBono = patient.client_type_key === 'approved_disc_pro_bono_pt' || patient.payment_method_key === 'pro_bono';
 
         // 2. Check access control
         const accessCheck = await getPatientAccessStatus(patientId);
@@ -159,8 +162,11 @@ export async function GET(request: NextRequest) {
             urgency = 'overdue';
         }
 
-        // If no card and no package, flag it
-        if (!hasCard && !activePackage) {
+        // Pro bono patients should never see payment alerts
+        if (isProBono) {
+            paymentStatus = 'pro_bono';
+            urgency = 'current';
+        } else if (!hasCard && !activePackage) {
             paymentStatus = 'needs_setup';
             urgency = 'overdue';
         } else if (!hasCard) {
@@ -168,7 +174,7 @@ export async function GET(request: NextRequest) {
             urgency = 'overdue';
         } else if (!activePackage && !nextRecurring) {
             paymentStatus = 'no_package';
-            urgency = 'overdue';
+            urgency = 'current';  // Don't alarm patients with no package — could be transitional
         }
 
         return NextResponse.json({
@@ -181,9 +187,11 @@ export async function GET(request: NextRequest) {
             days_until_payment: daysUntilPayment,
             has_card_on_file: hasCard,
             card_info: cardInfo,
-            payment_status: paymentStatus, // 'current', 'due_soon', 'overdue', 'failed', 'no_card', 'no_package', 'needs_setup'
+            payment_status: paymentStatus, // 'current', 'due_soon', 'overdue', 'failed', 'no_card', 'no_package', 'needs_setup', 'pro_bono'
             urgency: urgency, // 'current', 'due_soon', 'overdue', 'unknown'
             update_card_url: PORTAL_URL,
+            is_pro_bono: isProBono,
+            group_name: patient.healthie_group_name || null,
         });
 
     } catch (error) {

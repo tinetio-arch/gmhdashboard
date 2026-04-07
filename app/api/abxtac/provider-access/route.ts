@@ -23,7 +23,7 @@ import {
 import { getHealthieClient } from '@/lib/healthie';
 import { getABXTacClient } from '@/lib/abxtac-woo';
 
-const VALID_TIERS: ABXTacTier[] = ['heal', 'optimize', 'thrive'];
+const VALID_TIERS: ABXTacTier[] = ['heal', 'optimize', 'thrive', 'full'];
 
 /**
  * GET /api/abxtac/provider-access?email=patient@example.com

@@ -20,6 +20,7 @@ type FormState = {
   paymentMethodKey: string | null;
   clientTypeKey: string | null;
   clinic: string | null;  // 'nowprimary.care' or 'nowmenshealth.care'
+  patientType: string;   // 'member' or 'visit'
   phoneNumber: string;
   email: string;  // Email for Healthie matching
   address: string;
@@ -68,6 +69,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
     paymentMethodKey: null,
     clientTypeKey: null,
     clinic: null,
+    patientType: 'member',
     phoneNumber: '',
     email: '',
     address: '',
@@ -145,6 +147,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
           paymentMethodKey: form.paymentMethodKey,
           clientTypeKey: form.clientTypeKey,
           clinic: form.clinic,
+          patientType: form.patientType,
           phoneNumber: form.phoneNumber.trim() || null,
           email: form.email.trim() || null,
           address: form.address.trim() || null,
@@ -183,6 +186,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
         paymentMethodKey: null,
         clientTypeKey: null,
         clinic: null,
+        patientType: 'member',
         phoneNumber: '',
         email: '',
         address: '',
@@ -290,6 +294,18 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
             <option value="">Select Clinic...</option>
             <option value="nowprimary.care">NOW Primary Care</option>
             <option value="nowmenshealth.care">NOW Men's Health</option>
+          </select>
+        </div>
+        <div style={{ flex: '1 1 180px' }}>
+          <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Patient Type</label>
+          <select
+            value={form.patientType}
+            onChange={(event) => updateForm('patientType', event.target.value)}
+            style={inputStyle}
+            disabled={isDisabled}
+          >
+            <option value="member">Member (Recurring)</option>
+            <option value="visit">Visit (One-time)</option>
           </select>
         </div>
       </div>

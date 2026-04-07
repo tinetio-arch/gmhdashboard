@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOW Optimal — Command Center</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e4e4e7;min-height:100vh}
+.header{background:linear-gradient(135deg,#1a1d29,#0f1117);padding:20px 24px;border-bottom:1px solid #2a2d3a;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.header h1{font-size:20px;font-weight:700;color:#fff}
+.header .sub{font-size:12px;color:#71717a}
+.btn{padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-size:12px;font-weight:600;transition:all .2s}
+.btn-primary{background:#f59e0b;color:#000}.btn-primary:hover{background:#d97706}
+.btn-sm{padding:5px 10px;font-size:11px;border-radius:6px}
+.btn-launch{background:#22c55e;color:#000}.btn-launch:hover{background:#16a34a}
+.btn-ghost{background:#27272a;color:#a1a1aa}.btn-ghost:hover{background:#3f3f46;color:#fff}
+.btn-danger{background:#7f1d1d;color:#fca5a5}.btn-danger:hover{background:#991b1b}
+.container{max-width:1200px;margin:0 auto;padding:20px 16px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin-bottom:24px}
+.kpi-card{background:#1a1d29;border-radius:10px;padding:14px;border:1px solid #2a2d3a}
+.kpi-card.pass{border-left:3px solid #22c55e}.kpi-card.warn{border-left:3px solid #f59e0b}.kpi-card.fail{border-left:3px solid #ef4444}
+.kpi-label{font-size:10px;color:#71717a;text-transform:uppercase;letter-spacing:.5px}
+.kpi-value{font-size:26px;font-weight:700;margin:4px 0 2px}
+.kpi-card.pass .kpi-value{color:#22c55e}.kpi-card.warn .kpi-value{color:#f59e0b}.kpi-card.fail .kpi-value{color:#ef4444}
+.kpi-target{font-size:10px;color:#52525b}
+.section{background:#1a1d29;border-radius:10px;padding:16px;margin-bottom:16px;border:1px solid #2a2d3a}
+.section-title{font-size:15px;font-weight:600;color:#fff;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.badge{font-size:10px;background:#27272a;color:#a1a1aa;padding:2px 8px;border-radius:10px}
+.task-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;margin-bottom:4px;border:1px solid #2a2d3a;transition:border-color .2s}
+.task-row:hover{border-color:#3f3f46}
+.dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.dot.done{background:#22c55e}.dot.progress{background:#f59e0b}.dot.fail{background:#ef4444}.dot.not-started{background:#3f3f46}.dot.unknown{background:#6366f1}
+.task-text{flex:1;font-size:13px;line-height:1.4}
+.label{font-size:9px;padding:1px 6px;border-radius:4px;font-weight:600;white-space:nowrap}
+.label.done{background:#14532d;color:#86efac}.label.progress{background:#78350f;color:#fcd34d}.label.not-started{background:#27272a;color:#71717a}.label.unknown{background:#312e81;color:#a5b4fc}.label.critical{background:#7f1d1d;color:#fca5a5}
+.priority-tag{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;padding:3px 8px;border-radius:5px;display:inline-block;margin-bottom:10px}
+.p1{background:#7f1d1d;color:#fca5a5}.p2{background:#78350f;color:#fcd34d}.p3{background:#1e3a5f;color:#93c5fd}.p4{background:#14532d;color:#86efac}
+.input-row{display:flex;gap:6px;margin-top:6px}
+.task-input{flex:1;background:#0f1117;border:1px solid #3f3f46;border-radius:6px;padding:6px 10px;color:#e4e4e7;font-size:12px;font-family:inherit}
+.task-input::placeholder{color:#52525b}
+.sessions-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
+.session-card{background:#0f1117;border-radius:8px;padding:12px;border:1px solid #2a2d3a;display:flex;align-items:center;gap:10px}
+.session-card .dot{width:8px;height:8px}
+.session-name{font-size:13px;font-weight:500}
+.session-url{font-size:11px;color:#6366f1;text-decoration:none;word-break:break-all}
+.session-url:hover{color:#818cf8;text-decoration:underline}
+.int-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
+.int-card{display:flex;align-items:center;gap:10px;padding:10px;background:#0f1117;border-radius:8px;border:1px solid #2a2d3a}
+.int-name{font-size:12px;font-weight:500}.int-status{font-size:10px;color:#71717a}
+.loading{color:#f59e0b;font-size:13px;padding:20px;text-align:center}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center}
+.modal-overlay.active{display:flex}
+.modal{background:#1a1d29;border-radius:12px;padding:24px;max-width:500px;width:90%;border:1px solid #2a2d3a}
+.modal h3{color:#fff;margin-bottom:12px;font-size:16px}
+.modal textarea{width:100%;background:#0f1117;border:1px solid #3f3f46;border-radius:8px;padding:10px;color:#e4e4e7;font-size:13px;font-family:inherit;min-height:80px;margin-bottom:12px;resize:vertical}
+.modal textarea::placeholder{color:#52525b}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end}
+.toast{position:fixed;bottom:20px;right:20px;background:#22c55e;color:#000;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:200;display:none;animation:slideIn .3s ease}
+@keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+@media(max-width:600px){.kpi-grid{grid-template-columns:repeat(2,1fr)}.kpi-value{font-size:20px}.container{padding:12px 10px}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>NOW Optimal — Command Center</h1>
+    <div class="sub">Phil Schafer NP &middot; Granite Mountain Health</div>
+    <div id="timestamp" style="font-size:11px;color:#f59e0b;margin-top:4px"></div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-primary" onclick="refreshData()">Refresh Live Data</button>
+    <button class="btn btn-ghost" onclick="loadSessions()">Refresh Sessions</button>
+  </div>
+</div>
+
+<div class="container">
+  <!-- KPI Cards -->
+  <div id="kpi-section">
+    <div class="section-title">System Health <span class="badge" id="kpi-summary">Loading...</span></div>
+    <div class="kpi-grid" id="kpi-grid"></div>
+  </div>
+
+  <!-- Active Sessions -->
+  <div class="section">
+    <div class="section-title">Active Claude Sessions <span class="badge" id="session-count">0</span></div>
+    <div class="sessions-grid" id="sessions-grid">
+      <div class="loading">Loading sessions...</div>
+    </div>
+  </div>
+
+  <!-- Integrations -->
+  <div class="section">
+    <div class="section-title">Integrations</div>
+    <div class="int-grid" id="int-grid"></div>
+  </div>
+
+  <!-- Action Items -->
+  <div id="tasks-section"></div>
+</div>
+
+<!-- Launch Modal -->
+<div class="modal-overlay" id="launch-modal">
+  <div class="modal">
+    <h3 id="modal-title">Launch Task</h3>
+    <p style="font-size:12px;color:#a1a1aa;margin-bottom:12px" id="modal-desc"></p>
+    <textarea id="modal-input" placeholder="Add specific instructions for Claude (optional)..."></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-launch" id="modal-launch-btn" onclick="confirmLaunch()">Launch Session</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<div style="text-align:center;padding:20px;color:#3f3f46;font-size:11px">
+  NOW Optimal Command Center &middot; Morning pulse at 7am daily
+</div>
+
+<script>
+const API = window.location.origin;
+let currentTaskId = null;
+
+const TASKS = [
+  { priority: 'p1', group: 'Clinical Safety', items: [
+    { id: 'pending-labs', text: 'Review critical hematocrit labs (Connor 64.3%, Garcia 61%, Woods 60.1%)', status: 'not-started', label: 'URGENT' },
+    { id: 'pending-labs', text: 'Clear 26 pending lab reviews', status: 'progress', label: 'IN PROGRESS' },
+  ]},
+  { priority: 'p2', group: 'Server Infrastructure', items: [
+    { id: 'disk-cleanup', text: 'Free disk space — currently 95%, target <75%', status: 'fail', label: 'CRITICAL' },
+    { id: 'dashboard-restarts', text: 'Fix dashboard crash loop — 268 restarts', status: 'fail', label: 'CRITICAL' },
+    { id: 'ghl-sync', text: 'Fix remaining 2 GHL sync errors', status: 'progress', label: 'IN PROGRESS' },
+    { id: 'quickbooks-fix', text: 'Verify QuickBooks integration', status: 'not-started', label: 'NOT STARTED' },
+    { id: 'stripe-reconnect', text: 'Verify Stripe connection', status: 'unknown', label: 'VERIFY' },
+  ]},
+  { priority: 'p3', group: 'GoHighLevel CRM', items: [
+    { id: 'ghl-pipelines', text: 'Build 4 pipelines + 7 core workflows', status: 'not-started', label: 'NOT STARTED' },
+    { id: 'email-campaign', text: 'Import 3,371 Mailchimp contacts to GHL', status: 'not-started', label: 'NOT STARTED' },
+  ]},
+  { priority: 'p2', group: 'Billing & Payments', items: [
+    { id: 'billing-holds', text: 'Resolve 10 billing hold patients', status: 'progress', label: 'IN PROGRESS' },
+    { id: 'payment-issues', text: 'Resolve 50 unresolved payment issues', status: 'not-started', label: 'NEW FINDING' },
+  ]},
+  { priority: 'p3', group: 'Email & Mobile', items: [
+    { id: 'email-campaign', text: "Send 'We're Back' campaign to 2,829 subscribers", status: 'not-started', label: 'NOT STARTED' },
+    { id: 'mobile-app-debug', text: 'Diagnose mobile app — 0 of 380 verified', status: 'unknown', label: 'UNKNOWN' },
+  ]},
+  { priority: 'p4', group: 'Inventory & Websites', items: [
+    { id: 'inventory-restock', text: 'Audit inventory + reorder zero-stock items', status: 'unknown', label: 'CHECK' },
+    { id: 'full-audit', text: 'Run full system audit and update project tracker', status: 'not-started', label: 'ON DEMAND' },
+    { id: 'longevity-launch', text: 'Prepare NOW Longevity soft launch', status: 'not-started', label: 'NOT STARTED' },
+  ]},
+];
+
+const INTEGRATIONS = [
+  { name: 'Healthie EHR', status: 'Connected', dot: 'green' },
+  { name: 'GoHighLevel', status: '99% synced', dot: 'green' },
+  { name: 'Stripe', status: 'Verify connection', dot: 'yellow' },
+  { name: 'QuickBooks', status: 'Health check failing', dot: 'red' },
+  { name: 'Mailchimp', status: 'Dormant 12mo', dot: 'yellow' },
+  { name: 'Snowflake', status: 'Connected', dot: 'green' },
+  { name: 'Google Analytics', status: 'Need GA4 ID', dot: 'gray' },
+  { name: 'Mobile App', status: '0 verified', dot: 'gray' },
+];
+
+function showToast(msg, color) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.background = color || '#22c55e';
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 4000);
+}
+
+function openLaunchModal(taskId, taskText) {
+  currentTaskId = taskId;
+  document.getElementById('modal-title').textContent = 'Launch: ' + taskId.replace(/-/g, ' ');
+  document.getElementById('modal-desc').textContent = taskText;
+  document.getElementById('modal-input').value = '';
+  document.getElementById('launch-modal').classList.add('active');
+}
+
+function closeModal() {
+  document.getElementById('launch-modal').classList.remove('active');
+  currentTaskId = null;
+}
+
+async function confirmLaunch() {
+  if (!currentTaskId) return;
+  const input = document.getElementById('modal-input').value;
+  const btn = document.getElementById('modal-launch-btn');
+  btn.textContent = 'Launching...';
+  btn.disabled = true;
+  try {
+    const res = await fetch(API + '/api/launch-task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: currentTaskId, user_input: input })
+    });
+    const data = await res.json();
+    closeModal();
+    if (data.remote_control_url) {
+      showToast('Session launched! Opening Remote Control...');
+      setTimeout(() => window.open(data.remote_control_url, '_blank'), 1000);
+    } else if (data.status === 'exists') {
+      showToast('Session already running. Check active sessions above.', '#f59e0b');
+    } else {
+      showToast('Session launched. Remote Control URL may take a moment.', '#6366f1');
+    }
+    setTimeout(loadSessions, 3000);
+  } catch(e) {
+    showToast('Launch failed: ' + e.message, '#ef4444');
+  }
+  btn.textContent = 'Launch Session';
+  btn.disabled = false;
+}
+
+function renderKPIs() {
+  const kpis = [
+    { label: 'Active Patients', value: '260', target: 'Target: 380', status: 'fail' },
+    { label: 'Billing Holds', value: '10', target: 'Target: 0', status: 'fail' },
+    { label: 'GHL Sync', value: '99%', target: '258/260 synced', status: 'warn' },
+    { label: 'Pending Labs', value: '26', target: 'Target: 0', status: 'fail' },
+    { label: 'Peptide Stock', value: 'OK', target: '0 at zero', status: 'pass' },
+    { label: 'Disk Usage', value: '95%', target: 'Target: <75%', status: 'fail' },
+    { label: 'Restarts', value: '268', target: 'Target: <5', status: 'fail' },
+    { label: 'PM2 Services', value: '14/14', target: 'All online', status: 'pass' },
+  ];
+  const pass = kpis.filter(k=>k.status==='pass').length;
+  const warn = kpis.filter(k=>k.status==='warn').length;
+  const fail = kpis.filter(k=>k.status==='fail').length;
+  document.getElementById('kpi-summary').textContent = `${pass} PASS · ${warn} WARN · ${fail} FAIL`;
+  document.getElementById('kpi-grid').innerHTML = kpis.map(k => `
+    <div class="kpi-card ${k.status}">
+      <div class="kpi-label">${k.label}</div>
+      <div class="kpi-value">${k.value}</div>
+      <div class="kpi-target">${k.target}</div>
+    </div>
+  `).join('');
+}
+
+function renderIntegrations() {
+  document.getElementById('int-grid').innerHTML = INTEGRATIONS.map(i => `
+    <div class="int-card">
+      <div class="dot" style="background:${({green:'#22c55e',red:'#ef4444',yellow:'#f59e0b',gray:'#52525b'})[i.dot]}"></div>
+      <div><div class="int-name">${i.name}</div><div class="int-status">${i.status}</div></div>
+    </div>
+  `).join('');
+}
+
+function renderTasks() {
+  const html = TASKS.map(group => {
+    const items = group.items.map(t => `
+      <div class="task-row">
+        <div class="dot ${t.status}"></div>
+        <div class="task-text">${t.text} <span class="label ${t.status === 'fail' ? 'critical' : t.status === 'progress' ? 'progress' : t.status === 'unknown' ? 'unknown' : t.status === 'done' ? 'done' : 'not-started'}">${t.label}</span></div>
+        <button class="btn btn-sm btn-launch" onclick="openLaunchModal('${t.id}','${t.text.replace(/'/g,"\\'")}')">Launch</button>
+      </div>
+    `).join('');
+    return `
+      <div class="section" style="margin-top:12px">
+        <div class="priority-tag ${group.priority}">${group.group}</div>
+        ${items}
+      </div>
+    `;
+  }).join('');
+  document.getElementById('tasks-section').innerHTML = html;
+}
+
+async function loadSessions() {
+  try {
+    const res = await fetch(API + '/api/sessions');
+    const data = await res.json();
+    const grid = document.getElementById('sessions-grid');
+    document.getElementById('session-count').textContent = data.sessions.length;
+    if (data.sessions.length === 0) {
+      grid.innerHTML = '<div style="color:#52525b;font-size:12px;padding:8px">No active Claude sessions</div>';
+      return;
+    }
+    grid.innerHTML = data.sessions.map(s => `
+      <div class="session-card">
+        <div class="dot" style="background:#22c55e"></div>
+        <div style="flex:1">
+          <div class="session-name">${s.name}</div>
+          ${s.remote_control_url ? `<a class="session-url" href="${s.remote_control_url}" target="_blank">Open Remote Control</a>` : '<div style="font-size:10px;color:#52525b">No RC link yet</div>'}
+        </div>
+        ${s.name.startsWith('claude-task-') ? `<button class="btn btn-sm btn-danger" onclick="killSession('${s.name}')">Stop</button>` : ''}
+      </div>
+    `).join('');
+  } catch(e) {
+    document.getElementById('sessions-grid').innerHTML = '<div style="color:#ef4444;font-size:12px">Failed to load sessions</div>';
+  }
+}
+
+async function killSession(name) {
+  if (!confirm('Stop session ' + name + '?')) return;
+  try {
+    await fetch(API + '/api/kill-session?session=' + name);
+    showToast('Session stopped', '#f59e0b');
+    setTimeout(loadSessions, 1000);
+  } catch(e) {}
+}
+
+async function refreshData() {
+  showToast('Running live health check...', '#6366f1');
+  try {
+    const res = await fetch(API + '/api/health-check');
+    const data = await res.json();
+    showToast('Data refreshed!');
+    // In a full implementation, we'd parse the markdown and update KPIs dynamically
+    // For now, reload the page
+    location.reload();
+  } catch(e) {
+    showToast('Refresh failed: ' + e.message, '#ef4444');
+  }
+}
+
+// Init
+document.getElementById('timestamp').textContent = 'Last audit: ' + new Date().toLocaleString();
+renderKPIs();
+renderIntegrations();
+renderTasks();
+loadSessions();
+
+// Auto-refresh sessions every 30s
+setInterval(loadSessions, 30000);
+</script>
+</body>
+</html>

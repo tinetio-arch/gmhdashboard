@@ -6,15 +6,15 @@ import { generateLabelPdf } from '@/lib/pdf/labelGenerator';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
-    await requireApiUser(request, 'read');
-
-    const dispenseId = request.nextUrl.searchParams.get('dispense_id');
-    if (!dispenseId) {
-        return NextResponse.json({ error: 'dispense_id required' }, { status: 400 });
-    }
-
     try {
+        await requireApiUser(request, 'read');
+
+        const dispenseId = request.nextUrl.searchParams.get('dispense_id');
+        if (!dispenseId) {
+            return NextResponse.json({ error: 'dispense_id required' }, { status: 400 });
+        }
         // FIX(2026-03-26): Pull label_directions from peptide_products for accurate dosing
+        // FIX(2026-04-06): COALESCE patient_dob from patients table when not stored on dispense
         const result = await query<{
             sale_id: number;
             patient_name: string;
@@ -25,10 +25,13 @@ export async function GET(request: NextRequest) {
             label_directions: string | null;
         }>(`
             SELECT
-                d.sale_id, d.patient_name, d.patient_dob, d.sale_date,
+                d.sale_id, d.patient_name,
+                COALESCE(d.patient_dob, pt.dob::text) as patient_dob,
+                d.sale_date,
                 p.name as product_name, p.category, p.label_directions
             FROM peptide_dispenses d
             JOIN peptide_products p ON p.product_id = d.product_id
+            LEFT JOIN patients pt ON pt.full_name ILIKE d.patient_name
             WHERE d.sale_id = $1
         `, [dispenseId]);
 
@@ -56,6 +59,7 @@ export async function GET(request: NextRequest) {
             }
         });
     } catch (error: any) {
+        if (error?.status === 401 || error?.message === 'Unauthorized') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         console.error('[billing/label] Error:', error.message);
         return NextResponse.json({ error: 'Failed to generate label' }, { status: 500 });
     }

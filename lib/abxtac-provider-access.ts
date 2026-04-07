@@ -21,7 +21,7 @@ import { query } from '@/lib/db';
 
 // ─── TYPES ───────────────────────────────────────────────────────────
 
-export type ABXTacTier = 'heal' | 'optimize' | 'thrive';
+export type ABXTacTier = 'heal' | 'optimize' | 'thrive' | 'full';
 
 export interface ProviderVisitRecord {
   healthiePatientId: string;
@@ -52,12 +52,14 @@ export const TIER_DISCOUNTS: Record<ABXTacTier, number> = {
   heal: 40,
   optimize: 30,
   thrive: 20,
+  full: 20,  // Full access gets same discount as Thrive + unlocks entire catalog
 };
 
 const TIER_RANK: Record<ABXTacTier, number> = {
   heal: 1,
   optimize: 2,
   thrive: 3,
+  full: 4,  // Highest tier — unlocks everything
 };
 
 // Tier access duration — patients must see provider within this window to maintain discount

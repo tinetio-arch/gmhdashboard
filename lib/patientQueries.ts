@@ -51,6 +51,8 @@ export type PatientDataEntryRow = {
   last_dea_drug?: string | null;
   healthie_client_id?: string | null;
   ghl_contact_id?: string | null;
+  patient_type?: string | null;
+  service_tags?: string[] | null;
 };
 
 export type ProfessionalPatient = {
@@ -228,9 +230,16 @@ function enforceLabStatusOnPatientStatus(
 
 export async function fetchPatientDataEntries(): Promise<PatientDataEntryRow[]> {
   return query<PatientDataEntryRow>(
-    `SELECT v.*, p.healthie_client_id, p.ghl_contact_id, p.avatar_url
+    `SELECT v.*, p.healthie_client_id, p.ghl_contact_id, p.avatar_url,
+            COALESCE(p.patient_type, 'member') as patient_type,
+            pst.service_tags
      FROM patient_data_entry_v v
      LEFT JOIN patients p ON v.patient_id = p.patient_id
+     LEFT JOIN LATERAL (
+       SELECT array_agg(tag ORDER BY tag) as service_tags
+       FROM patient_service_tags
+       WHERE patient_id = v.patient_id::text
+     ) pst ON TRUE
      ORDER BY
        CASE
          WHEN COALESCE(v.status_key, '') LIKE 'hold%' OR LOWER(COALESCE(v.alert_status, '')) LIKE 'hold%' THEN 0
@@ -424,6 +433,7 @@ export type PatientDataEntryPayload = {
   lastControlledDispenseAt: string | null;
   lastDeaDrug: string | null;
   clinic?: string | null;  // 'nowprimary.care' or 'nowmenshealth.care'
+  patientType?: string | null;  // 'member' or 'visit'
 };
 
 export async function createPatient(payload: PatientDataEntryPayload): Promise<PatientDataEntryRow> {
@@ -479,6 +489,7 @@ export async function createPatient(payload: PatientDataEntryPayload): Promise<P
           is_verified,
           membership_owes,
           clinic,
+          patient_type,
           updated_at
        ) VALUES (
           $1,
@@ -507,6 +518,7 @@ export async function createPatient(payload: PatientDataEntryPayload): Promise<P
           $21,
           $22,
           $23,
+          $24,
           NOW()
        ) RETURNING patient_id`,
       [
@@ -532,7 +544,8 @@ export async function createPatient(payload: PatientDataEntryPayload): Promise<P
         regularClient,
         isVerified,
         membershipOwes,
-        payload.clinic ?? null
+        payload.clinic ?? null,
+        payload.patientType ?? 'member'
       ]
     );
     const patientId = patientInsert.rows[0].patient_id;
@@ -587,6 +600,18 @@ export async function updatePatient(payload: PatientDataEntryPayload): Promise<P
     );
     const statusKey = enforceLabStatusOnPatientStatus(payload.statusKey, labStatusState);
 
+    // GUARD: Never change an inactive patient's status — inactive is a deliberate clinical decision.
+    // Only direct database access by an admin can reverse it. (Added 2026-04-01)
+    if (statusKey && statusKey !== 'inactive') {
+      const currentRow = await client.query<{ status_key: string | null }>(
+        'SELECT status_key FROM patients WHERE patient_id = $1',
+        [payload.patientId]
+      );
+      if (currentRow.rows[0]?.status_key === 'inactive') {
+        throw new Error('Cannot change status of an inactive patient. Inactive status can only be reversed by an admin via direct database access.');
+      }
+    }
+
     await client.query(
       `UPDATE patients
           SET full_name = $2,
@@ -620,6 +645,7 @@ export async function updatePatient(payload: PatientDataEntryPayload): Promise<P
               regular_client = $21,
               is_verified = $22,
               membership_owes = $23,
+              patient_type = COALESCE(NULLIF($24::text, ''), patient_type),
               updated_at = NOW()
         WHERE patient_id = $1`,
       [
@@ -645,7 +671,8 @@ export async function updatePatient(payload: PatientDataEntryPayload): Promise<P
         email,
         regularClient,
         isVerified,
-        membershipOwes
+        membershipOwes,
+        payload.patientType ?? null
       ]
     );
 

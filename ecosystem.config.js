@@ -55,7 +55,7 @@ module.exports = {
             max_restarts: 10,
             restart_delay: 5000,
             exp_backoff_restart_delay: 1000,
-            max_memory_restart: '1G',
+            max_memory_restart: '2G',
             env: {
                 NODE_ENV: 'production',
                 PORT: 3011,

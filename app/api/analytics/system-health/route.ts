@@ -59,6 +59,9 @@ async function getPM2Processes(): Promise<Array<{
             memory: p.monit?.memory || 0,
             memoryMB: Math.round((p.monit?.memory || 0) / 1024 / 1024),
             restarts: p.pm2_env?.restart_time || 0,
+            // FIX(2026-03-31): Track unstable restarts separately from manual deploys
+            // unstable_restarts only increments on crash loops, not manual pm2 restart
+            unstableRestarts: p.pm2_env?.unstable_restarts || 0,
             uptime: formatUptime(p.pm2_env?.pm_uptime),
             pid: p.pid || 0
         }));
@@ -123,58 +126,46 @@ async function checkApiHealth(): Promise<Array<{
         });
     }
 
-    // Check QuickBooks token
+    // FIX(2026-03-31): Actually test QuickBooks connection instead of just checking token DB
+    // Old code only queried token expiry from DB — didn't verify the API was reachable
     try {
-        const { query } = await import('@/lib/db');
-        const tokens = await query('SELECT expires_at FROM quickbooks_oauth_tokens ORDER BY created_at DESC LIMIT 1');
-        if (tokens.length > 0) {
-            const expiresAt = new Date(tokens[0].expires_at);
-            const msUntilExpiry = expiresAt.getTime() - Date.now();
-            const hoursUntilExpiry = Math.round(msUntilExpiry / 3600000 * 10) / 10; // 1 decimal place
-            const daysUntilExpiry = Math.round(msUntilExpiry / 86400000 * 10) / 10;
+        const { testQuickBooksConnection } = await import('@/lib/quickbooksHealth');
+        const start = Date.now();
+        const qbHealth = await testQuickBooksConnection();
+        const responseTime = Date.now() - start;
 
-            let status: 'healthy' | 'warning' | 'error' = 'healthy';
-            let message = '';
+        let status: 'healthy' | 'warning' | 'error' = qbHealth.connected ? 'healthy' : 'error';
+        let message = '';
 
-            if (msUntilExpiry <= 0) {
-                status = 'error';
-                message = 'Token expired!';
-            } else if (hoursUntilExpiry < 2) {
-                status = 'error';
-                message = `Token expires in ${hoursUntilExpiry}h - refresh needed!`;
-            } else if (hoursUntilExpiry < 24) {
+        if (!qbHealth.connected) {
+            message = qbHealth.error || 'Connection failed';
+        } else if (qbHealth.tokenExpiresAt) {
+            const msUntilExpiry = new Date(qbHealth.tokenExpiresAt).getTime() - Date.now();
+            const hoursUntilExpiry = Math.round(msUntilExpiry / 3600000 * 10) / 10;
+            if (hoursUntilExpiry < 2) {
                 status = 'warning';
-                message = `Token expires in ${hoursUntilExpiry}h`;
-            } else if (daysUntilExpiry < 7) {
-                status = 'warning';
-                message = `Token expires in ${daysUntilExpiry} days`;
+                message = `Connected, token expires in ${hoursUntilExpiry}h`;
             } else {
-                message = `Token expires in ${daysUntilExpiry} days`;
+                message = `Connected (${responseTime}ms)`;
             }
-
-            results.push({
-                name: 'QuickBooks OAuth',
-                status,
-                responseTime: 0,
-                lastCheck: new Date().toISOString(),
-                message
-            });
         } else {
-            results.push({
-                name: 'QuickBooks OAuth',
-                status: 'error',
-                responseTime: 0,
-                lastCheck: new Date().toISOString(),
-                message: 'No token found'
-            });
+            message = `Connected (${responseTime}ms)`;
         }
+
+        results.push({
+            name: 'QuickBooks',
+            status,
+            responseTime,
+            lastCheck: new Date().toISOString(),
+            message
+        });
     } catch (e: any) {
         results.push({
-            name: 'QuickBooks OAuth',
+            name: 'QuickBooks',
             status: 'error',
             responseTime: 0,
             lastCheck: new Date().toISOString(),
-            message: `DB error: ${e.message}`
+            message: `Check failed: ${e.message}`
         });
     }
 
@@ -361,19 +352,21 @@ async function getCronJobs(): Promise<Array<{
     // Log paths match cron-alert.sh wrapper output (logs/cron/)
     // Updated Feb 22, 2026: reflects crontab restructure (individual Healthie syncs
     // replaced by unified sync-all-to-snowflake.py)
+    // FIX(2026-03-31): Each job now has warnAfterHours/errorAfterHours based on its actual schedule
+    // Old code used fixed 24/48h thresholds which falsely flagged 4h jobs as "dead"
     const jobs = [
-        { name: 'Snowflake Sync (All Data)', logFile: '/home/ec2-user/logs/cron/snowflake-sync.log', schedule: 'Every 4h' },
-        { name: 'Snowflake Freshness', logFile: '/home/ec2-user/logs/cron/snowflake-freshness.log', schedule: 'Every 2h' },
-        { name: 'Morning Report', logFile: '/home/ec2-user/logs/cron/morning-report.log', schedule: 'Daily 7am' },
-        { name: 'QuickBooks Sync', logFile: '/home/ec2-user/logs/cron/quickbooks-sync.log', schedule: 'Every 3h' },
-        { name: 'Healthie Revenue Cache', logFile: '/home/ec2-user/logs/cron/healthie-revenue-cache.log', schedule: 'Every 6h' },
-        { name: 'Peptide Purchases Sync', logFile: '/home/ec2-user/logs/cron/peptide-sync.log', schedule: 'Every 6h' },
-        { name: 'Access Labs Sync', logFile: '/home/ec2-user/logs/cron/lab-results-fetch.log', schedule: 'Every 30m' },
-        { name: 'Healthie Webhooks', logFile: '/home/ec2-user/logs/cron/process-healthie-webhooks.log', schedule: 'Every 5m' },
-        { name: 'Healthie Failed Payments', logFile: '/home/ec2-user/logs/cron/healthie-failed-payments.log', schedule: 'Every 6h' },
-        { name: 'Lab Status Refresh', logFile: '/home/ec2-user/logs/cron/lab-status-refresh.log', schedule: 'Daily 10pm' },
-        { name: 'Infrastructure Monitor', logFile: '/home/ec2-user/logs/cron/infrastructure-monitor.log', schedule: 'Daily 9am' },
-        { name: 'Heartbeat', logFile: '/home/ec2-user/logs/cron/heartbeat.log', schedule: 'Every 5m' },
+        { name: 'Snowflake Sync (All Data)', logFile: '/home/ec2-user/logs/cron/snowflake-sync.log', schedule: 'Every 4h', warnAfterHours: 5, errorAfterHours: 8 },
+        { name: 'Snowflake Freshness', logFile: '/home/ec2-user/logs/cron/snowflake-freshness.log', schedule: 'Every 2h', warnAfterHours: 3, errorAfterHours: 5 },
+        { name: 'Morning Report', logFile: '/home/ec2-user/logs/cron/morning-report.log', schedule: 'Daily 7am', warnAfterHours: 25, errorAfterHours: 48 },
+        { name: 'QuickBooks Sync', logFile: '/home/ec2-user/logs/cron/quickbooks-sync.log', schedule: 'Every 3h', warnAfterHours: 4, errorAfterHours: 7 },
+        { name: 'Healthie Revenue Cache', logFile: '/home/ec2-user/logs/cron/healthie-revenue-cache.log', schedule: 'Every 6h', warnAfterHours: 7, errorAfterHours: 13 },
+        { name: 'Peptide Purchases Sync', logFile: '/home/ec2-user/logs/cron/peptide-sync.log', schedule: 'Every 6h', warnAfterHours: 7, errorAfterHours: 13 },
+        { name: 'Access Labs Sync', logFile: '/home/ec2-user/logs/cron/lab-results-fetch.log', schedule: 'Every 30m', warnAfterHours: 1, errorAfterHours: 2 },
+        { name: 'Healthie Webhooks', logFile: '/home/ec2-user/logs/cron/process-healthie-webhooks.log', schedule: 'Every 5m', warnAfterHours: 0.25, errorAfterHours: 0.5 },
+        { name: 'Healthie Failed Payments', logFile: '/home/ec2-user/logs/cron/healthie-failed-payments.log', schedule: 'Every 6h', warnAfterHours: 7, errorAfterHours: 13 },
+        { name: 'Lab Status Refresh', logFile: '/home/ec2-user/logs/cron/lab-status-refresh.log', schedule: 'Daily 10pm', warnAfterHours: 25, errorAfterHours: 48 },
+        { name: 'Infrastructure Monitor', logFile: '/home/ec2-user/logs/cron/infrastructure-monitor.log', schedule: 'Daily 9am', warnAfterHours: 25, errorAfterHours: 48 },
+        { name: 'Heartbeat', logFile: '/home/ec2-user/logs/cron/heartbeat.log', schedule: 'Every 5m', warnAfterHours: 0.25, errorAfterHours: 0.5 },
     ];
 
     const results = [];
@@ -396,7 +389,8 @@ async function getCronJobs(): Promise<Array<{
                 schedule: job.schedule,
                 lastRun: stats.mtime.toISOString(),
                 hoursAgo,
-                status: hasError ? 'error' : hoursAgo < 24 ? 'success' : hoursAgo < 48 ? 'warning' : 'error'
+                // FIX(2026-03-31): Use schedule-aware thresholds instead of fixed 24/48h
+                status: hasError ? 'error' : hoursAgo < job.warnAfterHours ? 'success' : hoursAgo < job.errorAfterHours ? 'warning' : 'error'
             });
         } catch (e) {
             results.push({
@@ -611,6 +605,11 @@ export async function GET() {
         // Check for critical issues
         processes.filter(p => p.status !== 'online').forEach(p => {
             alerts.push({ level: 'critical', message: `PM2 process "${p.name}" is ${p.status}` });
+        });
+
+        // FIX(2026-03-31): Alert on unstable restarts (crashes), not total restarts (includes manual deploys)
+        processes.filter(p => (p as any).unstableRestarts > 0).forEach(p => {
+            alerts.push({ level: 'warning', message: `PM2 process "${p.name}" has ${(p as any).unstableRestarts} crash restarts` });
         });
 
         apiHealth.filter(a => a.status === 'error').forEach(a => {

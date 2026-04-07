@@ -69,7 +69,7 @@ async function callGemini(prompt: string, maxTokens: number = 1000, temperature:
     throw new Error('GOOGLE_AI_API_KEY not configured');
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -332,7 +332,7 @@ async function callGeminiWithTools(prompt: string, systemPrompt?: string): Promi
     throw new Error('GOOGLE_AI_API_KEY not configured');
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
 
   const contents: any[] = [];
 
@@ -2111,7 +2111,7 @@ CURRENT ${docLabel.toUpperCase()}:
 ${currentDoc}`;
 
       const geminiResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3606,7 +3606,7 @@ Date: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long',
                       };
 
                       const geminiResponse = await fetch(
-                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
                         {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },

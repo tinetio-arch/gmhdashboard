@@ -8,11 +8,14 @@ import { fetchPatientById } from '@/lib/patientQueries';
 import { query } from '@/lib/db';
 
 export async function GET(request: NextRequest) {
-  await requireApiUser(request, 'read');
   try {
+    await requireApiUser(request, 'read');
     const patients = await fetchPatientDataEntries();
     return NextResponse.json({ data: patients });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.status === 401 || error?.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     console.error('Failed to fetch patients', error);
     return NextResponse.json({ error: 'Failed to fetch patients' }, { status: 500 });
   }
@@ -99,6 +102,7 @@ export async function POST(request: NextRequest) {
       paymentMethodKey: body.paymentMethodKey ?? null,
       clientTypeKey: body.clientTypeKey ?? null,
       clinic: body.clinic ?? null,
+      patientType: body.patientType ?? 'member',
       regimen: body.regimen ?? null,
       patientNotes: body.patientNotes ?? null,
       lastLab: body.lastLab ?? null,

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="GMH Mobile">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#0C141D">
+    <link rel="apple-touch-icon" sizes="180x180"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect fill='%230C141D' width='180' height='180' rx='40'/><text x='90' y='115' text-anchor='middle' fill='%2300D4FF' font-size='72' font-family='sans-serif' font-weight='bold'>G</text></svg>">
+    <title>GMH Ops — Mobile</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+    <link id="appStylesheet" rel="stylesheet" href="./style.css">
+    <script>document.getElementById('appStylesheet').href='./style.css?v='+Date.now();</script>
+    <!-- Prevent caching on older browsers -->
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+</head>
+
+<body>
+    <!-- Status Bar -->
+    <header class="status-bar">
+        <div class="status-bar-left">
+            <span class="logo-text">GMH</span><span class="logo-ops">Ops</span>
+            <span class="version-badge">LIVE</span>
+        </div>
+        <div class="status-bar-right">
+            <span class="connection-dot" id="connectionDot"></span>
+            <span class="connection-text" id="connectionText">Connecting…</span>
+            <span class="status-time" id="statusTime"></span>
+            <button id="logoutBtn" onclick="handleLogout()" style="display:none; margin-left:12px; padding:6px 12px; background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.4); border-radius:6px; color:#f87171; font-size:12px; font-weight:600; cursor:pointer;">Logout</button>
+        </div>
+    </header>
+
+    <!-- Toast container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Pull to refresh indicator -->
+    <div class="pull-refresh" id="pullRefresh">
+        <div class="pull-refresh-spinner"></div>
+        <span>Release to refresh</span>
+    </div>
+
+    <!-- Auth overlay — shows login form when session expires -->
+    <div class="auth-overlay" id="authOverlay">
+        <div style="
+            width:90vw; max-width:380px; padding:28px; border-radius:16px;
+            background:rgba(30,41,59,0.7); border:1px solid rgba(100,200,255,0.15);
+            backdrop-filter:blur(20px); box-shadow:0 25px 50px rgba(0,0,0,0.5);
+        ">
+            <div style="text-align:center; margin-bottom:28px;">
+                <span style="font-size:28px; font-weight:700; color:#fff;">GMH</span>
+                <span style="font-size:28px; font-weight:300; color:#22d3ee;">Ops</span>
+                <div style="font-size:12px; color:#94a3b8; margin-top:4px; letter-spacing:0.1em; text-transform:uppercase;">Staff Dashboard</div>
+            </div>
+            <div id="authLoginError" style="display:none; padding:10px 14px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color:#f87171; font-size:13px; margin-bottom:16px;"></div>
+            <div style="margin-bottom:16px;">
+                <label style="display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; font-weight:600;">Email</label>
+                <input id="authLoginEmail" type="email" placeholder="you@nowoptimal.com" autocomplete="email" style="
+                    width:100%; padding:12px 16px; border-radius:8px; border:1px solid rgba(100,200,255,0.15);
+                    background:rgba(15,23,42,0.8); color:#fff; font-size:15px; font-family:inherit; outline:none;
+                    box-sizing:border-box; transition:border-color 0.2s;
+                " onfocus="this.style.borderColor='#22d3ee'" onblur="this.style.borderColor='rgba(100,200,255,0.15)'">
+            </div>
+            <div style="margin-bottom:24px;">
+                <label style="display:block; font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; font-weight:600;">Password</label>
+                <input id="authLoginPassword" type="password" placeholder="••••••••" autocomplete="current-password" style="
+                    width:100%; padding:12px 16px; border-radius:8px; border:1px solid rgba(100,200,255,0.15);
+                    background:rgba(15,23,42,0.8); color:#fff; font-size:15px; font-family:inherit; outline:none;
+                    box-sizing:border-box; transition:border-color 0.2s;
+                " onfocus="this.style.borderColor='#22d3ee'" onblur="this.style.borderColor='rgba(100,200,255,0.15)'"
+                onkeydown="if(event.key==='Enter') authOverlayLogin()">
+            </div>
+            <button onclick="authOverlayLogin()" id="authLoginBtn" style="
+                width:100%; padding:14px; border:none; border-radius:8px;
+                background:linear-gradient(135deg, #22d3ee, #06b6d4); color:#0a0f1a;
+                font-size:15px; font-weight:700; cursor:pointer; font-family:inherit;
+                transition:all 0.2s; letter-spacing:0.02em;
+            ">Sign In</button>
+        </div>
+    </div>
+    <script>
+    // Inline login handler — works even if app.js is cached/broken
+    function authOverlayLogin() {
+        var email = document.getElementById('authLoginEmail').value.trim();
+        var pw = document.getElementById('authLoginPassword').value;
+        var err = document.getElementById('authLoginError');
+        var btn = document.getElementById('authLoginBtn');
+        if (!email || !pw) { err.textContent = 'Please enter email and password'; err.style.display = 'block'; return; }
+        btn.textContent = 'Signing in…'; btn.disabled = true; err.style.display = 'none';
+        fetch('/ops/api/auth/login', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, password: pw })
+        }).then(function(r) { return r.json(); }).then(function(data) {
+            if (data.success) { window.location.reload(); }
+            else { err.textContent = data.error || 'Invalid credentials'; err.style.display = 'block'; }
+        }).catch(function() {
+            err.textContent = 'Connection error — try again'; err.style.display = 'block';
+        }).finally(function() { btn.textContent = 'Sign In'; btn.disabled = false; });
+    }
+    </script>
+
+    <!-- Main content area -->
+    <main class="main-content" id="mainContent">
+        <!-- Tab views are rendered by JS -->
+    </main>
+
+    <!-- Bottom Tab Bar -->
+    <nav class="tab-bar" id="tabBar">
+        <button class="tab-item active" data-tab="today">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+                <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+                <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
+                <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+            </svg>
+            <span class="tab-label">Today</span>
+        </button>
+        <button class="tab-item" data-tab="labs">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 3h6v7l4 9H5l4-9V3z"></path>
+                <path d="M9 3h6"></path>
+            </svg>
+            <span class="tab-label">Labs</span>
+            <span class="tab-badge hidden" id="labsBadge">0</span>
+        </button>
+        <button class="tab-item" data-tab="scribe">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="23"></line>
+                <line x1="8" y1="23" x2="16" y2="23"></line>
+            </svg>
+            <span class="tab-label">Scribe</span>
+            <span class="tab-badge hidden" id="scribeBadge">0</span>
+        </button>
+        <button class="tab-item" data-tab="inventory">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path
+                    d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z">
+                </path>
+                <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                <line x1="12" y1="22.08" x2="12" y2="12"></line>
+            </svg>
+            <span class="tab-label">Inventory</span>
+            <span class="tab-badge alert hidden" id="inventoryBadge">0</span>
+        </button>
+        <button class="tab-item" data-tab="patients">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            </svg>
+            <span class="tab-label">Patients</span>
+        </button>
+    </nav>
+
+    <!-- PDF Viewer Modal -->
+    <div id="pdfViewerModal" class="pdf-viewer-modal">
+        <div class="pdf-viewer-header">
+            <button class="pdf-viewer-close" onclick="closeLabPdf()">✕ Close</button>
+            <span id="pdfViewerTitle" class="pdf-viewer-title"></span>
+            <div id="pdfViewerActions" class="pdf-viewer-header-actions"></div>
+        </div>
+        <div id="pdfViewerLoading" class="pdf-viewer-loading">
+            <div class="loading-spinner"></div>
+            <span>Loading PDF…</span>
+        </div>
+        <iframe id="pdfViewerFrame" class="pdf-viewer-frame" frameborder="0"></iframe>
+    </div>
+
+    <!-- Global Chart Panel (accessible from any view) -->
+    <div id="globalChartPanel" class="chart-panel" style="z-index:200;">
+        <div class="chart-panel-minimized-tab" onclick="toggleGlobalChart()" title="Restore chart panel">
+            <span>📋</span>
+            <span class="minimized-patient-name" id="globalChartPatientName"></span>
+        </div>
+        <div class="chart-panel-header">
+            <div class="chart-panel-title" id="globalChartTitle">📋 Patient Chart</div>
+            <div class="chart-panel-actions">
+                <button class="chart-panel-btn" onclick="minimizeGlobalChart()" title="Minimize">⊟</button>
+                <button class="chart-panel-btn" onclick="expandGlobalChart()" title="Expand">⊞</button>
+                <button class="chart-panel-close" onclick="closeGlobalChart()" style="background:rgba(239,68,68,0.8); color:white; font-size:18px; font-weight:bold;">✕</button>
+            </div>
+        </div>
+        <div id="globalChartContent" class="chart-panel-content">
+            <div class="chart-loading"><div class="spinner"></div> Select a patient…</div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer-note">Powered by GMH Ops — Live Data</div>
+
+    <script>document.write('<scr'+'ipt src="./app.js?v='+Date.now()+'"></scr'+'ipt>');</script>
+</body>
+
+</html>

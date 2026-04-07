@@ -36,6 +36,10 @@ export async function POST(request: NextRequest) {
                 return await addAllergy(healthie_id, body);
             case 'add_medication':
                 return await addMedication(healthie_id, body);
+            case 'update_medication':
+                return await updateMedication(body);
+            case 'deactivate_medication':
+                return await deactivateMedication(body);
             case 'add_diagnosis':
                 return await addDiagnosis(healthie_id, body);
             case 'remove_diagnosis':
@@ -226,6 +230,75 @@ async function addMedication(healthieId: string, body: any) {
     return NextResponse.json({
         success: true,
         data: { ...result.createMedication?.medication, active: true },
+    });
+}
+
+// ==================== UPDATE MEDICATION ====================
+// FIX(2026-04-01): Allow editing dose, frequency, directions, route on existing medications
+async function updateMedication(body: any) {
+    const { medication_id, name, dosage, frequency, directions, route } = body;
+
+    if (!medication_id) {
+        return NextResponse.json({ success: false, error: 'medication_id is required' }, { status: 400 });
+    }
+
+    // Build update input — only include fields that were provided
+    const input: Record<string, any> = { id: medication_id };
+    if (name !== undefined) input.name = name;
+    if (dosage !== undefined) input.dosage = dosage;
+    if (frequency !== undefined) input.frequency = frequency;
+    if (directions !== undefined) input.directions = directions;
+    if (route !== undefined) input.route = route;
+
+    const result = await healthieGraphQL<any>(`
+        mutation UpdateMedication($input: updateMedicationInput!) {
+            updateMedication(input: $input) {
+                medication {
+                    id name dosage frequency directions route active
+                }
+                messages { field message }
+            }
+        }
+    `, { input });
+
+    if (result.updateMedication?.messages?.length > 0) {
+        const msg = result.updateMedication.messages.map((m: any) => m.message).join(', ');
+        return NextResponse.json({ success: false, error: msg }, { status: 400 });
+    }
+
+    console.log(`[iPad:PatientData] Updated medication ${medication_id}`);
+    return NextResponse.json({
+        success: true,
+        data: result.updateMedication?.medication,
+    });
+}
+
+// ==================== DEACTIVATE MEDICATION ====================
+async function deactivateMedication(body: any) {
+    const { medication_id } = body;
+
+    if (!medication_id) {
+        return NextResponse.json({ success: false, error: 'medication_id is required' }, { status: 400 });
+    }
+
+    const result = await healthieGraphQL<any>(`
+        mutation DeactivateMedication($input: updateMedicationInput!) {
+            updateMedication(input: $input) {
+                medication { id name active }
+                messages { field message }
+            }
+        }
+    `, { input: { id: medication_id, active: false, end_date: new Date().toISOString().split('T')[0] } });
+
+    if (result.updateMedication?.messages?.length > 0) {
+        const msg = result.updateMedication.messages.map((m: any) => m.message).join(', ');
+        return NextResponse.json({ success: false, error: msg }, { status: 400 });
+    }
+
+    console.log(`[iPad:PatientData] Deactivated medication ${medication_id}`);
+    return NextResponse.json({
+        success: true,
+        data: result.updateMedication?.medication,
     });
 }
 

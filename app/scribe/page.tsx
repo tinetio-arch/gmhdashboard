@@ -29,7 +29,10 @@ async function loadScribeData() {
                 sn.icd10_codes, sn.cpt_codes,
                 sn.supplementary_docs, sn.full_note_text
             FROM scribe_sessions ss
-            LEFT JOIN patients p ON ss.patient_id = p.patient_id
+            LEFT JOIN patients p ON (
+                ss.patient_id = p.patient_id::text
+                OR ss.patient_id = p.healthie_client_id
+            )
             LEFT JOIN scribe_notes sn ON ss.session_id = sn.session_id
             ORDER BY ss.created_at DESC
             LIMIT 50

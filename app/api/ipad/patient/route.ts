@@ -24,9 +24,8 @@ async function healthieGraphQL(query: string, variables: Record<string, any> = {
 // GET /api/ipad/patient?action=groups — Fetch all groups for dropdown
 // GET /api/ipad/patient?action=tags — Fetch available tags
 export async function GET(request: NextRequest) {
-    await requireApiUser(request, 'read');
-
     try {
+        await requireApiUser(request, 'read');
         const action = request.nextUrl.searchParams.get('action');
 
         if (action === 'groups') {
@@ -85,6 +84,9 @@ export async function GET(request: NextRequest) {
             }
 
             const user = appt.user;
+            const attendee = appt.attendees?.[0];
+            // FIX(2026-03-31): Return patient Healthie ID so video page can use it for scribe/chart
+            const patientHealthieId = attendee?.id || user?.id || null;
             return NextResponse.json({
                 success: true,
                 session: {
@@ -94,6 +96,7 @@ export async function GET(request: NextRequest) {
                     contactType: appt.contact_type,
                     provider: appt.provider ? `${appt.provider.first_name} ${appt.provider.last_name}` : null,
                     patientName: user ? `${user.first_name} ${user.last_name}` : null,
+                    patientHealthieId,
                     // Vonage/OpenTok native video (Healthie Video Call)
                     sessionId: appt.session_id || null,
                     token: appt.generated_token || null,
@@ -114,9 +117,8 @@ export async function GET(request: NextRequest) {
 
 // PATCH /api/ipad/patient — Update patient group or tags
 export async function PATCH(request: NextRequest) {
-    await requireApiUser(request, 'write');
-
     try {
+        await requireApiUser(request, 'write');
         const body = await request.json();
         const { action, healthie_id } = body;
 
@@ -163,7 +165,10 @@ export async function PATCH(request: NextRequest) {
                 return NextResponse.json({ error: 'tag_name is required' }, { status: 400 });
             }
 
-            const data = await healthieGraphQL(`mutation CreateTag($input: createTagInput!) {
+            console.log(`[iPad Tags] Adding tag "${tag_name}" to Healthie user ${healthie_id}`);
+
+            // Step 1: Try createTag (creates new tag AND applies to patient)
+            const data = await healthieGraphQL<any>(`mutation CreateTag($input: createTagInput!) {
                 createTag(input: $input) {
                     tag { id name }
                     messages { field message }
@@ -173,10 +178,72 @@ export async function PATCH(request: NextRequest) {
             });
 
             const result = data.createTag;
-            return NextResponse.json({
-                success: true,
-                tag: result.tag || null,
-            });
+
+            // If createTag succeeded, return it
+            if (result?.tag) {
+                console.log(`[iPad Tags] New tag created & applied: ${result.tag.id} "${result.tag.name}"`);
+                return NextResponse.json({ success: true, tag: result.tag });
+            }
+
+            // Step 2: If "already taken", the tag exists globally — find it and apply via bulkApply
+            const hasAlreadyTaken = result?.messages?.some((m: any) =>
+                (m.message || '').toLowerCase().includes('already been taken')
+            );
+
+            if (hasAlreadyTaken) {
+                console.log(`[iPad Tags] Tag "${tag_name}" exists globally, applying via bulkApply`);
+
+                // Find existing tag by name
+                const tagsData = await healthieGraphQL<any>(`{ tags { id name } }`);
+                const existingTag = (tagsData.tags || []).find(
+                    (t: any) => t.name.toLowerCase() === tag_name.toLowerCase()
+                );
+
+                if (!existingTag) {
+                    return NextResponse.json({
+                        success: false,
+                        error: `Tag "${tag_name}" exists but could not be found. Try a different name.`
+                    }, { status: 400 });
+                }
+
+                // Apply existing tag to patient via bulkApply
+                // FIX(2026-04-01): Healthie createTag fails for existing tags.
+                // Use bulkApply(ids: [tagId], taggable_user_id) to apply existing tags.
+                const applyData = await healthieGraphQL<any>(`mutation BulkApply($input: bulkApplyInput!) {
+                    bulkApply(input: $input) {
+                        tags { id name }
+                        messages { field message }
+                    }
+                }`, {
+                    input: { ids: [existingTag.id], taggable_user_id: healthie_id }
+                });
+
+                const applied = applyData.bulkApply;
+                if (applied?.tags && applied.tags.length > 0) {
+                    console.log(`[iPad Tags] Existing tag applied: ${applied.tags[0].id} "${applied.tags[0].name}"`);
+                    return NextResponse.json({ success: true, tag: applied.tags[0] });
+                }
+
+                // Check for messages (e.g., already applied to this patient)
+                if (applied?.messages && applied.messages.length > 0) {
+                    return NextResponse.json({
+                        success: false,
+                        error: applied.messages.map((m: any) => m.message).join(', ')
+                    }, { status: 400 });
+                }
+
+                // Fallback: return the tag we found even if bulkApply returned empty
+                return NextResponse.json({ success: true, tag: existingTag });
+            }
+
+            // Other error from createTag
+            if (result?.messages && result.messages.length > 0) {
+                const errMsg = result.messages.map((m: any) => m.message).join(', ');
+                console.warn('[iPad Tags] createTag error:', errMsg);
+                return NextResponse.json({ success: false, error: errMsg }, { status: 400 });
+            }
+
+            return NextResponse.json({ success: false, error: 'Tag creation returned no result' }, { status: 500 });
         }
 
         // Remove tag from patient
@@ -186,9 +253,10 @@ export async function PATCH(request: NextRequest) {
                 return NextResponse.json({ error: 'tag_id is required' }, { status: 400 });
             }
 
+            // FIX(2026-04-01): Healthie removed 'appliedTag' from removeAppliedTagPayload.
+            // Only request 'messages' which still exists.
             const data = await healthieGraphQL(`mutation RemoveTag($input: removeAppliedTagInput!) {
                 removeAppliedTag(input: $input) {
-                    appliedTag { id }
                     messages { field message }
                 }
             }`, {
@@ -199,8 +267,9 @@ export async function PATCH(request: NextRequest) {
         }
 
         return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
-    } catch (error) {
-        console.error('[API] iPad patient PATCH error:', error);
-        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    } catch (error: any) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error('[API] iPad patient PATCH error:', msg);
+        return NextResponse.json({ error: msg || 'Internal server error' }, { status: 500 });
     }
 }

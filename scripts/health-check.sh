@@ -1,88 +1,82 @@
 #!/bin/bash
-# GMH Dashboard Health Check Script
-# Created: Dec 28, 2025
-# Purpose: Daily automated health monitoring
-# Run via cron: 0 8 * * * /home/ec2-user/gmhdashboard/scripts/health-check.sh
+# health-check.sh — KPI scoreboard with pass/warn/fail indicators
+# Usage: bash ~/gmhdashboard/scripts/health-check.sh
+# Output: ~/gmhdashboard/docs/KPI_CHECK.md + stdout summary
 
-LOG_FILE="/home/ec2-user/logs/gmh-health.log"
-mkdir -p /home/ec2-user/logs
-ALERT_THRESHOLD_DISK=85
-ALERT_THRESHOLD_MEM=90
+OUTPUT="$HOME/gmhdashboard/docs/KPI_CHECK.md"
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
 
-echo "=====================================" >> $LOG_FILE
-echo "GMH Dashboard Health Check - $(date)" >> $LOG_FILE
-echo "=====================================" >> $LOG_FILE
+# Load env vars safely
+eval $(grep -E '^DATABASE_' $HOME/gmhdashboard/.env.local | while IFS='=' read -r key val; do echo "export $key=\"$val\""; done) 2>/dev/null || true
+export PGPASSWORD="$DATABASE_PASSWORD"
+export PGSSLMODE="$DATABASE_SSLMODE"
+DB_CMD="psql -h $DATABASE_HOST -p $DATABASE_PORT -U $DATABASE_USER -d $DATABASE_NAME -t -A"
 
-# 1. Disk Space Check
-echo "[DISK] Checking disk usage..." >> $LOG_FILE
-DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
-echo "Disk usage: ${DISK_USAGE}%" >> $LOG_FILE
-if [ "$DISK_USAGE" -gt "$ALERT_THRESHOLD_DISK" ]; then
-  echo "⚠️  ALERT: Disk usage ${DISK_USAGE}% exceeds threshold ${ALERT_THRESHOLD_DISK}%" >> $LOG_FILE
-  # TODO: Send alert (Telegram/email)
-fi
+RESULTS=""
+add_result() {
+  local name="$1" value="$2" target="$3" status="$4"
+  RESULTS="${RESULTS}| $status | $name | $value | $target |\n"
+}
 
-# 2. PM2 Processes Check
-echo "[PM2] Checking PM2 processes..." >> $LOG_FILE
-PM2_ONLINE=$(pm2 jlist | jq -r '.[] | select(.pm2_env.status=="online") | .name' | wc -l)
-PM2_TOTAL=$(pm2 jlist | jq -r '.[].name' | wc -l)
-echo "PM2 processes: ${PM2_ONLINE}/${PM2_TOTAL} online" >> $LOG_FILE
-if [ "$PM2_ONLINE" -lt "$PM2_TOTAL" ]; then
-  echo "⚠️  ALERT: Some PM2 processes are down" >> $LOG_FILE
-  pm2 jlist | jq -r '.[] | select(.pm2_env.status!="online") | "\(.name): \(.pm2_env.status)"' >> $LOG_FILE
-fi
+echo "Running KPI health checks..."
 
-# 3. Dashboard Response Check
-echo "[HTTP] Checking dashboard response..." >> $LOG_FILE
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 5 http://localhost:3000/ops/ 2>/dev/null)
-echo "HTTP status: ${HTTP_STATUS}" >> $LOG_FILE
-if [ "$HTTP_STATUS" != "307" ] && [ "$HTTP_STATUS" != "200" ]; then
-  echo "⚠️  ALERT: Dashboard not responding correctly (expected 307 or 200, got ${HTTP_STATUS})" >> $LOG_FILE
-fi
+# 1. Active patients
+VAL=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE status_key='active';" 2>/dev/null || echo '0')
+if [ "$VAL" -ge 380 ] 2>/dev/null; then S="PASS"; elif [ "$VAL" -ge 345 ] 2>/dev/null; then S="WARN"; else S="FAIL"; fi
+add_result "Active Patients" "$VAL" "380 (90d)" "$S"
 
-# 4. Database Connection Check
-echo "[DB] Checking Postgres connection..." >> $LOG_FILE
-# Load env vars from .env.local
-if [ -f "/home/ec2-user/gmhdashboard/.env.local" ]; then
-  export $(grep -v '^#' /home/ec2-user/gmhdashboard/.env.local | grep 'DATABASE_' | xargs)
-fi
-DB_CHECK=$(PGPASSWORD="${DATABASE_PASSWORD}" psql -h "${DATABASE_HOST}" -U "${DATABASE_USER}" -d "${DATABASE_NAME}" -c "SELECT 1" 2>&1 | grep -c "1 row")
-if [ "$DB_CHECK" -eq 1 ]; then
-  echo "Database: Connected ✓" >> $LOG_FILE
-else
-  echo "⚠️  ALERT: Database connection failed" >> $LOG_FILE
-fi
+# 2. Billing holds
+VAL=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE status_key='hold_payment_research';" 2>/dev/null || echo '0')
+if [ "$VAL" -eq 0 ] 2>/dev/null; then S="PASS"; elif [ "$VAL" -le 3 ] 2>/dev/null; then S="WARN"; else S="FAIL"; fi
+add_result "Billing Holds" "$VAL" "0" "$S"
 
-# 5. Memory Usage Check
-echo "[MEM] Checking memory usage..." >> $LOG_FILE
-MEM_USAGE=$(free | awk 'NR==2 {printf "%.0f", $3/$2 * 100}')
-echo "Memory usage: ${MEM_USAGE}%" >> $LOG_FILE
-if [ "$MEM_USAGE" -gt "$ALERT_THRESHOLD_MEM" ]; then
-  echo "⚠️  ALERT: Memory usage ${MEM_USAGE}% exceeds threshold ${ALERT_THRESHOLD_MEM}%" >> $LOG_FILE
-fi
+# 3. GHL sync rate
+SYNCED=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE ghl_contact_id IS NOT NULL AND ghl_contact_id != '' AND status_key='active';" 2>/dev/null || echo '0')
+TOTAL_ACT=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE status_key='active';" 2>/dev/null || echo '1')
+RATE=$(echo "scale=0; $SYNCED * 100 / $TOTAL_ACT" | bc 2>/dev/null || echo '0')
+if [ "$RATE" -ge 100 ] 2>/dev/null; then S="PASS"; elif [ "$RATE" -ge 80 ] 2>/dev/null; then S="WARN"; else S="FAIL"; fi
+add_result "GHL Sync Rate" "${RATE}%" "100%" "$S"
 
-# 6. Recent Errors Check
-echo "[LOGS] Checking for recent errors..." >> $LOG_FILE
-ERROR_COUNT=$(pm2 logs gmh-dashboard --lines 100 --nostream 2>/dev/null | grep -i "error\|failed\|exception" | wc -l)
-echo "Recent errors in logs: ${ERROR_COUNT}" >> $LOG_FILE
-if [ "$ERROR_COUNT" -gt 10 ]; then
-  echo "⚠️  ALERT: High error count (${ERROR_COUNT}) in recent logs" >> $LOG_FILE
-fi
+# 4. Pending labs
+VAL=$($DB_CMD -c "SELECT COUNT(*) FROM lab_review_queue WHERE status='pending_review';" 2>/dev/null || echo '0')
+if [ "$VAL" -eq 0 ] 2>/dev/null; then S="PASS"; elif [ "$VAL" -le 5 ] 2>/dev/null; then S="WARN"; else S="FAIL"; fi
+add_result "Pending Lab Reviews" "$VAL" "0" "$S"
 
-# 7. ClinicSync Removal Verification (one-time check, will remove after confirmed)
-echo "[CLEANUP] Verifying ClinicSync removal..." >> $LOG_FILE
-CLINICSYNC_REF=$(grep -r "ClinicSync\|clinicsync" /home/ec2-user/gmhdashboard/app --include="*.ts" --include="*.tsx" 2>/dev/null | grep -v "removed\|deprecated\|DEPRECATED" | wc -l)
-echo "ClinicSync references (excluding deprecation comments): ${CLINICSYNC_REF}" >> $LOG_FILE
-if [ "$CLINICSYNC_REF" -gt 0 ]; then
-  echo "⚠️  WARNING: Found ${CLINICSYNC_REF} ClinicSync references still in code" >> $LOG_FILE
-fi
+# 5. Peptide zero stock
+VAL=$($DB_CMD -c "SELECT COUNT(*) FROM peptide_products pp LEFT JOIN (SELECT product_id, SUM(remaining_volume_ml) as total_stock FROM vials WHERE status='active' GROUP BY product_id) v ON pp.product_id=v.product_id WHERE pp.active=true AND (v.total_stock IS NULL OR v.total_stock <= 0);" 2>/dev/null || echo '0')
+if [ "$VAL" -eq 0 ] 2>/dev/null; then S="PASS"; elif [ "$VAL" -le 5 ] 2>/dev/null; then S="WARN"; else S="FAIL"; fi
+add_result "Peptide SKUs at Zero" "$VAL" "0" "$S"
 
-echo "Health check complete at $(date)" >> $LOG_FILE
-echo "" >> $LOG_FILE
+# 6. Disk usage
+DISK_PCT=$(df / | awk 'NR==2{gsub(/%/,""); print $5}')
+if [ "$DISK_PCT" -le 65 ] 2>/dev/null; then S="PASS"; elif [ "$DISK_PCT" -le 75 ] 2>/dev/null; then S="WARN"; else S="FAIL"; fi
+add_result "Disk Usage" "${DISK_PCT}%" "< 75%" "$S"
 
-# Return exit code based on critical alerts
-if grep -q "⚠️  ALERT:" $LOG_FILE | tail -50; then
-  exit 1
-else
-  exit 0
-fi
+# 7. Dashboard restarts
+DR=$(pm2 jlist 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));const s=d.find(x=>x.name==='gmh-dashboard');console.log(s?s.pm2_env.restart_time:0)" 2>/dev/null || echo '0')
+if [ "$DR" -le 5 ] 2>/dev/null; then S="PASS"; elif [ "$DR" -le 50 ] 2>/dev/null; then S="WARN"; else S="FAIL"; fi
+add_result "Dashboard Restarts" "$DR" "< 5" "$S"
+
+# 8. PM2 all online
+OFF=$(pm2 jlist 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.filter(s=>s.pm2_env.status!=='online').length)" 2>/dev/null || echo '0')
+if [ "$OFF" -eq 0 ] 2>/dev/null; then S="PASS"; else S="FAIL"; fi
+add_result "PM2 All Online" "$OFF offline" "0" "$S"
+
+# Build output
+cat > "$OUTPUT" << REPORTEOF
+# KPI Health Check
+
+**Run at**: $TIMESTAMP
+
+| Status | KPI | Current | Target |
+|---|---|---|---|
+$(echo -e "$RESULTS")
+
+---
+*Run: \`bash ~/gmhdashboard/scripts/health-check.sh\`*
+REPORTEOF
+
+echo ""
+echo "=== KPI HEALTH CHECK ($TIMESTAMP) ==="
+echo -e "$RESULTS"
+echo "Saved to $OUTPUT"

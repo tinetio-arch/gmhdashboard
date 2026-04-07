@@ -4546,3 +4546,572 @@ select.chart-data-input {
 .dosespot-fullscreen-body iframe {
   -webkit-overflow-scrolling: touch;
 }
+
+/* ============================================================
+   KIOSK MODE — Patient-facing form overlay (light theme)
+   ============================================================ */
+
+.kiosk-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: #f8fafc;
+  color: #1e293b;
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.kiosk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+
+.kiosk-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.kiosk-header-brand img {
+  height: 36px;
+  object-fit: contain;
+}
+
+.kiosk-lock-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.kiosk-lock-btn:active {
+  background: #e2e8f0;
+}
+
+.kiosk-body {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 24px;
+  overscroll-behavior: contain;
+}
+
+.kiosk-patient-banner {
+  text-align: center;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.kiosk-patient-name {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0c141d;
+  margin-bottom: 4px;
+}
+
+.kiosk-patient-subtitle {
+  font-size: 14px;
+  color: #64748b;
+}
+
+.kiosk-progress-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  margin-bottom: 20px;
+}
+
+.kiosk-progress-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  transition: background 0.3s;
+}
+
+.kiosk-progress-dot.completed {
+  background: #0891b2;
+}
+
+.kiosk-progress-dot.active {
+  background: #0891b2;
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.25);
+}
+
+.kiosk-progress-label {
+  font-size: 13px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+/* Form select screen */
+.kiosk-form-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.kiosk-form-card {
+  padding: 20px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 2px solid #e2e8f0;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.kiosk-form-card:active {
+  border-color: #0891b2;
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.15);
+}
+
+.kiosk-form-card.completed {
+  border-color: #10b981;
+  background: #f0fdf4;
+}
+
+.kiosk-form-card-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #0c141d;
+  margin-bottom: 4px;
+}
+
+.kiosk-form-card-status {
+  font-size: 13px;
+  color: #64748b;
+}
+
+/* Form fields */
+.kiosk-form-container {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.kiosk-form-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #0c141d;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.kiosk-form-desc {
+  font-size: 14px;
+  color: #64748b;
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.kiosk-field {
+  margin-bottom: 24px;
+}
+
+.kiosk-field-label {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 8px;
+}
+
+.kiosk-field-label.required::after {
+  content: " *";
+  color: #ef4444;
+}
+
+.kiosk-field-description {
+  font-size: 13px;
+  color: #64748b;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.kiosk-input {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 2px solid #e2e8f0;
+  background: #ffffff;
+  color: #1e293b;
+  font-size: 16px;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.2s;
+  -webkit-appearance: none;
+}
+
+.kiosk-input:focus {
+  border-color: #0891b2;
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.12);
+}
+
+.kiosk-input::placeholder {
+  color: #94a3b8;
+}
+
+textarea.kiosk-input {
+  resize: vertical;
+  min-height: 100px;
+}
+
+/* Radio / Checkbox groups */
+.kiosk-radio-group, .kiosk-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.kiosk-radio-option, .kiosk-checkbox-option {
+  padding: 12px 20px;
+  border-radius: 10px;
+  border: 2px solid #e2e8f0;
+  background: #ffffff;
+  color: #334155;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+  -webkit-user-select: none;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+}
+
+.kiosk-radio-option:active, .kiosk-checkbox-option:active {
+  transform: scale(0.98);
+}
+
+.kiosk-radio-option.selected, .kiosk-checkbox-option.selected {
+  border-color: #0891b2;
+  background: #ecfeff;
+  color: #0891b2;
+  font-weight: 600;
+}
+
+/* Signature pad */
+.kiosk-signature-wrapper {
+  border: 2px dashed #cbd5e1;
+  border-radius: 12px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.kiosk-signature-canvas {
+  width: 100%;
+  height: 180px;
+  border-radius: 8px;
+  background: #ffffff;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.kiosk-signature-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.kiosk-signature-clear {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.kiosk-signature-disclaimer {
+  font-size: 12px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* Submit button */
+.kiosk-submit-btn {
+  width: 100%;
+  padding: 18px;
+  border-radius: 12px;
+  border: none;
+  background: linear-gradient(135deg, #0891b2, #06b6d4);
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  margin-top: 24px;
+  transition: opacity 0.2s;
+}
+
+.kiosk-submit-btn:active {
+  opacity: 0.85;
+}
+
+.kiosk-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Confirmation screen */
+.kiosk-confirmation {
+  text-align: center;
+  padding: 60px 24px;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.kiosk-confirmation-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  animation: kioskCheckPop 0.5s ease-out;
+}
+
+@keyframes kioskCheckPop {
+  0% { transform: scale(0); opacity: 0; }
+  60% { transform: scale(1.2); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.kiosk-confirmation-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0c141d;
+  margin-bottom: 8px;
+}
+
+.kiosk-confirmation-timestamp {
+  font-size: 15px;
+  color: #64748b;
+  margin-bottom: 32px;
+}
+
+.kiosk-next-btn {
+  padding: 16px 40px;
+  border-radius: 12px;
+  border: none;
+  background: linear-gradient(135deg, #0891b2, #06b6d4);
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Return iPad screen */
+.kiosk-return-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 60px 24px;
+  flex: 1;
+}
+
+.kiosk-return-icon {
+  font-size: 80px;
+  margin-bottom: 20px;
+}
+
+.kiosk-return-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #0c141d;
+  margin-bottom: 8px;
+}
+
+.kiosk-return-subtitle {
+  font-size: 16px;
+  color: #64748b;
+}
+
+/* PIN unlock dialog */
+.kiosk-unlock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.kiosk-unlock-dialog {
+  width: 340px;
+  padding: 32px;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
+  text-align: center;
+}
+
+.kiosk-unlock-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0c141d;
+  margin-bottom: 4px;
+}
+
+.kiosk-unlock-subtitle {
+  font-size: 13px;
+  color: #64748b;
+  margin-bottom: 20px;
+}
+
+.kiosk-pin-input {
+  width: 180px;
+  padding: 14px;
+  border-radius: 10px;
+  border: 2px solid #e2e8f0;
+  background: #f8fafc;
+  color: #0c141d;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 12px;
+  text-align: center;
+  font-family: monospace;
+  outline: none;
+  -webkit-appearance: none;
+  margin: 0 auto;
+  display: block;
+}
+
+.kiosk-pin-input:focus {
+  border-color: #0891b2;
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.12);
+}
+
+.kiosk-pin-error {
+  color: #ef4444;
+  font-size: 13px;
+  font-weight: 500;
+  margin-top: 8px;
+  min-height: 20px;
+}
+
+.kiosk-unlock-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.kiosk-unlock-cancel {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.kiosk-unlock-submit {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #0891b2, #06b6d4);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Validation error on field */
+.kiosk-field-error {
+  color: #ef4444;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 4px;
+}
+
+.kiosk-input.error {
+  border-color: #ef4444;
+}
+
+/* Hand-to-patient button in chart panel */
+.kiosk-launch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(8, 145, 178, 0.3);
+  background: rgba(8, 145, 178, 0.1);
+  color: #0891b2;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+
+.kiosk-launch-btn:active {
+  background: rgba(8, 145, 178, 0.2);
+}
+
+.kiosk-launch-btn-large {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 20px;
+  margin: 12px 0;
+  border-radius: 10px;
+  border: 2px dashed rgba(8, 145, 178, 0.3);
+  background: rgba(8, 145, 178, 0.06);
+  color: #0891b2;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.kiosk-launch-btn-large:active {
+  background: rgba(8, 145, 178, 0.12);
+}
+
+.kiosk-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+}

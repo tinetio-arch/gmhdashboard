@@ -25,6 +25,7 @@ export default async function RootLayout({
     { label: 'Faxes', href: '/faxes' },
     { label: 'Supplies', href: '/supplies' },
     { label: 'Peptides', href: '/peptides' },
+    { label: 'Finance Audit', href: '/finance-audit' },
   ];
 
   const dispensingItems = user ? [

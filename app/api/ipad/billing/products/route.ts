@@ -5,11 +5,10 @@ import { query } from '@/lib/db';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
-  await requireApiUser(request, 'read');
-
-  const q = request.nextUrl.searchParams.get('q') || '';
-
   try {
+    await requireApiUser(request, 'read');
+
+    const q = request.nextUrl.searchParams.get('q') || '';
     const result = await query<{
       product_id: string;
       name: string;
@@ -40,6 +39,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ success: true, products: result });
   } catch (error: any) {
+    if (error?.status === 401 || error?.message === 'Unauthorized') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     console.error('[billing/products] Error:', error.message);
     return NextResponse.json({ success: false, error: 'Failed to fetch products' }, { status: 500 });
   }

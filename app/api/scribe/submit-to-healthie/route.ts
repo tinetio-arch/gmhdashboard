@@ -286,23 +286,25 @@ export async function POST(request: NextRequest) {
             }
         }
 
+        // FIX(2026-03-31): Hoist session/date vars so they're available to PDF, supplementary docs, AND vitals sections
+        // Previously these were scoped inside the PDF try-catch, causing "visitDateObj is not defined" in vitals
+        const [session] = await query<any>(
+            'SELECT ss.encounter_date, u.display_name as provider_name FROM scribe_sessions ss LEFT JOIN users u ON ss.created_by::text = u.user_id::text WHERE ss.session_id = $1',
+            [note.session_id]
+        );
+        const providerName = session?.provider_name || 'Phil Schafer, NP';
+        const encounterDateRaw = session?.encounter_date;
+        // encounter_date is a DATE column returned as 'YYYY-MM-DD' string
+        const visitDateObj = encounterDateRaw
+            ? new Date(encounterDateRaw + 'T12:00:00') // noon to avoid timezone shift
+            : new Date(note.created_at || Date.now());
+        const visitDate = visitDateObj.toLocaleDateString('en-US', {
+            year: 'numeric', month: 'long', day: 'numeric'
+        });
+
         // 5.5. Generate PDF and upload to Healthie as a document
         let pdfDocumentId: string | null = null;
         try {
-            // Use encounter_date from session if available, fallback to note.created_at
-            const [session] = await query<any>(
-                'SELECT ss.encounter_date, u.display_name as provider_name FROM scribe_sessions ss LEFT JOIN users u ON ss.created_by::text = u.user_id::text WHERE ss.session_id = $1',
-                [note.session_id]
-            );
-            const providerName = session?.provider_name || 'Phil Schafer, NP';
-            const encounterDateRaw = session?.encounter_date;
-            // encounter_date is a DATE column returned as 'YYYY-MM-DD' string
-            const visitDateObj = encounterDateRaw
-                ? new Date(encounterDateRaw + 'T12:00:00') // noon to avoid timezone shift
-                : new Date(note.created_at || Date.now());
-            const visitDate = visitDateObj.toLocaleDateString('en-US', {
-                year: 'numeric', month: 'long', day: 'numeric'
-            });
             const pdfBuffer = await generateSoapPdf({
                 patientName: patient.full_name || 'Unknown',
                 patientDob: patient.dob ? new Date(patient.dob).toLocaleDateString() : null,

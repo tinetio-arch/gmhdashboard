@@ -316,11 +316,11 @@ async function reactivatePatient(patientName: string, timestamp: string) {
     const noteEntry = `[${timestamp}] PAYMENT RECEIVED - Auto-reactivated from Hold - Payment Research.`;
 
     const result = await pool.query(`
-      UPDATE patients 
-      SET 
+      UPDATE patients
+      SET
         alert_status = 'Active',
         status_key = 'active',
-        notes = CASE 
+        notes = CASE
           WHEN notes IS NULL OR notes = '' THEN $1
           ELSE notes || E'\\n' || $1
         END,
@@ -329,6 +329,20 @@ async function reactivatePatient(patientName: string, timestamp: string) {
         AND status_key = 'hold_payment_research'
       RETURNING patient_id, full_name as patient_name
     `, [noteEntry, patientName]);
+
+    // FIX(2026-04-06): Audit log for script-based reactivation
+    if (result.rows.length > 0) {
+      try {
+        await pool.query(
+          `INSERT INTO patient_status_activity_log
+           (patient_id, previous_status, new_status, change_source, change_reason)
+           VALUES ($1, 'hold_payment_research', 'active', 'healthie_webhook_script', $2)`,
+          [result.rows[0].patient_id, noteEntry]
+        );
+      } catch (e) {
+        console.warn('[Healthie Webhooks] Failed to write audit log');
+      }
+    }
 
     await pool.end();
 

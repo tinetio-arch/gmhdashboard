@@ -155,62 +155,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // FIX(2026-04-06): QuickBooks is being phased out. QB data should NOT change patient status.
+    // Previously this block would put patients on hold_payment_research based on QB outstanding
+    // invoices — disabled because Healthie is now the source of truth for payment status.
+    // QB can still track financial records (payment_issues table) for reporting purposes.
     const holdsByPatient = new Map<string, string | null>();
-    for (const row of outstandingInvoices) {
-      if (!row.patient_id) continue;
-      const balance = Number(row.balance ?? 0);
-      const daysOverdue = Number(row.days_overdue ?? 0);
-      const currentStatus = row.status_key ?? null;
-
-      if ((balance >= 200 || daysOverdue >= 30) && (currentStatus ?? '').toLowerCase() !== 'hold_payment_research') {
-        if (!holdsByPatient.has(row.patient_id)) {
-          holdsByPatient.set(row.patient_id, currentStatus);
-        }
-      }
-    }
-
-    if (holdsByPatient.size > 0) {
-      const patientIds = Array.from(holdsByPatient.keys());
-      const previousStatuses = patientIds.map((id) => holdsByPatient.get(id) ?? 'unknown');
-      const modifiedBy = actingUser?.email ?? 'payment-check@system.internal';
-
-      await query(
-        `UPDATE patients
-            SET status_key = 'hold_payment_research',
-                last_modified = NOW(),
-                last_modified_by = $2
-          WHERE patient_id = ANY($1::uuid[])
-            AND status_key != 'hold_payment_research'`,
-        [patientIds, modifiedBy]
-      );
-
-      try {
-        await query(
-          `INSERT INTO patient_status_activity_log (
-              patient_id,
-              previous_status,
-              new_status,
-              changed_by_user_id,
-              change_reason,
-              created_at
-            )
-            SELECT UNNEST($1::uuid[]),
-                   UNNEST($2::text[]),
-                   'hold_payment_research',
-                   $3::uuid,
-                   'QuickBooks payment check - auto hold',
-                   NOW()`,
-          [patientIds, previousStatuses, actingUser?.user_id ?? null]
-        );
-      } catch (error: unknown) {
-        if ((error as { code?: string })?.code !== '42P01') {
-          throw error;
-        }
-        console.warn(
-          '[QuickBooks] patient_status_activity_log table missing when logging auto-hold transition; continuing.'
-        );
-      }
-    }
 
     const resolvedIssues = await query<{ issue_id: string }>(
       `UPDATE payment_issues pi
@@ -230,6 +179,28 @@ export async function POST(req: NextRequest) {
       [actingUser?.user_id ?? null]
     );
 
+    // FIX(2026-04-06): Auto-resolve payment issues for patients who are already active.
+    // Many issues come from Healthie (no qb_invoice_id) and were never auto-resolved.
+    const activeResolvedIssues = await query<{ issue_id: string }>(
+      `UPDATE payment_issues pi
+          SET resolved_at = NOW(),
+              resolved_by = CASE WHEN $1::uuid IS NOT NULL THEN $1::uuid ELSE resolved_by END,
+              resolution_notes = 'Auto-resolved — patient is active (payment succeeded)',
+              auto_updated = TRUE
+        WHERE pi.resolved_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM patients p
+             WHERE p.patient_id = pi.patient_id
+               AND p.status_key = 'active'
+          )
+        RETURNING pi.issue_id`,
+      [actingUser?.user_id ?? null]
+    );
+
+    if (activeResolvedIssues.length > 0) {
+      console.log(`[QuickBooks] Auto-resolved ${activeResolvedIssues.length} payment issues for active patients`);
+    }
+
     const stats = await getPaymentFailureStats();
 
     return NextResponse.json({
@@ -237,7 +208,9 @@ export async function POST(req: NextRequest) {
       summary: {
         outstandingInvoices: outstandingInvoices.length,
         issuesCreated: createdIssueCount,
-        issuesResolved: resolvedIssues.length,
+        issuesResolved: resolvedIssues.length + activeResolvedIssues.length,
+        issuesResolvedByQB: resolvedIssues.length,
+        issuesResolvedByActiveStatus: activeResolvedIssues.length,
         patientsPlacedOnHold: holdsByPatient.size,
       },
       stats,

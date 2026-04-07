@@ -271,10 +271,10 @@ async function reactivatePatient(patientId: string, patientName: string): Promis
 
     await dbQuery(`
     UPDATE patients
-    SET 
+    SET
       status_key = 'active',
       alert_status = 'Active',
-      notes = CASE 
+      notes = CASE
         WHEN notes IS NULL OR notes = '' THEN $2
         ELSE notes || E'\\n' || $2
       END,
@@ -282,6 +282,18 @@ async function reactivatePatient(patientId: string, patientName: string): Promis
     WHERE patient_id = $1
       AND status_key = 'hold_payment_research'
   `, [patientId, noteEntry]);
+
+    // FIX(2026-04-06): Audit log for sync-script reactivation
+    try {
+      await dbQuery(
+        `INSERT INTO patient_status_activity_log
+         (patient_id, previous_status, new_status, change_source, change_reason)
+         VALUES ($1, 'hold_payment_research', 'active', 'sync_healthie_failed_payments', $2)`,
+        [patientId, noteEntry]
+      );
+    } catch (e) {
+      console.warn('[Sync Failed Payments] Failed to write audit log');
+    }
 }
 
 async function main() {

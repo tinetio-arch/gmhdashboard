@@ -2,385 +2,337 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Video Call — GMH Ops</title>
+    <title>Video Call — GMH</title>
     <script src="https://static.opentok.com/v2/js/opentok.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        /*
+         * LAYOUT: Flex column fills viewport. No fixed positioning on body.
+         * Video area stretches, controls pinned to bottom via flex.
+         * This avoids iPad Safari's broken position:fixed behavior.
+         */
+        html {
+            height: 100%;
+            overflow: hidden;
+            background: #0C141D;
+        }
         body {
             background: #0C141D;
             color: #fff;
-            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'DM Sans', sans-serif;
+            /* Use multiple height fallbacks for iPad Safari */
             height: 100vh;
             height: 100dvh;
+            height: -webkit-fill-available;
+            max-height: 100vh;
+            max-height: 100dvh;
             overflow: hidden;
-            position: relative;
-        }
-
-        /* ─── Header ─── */
-        .video-header {
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            z-index: 10;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px 16px;
-            padding-top: max(8px, env(safe-area-inset-top));
-            background: linear-gradient(180deg, rgba(12,20,29,0.92) 0%, rgba(12,20,29,0.6) 70%, transparent 100%);
+            flex-direction: column;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
         }
-        .video-header .info { font-size: 13px; font-weight: 600; }
-        .video-header .info .patient-name { color: #00D4FF; }
-        .video-header .info .status { font-size: 10px; color: #94a3b8; margin-top: 1px; }
-        .video-header .timer { font-size: 16px; font-weight: 600; color: #60a5fa; font-variant-numeric: tabular-nums; }
+        /* Force recalc on iOS Safari resize (orientation change, toolbar show/hide) */
+        @supports (-webkit-touch-callout: none) {
+            body { min-height: -webkit-fill-available; }
+        }
 
-        /* ─── Video containers ─── */
+        /* ─── Video area: fills all space between top bar and controls ─── */
+        .video-area {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            min-height: 0;
+        }
         #subscriber {
             position: absolute;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
+            top: 0; left: 0; right: 0; bottom: 0;
             background: #111827;
         }
-        #subscriber video { object-fit: cover; }
+        #subscriber video { object-fit: cover; width: 100%; height: 100%; }
 
         #publisher {
             position: absolute;
-            top: 56px; right: 12px;
-            width: 140px; height: 105px;
-            border-radius: 10px;
+            top: 6px; right: 6px;
+            width: 110px; height: 82px;
+            border-radius: 8px;
             overflow: hidden;
-            border: 2px solid rgba(255,255,255,0.15);
+            border: 2px solid rgba(255,255,255,0.2);
             z-index: 5;
             background: #1e293b;
         }
-        #publisher video { object-fit: cover; }
+        #publisher video { object-fit: cover; width: 100%; height: 100%; }
 
-        /* ─── Controls bar — bottom, always visible ─── */
-        .controls {
+        /* Top bar overlays the video area */
+        .top-bar {
             position: absolute;
-            bottom: 0; left: 0; right: 0;
+            top: 0; left: 0; right: 120px;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 10px;
+            background: linear-gradient(180deg, rgba(0,0,0,0.7) 0%, transparent 100%);
+        }
+        .top-bar .info { font-size: 12px; font-weight: 600; }
+        .top-bar .patient-name { color: #00D4FF; }
+        .top-bar .status { font-size: 9px; color: #94a3b8; }
+        .top-bar .timer { font-size: 14px; font-weight: 600; color: #60a5fa; font-variant-numeric: tabular-nums; }
+
+        .scribe-banner {
+            position: absolute;
+            top: 28px; left: 50%;
+            transform: translateX(-50%);
+            z-index: 15;
+            display: none;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 10px;
+            background: rgba(239,68,68,0.25);
+            border: 1px solid rgba(239,68,68,0.5);
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: 600;
+            color: #f87171;
+        }
+        .scribe-banner.active { display: flex; }
+        .scribe-banner .dot {
+            width: 6px; height: 6px;
+            background: #ef4444;
+            border-radius: 50%;
+            animation: blink 1s ease-in-out infinite;
+        }
+        @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.2;} }
+
+        /* ─── Controls bar: flex-shrink:0 at bottom of body ─── */
+        .controls {
+            flex-shrink: 0;
             z-index: 10;
             display: flex;
             justify-content: center;
             align-items: center;
             gap: 12px;
-            padding: 12px 16px;
-            padding-bottom: max(12px, env(safe-area-inset-bottom));
-            background: linear-gradient(0deg, rgba(12,20,29,0.95) 0%, rgba(12,20,29,0.7) 70%, transparent 100%);
-            flex-wrap: wrap;
+            padding: 6px 12px;
+            padding-bottom: max(6px, env(safe-area-inset-bottom, 6px));
+            background: #0a0f18;
+            border-top: 1px solid rgba(255,255,255,0.08);
         }
         .ctrl-btn {
-            width: 48px; height: 48px;
+            width: 40px; height: 40px;
             border-radius: 50%;
             border: none;
             display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            cursor: pointer;
-            transition: transform 0.15s, opacity 0.15s;
-            position: relative;
-            flex-shrink: 0;
-        }
-        .ctrl-btn:active { transform: scale(0.9); }
-        .ctrl-btn .btn-label {
-            position: absolute;
-            bottom: -14px;
-            font-size: 8px;
-            color: #94a3b8;
-            white-space: nowrap;
-            font-weight: 500;
-        }
-        .ctrl-btn.default { background: rgba(255,255,255,0.12); color: #fff; }
-        .ctrl-btn.default.active { background: rgba(239,68,68,0.3); color: #f87171; }
-        .ctrl-btn.end { background: #ef4444; color: #fff; width: 52px; height: 52px; font-size: 22px; }
-        .ctrl-btn.scribe { background: rgba(34,197,94,0.2); color: #4ade80; }
-        .ctrl-btn.scribe.active { background: rgba(239,68,68,0.3); color: #f87171; animation: pulse-red 1.5s ease-in-out infinite; }
-        .ctrl-btn.chart { background: rgba(0,212,255,0.15); color: #00D4FF; }
-        .ctrl-btn.share { background: rgba(168,85,247,0.2); color: #c084fc; }
-        .ctrl-btn.share.active { background: rgba(168,85,247,0.4); color: #e9d5ff; }
-
-        @keyframes pulse-red {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); }
-            50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
-        }
-
-        /* ─── Scribe recording indicator ─── */
-        .scribe-indicator {
-            position: absolute;
-            top: 8px; left: 50%;
-            transform: translateX(-50%);
-            z-index: 15;
-            display: none;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 14px;
-            background: rgba(239,68,68,0.2);
-            border: 1px solid rgba(239,68,68,0.4);
-            border-radius: 20px;
-            font-size: 11px;
-            font-weight: 600;
-            color: #f87171;
-        }
-        .scribe-indicator.active { display: flex; }
-        .scribe-indicator .dot {
-            width: 8px; height: 8px;
-            background: #ef4444;
-            border-radius: 50%;
-            animation: pulse-dot 1s ease-in-out infinite;
-        }
-        @keyframes pulse-dot {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
-        }
-
-        /* ─── Chart drawer ─── */
-        .chart-drawer {
-            position: absolute;
-            top: 0; right: -400px;
-            width: 380px;
-            max-width: 85vw;
-            height: 100%;
-            background: #0f1923;
-            border-left: 1px solid rgba(255,255,255,0.1);
-            z-index: 20;
-            display: flex;
             flex-direction: column;
-            transition: right 0.3s ease;
-            overflow: hidden;
-        }
-        .chart-drawer.open { right: 0; }
-        .chart-drawer-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 10px 14px;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-            flex-shrink: 0;
-        }
-        .chart-drawer-header h3 { font-size: 14px; color: #00D4FF; margin: 0; }
-        .chart-drawer-close {
-            width: 28px; height: 28px;
-            border-radius: 6px;
-            background: rgba(239,68,68,0.2);
-            border: 1px solid rgba(239,68,68,0.3);
-            color: #f87171;
-            font-size: 14px;
-            cursor: pointer;
-            display: flex;
             align-items: center;
             justify-content: center;
+            font-size: 17px;
+            cursor: pointer;
+            flex-shrink: 0;
+            -webkit-tap-highlight-color: transparent;
         }
-        .chart-drawer-body {
-            flex: 1;
-            overflow-y: auto;
-            padding: 12px;
-            -webkit-overflow-scrolling: touch;
-        }
-        .chart-drawer-body .section {
-            margin-bottom: 14px;
-        }
-        .chart-drawer-body .section-title {
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: #64748b;
-            margin-bottom: 6px;
-            font-weight: 600;
-        }
-        .chart-drawer-body .card {
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.06);
-            border-radius: 8px;
-            padding: 10px;
-            font-size: 12px;
-            color: #cbd5e1;
-            line-height: 1.5;
-        }
-        .chart-drawer-body .med-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 4px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
-            font-size: 11px;
-        }
-        .chart-drawer-body .med-name { color: #e2e8f0; font-weight: 500; }
-        .chart-drawer-body .med-dose { color: #94a3b8; }
-        .chart-drawer-body .allergy-tag {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            background: rgba(239,68,68,0.15);
-            color: #f87171;
-            font-size: 10px;
-            margin: 2px 4px 2px 0;
-        }
-        .chart-drawer-body .vital-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 3px 0;
-            font-size: 11px;
-        }
-        .chart-drawer-body .note-card {
-            padding: 8px;
-            margin-bottom: 6px;
-            background: rgba(255,255,255,0.03);
-            border-radius: 6px;
-            border-left: 2px solid rgba(0,212,255,0.3);
-        }
-        .chart-drawer-body .note-date { font-size: 9px; color: #64748b; }
-        .chart-drawer-body .note-content { font-size: 11px; color: #94a3b8; margin-top: 2px; }
-        .chart-loading-small {
-            text-align: center;
-            padding: 30px;
-            color: #64748b;
-            font-size: 12px;
-        }
-        .chart-loading-small .spinner {
-            width: 24px; height: 24px;
-            border: 2px solid rgba(0,212,255,0.2);
-            border-top-color: #00D4FF;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 8px;
-        }
+        .ctrl-btn:active { opacity: 0.7; transform: scale(0.92); }
+        .ctrl-label { font-size: 8px; margin-top: 2px; color: #94a3b8; font-weight: 500; line-height: 1; }
+        .ctrl-btn.off { background: rgba(255,255,255,0.12); color: #fff; }
+        .ctrl-btn.off.active { background: rgba(239,68,68,0.35); color: #f87171; }
+        .ctrl-btn.end-call { background: #ef4444; color: #fff; width: 48px; height: 48px; font-size: 20px; }
+        .ctrl-btn.scribe-btn { background: rgba(34,197,94,0.25); color: #4ade80; }
+        .ctrl-btn.scribe-btn.active { background: rgba(239,68,68,0.35); color: #f87171; animation: pulse-ring 1.5s infinite; }
+        .ctrl-btn.chart-btn { background: rgba(0,212,255,0.18); color: #00D4FF; }
+        .ctrl-btn.share-btn { background: rgba(168,85,247,0.2); color: #c084fc; }
+        .ctrl-btn.share-btn.active { background: rgba(168,85,247,0.45); color: #e9d5ff; }
+        @keyframes pulse-ring { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4);} 50%{box-shadow:0 0 0 6px rgba(239,68,68,0);} }
 
-        /* ─── Waiting / Error states ─── */
-        .waiting {
+        /* ─── Waiting / Error (absolute within video-area) ─── */
+        .waiting, .error-state {
             position: absolute;
             top: 0; left: 0; right: 0; bottom: 0;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            z-index: 3;
+            z-index: 30;
             background: #0C141D;
         }
         .waiting .spinner {
-            width: 48px; height: 48px;
+            width: 40px; height: 40px;
             border: 3px solid rgba(0,212,255,0.2);
             border-top-color: #00D4FF;
             border-radius: 50%;
             animation: spin 1s linear infinite;
-            margin-bottom: 16px;
+            margin-bottom: 12px;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .waiting .msg { font-size: 14px; color: #94a3b8; }
-        .waiting .patient-label { font-size: 18px; font-weight: 700; color: #00D4FF; margin-bottom: 8px; }
+        .waiting .msg { font-size: 13px; color: #94a3b8; }
+        .waiting .patient-label { font-size: 17px; font-weight: 700; color: #00D4FF; margin-bottom: 6px; }
+        .error-state { display: none; }
+        .error-state .icon { font-size: 40px; margin-bottom: 10px; }
+        .error-state .title { font-size: 16px; font-weight: 700; color: #f87171; margin-bottom: 6px; }
+        .error-state .detail { font-size: 12px; color: #94a3b8; max-width: 360px; text-align: center; margin-bottom: 16px; }
+        .error-state button { padding: 8px 20px; border-radius: 8px; background: rgba(0,212,255,0.15); border: 1px solid rgba(0,212,255,0.3); color: #00D4FF; font-size: 13px; font-weight: 600; cursor: pointer; }
 
-        .error-state {
+        /* ─── Chart drawer (absolute within video-area) ─── */
+        .chart-drawer {
             position: absolute;
-            top: 0; left: 0; right: 0; bottom: 0;
+            top: 0; bottom: 0; right: 0;
+            width: 340px;
+            max-width: 80vw;
+            background: rgba(15,25,35,0.97);
+            border-left: 1px solid rgba(255,255,255,0.1);
+            z-index: 25;
             display: flex;
             flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            z-index: 20;
-            background: #0C141D;
+            transform: translateX(100%);
+            transition: transform 0.25s ease;
+            -webkit-backdrop-filter: blur(10px);
+            backdrop-filter: blur(10px);
         }
-        .error-state .icon { font-size: 48px; margin-bottom: 12px; }
-        .error-state .title { font-size: 18px; font-weight: 700; color: #f87171; margin-bottom: 8px; }
-        .error-state .detail { font-size: 13px; color: #94a3b8; max-width: 400px; text-align: center; margin-bottom: 20px; }
-        .error-state button { padding: 10px 24px; border-radius: 8px; background: rgba(0,212,255,0.15); border: 1px solid rgba(0,212,255,0.3); color: #00D4FF; font-size: 14px; font-weight: 600; cursor: pointer; }
+        .chart-drawer.open { transform: translateX(0); }
+        .chart-hdr {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            flex-shrink: 0;
+        }
+        .chart-hdr h3 { font-size: 13px; color: #00D4FF; margin: 0; font-weight: 600; }
+        .chart-close {
+            width: 26px; height: 26px; border-radius: 6px;
+            background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.3);
+            color: #f87171; font-size: 13px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .chart-body {
+            flex: 1; overflow-y: auto; padding: 10px;
+            -webkit-overflow-scrolling: touch;
+            font-size: 11px; color: #cbd5e1; line-height: 1.5;
+        }
+        .chart-body .sec { margin-bottom: 12px; }
+        .chart-body .sec-t { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; font-weight: 600; }
+        .chart-body .crd { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; padding: 8px; }
+        .chart-body .med-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .chart-body .al-tag { display: inline-block; padding: 1px 6px; border-radius: 3px; background: rgba(239,68,68,0.15); color: #f87171; font-size: 9px; margin: 1px 3px 1px 0; }
+        .chart-body .note-c { padding: 6px; margin-bottom: 4px; background: rgba(255,255,255,0.03); border-radius: 4px; border-left: 2px solid rgba(0,212,255,0.25); }
+        .chart-loading { text-align: center; padding: 24px; color: #64748b; font-size: 11px; }
+        .chart-loading .sp { width: 20px; height: 20px; border: 2px solid rgba(0,212,255,0.2); border-top-color: #00D4FF; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 6px; }
+
+        /* ─── Portrait: plenty of width, ensure controls fit ─── */
+        @media (orientation: portrait) {
+            .controls { padding: 8px 16px; gap: 14px; }
+            .ctrl-btn { width: 42px; height: 42px; font-size: 17px; }
+            .ctrl-btn.end-call { width: 46px; height: 46px; font-size: 19px; }
+            #publisher { width: 120px; height: 90px; }
+        }
+
+        /* ─── Landscape: even more compact ─── */
+        @media (orientation: landscape) {
+            .controls { padding: 4px 16px; gap: 16px; }
+            .ctrl-btn { width: 36px; height: 36px; font-size: 14px; }
+            .ctrl-btn.end-call { width: 40px; height: 40px; font-size: 16px; }
+            .ctrl-label { font-size: 7px; }
+            #publisher { width: 90px; height: 68px; top: 4px; right: 4px; }
+        }
+        @media (max-height: 440px) {
+            .controls { padding: 3px 16px; gap: 14px; }
+            .ctrl-btn { width: 32px; height: 32px; font-size: 13px; }
+            .ctrl-btn.end-call { width: 36px; height: 36px; font-size: 15px; }
+            .ctrl-label { display: none; }
+            #publisher { width: 70px; height: 52px; }
+        }
     </style>
 </head>
 <body>
-    <!-- Waiting state -->
-    <div class="waiting" id="waitingState">
-        <div class="spinner"></div>
-        <div class="patient-label" id="waitingPatient">Connecting...</div>
-        <div class="msg" id="waitingMsg">Initializing video session</div>
-    </div>
-
-    <!-- Error state (hidden) -->
-    <div class="error-state" id="errorState" style="display:none;">
-        <div class="icon">&#9888;</div>
-        <div class="title" id="errorTitle">Connection Error</div>
-        <div class="detail" id="errorDetail"></div>
-        <button onclick="window.close()">Close</button>
-    </div>
-
-    <!-- Video containers -->
-    <div id="subscriber"></div>
-    <div id="publisher"></div>
-
-    <!-- Scribe recording indicator (top center) -->
-    <div class="scribe-indicator" id="scribeIndicator">
-        <div class="dot"></div>
-        <span>Scribe Recording</span>
-        <span id="scribeTimer">00:00</span>
-    </div>
-
-    <!-- Header overlay -->
-    <div class="video-header" id="videoHeader" style="display:none;">
-        <div class="info">
-            <div><span class="patient-name" id="headerPatient"></span></div>
-            <div class="status" id="headerStatus">Connecting...</div>
+    <!-- Video area: fills flex space -->
+    <div class="video-area" id="videoArea">
+        <!-- Waiting -->
+        <div class="waiting" id="waitingState">
+            <div class="spinner"></div>
+            <div class="patient-label" id="waitingPatient">Connecting...</div>
+            <div class="msg" id="waitingMsg">Initializing video session</div>
         </div>
-        <div class="timer" id="callTimer">00:00</div>
-    </div>
 
-    <!-- Controls — compact, iPad-safe -->
-    <div class="controls" id="controls" style="display:none;">
-        <button class="ctrl-btn default" id="muteBtn" onclick="toggleMute()" title="Mute">
-            &#x1F50A;<span class="btn-label">Mute</span>
-        </button>
-        <button class="ctrl-btn default" id="videoBtn" onclick="toggleVideo()" title="Camera">
-            &#x1F4F7;<span class="btn-label">Camera</span>
-        </button>
-        <button class="ctrl-btn share" id="shareBtn" onclick="toggleScreenShare()" title="Share Screen">
-            &#x1F4BB;<span class="btn-label">Share</span>
-        </button>
-        <button class="ctrl-btn scribe" id="scribeBtn" onclick="toggleScribe()" title="Scribe">
-            &#x1F3A4;<span class="btn-label">Scribe</span>
-        </button>
-        <button class="ctrl-btn chart" id="chartBtn" onclick="toggleChart()" title="Chart">
-            &#x1F4CB;<span class="btn-label">Chart</span>
-        </button>
-        <button class="ctrl-btn end" id="endBtn" onclick="endCall()" title="End Call">
-            &#x1F4F5;<span class="btn-label" style="color:#fca5a5;">End</span>
-        </button>
-    </div>
-
-    <!-- Chart drawer (right side) -->
-    <div class="chart-drawer" id="chartDrawer">
-        <div class="chart-drawer-header">
-            <h3 id="chartDrawerTitle">Patient Chart</h3>
-            <button class="chart-drawer-close" onclick="toggleChart()">&#x2715;</button>
+        <!-- Error -->
+        <div class="error-state" id="errorState">
+            <div class="icon">&#9888;</div>
+            <div class="title" id="errorTitle">Connection Error</div>
+            <div class="detail" id="errorDetail"></div>
+            <button onclick="window.close()">Close</button>
         </div>
-        <div class="chart-drawer-body" id="chartDrawerBody">
-            <div class="chart-loading-small"><div class="spinner"></div>Loading chart...</div>
+        <div id="subscriber"></div>
+        <div id="publisher"></div>
+
+        <!-- Scribe banner overlays video -->
+        <div class="scribe-banner" id="scribeBanner">
+            <div class="dot"></div>
+            <span>SCRIBE REC</span>
+            <span id="scribeTimer">00:00</span>
+        </div>
+
+        <!-- Top bar overlays video -->
+        <div class="top-bar" id="topBar" style="display:none;">
+            <div class="info">
+                <span class="patient-name" id="headerPatient"></span>
+                <span class="status" id="headerStatus"> — Connecting</span>
+            </div>
+            <div class="timer" id="callTimer">00:00</div>
+        </div>
+    </div>
+
+        <!-- Chart drawer inside video-area (NOT inside controls) -->
+        <div class="chart-drawer" id="chartDrawer">
+            <div class="chart-hdr">
+                <h3 id="chartTitle">Patient Chart</h3>
+                <button class="chart-close" onclick="toggleChart()">&#x2715;</button>
+            </div>
+            <div class="chart-body" id="chartBody">
+                <div class="chart-loading"><div class="sp"></div>Loading...</div>
+            </div>
+        </div>
+    </div><!-- /video-area -->
+
+    <!-- Controls bar: ALWAYS visible, pinned to bottom via flex -->
+    <!-- FIX(2026-04-02): Controls show immediately so Chart/Scribe are accessible before patient connects -->
+    <div class="controls" id="controls">
+        <div style="text-align:center;">
+            <button class="ctrl-btn off" id="muteBtn" onclick="toggleMute()" disabled style="opacity:0.4;">&#x1F50A;</button>
+            <div class="ctrl-label">Mute</div>
+        </div>
+        <div style="text-align:center;">
+            <button class="ctrl-btn off" id="videoBtn" onclick="toggleVideo()" disabled style="opacity:0.4;">&#x1F4F7;</button>
+            <div class="ctrl-label">Camera</div>
+        </div>
+        <div style="text-align:center;">
+            <button class="ctrl-btn share-btn" id="shareBtn" onclick="toggleScreenShare()" disabled style="opacity:0.4;">&#x1F4BB;</button>
+            <div class="ctrl-label">Share</div>
+        </div>
+        <div style="text-align:center;">
+            <button class="ctrl-btn scribe-btn" id="scribeBtn" onclick="toggleScribe()">&#x1F3A4;</button>
+            <div class="ctrl-label" id="scribeLabel">Scribe</div>
+        </div>
+        <div style="text-align:center;">
+            <button class="ctrl-btn chart-btn" id="chartBtn" onclick="toggleChart()">&#x1F4CB;</button>
+            <div class="ctrl-label">Chart</div>
+        </div>
+        <div style="text-align:center;">
+            <button class="ctrl-btn end-call" id="endBtn" onclick="endCall()">&#x1F4F5;</button>
+            <div class="ctrl-label" style="color:#fca5a5;">End</div>
         </div>
     </div>
 
     <script>
         // ─── State ───
-        var session = null;
-        var publisher = null;
-        var subscriber = null;
-        var isMuted = false;
-        var isVideoOff = false;
-        var timerInterval = null;
-        var callStartTime = null;
-
-        // Scribe state
-        var scribeRecording = false;
-        var scribeMediaRecorder = null;
-        var scribeAudioChunks = [];
-        var scribeStream = null;
-        var scribeStartTime = null;
-        var scribeTimerInterval = null;
-        var scribeMimeType = '';
-
-        // Screen share state
-        var screenPublisher = null;
-        var isScreenSharing = false;
-
-        // Chart state
-        var chartOpen = false;
-        var chartDataLoaded = false;
+        var session = null, publisher = null, subscriber = null;
+        var isMuted = false, isVideoOff = false;
+        var timerInterval = null, callStartTime = null;
+        var scribeRecording = false, scribeMediaRecorder = null, scribeAudioChunks = [];
+        var scribeStream = null, scribeStartTime = null, scribeTimerInterval = null, scribeMimeType = '';
+        var screenPublisher = null, isScreenSharing = false;
+        var chartOpen = false, chartLoaded = false;
 
         // Parse URL params
         var params = new URLSearchParams(window.location.search);
@@ -388,9 +340,16 @@
         var patientName = decodeURIComponent(params.get('patient_name') || 'Patient');
         var patientId = params.get('patient_id') || '';
 
-        document.getElementById('waitingPatient').textContent = patientName;
+        // FIX(2026-03-31): Handle edge cases where patient_id might be literal "null", "undefined", or empty
+        if (!patientId || patientId === 'null' || patientId === 'undefined' || patientId === '') {
+            patientId = '';
+            console.warn('[Video] No patient_id in URL params. Scribe and chart will attempt lookup via appointment.');
+        }
 
-        // ─── Error / Show helpers ───
+        document.getElementById('waitingPatient').textContent = patientName;
+        console.log('[Video] Init — appt:', appointmentId, 'patient:', patientName, 'pid:', patientId || '(none)');
+
+        // ─── Helpers ───
         function showError(title, detail) {
             document.getElementById('waitingState').style.display = 'none';
             document.getElementById('errorState').style.display = 'flex';
@@ -400,180 +359,194 @@
 
         function showVideo() {
             document.getElementById('waitingState').style.display = 'none';
-            document.getElementById('videoHeader').style.display = 'flex';
-            document.getElementById('controls').style.display = 'flex';
+            document.getElementById('topBar').style.display = 'flex';
             document.getElementById('headerPatient').textContent = patientName;
+            // Enable video-dependent buttons now that session is connected
+            ['muteBtn', 'videoBtn', 'shareBtn'].forEach(function(id) {
+                var btn = document.getElementById(id);
+                if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+            });
         }
 
-        // ─── Call Timer ───
         function startTimer() {
             callStartTime = Date.now();
             timerInterval = setInterval(function() {
-                var elapsed = Math.floor((Date.now() - callStartTime) / 1000);
-                var min = String(Math.floor(elapsed / 60)).padStart(2, '0');
-                var sec = String(elapsed % 60).padStart(2, '0');
-                document.getElementById('callTimer').textContent = min + ':' + sec;
+                var s = Math.floor((Date.now() - callStartTime) / 1000);
+                document.getElementById('callTimer').textContent =
+                    String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
             }, 1000);
         }
 
-        // ═══════════════════════════════════════════
-        // CORE VIDEO CONTROLS (preserved from original)
-        // ═══════════════════════════════════════════
+        function setStatus(txt) { document.getElementById('headerStatus').textContent = ' — ' + txt; }
 
+        // ═══════════════════════════════════════
+        // CORE VIDEO CONTROLS
+        // ═══════════════════════════════════════
         function toggleMute() {
             if (!publisher) return;
             isMuted = !isMuted;
             publisher.publishAudio(!isMuted);
-            var btn = document.getElementById('muteBtn');
-            btn.classList.toggle('active', isMuted);
-            btn.innerHTML = (isMuted ? '&#x1F507;' : '&#x1F50A;') + '<span class="btn-label">' + (isMuted ? 'Unmute' : 'Mute') + '</span>';
+            var b = document.getElementById('muteBtn');
+            b.classList.toggle('active', isMuted);
+            b.innerHTML = isMuted ? '&#x1F507;' : '&#x1F50A;';
+            b.nextElementSibling.textContent = isMuted ? 'Unmute' : 'Mute';
         }
 
         function toggleVideo() {
             if (!publisher) return;
             isVideoOff = !isVideoOff;
             publisher.publishVideo(!isVideoOff);
-            var btn = document.getElementById('videoBtn');
-            btn.classList.toggle('active', isVideoOff);
-            btn.innerHTML = (isVideoOff ? '&#x1F6AB;' : '&#x1F4F7;') + '<span class="btn-label">' + (isVideoOff ? 'Cam Off' : 'Camera') + '</span>';
+            var b = document.getElementById('videoBtn');
+            b.classList.toggle('active', isVideoOff);
+            b.innerHTML = isVideoOff ? '&#x1F6AB;' : '&#x1F4F7;';
+            b.nextElementSibling.textContent = isVideoOff ? 'Cam Off' : 'Camera';
         }
 
         function endCall() {
-            // Stop scribe if recording
             if (scribeRecording) stopScribe();
-            // Stop screen share if active
             if (isScreenSharing) stopScreenShare();
-            // Stop call timer
             if (timerInterval) clearInterval(timerInterval);
-            // Disconnect Vonage session
             if (session) session.disconnect();
             window.close();
-            // Fallback if window.close() is blocked
-            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0C141D;color:#94a3b8;font-family:sans-serif;font-size:18px;">Call ended. You can close this window.</div>';
+            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;position:fixed;top:0;left:0;right:0;bottom:0;background:#0C141D;color:#94a3b8;font-size:16px;">Call ended. You can close this tab.</div>';
         }
 
-        // ═══════════════════════════════════════════
-        // SCREEN SHARING (Vonage OT.initPublisher with screen source)
-        // ═══════════════════════════════════════════
-
+        // ═══════════════════════════════════════
+        // SCREEN SHARING
+        // ═══════════════════════════════════════
         function toggleScreenShare() {
-            if (isScreenSharing) {
-                stopScreenShare();
-            } else {
-                startScreenShare();
-            }
+            isScreenSharing ? stopScreenShare() : startScreenShare();
         }
 
         function startScreenShare() {
             if (!session || isScreenSharing) return;
-
-            // Check browser support
-            if (!OT.checkScreenSharingCapability) {
-                // Fallback: try directly
-                doScreenShare();
-                return;
-            }
-
-            OT.checkScreenSharingCapability(function(response) {
-                if (!response.supported) {
-                    alert('Screen sharing is not supported in this browser.');
-                    return;
-                }
-                doScreenShare();
-            });
-        }
-
-        function doScreenShare() {
-            screenPublisher = OT.initPublisher('subscriber', {
-                insertMode: 'append',
-                width: '100%',
-                height: '100%',
+            screenPublisher = OT.initPublisher(null, {
                 videoSource: 'screen',
                 publishAudio: false,
                 maxResolution: { width: 1920, height: 1080 },
                 style: { buttonDisplayMode: 'off' }
             }, function(err) {
                 if (err) {
-                    console.error('[Video] Screen share init error:', err);
-                    // User cancelled the screen picker or permission denied
-                    if (err.code !== 1500) {
-                        alert('Screen share error: ' + err.message);
-                    }
+                    if (err.code !== 1500) console.error('[Video] Screen share error:', err);
                     screenPublisher = null;
                     return;
                 }
-
-                session.publish(screenPublisher, function(pubErr) {
-                    if (pubErr) {
-                        console.error('[Video] Screen share publish error:', pubErr);
-                        screenPublisher.destroy();
-                        screenPublisher = null;
-                        return;
-                    }
+                session.publish(screenPublisher, function(e2) {
+                    if (e2) { screenPublisher.destroy(); screenPublisher = null; return; }
                     isScreenSharing = true;
-                    var btn = document.getElementById('shareBtn');
-                    btn.classList.add('active');
-                    btn.innerHTML = '&#x1F4BB;<span class="btn-label">Stop Share</span>';
-                    document.getElementById('headerStatus').textContent = 'Sharing screen...';
+                    var b = document.getElementById('shareBtn');
+                    b.classList.add('active');
+                    b.parentElement.querySelector('.ctrl-label').textContent = 'Stop';
+                    setStatus('Sharing screen');
                 });
-
-                // Auto-stop when user stops sharing via browser UI
-                screenPublisher.on('mediaStopped', function() {
-                    stopScreenShare();
-                });
+                screenPublisher.on('mediaStopped', function() { stopScreenShare(); });
             });
         }
 
         function stopScreenShare() {
-            if (screenPublisher) {
-                session.unpublish(screenPublisher);
-                screenPublisher.destroy();
-                screenPublisher = null;
-            }
+            if (screenPublisher) { session.unpublish(screenPublisher); screenPublisher.destroy(); screenPublisher = null; }
             isScreenSharing = false;
-            var btn = document.getElementById('shareBtn');
-            btn.classList.remove('active');
-            btn.innerHTML = '&#x1F4BB;<span class="btn-label">Share</span>';
-            document.getElementById('headerStatus').textContent = 'Connected';
+            var b = document.getElementById('shareBtn');
+            b.classList.remove('active');
+            b.parentElement.querySelector('.ctrl-label').textContent = 'Share';
+            setStatus('Connected');
         }
 
-        // ═══════════════════════════════════════════
-        // SCRIBE RECORDING (captures iPad mic → uploads to scribe API)
-        // Uses same audio capture approach as the main scribe system
-        // ═══════════════════════════════════════════
-
+        // ═══════════════════════════════════════
+        // SCRIBE RECORDING
+        // Same audio capture as main iPad scribe system:
+        // getUserMedia → MediaRecorder → POST /ops/api/scribe/transcribe/
+        // ═══════════════════════════════════════
         function getRecordingMimeType() {
-            var candidates = [
-                'audio/webm;codecs=opus',
-                'audio/webm',
-                'audio/mp4;codecs=mp4a.40.2',
-                'audio/mp4',
-                'audio/ogg;codecs=opus',
-                'audio/wav'
-            ];
-            for (var i = 0; i < candidates.length; i++) {
-                try {
-                    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(candidates[i])) {
-                        return candidates[i];
-                    }
-                } catch (e) { /* skip */ }
+            var c = ['audio/webm;codecs=opus','audio/webm','audio/mp4;codecs=mp4a.40.2','audio/mp4','audio/ogg;codecs=opus','audio/wav'];
+            for (var i = 0; i < c.length; i++) {
+                try { if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c[i])) return c[i]; } catch(e) {}
             }
             return '';
         }
 
         function toggleScribe() {
-            if (scribeRecording) {
-                stopScribe();
-            } else {
-                startScribe();
+            // If in retry mode, re-attempt upload
+            if (window._scribeRetryMode && window._pendingBlob) {
+                window._scribeRetryMode = false;
+                var b = document.getElementById('scribeBtn');
+                b.classList.remove('active');
+                b.innerHTML = '&#x1F3A4;';
+                document.getElementById('scribeLabel').textContent = 'Scribe';
+                setStatus('Retrying upload...');
+                handleScribeComplete = null; // prevent double
+                // Re-upload
+                var blob = window._pendingBlob;
+                var sizeMB = (blob.size / (1024*1024)).toFixed(1);
+                setStatus('Retrying ' + sizeMB + 'MB upload...');
+                var fd = new FormData();
+                var fn = window._pendingFilename || 'retry-scribe.webm';
+                fd.append('audio', blob, fn);
+                fd.append('patient_id', patientId);
+                fd.append('visit_type', 'telehealth');
+                fd.append('patient_name', patientName);
+                fd.append('appointment_id', appointmentId);
+                fd.append('encounter_date', new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }));
+                fetch('/ops/api/scribe/transcribe/', { method: 'POST', body: fd, credentials: 'include' })
+                    .then(function(r) { if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+                    .then(function(data) {
+                        window._pendingBlob = null;
+                        if (data.success && data.data && (data.data.status === 'transcribing' || data.data.transcribe_job_name)) {
+                            setStatus('Uploaded! Transcribing...');
+                            startScribePoll(data.data.session_id);
+                        } else { setStatus('Uploaded!'); setTimeout(function(){setStatus('Connected');}, 4000); }
+                    })
+                    .catch(function(err) {
+                        setStatus('Retry failed: ' + err.message);
+                        window._scribeRetryMode = true;
+                        b.classList.add('active'); b.innerHTML='&#x26A0;';
+                        document.getElementById('scribeLabel').textContent = 'Retry';
+                    });
+                return;
             }
+            scribeRecording ? stopScribe() : startScribe();
         }
 
         async function startScribe() {
             if (scribeRecording) return;
+
+            // FIX(2026-03-31): If no patient_id from URL, try to resolve from appointment
             if (!patientId) {
-                alert('No patient ID available. Cannot start scribe recording.');
-                return;
+                try {
+                    setStatus('Looking up patient...');
+                    var resp = await fetch('/ops/api/ipad/patient?action=video_session&appointment_id=' + appointmentId, { credentials: 'include' });
+                    if (resp.ok) {
+                        var d = await resp.json();
+                        if (d.success && d.session) {
+                            // The video_session API returns appointment data which may have patient info
+                            // But we need the Healthie user ID — try to get it from the appointment attendees
+                            console.log('[VideoScribe] Got session data, checking for patient info');
+                        }
+                    }
+                } catch(e) { console.warn('[VideoScribe] Patient lookup failed:', e); }
+
+                // Also try to get patient ID from the schedule data
+                if (!patientId) {
+                    try {
+                        var todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+                        var schedResp = await fetch('/ops/api/ipad/schedule/?start_date=' + todayStr + '&end_date=' + todayStr, { credentials: 'include' });
+                        if (schedResp.ok) {
+                            var schedData = await schedResp.json();
+                            var match = (schedData.patients || []).find(function(p) { return p.appointment_id === appointmentId; });
+                            if (match) {
+                                patientId = match.patient_id || match.healthie_id || '';
+                                if (!patientName || patientName === 'Patient') patientName = match.full_name || patientName;
+                                console.log('[VideoScribe] Resolved patient from schedule:', patientId, patientName);
+                            }
+                        }
+                    } catch(e) { console.warn('[VideoScribe] Schedule lookup failed:', e); }
+                }
+
+                if (!patientId) {
+                    alert('Could not find patient ID for this appointment. Please start the scribe from the main Schedule tab instead.');
+                    setStatus('Connected');
+                    return;
+                }
             }
 
             try {
@@ -586,38 +559,29 @@
                 scribeMediaRecorder.ondataavailable = function(e) {
                     if (e.data && e.data.size > 0) scribeAudioChunks.push(e.data);
                 };
+                scribeMediaRecorder.onstop = handleScribeComplete;
+                scribeMediaRecorder.start(1000);
 
-                scribeMediaRecorder.onstop = function() {
-                    handleScribeComplete();
-                };
-
-                scribeMediaRecorder.start(1000); // 1-second chunks
                 scribeRecording = true;
                 scribeStartTime = Date.now();
 
-                // Update UI
-                var btn = document.getElementById('scribeBtn');
-                btn.classList.add('active');
-                btn.innerHTML = '&#x23F9;<span class="btn-label">Stop Scribe</span>';
-                document.getElementById('scribeIndicator').classList.add('active');
+                var b = document.getElementById('scribeBtn');
+                b.classList.add('active');
+                b.innerHTML = '&#x23F9;';
+                document.getElementById('scribeLabel').textContent = 'Stop';
+                document.getElementById('scribeBanner').classList.add('active');
 
-                // Start scribe timer
                 scribeTimerInterval = setInterval(function() {
-                    var elapsed = Math.floor((Date.now() - scribeStartTime) / 1000);
-                    var min = String(Math.floor(elapsed / 60)).padStart(2, '0');
-                    var sec = String(elapsed % 60).padStart(2, '0');
-                    document.getElementById('scribeTimer').textContent = min + ':' + sec;
-
-                    // Auto-stop at 60 minutes (same as main scribe)
-                    if (elapsed >= 3600) {
-                        stopScribe();
-                    }
+                    var s = Math.floor((Date.now() - scribeStartTime) / 1000);
+                    document.getElementById('scribeTimer').textContent =
+                        String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+                    if (s >= 3600) stopScribe(); // 60 min max
                 }, 1000);
 
                 console.log('[VideoScribe] Recording started, MIME:', scribeMimeType || 'default');
             } catch (err) {
-                console.error('[VideoScribe] Failed to start:', err);
-                alert('Could not access microphone for scribe: ' + err.message);
+                console.error('[VideoScribe] Start failed:', err);
+                alert('Microphone access failed: ' + err.message);
             }
         }
 
@@ -625,365 +589,519 @@
             if (!scribeRecording || !scribeMediaRecorder) return;
             scribeRecording = false;
             if (scribeTimerInterval) clearInterval(scribeTimerInterval);
+            if (scribeMediaRecorder.state !== 'inactive') scribeMediaRecorder.stop();
+            if (scribeStream) { scribeStream.getTracks().forEach(function(t){t.stop();}); scribeStream = null; }
 
-            // Stop MediaRecorder (triggers onstop → handleScribeComplete)
-            if (scribeMediaRecorder.state !== 'inactive') {
-                scribeMediaRecorder.stop();
-            }
-
-            // Release mic stream
-            if (scribeStream) {
-                scribeStream.getTracks().forEach(function(t) { t.stop(); });
-                scribeStream = null;
-            }
-
-            // Update UI immediately
-            var btn = document.getElementById('scribeBtn');
-            btn.classList.remove('active');
-            btn.innerHTML = '&#x1F3A4;<span class="btn-label">Scribe</span>';
-            document.getElementById('scribeIndicator').classList.remove('active');
-            document.getElementById('headerStatus').textContent = 'Uploading scribe...';
+            var b = document.getElementById('scribeBtn');
+            b.classList.remove('active');
+            b.innerHTML = '&#x1F3A4;';
+            document.getElementById('scribeLabel').textContent = 'Scribe';
+            document.getElementById('scribeBanner').classList.remove('active');
+            setStatus('Uploading scribe...');
         }
 
         async function handleScribeComplete() {
-            if (scribeAudioChunks.length === 0) {
-                console.warn('[VideoScribe] No audio chunks captured');
-                document.getElementById('headerStatus').textContent = 'Connected';
-                return;
-            }
+            if (scribeAudioChunks.length === 0) { setStatus('Connected'); return; }
 
-            var mimeForBlob = scribeMimeType || 'audio/webm';
-            var blob = new Blob(scribeAudioChunks, { type: mimeForBlob });
+            var mime = scribeMimeType || 'audio/webm';
+            var blob = new Blob(scribeAudioChunks, { type: mime });
             scribeAudioChunks = [];
+            var sizeMB = (blob.size / (1024*1024)).toFixed(1);
+            console.log('[VideoScribe] Blob:', blob.size, 'bytes (' + sizeMB + 'MB)');
+            setStatus('Uploading ' + sizeMB + 'MB audio...');
 
-            console.log('[VideoScribe] Audio blob:', blob.size, 'bytes, type:', mimeForBlob);
-
-            // Determine file extension
             var ext = 'webm';
-            if (mimeForBlob.includes('mp4') || mimeForBlob.includes('m4a')) ext = 'mp4';
-            else if (mimeForBlob.includes('ogg')) ext = 'ogg';
-            else if (mimeForBlob.includes('wav')) ext = 'wav';
-
+            if (mime.includes('mp4') || mime.includes('m4a')) ext = 'mp4';
+            else if (mime.includes('ogg')) ext = 'ogg';
+            else if (mime.includes('wav')) ext = 'wav';
             var filename = 'video-scribe-' + Date.now() + '.' + ext;
 
-            // Build FormData — same format as main scribe system
-            var formData = new FormData();
-            formData.append('audio', blob, filename);
-            formData.append('patient_id', patientId);
-            formData.append('visit_type', 'telehealth');
-            formData.append('patient_name', patientName);
-            formData.append('appointment_id', appointmentId);
-            formData.append('encounter_date', new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }));
+            // Save for retry (same pattern as main scribe)
+            window._pendingBlob = blob;
+            window._pendingFilename = filename;
+
+            var fd = new FormData();
+            fd.append('audio', blob, filename);
+            fd.append('patient_id', patientId);
+            fd.append('visit_type', 'telehealth');
+            fd.append('patient_name', patientName);
+            fd.append('appointment_id', appointmentId);
+            fd.append('encounter_date', new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }));
 
             try {
-                var resp = await fetch('/ops/api/scribe/transcribe/', {
-                    method: 'POST',
-                    body: formData,
-                    credentials: 'include'
-                });
-
-                if (!resp.ok) {
-                    var errData = await resp.json().catch(function() { return {}; });
-                    throw new Error(errData.error || 'HTTP ' + resp.status);
-                }
-
+                var resp = await fetch('/ops/api/scribe/transcribe/', { method: 'POST', body: fd, credentials: 'include' });
+                if (!resp.ok) { var e = await resp.json().catch(function(){return {};}); throw new Error(e.error || 'HTTP ' + resp.status); }
                 var data = await resp.json();
-                console.log('[VideoScribe] Upload success:', data);
-                document.getElementById('headerStatus').textContent = 'Scribe uploaded - transcribing...';
+                console.log('[VideoScribe] Upload OK:', data);
 
-                // Show success with session link
-                setTimeout(function() {
-                    document.getElementById('headerStatus').textContent = 'Connected';
-                }, 5000);
+                // Clear backup on success
+                window._pendingBlob = null;
+
+                if (data.success && data.data) {
+                    var sid = data.data.session_id;
+                    if (data.data.status === 'transcribing' || data.data.transcribe_job_name) {
+                        // Start polling — same as main scribe system
+                        setStatus('Uploaded! Transcribing in background...');
+                        startScribePoll(sid);
+                    } else if (data.data.status === 'transcribed') {
+                        setStatus('Transcribed! Open Scribe tab to review.');
+                        setTimeout(function() { setStatus('Connected'); }, 6000);
+                    }
+                }
             } catch (err) {
                 console.error('[VideoScribe] Upload failed:', err);
-                document.getElementById('headerStatus').textContent = 'Scribe upload failed!';
+                setStatus('UPLOAD FAILED — tap Scribe to retry');
 
-                // Store blob for manual download recovery
-                window._pendingScribeBlob = blob;
-                window._pendingScribeFilename = filename;
+                // Show retry/download options
+                var b = document.getElementById('scribeBtn');
+                b.classList.add('active');
+                b.innerHTML = '&#x26A0;';
+                document.getElementById('scribeLabel').textContent = 'Retry';
 
-                setTimeout(function() {
-                    if (confirm('Scribe upload failed: ' + err.message + '\n\nDownload the audio file to save it?')) {
-                        downloadPendingScribe();
+                // Override scribe button to retry
+                window._scribeRetryMode = true;
+            }
+        }
+
+        // Background poll for transcription (matches main scribe: 5s interval, 60 max attempts)
+        var _scribePollInterval = null;
+        var _scribePollAttempts = 0;
+
+        function startScribePoll(sessionId) {
+            if (_scribePollInterval) clearInterval(_scribePollInterval);
+            _scribePollAttempts = 0;
+
+            _scribePollInterval = setInterval(async function() {
+                _scribePollAttempts++;
+                try {
+                    var resp = await fetch('/ops/api/scribe/transcribe?session_id=' + sessionId, { credentials: 'include' });
+                    if (!resp.ok) return;
+                    var data = await resp.json();
+
+                    if (data.success && data.data) {
+                        if (data.data.status === 'transcribed') {
+                            clearInterval(_scribePollInterval);
+                            _scribePollInterval = null;
+                            var chars = data.data.transcript_length || 0;
+                            setStatus('Transcription complete! (' + chars + ' chars) — check Scribe tab');
+                            console.log('[VideoScribe] Transcription complete:', chars, 'chars');
+                            setTimeout(function() { setStatus('Connected'); }, 8000);
+                        } else if (data.data.status === 'error') {
+                            clearInterval(_scribePollInterval);
+                            _scribePollInterval = null;
+                            setStatus('Transcription failed — check Scribe tab');
+                            setTimeout(function() { setStatus('Connected'); }, 8000);
+                        }
+                        // else still transcribing, keep polling
                     }
-                    document.getElementById('headerStatus').textContent = 'Connected';
-                }, 500);
-            }
+                } catch(e) { console.warn('[VideoScribe] Poll error:', e); }
+
+                if (_scribePollAttempts >= 60) {
+                    clearInterval(_scribePollInterval);
+                    _scribePollInterval = null;
+                    setStatus('Transcription still processing — check Scribe tab later');
+                    setTimeout(function() { setStatus('Connected'); }, 6000);
+                }
+            }, 5000);
         }
 
-        function downloadPendingScribe() {
-            var blob = window._pendingScribeBlob;
-            var filename = window._pendingScribeFilename || 'scribe-backup.webm';
-            if (!blob) return;
-            var url = URL.createObjectURL(blob);
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.click();
-            URL.revokeObjectURL(url);
-        }
-
-        // ═══════════════════════════════════════════
+        // ═══════════════════════════════════════
         // PATIENT CHART DRAWER
-        // ═══════════════════════════════════════════
-
+        // ═══════════════════════════════════════
         function toggleChart() {
-            var drawer = document.getElementById('chartDrawer');
             chartOpen = !chartOpen;
-            drawer.classList.toggle('open', chartOpen);
-
-            if (chartOpen && !chartDataLoaded) {
-                loadChartData();
-            }
+            document.getElementById('chartDrawer').classList.toggle('open', chartOpen);
+            if (chartOpen && !chartLoaded) loadChart();
         }
 
-        async function loadChartData() {
-            if (!patientId) {
-                document.getElementById('chartDrawerBody').innerHTML = '<div class="chart-loading-small">No patient ID available</div>';
+        async function loadChart() {
+            var pid = patientId;
+            // If no patient_id, try to resolve from schedule like scribe does
+            if (!pid) {
+                try {
+                    var todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+                    var r = await fetch('/ops/api/ipad/schedule/?start_date=' + todayStr + '&end_date=' + todayStr, { credentials: 'include' });
+                    if (r.ok) {
+                        var sd = await r.json();
+                        var m = (sd.patients || []).find(function(p) { return p.appointment_id === appointmentId; });
+                        if (m) { pid = m.patient_id || m.healthie_id || ''; patientId = pid; }
+                    }
+                } catch(e) {}
+            }
+            if (!pid) {
+                document.getElementById('chartBody').innerHTML = '<div class="chart-loading">No patient ID available</div>';
                 return;
             }
 
-            document.getElementById('chartDrawerTitle').textContent = patientName;
-            document.getElementById('chartDrawerBody').innerHTML = '<div class="chart-loading-small"><div class="spinner"></div>Loading chart...</div>';
+            document.getElementById('chartTitle').textContent = patientName;
+            document.getElementById('chartBody').innerHTML = '<div class="chart-loading"><div class="sp"></div>Loading...</div>';
 
             try {
-                var resp = await fetch('/ops/api/ipad/patient-chart/?patient_id=' + encodeURIComponent(patientId), { credentials: 'include' });
+                var resp = await fetch('/ops/api/ipad/patient-chart/?patient_id=' + encodeURIComponent(pid), { credentials: 'include' });
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 var data = await resp.json();
-                if (!data.success) throw new Error(data.error || 'Failed to load chart');
-
-                chartDataLoaded = true;
+                if (!data.success) throw new Error(data.error || 'Failed');
+                chartLoaded = true;
                 renderChart(data.data);
             } catch (err) {
-                console.error('[VideoChart] Load error:', err);
-                document.getElementById('chartDrawerBody').innerHTML =
-                    '<div class="chart-loading-small">Failed to load chart: ' + err.message +
-                    '<br><button onclick="chartDataLoaded=false; loadChartData()" style="margin-top:8px; padding:6px 12px; border-radius:6px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); color:#00D4FF; cursor:pointer;">Retry</button></div>';
+                document.getElementById('chartBody').innerHTML = '<div class="chart-loading">Error: ' + esc(err.message) + '<br><button onclick="chartLoaded=false;loadChart()" style="margin-top:6px;padding:4px 12px;border-radius:6px;background:rgba(0,212,255,0.15);border:1px solid rgba(0,212,255,0.3);color:#00D4FF;cursor:pointer;font-size:11px;">Retry</button></div>';
             }
+        }
+
+        // ─── Date helpers (same as main iPad app) ───
+        function fmtDate(dateStr) {
+            if (!dateStr) return '';
+            try {
+                var raw = String(dateStr);
+                // Parse date-only strings as noon UTC to avoid Arizona day-boundary shift
+                var d = raw.match(/^\d{4}-\d{2}-\d{2}$/) ? new Date(raw + 'T12:00:00Z') : new Date(raw);
+                if (isNaN(d.getTime())) return dateStr;
+                return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric', timeZone: 'America/Phoenix' }).replace(/\//g, '-');
+            } catch(e) { return dateStr; }
+        }
+        function fmtDateShort(dateStr) {
+            if (!dateStr) return '';
+            try {
+                var raw = String(dateStr);
+                var d = raw.match(/^\d{4}-\d{2}-\d{2}$/) ? new Date(raw + 'T12:00:00Z') : new Date(raw);
+                if (isNaN(d.getTime())) return '';
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Phoenix' });
+            } catch(e) { return ''; }
+        }
+        function calcAge(dob) {
+            if (!dob) return '';
+            try {
+                var d = new Date(dob + 'T12:00:00Z');
+                var now = new Date();
+                var age = now.getFullYear() - d.getFullYear();
+                var m = now.getMonth() - d.getMonth();
+                if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+                return age;
+            } catch(e) { return ''; }
+        }
+
+        // ─── Vital helpers (same logic as main iPad app) ───
+        function fmtVitalVal(val) {
+            if (val == null) return '—';
+            var s = String(val);
+            s = s.replace(/\s*(bpm|mmhg|°f|breaths\/min|%|lbs|in|mg\/dl)\s*$/i, '');
+            if (/^\d+\.0$/.test(s)) s = s.replace('.0', '');
+            return s || '—';
+        }
+        function vitalUnit(cat, desc) {
+            var c = (cat||'').toLowerCase(), d = (desc||'');
+            if (c.includes('blood pressure') || c==='bp') return 'mmHg';
+            if (c.includes('heart rate') || c==='pulse' || c==='hr') return 'bpm';
+            if (c.includes('respiration') || c==='rr') return '/min';
+            if (c.includes('temperature') || c==='temp') return '°F';
+            if (c.includes('oxygen') || c.includes('spo2')) return '% RA';
+            if (c==='weight') return 'lbs';
+            if (c==='height') return 'in';
+            return '';
+        }
+        function vitalOOR(cat, val) {
+            if (!cat || !val) return false;
+            var c = (cat||'').toLowerCase();
+            var v = String(val);
+            if (c.includes('blood pressure') || c==='bp') {
+                var m = v.match(/(\d+)\s*\/\s*(\d+)/);
+                if (m) { var s=parseInt(m[1]),d=parseInt(m[2]); return s>140||s<90||d>90||d<60; }
+                return false;
+            }
+            var n = parseFloat(v); if (isNaN(n)) return false;
+            if (c.includes('heart rate')||c==='pulse'||c==='hr') return n>100||n<60;
+            if (c.includes('temperature')||c==='temp') return n>100.4||n<96.0;
+            if (c.includes('oxygen')||c.includes('spo2')) return n<94;
+            return false;
         }
 
         function renderChart(d) {
-            var body = document.getElementById('chartDrawerBody');
-            var html = '';
+            var h = '', demo = d.demographics || {};
 
-            // Demographics
-            var demo = d.demographics || {};
-            html += '<div class="section">';
-            html += '<div class="section-title">Demographics</div>';
-            html += '<div class="card">';
-            html += '<div style="font-weight:600; color:#e2e8f0; margin-bottom:4px;">' + esc(demo.full_name || patientName) + '</div>';
-            if (demo.dob) html += '<div>DOB: ' + esc(demo.dob) + '</div>';
-            if (demo.email) html += '<div>' + esc(demo.email) + '</div>';
-            if (demo.phone) html += '<div>' + esc(demo.phone) + '</div>';
-            if (demo.group_name) html += '<div>Group: <span style="color:#00D4FF;">' + esc(demo.group_name) + '</span></div>';
-            html += '</div></div>';
-
-            // Allergies
-            var allergies = d.allergies || [];
-            if (allergies.length > 0) {
-                html += '<div class="section">';
-                html += '<div class="section-title">Allergies</div>';
-                html += '<div class="card">';
-                allergies.forEach(function(a) {
-                    html += '<span class="allergy-tag">' + esc(a.name || a) + '</span>';
-                });
-                html += '</div></div>';
+            // ─── Demographics (matches main chart format) ───
+            h += '<div class="sec"><div class="sec-t">Patient Info</div><div class="crd">';
+            h += '<div style="font-weight:600;color:#e2e8f0;font-size:13px;margin-bottom:2px;">' + esc(demo.full_name || patientName) + '</div>';
+            var infoParts = [];
+            if (demo.dob) {
+                var dobDisplay = fmtDate(demo.dob);
+                var age = calcAge(demo.dob);
+                infoParts.push('DOB: ' + esc(dobDisplay) + (age ? ' (' + age + 'yo)' : ''));
             }
+            if (demo.gender) infoParts.push(esc(demo.gender));
+            if (demo.pronouns) infoParts.push(esc(demo.pronouns));
+            if (infoParts.length) h += '<div style="font-size:10px;color:#94a3b8;">' + infoParts.join(' · ') + '</div>';
+            var contactParts = [];
+            if (demo.phone_primary || demo.phone) contactParts.push(esc(demo.phone_primary || demo.phone));
+            if (demo.email) contactParts.push(esc(demo.email));
+            if (contactParts.length) h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + contactParts.join(' · ') + '</div>';
+            if (demo.user_group || demo.group_name) h += '<div style="font-size:10px;margin-top:2px;">Group: <span style="color:#00D4FF;">' + esc(demo.user_group || demo.group_name) + '</span></div>';
+            if (demo.height || demo.weight) {
+                var hw = [];
+                if (demo.height) hw.push('Ht: ' + esc(demo.height));
+                if (demo.weight) hw.push('Wt: ' + esc(demo.weight));
+                h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + hw.join(' · ') + '</div>';
+            }
+            h += '</div></div>';
 
-            // Medications
+            // ─── Allergies (match main app: NKDA badge, severity colors) ───
+            var al = d.allergies || [];
+            h += '<div class="sec"><div class="sec-t">Allergies</div>';
+            if (al.length > 0) {
+                h += '<div style="display:flex;flex-wrap:wrap;gap:3px;">';
+                al.forEach(function(a) {
+                    if (a.is_nkda) {
+                        h += '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid rgba(34,197,94,0.2);">NKDA</span>';
+                    } else {
+                        var sev = (a.severity||'').toLowerCase();
+                        var sc = sev==='severe' ? '#ef4444' : sev==='moderate' ? '#f59e0b' : '#f87171';
+                        h += '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:rgba(239,68,68,0.12);color:'+sc+';border:1px solid rgba(239,68,68,0.2);">' + esc(a.name||'Unknown') + (a.severity ? ' ('+esc(a.severity)+')' : '') + '</span>';
+                    }
+                });
+                h += '</div>';
+            } else {
+                h += '<div style="font-size:10px;color:#64748b;font-style:italic;">No allergies documented</div>';
+            }
+            h += '</div>';
+
+            // ─── Medications ───
             var meds = d.medications || [];
-            if (meds.length > 0) {
-                html += '<div class="section">';
-                html += '<div class="section-title">Medications (' + meds.length + ')</div>';
-                html += '<div class="card">';
-                meds.slice(0, 15).forEach(function(m) {
-                    html += '<div class="med-item">';
-                    html += '<span class="med-name">' + esc(m.name || m.drug_name || '') + '</span>';
-                    html += '<span class="med-dose">' + esc(m.dosage || m.strength || '') + '</span>';
-                    html += '</div>';
+            if (meds.length) {
+                h += '<div class="sec"><div class="sec-t">Medications (' + meds.length + ')</div><div class="crd" style="padding:6px;">';
+                meds.slice(0,10).forEach(function(m) {
+                    var name = esc(m.name||m.drug_name||'');
+                    var dose = esc(m.dosage||m.strength||'');
+                    var freq = esc(m.frequency||m.directions||'');
+                    h += '<div style="padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:10px;">';
+                    h += '<span style="color:#e2e8f0;font-weight:500;">' + name + '</span>';
+                    if (dose) h += ' <span style="color:#94a3b8;">' + dose + '</span>';
+                    if (freq) h += '<div style="color:#64748b;font-size:9px;">' + freq + '</div>';
+                    h += '</div>';
                 });
-                if (meds.length > 15) html += '<div style="font-size:10px; color:#64748b; padding-top:4px;">+' + (meds.length - 15) + ' more</div>';
-                html += '</div></div>';
+                if (meds.length > 10) h += '<div style="font-size:9px;color:#64748b;padding-top:3px;">+' + (meds.length-10) + ' more</div>';
+                h += '</div></div>';
             }
 
-            // Vitals
-            var vitals = d.vitals || [];
-            if (vitals.length > 0) {
-                html += '<div class="section">';
-                html += '<div class="section-title">Recent Vitals</div>';
-                html += '<div class="card">';
-                vitals.slice(0, 8).forEach(function(v) {
-                    html += '<div class="vital-row">';
-                    html += '<span style="color:#94a3b8;">' + esc(v.metric_stat || v.category || '') + '</span>';
-                    html += '<span style="color:#e2e8f0; font-weight:500;">' + esc(String(v.value || v.answer || '')) + '</span>';
-                    html += '</div>';
+            // ─── Vitals (match main app: grid, BP merge, out-of-range, units) ───
+            var vit = d.vitals || [];
+            // Clean values
+            vit.forEach(function(v) {
+                if (v.metric_stat != null) {
+                    var s = String(v.metric_stat);
+                    s = s.replace(/\s*(bpm|mmhg|°f|breaths\/min|%|lbs|in|mg\/dl)\s*$/i, '');
+                    if (/^\d+\.0$/.test(s)) s = s.replace('.0', '');
+                    v.metric_stat = s;
+                }
+            });
+            // Dedupe
+            var seen = {}, deduped = [];
+            vit.forEach(function(v) {
+                var cat = (v.category||'').toLowerCase();
+                var val = String(v.metric_stat||'');
+                var ts = v.created_at ? new Date(v.created_at).getTime() : 0;
+                var key = cat + '_' + val + '_' + Math.floor(ts/300000);
+                if (!seen[key]) { seen[key] = true; deduped.push(v); }
+            });
+            // Merge BP
+            var merged = [], bpSys = {}, bpDia = {}, bpUsed = {};
+            deduped.forEach(function(v) {
+                var cat = (v.category||'').toLowerCase();
+                var ts = v.created_at ? new Date(v.created_at).getTime() : 0;
+                var b = Math.floor(ts/300000);
+                if (cat.includes('systolic') || (cat==='blood pressure' && !cat.includes('diastolic'))) { if (!bpSys[b]) bpSys[b] = v; }
+                else if (cat.includes('diastolic')) { if (!bpDia[b]) bpDia[b] = v; }
+            });
+            deduped.forEach(function(v) {
+                var cat = (v.category||'').toLowerCase();
+                if (cat.includes('systolic') || (cat==='blood pressure' && !cat.includes('diastolic'))) {
+                    if (bpUsed[v.id]) return;
+                    var ts = v.created_at ? new Date(v.created_at).getTime() : 0;
+                    var b = Math.floor(ts/300000), dia = bpDia[b];
+                    var sv = Math.round(parseFloat(v.metric_stat));
+                    var dv = dia ? Math.round(parseFloat(dia.metric_stat)) : null;
+                    merged.push({ category:'Blood Pressure', metric_stat: dv ? sv+'/'+dv : ''+sv, created_at: v.created_at, created_by: v.created_by, description: v.description });
+                    bpUsed[v.id] = true; if (dia) bpUsed[dia.id] = true;
+                } else if (cat.includes('diastolic')) {
+                    bpUsed[v.id] = true;
+                } else {
+                    merged.push(v);
+                }
+            });
+            var recent = merged.slice(0, 8);
+            if (recent.length) {
+                h += '<div class="sec"><div class="sec-t">Last Vitals</div>';
+                h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:4px;">';
+                recent.forEach(function(v) {
+                    var oor = vitalOOR(v.category, v.metric_stat);
+                    var bg = oor ? 'background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);' : 'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);';
+                    var vc = oor ? 'color:#f87171;font-weight:700;' : 'color:#e2e8f0;font-weight:600;';
+                    var dt = fmtDateShort(v.created_at);
+                    var by = v.created_by ? (v.created_by.full_name||v.created_by.email||'').split('@')[0] : '';
+                    h += '<div style="font-size:10px;padding:4px 6px;border-radius:6px;' + bg + '">';
+                    h += '<div style="color:#64748b;font-size:8px;text-transform:uppercase;">' + esc(v.category||'?') + (oor?' ⚠️':'') + '</div>';
+                    h += '<div style="' + vc + 'font-size:13px;">' + esc(fmtVitalVal(v.metric_stat)) + ' <span style="font-weight:400;font-size:8px;color:#64748b;">' + vitalUnit(v.category,v.description) + '</span></div>';
+                    if (dt) h += '<div style="color:#64748b;font-size:8px;">' + esc(dt) + '</div>';
+                    if (by) h += '<div style="color:#22d3ee;font-size:8px;">by ' + esc(by) + '</div>';
+                    h += '</div>';
                 });
-                html += '</div></div>';
+                h += '</div></div>';
             }
 
-            // Recent chart notes
+            // ─── Scribe History (SOAP notes from AI scribe) ───
+            var scribes = d.scribe_history || [];
+            if (scribes.length) {
+                h += '<div class="sec"><div class="sec-t">Scribe Notes (' + scribes.length + ')</div>';
+                scribes.slice(0,3).forEach(function(s) {
+                    var dt = fmtDate(s.encounter_date || s.created_at || '');
+                    var vt = s.visit_type || '';
+                    h += '<div class="note-c">';
+                    h += '<div style="font-size:8px;color:#64748b;display:flex;justify-content:space-between;">';
+                    h += '<span>' + esc(dt) + '</span>';
+                    if (vt) h += '<span style="color:#a855f7;">' + esc(vt) + '</span>';
+                    h += '</div>';
+                    // Show SOAP sections if available
+                    var note = s.note || s;
+                    if (note.soap_subjective) h += '<div style="font-size:9px;margin-top:2px;"><span style="color:#22d3ee;font-weight:600;">S:</span> <span style="color:#94a3b8;">' + esc(note.soap_subjective.substring(0,150)) + '</span></div>';
+                    if (note.soap_assessment) h += '<div style="font-size:9px;margin-top:1px;"><span style="color:#f59e0b;font-weight:600;">A:</span> <span style="color:#94a3b8;">' + esc(note.soap_assessment.substring(0,150)) + '</span></div>';
+                    if (note.soap_plan) h += '<div style="font-size:9px;margin-top:1px;"><span style="color:#4ade80;font-weight:600;">P:</span> <span style="color:#94a3b8;">' + esc(note.soap_plan.substring(0,150)) + '</span></div>';
+                    // ICD codes
+                    var codes = note.icd10_codes || s.icd10_codes || [];
+                    if (codes.length) {
+                        h += '<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px;">';
+                        codes.slice(0,4).forEach(function(c) {
+                            var code = typeof c === 'string' ? c : c.code || '';
+                            var desc = typeof c === 'object' ? (c.description||'') : '';
+                            h += '<span style="font-size:8px;padding:1px 4px;border-radius:3px;background:rgba(168,85,247,0.12);color:#a855f7;font-family:monospace;">' + esc(code) + '</span>';
+                        });
+                        h += '</div>';
+                    }
+                    h += '</div>';
+                });
+                h += '</div>';
+            }
+
+            // ─── Chart Notes (Healthie form answer groups) ───
             var notes = d.chart_notes || [];
-            if (notes.length > 0) {
-                html += '<div class="section">';
-                html += '<div class="section-title">Recent Notes (' + notes.length + ')</div>';
-                notes.slice(0, 5).forEach(function(n) {
-                    html += '<div class="note-card">';
-                    html += '<div class="note-date">' + esc(n.created_at || n.date || '') + '</div>';
-                    html += '<div class="note-content">' + esc((n.content || n.note || '').substring(0, 200)) + '</div>';
-                    html += '</div>';
+            if (notes.length) {
+                h += '<div class="sec"><div class="sec-t">Healthie Notes (' + notes.length + ')</div>';
+                notes.slice(0,4).forEach(function(n) {
+                    var dt = fmtDate(n.created_at || '');
+                    var name = n.name || n.form_name || '';
+                    var content = n.content || n.note || '';
+                    // Try to extract useful text from form answers
+                    if (!content && n.form_answers) {
+                        try { content = n.form_answers.map(function(a){return a.answer||''}).filter(Boolean).join(' · ').substring(0,200); } catch(e){}
+                    }
+                    h += '<div class="note-c">';
+                    h += '<div style="font-size:8px;color:#64748b;">' + esc(dt);
+                    if (name) h += ' — <span style="color:#22d3ee;">' + esc(name) + '</span>';
+                    h += '</div>';
+                    if (content) h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + esc(content.substring(0,200)) + '</div>';
+                    h += '</div>';
                 });
-                html += '</div>';
+                h += '</div>';
             }
 
-            // Recent appointments
+            // ─── Appointments (recent + upcoming) ───
             var appts = d.appointments || [];
-            if (appts.length > 0) {
-                html += '<div class="section">';
-                html += '<div class="section-title">Recent Appointments</div>';
-                html += '<div class="card">';
-                appts.slice(0, 5).forEach(function(a) {
-                    html += '<div style="padding:3px 0; border-bottom:1px solid rgba(255,255,255,0.04); font-size:11px;">';
-                    html += '<span style="color:#94a3b8;">' + esc(a.date || '') + '</span> ';
-                    html += '<span style="color:#e2e8f0;">' + esc(a.appointment_type || a.type || '') + '</span>';
-                    if (a.pm_status) html += ' <span style="color:#64748b;">(' + esc(a.pm_status) + ')</span>';
-                    html += '</div>';
+            if (appts.length) {
+                h += '<div class="sec"><div class="sec-t">Appointments</div><div class="crd">';
+                appts.slice(0,5).forEach(function(a) {
+                    var dt = fmtDateShort(a.date);
+                    var st = a.pm_status || a.status || '';
+                    var stColor = st === 'Completed' ? '#4ade80' : st === 'No Show' ? '#ef4444' : '#94a3b8';
+                    h += '<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:10px;display:flex;justify-content:space-between;">';
+                    h += '<span><span style="color:#94a3b8;">' + esc(dt) + '</span> <span style="color:#e2e8f0;">' + esc(a.appointment_type||a.type||'') + '</span></span>';
+                    if (st) h += '<span style="color:' + stColor + ';font-size:9px;">' + esc(st) + '</span>';
+                    h += '</div>';
                 });
-                html += '</div></div>';
+                h += '</div></div>';
             }
 
-            if (!html) html = '<div class="chart-loading-small">No chart data available</div>';
-            body.innerHTML = html;
+            document.getElementById('chartBody').innerHTML = h || '<div class="chart-loading">No data</div>';
         }
 
-        function esc(str) {
-            if (!str) return '';
-            var div = document.createElement('div');
-            div.appendChild(document.createTextNode(str));
-            return div.innerHTML;
-        }
+        function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-        // ═══════════════════════════════════════════
-        // VONAGE/OPENTOK VIDEO SESSION (preserved from original)
-        // ═══════════════════════════════════════════
-
+        // ═══════════════════════════════════════
+        // VONAGE/OPENTOK (preserved exactly from original)
+        // ═══════════════════════════════════════
         async function initCall() {
             try {
                 document.getElementById('waitingMsg').textContent = 'Fetching video session...';
-
                 var resp = await fetch('/ops/api/ipad/patient?action=video_session&appointment_id=' + appointmentId, { credentials: 'include' });
-                if (!resp.ok) {
-                    showError('API Error', 'Failed to fetch video session (HTTP ' + resp.status + ')');
-                    return;
-                }
-
+                if (!resp.ok) { showError('API Error', 'HTTP ' + resp.status); return; }
                 var data = await resp.json();
-                if (!data.success || !data.session) {
-                    showError('Session Error', data.error || 'No video session returned');
-                    return;
-                }
-
+                if (!data.success || !data.session) { showError('Session Error', data.error || 'No video session'); return; }
                 var s = data.session;
 
-                // Zoom fallback
-                if (s.zoomJoinUrl) {
-                    window.location.href = s.zoomJoinUrl;
-                    return;
+                // FIX(2026-03-31): Try to capture patient ID from appointment data if missing
+                if (!patientId && s.patientHealthieId) {
+                    patientId = s.patientHealthieId;
+                    console.log('[Video] Got patient ID from session:', patientId);
                 }
 
-                // Healthie native video via Vonage/OpenTok
+                if (s.zoomJoinUrl) { window.location.href = s.zoomJoinUrl; return; }
                 if (!s.sessionId || !s.token) {
-                    showError('No Video Session',
-                        'This appointment does not have a video session. Make sure the appointment type is set to "Healthie Video Call". Contact type: ' + (s.contactType || 'unknown'));
+                    showError('No Video Session', 'Appointment type must be "Healthie Video Call". Contact type: ' + (s.contactType || 'unknown'));
                     return;
                 }
-
                 document.getElementById('waitingMsg').textContent = 'Connecting to video...';
                 connectVonage(s.vonageApiKey, s.sessionId, s.token);
-
             } catch (e) {
-                console.error('[Video] initCall error:', e);
-                showError('Connection Error', e.message || 'Failed to initialize video call');
+                showError('Connection Error', e.message || 'Failed to initialize');
             }
         }
 
         function connectVonage(apiKey, sessionId, token) {
-            if (typeof OT === 'undefined') {
-                showError('SDK Error', 'Vonage Video SDK failed to load. Check your internet connection.');
-                return;
-            }
-
+            if (typeof OT === 'undefined') { showError('SDK Error', 'Vonage SDK failed to load.'); return; }
             session = OT.initSession(apiKey, sessionId);
 
-            // Publish local camera
             publisher = OT.initPublisher('publisher', {
-                insertMode: 'append',
-                width: '100%',
-                height: '100%',
-                resolution: '640x480',
-                frameRate: 30,
-                mirror: true,
+                insertMode: 'append', width: '100%', height: '100%',
+                resolution: '640x480', frameRate: 30, mirror: true,
                 style: { buttonDisplayMode: 'off' }
             }, function(err) {
-                if (err) {
-                    console.error('[Video] Publisher error:', err);
-                    showError('Camera Error', 'Could not access camera/microphone. Please check permissions. Error: ' + err.message);
-                    return;
-                }
+                if (err) { showError('Camera Error', 'Check permissions. ' + err.message); return; }
             });
 
-            // When patient joins
             session.on('streamCreated', function(event) {
-                document.getElementById('headerStatus').textContent = 'Connected';
+                setStatus('Connected');
                 subscriber = session.subscribe(event.stream, 'subscriber', {
-                    insertMode: 'append',
-                    width: '100%',
-                    height: '100%',
+                    insertMode: 'append', width: '100%', height: '100%',
                     style: { buttonDisplayMode: 'off' }
-                }, function(err) {
-                    if (err) console.error('[Video] Subscribe error:', err);
-                });
+                }, function(err) { if (err) console.error('[Video] Subscribe:', err); });
                 startTimer();
             });
 
-            // When patient leaves
-            session.on('streamDestroyed', function(event) {
-                document.getElementById('headerStatus').textContent = 'Patient disconnected';
-                if (timerInterval) clearInterval(timerInterval);
-            });
+            session.on('streamDestroyed', function() { setStatus('Patient disconnected'); if (timerInterval) clearInterval(timerInterval); });
+            session.on('sessionDisconnected', function() { setStatus('Disconnected'); if (timerInterval) clearInterval(timerInterval); });
 
-            session.on('sessionDisconnected', function(event) {
-                document.getElementById('headerStatus').textContent = 'Disconnected';
-                if (timerInterval) clearInterval(timerInterval);
-            });
-
-            // Connect
             session.connect(token, function(err) {
-                if (err) {
-                    console.error('[Video] Session connect error:', err);
-                    showError('Connection Failed', 'Could not connect to video session. Error: ' + err.message);
-                    return;
-                }
-
-                // Publish local stream
+                if (err) { showError('Connection Failed', err.message); return; }
                 session.publish(publisher, function(err) {
-                    if (err) {
-                        console.error('[Video] Publish error:', err);
-                        showError('Publish Error', 'Could not publish video stream. Error: ' + err.message);
-                        return;
-                    }
+                    if (err) { showError('Publish Error', err.message); return; }
                     showVideo();
-                    document.getElementById('headerStatus').textContent = 'Waiting for patient...';
+                    setStatus('Waiting for patient...');
                 });
             });
         }
 
-        // ─── Start ───
-        if (!appointmentId) {
-            showError('Missing Appointment', 'No appointment_id provided in URL.');
-        } else {
-            initCall();
+        // ─── Fix iPad Safari viewport height ───
+        // Safari doesn't update 100vh/dvh reliably on toolbar show/hide.
+        // Set body height to window.innerHeight explicitly.
+        function fixViewportHeight() {
+            document.body.style.height = window.innerHeight + 'px';
         }
+        fixViewportHeight();
+        window.addEventListener('resize', fixViewportHeight);
+        window.addEventListener('orientationchange', function() {
+            setTimeout(fixViewportHeight, 100);
+            setTimeout(fixViewportHeight, 300);
+        });
+
+        // ─── Boot ───
+        if (!appointmentId) { showError('Missing Appointment', 'No appointment_id in URL.'); }
+        else { initCall(); }
     </script>
 </body>
 </html>

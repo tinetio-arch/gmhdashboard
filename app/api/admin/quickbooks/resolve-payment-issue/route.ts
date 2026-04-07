@@ -74,14 +74,13 @@ export async function POST(req: NextRequest) {
             
             try {
               await query(
-                `INSERT INTO patient_status_activity_log 
-                 (patient_id, previous_status, new_status, changed_by_user_id, change_reason, created_at)
-                 VALUES ($1, $2, 'active', $3, $4, NOW())`,
+                `INSERT INTO patient_status_activity_log
+                 (patient_id, previous_status, new_status, changed_by_user_id, change_source, change_reason, created_at)
+                 VALUES ($1, $2, 'active', $3, 'admin_resolve_payment', $4, NOW())`,
                 [issue.patient_id, previousStatus, user.user_id, changeReason]
               );
             } catch (logError: any) {
-              // Table may not exist, log but don't fail
-              console.warn('[Resolve Payment Issue] patient_status_activity_log table missing; continuing without audit entry.');
+              console.error('[Resolve Payment Issue] Failed to write audit log', logError);
             }
           }
         }
@@ -117,30 +116,37 @@ export async function POST(req: NextRequest) {
         [user.user_id, patientId]
       );
       
-      // Also update patient status if they're on hold for payment research or contract renewal
-      await query(
-        `UPDATE patients 
-         SET status_key = 'active',
-             alert_status = (
-               SELECT display_name FROM patient_status_lookup WHERE status_key = 'active'
-             ),
-             updated_at = NOW()
-         WHERE patient_id = $1 
-         AND status_key IN ('hold_payment_research', 'hold_contract_renewal')`,
+      // FIX(2026-04-06): Capture actual previous status before updating
+      const currentPatient = await query<{ status_key: string }>(
+        `SELECT status_key FROM patients WHERE patient_id = $1 AND status_key IN ('hold_payment_research', 'hold_contract_renewal')`,
         [patientId]
       );
 
-      // Log the status change (table may not exist, so wrap in try-catch)
-      try {
+      if (currentPatient.length > 0) {
+        const previousStatus = currentPatient[0].status_key;
+
         await query(
-          `INSERT INTO patient_status_activity_log 
-           (patient_id, previous_status, new_status, changed_by_user_id, change_reason, created_at)
-           VALUES ($1, 'hold_payment_research', 'active', $2, 'Payment issues manually resolved', NOW())`,
-          [patientId, user.user_id]
+          `UPDATE patients
+           SET status_key = 'active',
+               alert_status = (
+                 SELECT display_name FROM patient_status_lookup WHERE status_key = 'active'
+               ),
+               updated_at = NOW()
+           WHERE patient_id = $1
+           AND status_key IN ('hold_payment_research', 'hold_contract_renewal')`,
+          [patientId]
         );
-      } catch (logError: any) {
-        // Table may not exist, log but don't fail
-        console.warn('[Resolve Payment Issue] patient_status_activity_log table missing; continuing without audit entry.');
+
+        try {
+          await query(
+            `INSERT INTO patient_status_activity_log
+             (patient_id, previous_status, new_status, changed_by_user_id, change_source, change_reason, created_at)
+             VALUES ($1, $2, 'active', $3, 'admin_resolve_payment', 'Payment issues manually resolved', NOW())`,
+            [patientId, previousStatus, user.user_id]
+          );
+        } catch (logError: any) {
+          console.error('[Resolve Payment Issue] Failed to write audit log', logError);
+        }
       }
       
       return NextResponse.json({ 

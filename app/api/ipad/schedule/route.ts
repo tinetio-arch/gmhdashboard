@@ -212,31 +212,39 @@ export async function GET(request: NextRequest) {
             console.log(`[iPad Schedule] Sample result:`, JSON.stringify(result[0]));
         }
 
-        // Fetch names from Healthie for any patients without names
+        // FIX: Batch fetch names from Healthie instead of N+1 individual queries
         const missingNames = result.filter(r => r.healthie_id && !r.full_name);
         if (missingNames.length > 0) {
             console.log(`[iPad Schedule] Fetching names from Healthie for ${missingNames.length} patients without names`);
             try {
-                for (const item of missingNames) {
-                    const userQuery = `query { user(id: "${item.healthie_id}") { id first_name last_name } }`;
-                    const resp = await fetch(HEALTHIE_API_URL, {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Basic ${HEALTHIE_API_KEY}`,
-                            'AuthorizationSource': 'API',
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ query: userQuery }),
-                        signal: AbortSignal.timeout(5000),
-                        cache: 'no-store',
-                    } as any);
-                    if (resp.ok) {
-                        const userData = await resp.json();
-                        const user = userData.data?.user;
-                        if (user) {
-                            item.full_name = `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Unknown Patient';
+                // Batch: fetch up to 10 at a time using individual queries in parallel
+                const batchSize = 10;
+                for (let i = 0; i < missingNames.length; i += batchSize) {
+                    const batch = missingNames.slice(i, i + batchSize);
+                    const promises = batch.map(async (item) => {
+                        const resp = await fetch(HEALTHIE_API_URL, {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Basic ${HEALTHIE_API_KEY}`,
+                                'AuthorizationSource': 'API',
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                query: `query GetUser($id: ID) { user(id: $id) { id first_name last_name } }`,
+                                variables: { id: item.healthie_id },
+                            }),
+                            signal: AbortSignal.timeout(5000),
+                            cache: 'no-store',
+                        } as any);
+                        if (resp.ok) {
+                            const userData = await resp.json();
+                            const user = userData.data?.user;
+                            if (user) {
+                                item.full_name = `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Unknown Patient';
+                            }
                         }
-                    }
+                    });
+                    await Promise.allSettled(promises);
                 }
             } catch (err) {
                 console.warn('[iPad Schedule] Failed to fetch patient names from Healthie:', err);

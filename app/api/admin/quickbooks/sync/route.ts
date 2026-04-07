@@ -225,16 +225,8 @@ async function performSync(qbClient: any, syncId: string, createdBy: string | nu
                   patientStatus[0]?.status_key || 'active'
                 ]);
 
-                // Update patient status to 'Hold - Payment Research' if overdue or high balance
-                if (daysOverdue >= 30 || paymentData.balance >= 200) {
-                  await query(`
-                    UPDATE patients SET
-                      status_key = 'hold_payment_research',
-                      updated_at = NOW()
-                    WHERE patient_id = $1
-                      AND status_key != 'hold_payment_research'
-                  `, [patientId]);
-                }
+                // FIX(2026-04-06): QB no longer changes patient status. Healthie is source of truth.
+                // Previously: put patients on hold_payment_research if overdue/high balance.
               }
             }
           }
@@ -301,13 +293,8 @@ async function performSync(qbClient: any, syncId: string, createdBy: string | nu
                       patientStatus[0]?.status_key || 'active'
                     ]
                   );
-                  await query(
-                    `UPDATE patients
-                       SET status_key = 'hold_payment_research',
-                           updated_at = NOW()
-                     WHERE patient_id = $1`,
-                    [patientId]
-                  );
+                  // FIX(2026-04-06): QB no longer changes patient status. Healthie is source of truth.
+                  // Previously: put patients on hold_payment_research for declined sales receipts.
                 }
               }
             } catch (error) {

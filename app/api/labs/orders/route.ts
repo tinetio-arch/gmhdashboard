@@ -154,7 +154,7 @@ export async function POST(req: NextRequest) {
                 } else {
                     // Look up via healthie_clients join table (canonical Healthie→Patient mapping)
                     const patResult2 = await client.query(
-                        'SELECT p.patient_id FROM patients p JOIN healthie_clients hc ON p.patient_id = hc.patient_id WHERE hc.healthie_client_id = $1 AND hc.is_active = true',
+                        'SELECT p.patient_id FROM patients p JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id WHERE hc.healthie_client_id = $1 AND hc.is_active = true',
                         [patient_id]
                     );
                     if (patResult2.rows.length > 0) {

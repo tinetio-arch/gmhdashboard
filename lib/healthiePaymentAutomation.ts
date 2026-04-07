@@ -297,9 +297,13 @@ async function upsertInvoiceRecord(input: InvoiceUpsertInput): Promise<void> {
   );
 }
 
+// FIX(2026-04-06): Only activate patients currently on hold_payment_research.
+// Never reactivate discharged, inactive, paused, or hold_contract_renewal patients.
+const ACTIVATABLE_STATUSES = ['hold_payment_research'];
+
 async function activatePatientBilling(patientId: string, clientType: ClientTypeTarget): Promise<void> {
   await ensureLookupValues();
-  await query(
+  const result = await query<{ patient_id: string }>(
     `
       UPDATE patients
          SET payment_method_key = $2,
@@ -310,22 +314,74 @@ async function activatePatientBilling(patientId: string, clientType: ClientTypeT
              alert_status = 'Active',
              updated_at = NOW()
        WHERE patient_id = $1
+         AND status_key = ANY($6::text[])
+      RETURNING patient_id
     `,
-    [patientId, HEALTHIE_PAYMENT_METHOD_KEY, HEALTHIE_PAYMENT_METHOD_LABEL, clientType.key, clientType.label]
+    [patientId, HEALTHIE_PAYMENT_METHOD_KEY, HEALTHIE_PAYMENT_METHOD_LABEL, clientType.key, clientType.label, ACTIVATABLE_STATUSES]
   );
+
+  if (result.length === 0) {
+    const current = await query<{ status_key: string }>(
+      'SELECT status_key FROM patients WHERE patient_id = $1',
+      [patientId]
+    );
+    console.warn('[healthie-webhook] Skipped activation — patient status not activatable', {
+      patientId, currentStatus: current[0]?.status_key ?? 'not_found',
+      activatableStatuses: ACTIVATABLE_STATUSES,
+    });
+    return;
+  }
+
+  try {
+    await query(
+      `INSERT INTO patient_status_activity_log
+       (patient_id, previous_status, new_status, change_source, change_reason)
+       VALUES ($1, 'hold_payment_research', 'active', 'healthie_payment_automation', 'Payment marked paid — auto-activated')`,
+      [patientId]
+    );
+  } catch (e) {
+    console.warn('[healthie-webhook] Failed to write audit log', e);
+  }
 }
 
+// FIX(2026-04-06): Only put active patients on hold. Never touch discharged/paused/inactive.
+const DEACTIVATABLE_STATUSES = ['active'];
+
 async function deactivatePatientBilling(patientId: string, status: string): Promise<void> {
-  await query(
+  const result = await query<{ patient_id: string }>(
     `
       UPDATE patients
          SET status_key = 'hold_payment_research',
              alert_status = 'Payment Failed',
              updated_at = NOW()
        WHERE patient_id = $1
+         AND status_key = ANY($2::text[])
+      RETURNING patient_id
     `,
-    [patientId]
+    [patientId, DEACTIVATABLE_STATUSES]
   );
+
+  if (result.length === 0) {
+    const current = await query<{ status_key: string }>(
+      'SELECT status_key FROM patients WHERE patient_id = $1',
+      [patientId]
+    );
+    console.warn('[healthie-webhook] Skipped deactivation — patient not in deactivatable status', {
+      patientId, currentStatus: current[0]?.status_key ?? 'not_found',
+    });
+    return;
+  }
+
+  try {
+    await query(
+      `INSERT INTO patient_status_activity_log
+       (patient_id, previous_status, new_status, change_source, change_reason)
+       VALUES ($1, 'active', 'hold_payment_research', 'healthie_payment_automation', $2)`,
+      [patientId, `Payment failed — Healthie status: ${status}`]
+    );
+  } catch (e) {
+    console.warn('[healthie-webhook] Failed to write audit log', e);
+  }
 }
 
 /**

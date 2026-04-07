@@ -6,14 +6,13 @@ export const dynamic = 'force-dynamic';
 
 // GET — load a patient's saved cart
 export async function GET(request: NextRequest) {
-  await requireApiUser(request, 'read');
-
-  const patientId = request.nextUrl.searchParams.get('patient_id');
-  if (!patientId) {
-    return NextResponse.json({ error: 'patient_id required' }, { status: 400 });
-  }
-
   try {
+    await requireApiUser(request, 'read');
+
+    const patientId = request.nextUrl.searchParams.get('patient_id');
+    if (!patientId) {
+      return NextResponse.json({ error: 'patient_id required' }, { status: 400 });
+    }
     const items = await query<{
       id: number;
       product_id: string;
@@ -35,6 +34,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ success: true, items });
   } catch (error: any) {
+    if (error?.status === 401 || error?.message === 'Unauthorized') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     console.error('[billing/cart GET] Error:', error.message);
     return NextResponse.json({ success: false, error: 'Failed to load cart' }, { status: 500 });
   }
@@ -42,9 +42,8 @@ export async function GET(request: NextRequest) {
 
 // POST — add item to cart or update quantity
 export async function POST(request: NextRequest) {
-  const user = await requireApiUser(request, 'write');
-
   try {
+    const user = await requireApiUser(request, 'write');
     const body = await request.json();
     const { patient_id, patient_name, product_id, product_name, price, quantity } = body;
 
@@ -76,6 +75,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
+    if (error?.status === 401 || error?.message === 'Unauthorized') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     console.error('[billing/cart POST] Error:', error.message);
     return NextResponse.json({ success: false, error: 'Failed to add to cart' }, { status: 500 });
   }
@@ -83,9 +83,8 @@ export async function POST(request: NextRequest) {
 
 // PATCH — update quantity for a cart item
 export async function PATCH(request: NextRequest) {
-  await requireApiUser(request, 'write');
-
   try {
+    await requireApiUser(request, 'write');
     const body = await request.json();
     const { id, quantity } = body;
 
@@ -101,6 +100,7 @@ export async function PATCH(request: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
+    if (error?.status === 401 || error?.message === 'Unauthorized') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     console.error('[billing/cart PATCH] Error:', error.message);
     return NextResponse.json({ success: false, error: 'Failed to update cart' }, { status: 500 });
   }
@@ -108,12 +108,11 @@ export async function PATCH(request: NextRequest) {
 
 // DELETE — clear cart for a patient or remove one item
 export async function DELETE(request: NextRequest) {
-  await requireApiUser(request, 'write');
-
-  const patientId = request.nextUrl.searchParams.get('patient_id');
-  const itemId = request.nextUrl.searchParams.get('id');
-
   try {
+    await requireApiUser(request, 'write');
+
+    const patientId = request.nextUrl.searchParams.get('patient_id');
+    const itemId = request.nextUrl.searchParams.get('id');
     if (itemId) {
       await query('DELETE FROM patient_billing_cart WHERE id = $1', [itemId]);
     } else if (patientId) {
@@ -124,6 +123,7 @@ export async function DELETE(request: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
+    if (error?.status === 401 || error?.message === 'Unauthorized') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     console.error('[billing/cart DELETE] Error:', error.message);
     return NextResponse.json({ success: false, error: 'Failed to delete' }, { status: 500 });
   }

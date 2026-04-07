@@ -2,6 +2,9 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
+
+const ReceiptsViewer = dynamic(() => import('@/components/ReceiptsViewer'), { ssr: false });
 
 interface OperationsCenterProps {
   janeOutstanding: any[];
@@ -30,7 +33,7 @@ export default function OperationsCenterClient({
   ghlSyncHistory,
   quickActionsNeeded
 }: OperationsCenterProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'jane' | 'quickbooks' | 'ghl' | 'bulk-actions'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'jane' | 'quickbooks' | 'ghl' | 'bulk-actions' | 'receipts'>('overview');
   const [selectedIssues, setSelectedIssues] = useState<string[]>([]);
 
   const currencyFormatter = new Intl.NumberFormat('en-US', {
@@ -77,6 +80,7 @@ export default function OperationsCenterClient({
           { key: 'overview', label: '🎯 Overview', count: janeOutstanding.length + qbOutstanding.length + membershipHolds.length },
           { key: 'jane', label: '🏥 Jane Issues', count: janeOutstanding.length },
           { key: 'quickbooks', label: '💰 QuickBooks Issues', count: qbOutstanding.length },
+          { key: 'receipts', label: '🧾 Payment Receipts', count: 0 },
           { key: 'ghl', label: '🔗 GHL Issues', count: ghlSyncHistory.filter((h: any) => h.error_message).length },
           { key: 'bulk-actions', label: '⚡ Bulk Actions', count: quickActionsNeeded.reduce((sum: number, action: any) => sum + action.count, 0) }
         ].map((tab) => (
@@ -461,8 +465,18 @@ export default function OperationsCenterClient({
         </div>
       )}
 
+      {/* Receipts Tab */}
+      {activeTab === 'receipts' && (
+        <div style={{ padding: '1rem' }}>
+          <ReceiptsViewer
+            title="Payment Receipts"
+            showOnlyWithReceipts={false}
+          />
+        </div>
+      )}
+
       {/* Other tab content will be added here */}
-      {activeTab !== 'overview' && (
+      {activeTab !== 'overview' && activeTab !== 'receipts' && (
         <div style={{ 
           padding: '2rem', 
           textAlign: 'center',

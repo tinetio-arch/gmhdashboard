@@ -53,6 +53,12 @@ let pausedDuration = 0;
 let pauseStartTime = null;
 let autoPausedBySystem = false;  // true when auto-paused by visibilitychange (phone call, app switch)
 let scribeView = 'list';        // 'list' | 'new' | 'recording' | 'transcript' | 'note' | 'review'
+let supplyItems = null;          // from /ops/api/inventory/supplies
+let scheduleAllData = [];        // from /ops/api/ipad/schedule (all appointments)
+
+// ─── CONSTANTS ──────────────────────────────────────────────
+const CLINIC_TIMEZONE = 'America/Phoenix';
+const WASTE_PER_SYRINGE = 0.1;  // mL waste per testosterone syringe
 
 // ─── BACKGROUND TRANSCRIPTION POLLING SERVICE ───────────────
 // Survives tab navigation, page visibility changes, and user actions
@@ -1116,7 +1122,7 @@ function getGreeting() {
 function formatDate() {
     return new Date().toLocaleDateString('en-US', {
         weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-        timeZone: 'America/Phoenix'
+        timeZone: CLINIC_TIMEZONE
     });
 }
 
@@ -1512,7 +1518,7 @@ function renderHealthieAppointment(appt) {
     else if (status === 'No Show') { statusClass = 'completed'; statusLabel = 'No Show'; }
 
     const displayTime = typeof time === 'string' && time.includes('T')
-        ? new Date(time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Phoenix' })
+        ? new Date(time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: CLINIC_TIMEZONE })
         : time;
 
     const apptId = appt.id || appt.healthie_id || '';
@@ -1713,7 +1719,7 @@ function renderLabsView(container) {
         <div style="margin-bottom:12px;">
             <input type="text" id="labSearchInput" placeholder="Search by patient name or panel type..."
                 value="${sanitize(window._labSearchQuery || '')}"
-                oninput="window._labSearchQuery = this.value; renderCurrentTab();"
+                oninput="window._labSearchQuery = this.value; updateLabsFiltering();"
                 style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;">
         </div>
         <div class="labs-header">
@@ -1747,6 +1753,31 @@ function setLabFilter(filter) {
     renderCurrentTab();
 }
 
+// FIX(2026-04-01): Only re-render lab results list, not the entire container.
+// Prevents the search input from being destroyed/rebuilt on each keystroke.
+function updateLabsFiltering() {
+    var labSearch = (window._labSearchQuery || '').toLowerCase();
+    var allLabs = labsQueue;
+    var pending = allLabs.filter(function(l) { return l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review'; });
+    var approved = allLabs.filter(function(l) { return l.status === 'approved' || l.status === 'reviewed'; });
+    var filteredLabs = activeLabFilter === 'pending' ? pending
+        : activeLabFilter === 'approved' ? approved
+            : allLabs;
+    if (labSearch) {
+        filteredLabs = filteredLabs.filter(function(l) {
+            var name = (l.patient_name || l.patientName || '').toLowerCase();
+            var testType = (l.test_type || l.testType || l.panel_name || '').toLowerCase();
+            return name.includes(labSearch) || testType.includes(labSearch);
+        });
+    }
+    var listEl = document.getElementById('labsList');
+    if (listEl) {
+        listEl.innerHTML = filteredLabs.map(function(l) { return renderLabCard(l); }).join('')
+            + (filteredLabs.length === 0 ? renderEmptyState('🧪',
+                labSearch ? 'No results for "' + sanitize(labSearch) + '"' : 'No lab results', '') : '');
+    }
+}
+
 function renderLabCard(lab) {
     const isCritical = lab.critical || lab.is_critical;
     const critClass = isCritical ? 'critical' : '';
@@ -1758,6 +1789,8 @@ function renderLabCard(lab) {
     const dob = lab.dob || lab.date_of_birth || '';
     const testType = lab.test_type || lab.testType || lab.panel_name || 'Lab Panel';
     const receivedDate = lab.received_date || lab.created_at || lab.date || '';
+    const clinic = lab.clinic || '';
+    const isPC = clinic.toLowerCase().includes('primary');
     const summary = lab.summary || lab.ai_summary || '';
 
     // Parse results
@@ -1772,7 +1805,7 @@ function renderLabCard(lab) {
         <div class="lab-card ${critClass} ${isApproved ? 'approved' : ''}" id="lab-${labId}">
             <div class="lab-card-header">
                 <div class="lab-patient-info">
-                    <div class="lab-patient-name">${patientName}</div>
+                    <div class="lab-patient-name">${patientName}${clinic ? ` <span style="font-size:10px; padding:2px 6px; border-radius:4px; background:${isPC ? 'rgba(6,15,106,0.12)' : 'rgba(220,38,38,0.10)'}; color:${isPC ? '#6875d5' : '#DC2626'}; font-weight:600; vertical-align:middle;">${isPC ? 'Primary Care' : 'Mens Health'}</span>` : ''}</div>
                     ${dob ? `<div class="lab-patient-dob">DOB: ${dob}</div>` : ''}
                 </div>
                 <span class="lab-badge ${badgeClass}">${badgeText}</span>
@@ -2061,10 +2094,10 @@ function renderScribeSessionCard(session) {
     const name = session.patient_name || 'Unknown Patient';
     const visitType = (session.visit_type || 'follow_up').replace(/_/g, ' ');
     const encounterDateStr = session.encounter_date
-        ? new Date(session.encounter_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Phoenix' })
+        ? new Date(session.encounter_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: CLINIC_TIMEZONE })
         : null;
     const timeStr = session.created_at ? new Date(session.created_at).toLocaleString('en-US', {
-        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Phoenix'
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: CLINIC_TIMEZONE
     }) : '';
     const time = encounterDateStr ? `${encounterDateStr} · ${timeStr}` : timeStr;
     const status = session.status || 'recording';
@@ -2291,8 +2324,8 @@ function renderScribeNewSession(container) {
             <div class="scribe-field">
                 <label>Encounter Date</label>
                 <input type="date" id="scribeEncounterDate"
-                       value="${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' })}"
-                       max="${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' })}"
+                       value="${new Date().toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE })}"
+                       max="${new Date().toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE })}"
                        style="padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text-primary); font-size:14px; width:100%;" />
                 <p style="font-size:12px; color:var(--text-tertiary); margin-top:4px;">Change to backdate notes for past visits</p>
             </div>
@@ -3923,8 +3956,11 @@ function toggleGlobalChart() {
     }
 }
 
+let _chartLoadId = 0; // guard against concurrent chart loads
+
 async function loadChartData(patientId) {
     chartPanelPatientId = patientId;
+    const thisLoadId = ++_chartLoadId; // capture load ID to detect stale loads
 
     // Find the correct chart panel content element:
     // 1. If the global chart panel is open, use #globalChartContent
@@ -3967,6 +4003,9 @@ async function loadChartData(patientId) {
         // Then lazy-load 360 data in background for labs/visits/alerts
         const healthieChart = await timedFetch(`/ops/api/ipad/patient-chart/?patient_id=${patientId}`, 20000);
 
+        // Guard: if another loadChartData() was called while we were waiting, abort this stale one
+        if (thisLoadId !== _chartLoadId) { console.log('[Chart] Stale load aborted for', patientId); return; }
+
         // Render immediately with patient-chart data
         chartPanelData = {
             demographics: healthieChart?.demographics || {},
@@ -3991,12 +4030,13 @@ async function loadChartData(patientId) {
             payment_methods: healthieChart?.payment_methods || [],
             subscriptions: healthieChart?.subscriptions || [],
             recurring_payment: healthieChart?.recurring_payment || null,
+            pending_forms: healthieChart?.pending_forms || [],
         };
         renderChartPanel(content);
 
         // BACKGROUND: Load 360 data for labs/visits/alerts (non-blocking)
         timedFetch(`/ops/api/patients/${patientId}/360/`, 20000).then(local360 => {
-            if (local360 && chartPanelPatientId === patientId) {
+            if (local360 && chartPanelPatientId === patientId && thisLoadId === _chartLoadId) {
                 // FIX(2026-03-19): Merge 360 demographics INTO existing (don't overwrite Healthie-enriched data)
                 const existingDemo = chartPanelData.demographics || {};
                 const newDemo = local360.demographics || {};
@@ -4278,7 +4318,13 @@ async function addTagToPatient(tagName) {
             body: JSON.stringify({ action: 'add_tag', healthie_id: healthieId, tag_name: tagName }),
         });
         const data = await resp.json();
-        if (data.success && data.tag) {
+        if (!resp.ok || !data.success) {
+            // FIX(2026-04-01): Show actual error from Healthie API instead of generic message
+            showToast('Tag error: ' + (data.error || 'Unknown error — check Healthie'), 'error');
+            console.error('[Tags] API error:', data);
+            return;
+        }
+        if (data.tag) {
             // Add tag badge to the UI
             const section = document.getElementById('patientTagsSection');
             if (section) {
@@ -4295,11 +4341,11 @@ async function addTagToPatient(tagName) {
             }
             showToast(`Tag "${tagName}" added`, 'success');
         } else {
-            showToast('Failed to add tag', 'error');
+            showToast('Tag created but no ID returned', 'warning');
         }
     } catch (e) {
         console.error('[Tags] addTagToPatient error:', e);
-        showToast('Failed to add tag', 'error');
+        showToast('Tag failed: ' + (e.message || 'Network error'), 'error');
     }
 }
 
@@ -4552,7 +4598,8 @@ function renderChartPanel(content) {
 
     const demo = d.demographics || {};
     const hAllergies = d.healthie_allergies || [];
-    const hMeds = d.healthie_meds || [];
+    // FIX(2026-04-01): Filter to only show active medications — inactive/discontinued meds should not display
+    const hMeds = (d.healthie_meds || []).filter(m => m.active !== false);
     const hVitals = d.healthie_vitals || [];
     const peptides = (d.medications || {}).peptides || d.peptides || [];
     const trt = (d.medications || {}).trt || d.trt || [];
@@ -4688,7 +4735,7 @@ function renderChartPanel(content) {
         try {
             const d = new Date(dt);
             if (isNaN(d.getTime())) return '';
-            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Phoenix' });
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: CLINIC_TIMEZONE });
         } catch { return ''; }
     }
 
@@ -4773,6 +4820,7 @@ function renderChartPanel(content) {
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">
                     <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
+                    <button onclick="showResetPasswordDialog()" style="padding:4px 10px; border-radius:6px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); color:var(--yellow); font-size:11px; font-weight:600; cursor:pointer;" title="Reset patient Healthie password">🔑 Password</button>
                     <button onclick="toggleInterestingPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.2); color:#a855f7; font-size:11px; font-weight:600; cursor:pointer;" title="Interesting facts about this patient">⭐ Interesting</button>
                     <button onclick="closeGlobalChart()" style="padding:4px 10px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer;" title="Close chart">✕</button>
                 </div>
@@ -4838,7 +4886,7 @@ function renderChartPanel(content) {
             ${hAllergies.length > 0
                 ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${hAllergies.map(a => {
                     if (a.is_nkda) {
-                        const ts = a.created_at ? new Date(a.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix' }) : '';
+                        const ts = a.created_at ? new Date(a.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: CLINIC_TIMEZONE }) : '';
                         return `<span style="font-size:11px; padding:2px 8px; border-radius:10px; background:rgba(34,197,94,0.15); color:#22c55e; border:1px solid rgba(34,197,94,0.2);">✅ NKDA${a.entered_by ? ' — ' + a.entered_by : ''}${ts ? ' · ' + ts : ''}</span>`;
                     }
                     const severityColors = { severe: '#ef4444', moderate: '#f59e0b', mild: '#22c55e' };
@@ -4906,6 +4954,14 @@ function renderChartPanel(content) {
 
         <!-- Controlled Substance Alert (if any) -->
         ${renderControlledSubstanceAlert(d)}
+
+        <!-- Kiosk Mode: Hand iPad to Patient (chart header) -->
+        ${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? `
+        <div style="padding:6px 12px;">
+            <button class="kiosk-launch-btn" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify((d.pending_forms || []).filter(f => f.status !== 'completed')).replace(/"/g, '&quot;')}, '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="width:100%; justify-content:center; padding:10px 16px; font-size:13px;">
+                📋 Hand iPad to Patient <span class="kiosk-badge">${(d.pending_forms || []).filter(f => f.status !== 'completed').length}</span>
+            </button>
+        </div>` : ''}
 
         <!-- Consolidated Tabs -->
         <div class="chart-tab-nav" style="gap:0; padding:4px 8px;">
@@ -5187,8 +5243,8 @@ async function handleInlineRecordingComplete(patientId, patientName) {
     } catch (err) {
         area.innerHTML = `
             <div style="padding:12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
-                <div style="color:#f87171; font-weight:600; font-size:13px;">❌ Upload failed: ${err.message}</div>
-                <button onclick="startInlineRecording('${patientId}', '${patientName}', '')" style="margin-top:8px; padding:6px 12px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); font-size:11px; cursor:pointer;">Try Again</button>
+                <div style="color:#f87171; font-weight:600; font-size:13px;">❌ Upload failed: ${sanitize(err.message)}</div>
+                <button onclick="startInlineRecording('${sanitize(patientId)}', '${sanitize(patientName).replace(/'/g, "\\'")}', '')" style="margin-top:8px; padding:6px 12px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); font-size:11px; cursor:pointer;">Try Again</button>
             </div>
         `;
     }
@@ -5199,6 +5255,8 @@ function pollInlineTranscription(sessionId, area, patientId, patientName) {
     const maxAttempts = 60; // 2 minutes max
     const poll = setInterval(async () => {
         attempts++;
+        // FIX: Stop polling if the target element was removed from DOM
+        if (!area || !area.isConnected) { clearInterval(poll); return; }
         try {
             const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
             if (data?.success && data.data?.status === 'transcribed') {
@@ -5209,11 +5267,13 @@ function pollInlineTranscription(sessionId, area, patientId, patientName) {
                 area.innerHTML = `
                     <div style="padding:12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; margin-bottom:8px;">
                         <div style="color:#f87171; font-weight:600; font-size:13px;">⏱️ Transcription is taking longer than expected.</div>
-                        <button onclick="pollInlineTranscription('${sessionId}', document.getElementById('inlineRecordingArea'), '${patientId}', '${patientName}')" style="margin-top:6px; padding:6px 12px; border-radius:6px; background:var(--cyan); border:none; color:#000; font-size:11px; font-weight:600; cursor:pointer;">Check Again</button>
+                        <button onclick="pollInlineTranscription('${sanitize(sessionId)}', document.getElementById('inlineRecordingArea'), '${sanitize(patientId)}', '${sanitize(patientName).replace(/'/g, "\\'")}')" style="margin-top:6px; padding:6px 12px; border-radius:6px; background:var(--cyan); border:none; color:#000; font-size:11px; font-weight:600; cursor:pointer;">Check Again</button>
                     </div>
                 `;
             }
-        } catch (e) { /* keep polling */ }
+        } catch (e) {
+            console.warn('[Scribe] Poll error for session', sessionId, e.message || e);
+        }
     }, 3000);
 }
 
@@ -5230,7 +5290,7 @@ function showInlineTranscriptionReady(area, sessionData, patientId, patientName)
                 <span style="color:#22c55e; font-weight:700; font-size:13px;">✅ Transcription Ready</span>
                 <span style="color:var(--text-tertiary); font-size:11px;">${wordCount} words</span>
             </div>
-            <div style="max-height:120px; overflow-y:auto; font-size:11px; color:var(--text-secondary); line-height:1.5; padding:8px; background:var(--surface-2); border-radius:6px; margin-bottom:10px; white-space:pre-wrap;">${transcript.substring(0, 500)}${transcript.length > 500 ? '...' : ''}</div>
+            <div style="max-height:120px; overflow-y:auto; font-size:11px; color:var(--text-secondary); line-height:1.5; padding:8px; background:var(--surface-2); border-radius:6px; margin-bottom:10px; white-space:pre-wrap;">${sanitize(transcript.substring(0, 500))}${transcript.length > 500 ? '...' : ''}</div>
             <button onclick="generateInlineNote('${patientId}', '${patientName}')" style="width:100%; padding:12px; background:linear-gradient(135deg, #8b5cf6, #6d28d9); color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px;">
                 ✨ Generate SOAP Note
             </button>
@@ -5392,28 +5452,50 @@ function renderMedicationsSection(d, hMeds, peptides, trt) {
         html += '</div>';
     }
 
-    // Existing hMeds, peptides, TRT (as secondary items)
-    // FIX(2026-03-19): Don't duplicate dosage if already in the name
-    const otherMeds = [
-        ...hMeds.map(m => {
+    // Existing hMeds — each one is tappable to edit
+    // FIX(2026-04-01): Made medications editable (tap to change dose, frequency, etc.)
+    if (hMeds.length > 0) {
+        html += '<div style="margin-top:4px;">';
+        for (const m of hMeds) {
             const name = m.name || '?';
             const dosage = m.dosage || '';
             const freq = m.frequency || '';
             const route = m.route || '';
-            // Skip dosage if it's already part of the name
+            const directions = m.directions || '';
+            const medId = m.id || '';
             const hasDosageInName = dosage && name.toLowerCase().includes(dosage.toLowerCase());
             let display = name;
             if (dosage && !hasDosageInName) display += ' ' + dosage;
             if (route) display += ' ' + route;
-            if (freq) display += ' ' + freq;
-            return display;
-        }),
+            if (freq) display += ' · ' + freq;
+
+            const escapedName = (name || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const escapedDosage = (dosage || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const escapedFreq = (freq || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const escapedDir = (directions || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const escapedRoute = (route || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+
+            html += `<div onclick="showEditMedicationForm('${medId}', '${escapedName}', '${escapedDosage}', '${escapedFreq}', '${escapedDir}', '${escapedRoute}')"
+                style="display:flex; align-items:center; justify-content:space-between; padding:4px 6px; margin-bottom:2px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05); cursor:pointer; font-size:11px;"
+                onmouseover="this.style.background='rgba(0,212,255,0.06)'" onmouseout="this.style.background='rgba(255,255,255,0.03)'">
+                <div style="flex:1; min-width:0;">
+                    <span style="color:var(--text-primary); font-weight:500;">${display}</span>
+                    ${directions ? `<div style="font-size:9px; color:var(--text-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${directions}</div>` : ''}
+                </div>
+                <span style="font-size:9px; color:var(--cyan); flex-shrink:0; margin-left:4px;">✏️</span>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Peptides & TRT (not editable via Healthie — separate systems)
+    const otherMeds = [
         ...peptides.map(m => m.medication_name || m.product_name || '?'),
         ...trt.map(m => m.medication_name || '?'),
     ].filter(Boolean);
 
     if (otherMeds.length > 0) {
-        html += `<div style="font-size:11px; color:var(--text-secondary); line-height:1.5;">${otherMeds.join(' · ')}</div>`;
+        html += `<div style="font-size:11px; color:var(--text-secondary); line-height:1.5; margin-top:4px;">${otherMeds.join(' · ')}</div>`;
     }
 
     if (totalCount === 0) {
@@ -5424,6 +5506,130 @@ function renderMedicationsSection(d, hMeds, peptides, trt) {
 }
 
 // ─── CONTROLLED SUBSTANCE ALERT BANNER (above chart tabs) ─────────────
+// FIX(2026-04-01): Edit medication form — allows changing dose, frequency, directions, route
+function showEditMedicationForm(medId, name, dosage, frequency, directions, route) {
+    // Remove any existing edit form
+    document.getElementById('editMedOverlay')?.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'editMedOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    overlay.innerHTML = `
+        <div style="background:var(--surface-1,#1a1d23);border-radius:12px;padding:16px;min-width:320px;max-width:420px;border:1px solid var(--border,#333);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <div style="font-size:14px;font-weight:600;color:var(--text-primary,#fff);">Edit Medication</div>
+                <button onclick="document.getElementById('editMedOverlay').remove()" style="background:none;border:none;color:var(--text-tertiary);font-size:18px;cursor:pointer;">✕</button>
+            </div>
+            <div style="font-size:11px;color:var(--cyan);margin-bottom:12px;font-weight:600;">${name}</div>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                <div>
+                    <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:2px;">Dosage</label>
+                    <input id="editMedDosage" type="text" value="${dosage}" placeholder="e.g. 10mg, 200 IU, 0.5mL"
+                        style="width:100%;padding:8px 10px;border-radius:8px;background:var(--surface-2,#252830);border:1px solid var(--border,#333);color:var(--text-primary,#fff);font-size:13px;outline:none;box-sizing:border-box;" />
+                </div>
+                <div>
+                    <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:2px;">Frequency</label>
+                    <input id="editMedFrequency" type="text" value="${frequency}" placeholder="e.g. Once daily, BID, Weekly"
+                        style="width:100%;padding:8px 10px;border-radius:8px;background:var(--surface-2,#252830);border:1px solid var(--border,#333);color:var(--text-primary,#fff);font-size:13px;outline:none;box-sizing:border-box;" />
+                </div>
+                <div>
+                    <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:2px;">Route</label>
+                    <select id="editMedRoute"
+                        style="width:100%;padding:8px 10px;border-radius:8px;background:var(--surface-2,#252830);border:1px solid var(--border,#333);color:var(--text-primary,#fff);font-size:13px;outline:none;box-sizing:border-box;">
+                        <option value="" ${!route ? 'selected' : ''}>Select route...</option>
+                        <option value="Oral" ${route === 'Oral' ? 'selected' : ''}>Oral</option>
+                        <option value="Subcutaneous" ${route === 'Subcutaneous' ? 'selected' : ''}>Subcutaneous</option>
+                        <option value="Intramuscular" ${route === 'Intramuscular' ? 'selected' : ''}>Intramuscular</option>
+                        <option value="Topical" ${route === 'Topical' ? 'selected' : ''}>Topical</option>
+                        <option value="Intravenous" ${route === 'Intravenous' ? 'selected' : ''}>Intravenous</option>
+                        <option value="Sublingual" ${route === 'Sublingual' ? 'selected' : ''}>Sublingual</option>
+                        <option value="Inhalation" ${route === 'Inhalation' ? 'selected' : ''}>Inhalation</option>
+                        <option value="Transdermal" ${route === 'Transdermal' ? 'selected' : ''}>Transdermal</option>
+                        <option value="Rectal" ${route === 'Rectal' ? 'selected' : ''}>Rectal</option>
+                        <option value="Nasal" ${route === 'Nasal' ? 'selected' : ''}>Nasal</option>
+                        <option value="Ophthalmic" ${route === 'Ophthalmic' ? 'selected' : ''}>Ophthalmic</option>
+                        <option value="Otic" ${route === 'Otic' ? 'selected' : ''}>Otic</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:2px;">Directions</label>
+                    <input id="editMedDirections" type="text" value="${directions}" placeholder="e.g. Take with food, Apply to affected area"
+                        style="width:100%;padding:8px 10px;border-radius:8px;background:var(--surface-2,#252830);border:1px solid var(--border,#333);color:var(--text-primary,#fff);font-size:13px;outline:none;box-sizing:border-box;" />
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:14px;">
+                <button id="editMedSaveBtn" onclick="submitEditMedication('${medId}')" style="flex:1;padding:10px;border-radius:8px;background:linear-gradient(135deg,#0891b2,#22d3ee);border:none;color:#0a0f1a;font-weight:700;font-size:13px;cursor:pointer;">Save Changes</button>
+                <button onclick="confirmDeactivateMedication('${medId}', '${name}')" style="padding:10px 14px;border-radius:8px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);color:#ef4444;font-size:12px;font-weight:600;cursor:pointer;" title="Discontinue this medication">Stop</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+async function submitEditMedication(medId) {
+    const dosage = document.getElementById('editMedDosage')?.value?.trim() || '';
+    const frequency = document.getElementById('editMedFrequency')?.value?.trim() || '';
+    const directions = document.getElementById('editMedDirections')?.value?.trim() || '';
+    const route = document.getElementById('editMedRoute')?.value || '';
+
+    const btn = document.getElementById('editMedSaveBtn');
+    if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+
+    try {
+        const resp = await apiFetch('/ops/api/ipad/patient-data/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'update_medication',
+                healthie_id: chartPanelData?.healthie_id,
+                medication_id: medId,
+                dosage,
+                frequency,
+                directions,
+                route,
+            }),
+        });
+
+        if (resp.success) {
+            showToast('Medication updated', 'success');
+            document.getElementById('editMedOverlay')?.remove();
+            loadChartData(chartPanelPatientId);
+        } else {
+            showToast('Update failed: ' + (resp.error || 'Unknown error'), 'error');
+            if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
+        }
+    } catch (e) {
+        showToast('Error: ' + (e.message || 'Network error'), 'error');
+        if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
+    }
+}
+
+function confirmDeactivateMedication(medId, name) {
+    if (!confirm('Discontinue "' + name + '"? This will mark it as inactive in Healthie.')) return;
+
+    apiFetch('/ops/api/ipad/patient-data/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'deactivate_medication',
+            healthie_id: chartPanelData?.healthie_id,
+            medication_id: medId,
+        }),
+    }).then(resp => {
+        if (resp.success) {
+            showToast('"' + name + '" discontinued', 'success');
+            document.getElementById('editMedOverlay')?.remove();
+            loadChartData(chartPanelPatientId);
+        } else {
+            showToast('Failed: ' + (resp.error || 'Unknown'), 'error');
+        }
+    }).catch(e => {
+        showToast('Error: ' + (e.message || 'Network error'), 'error');
+    });
+}
+
 function renderControlledSubstanceAlert(d) {
     const rxActive = d.prescriptions?.active || [];
     const controlled = rxActive.filter(p => p.schedule != null);
@@ -5788,7 +5994,7 @@ function renderChartingTab(container, d) {
 
     function fmtDate(dt) {
         if (!dt) return '—';
-        try { const dd = new Date(dt); return isNaN(dd.getTime()) ? '—' : dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/Phoenix' }); } catch { return '—'; }
+        try { const dd = new Date(dt); return isNaN(dd.getTime()) ? '—' : dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE }); } catch { return '—'; }
     }
 
     // Merge ALL notes into one timeline: scribe SOAP notes + Healthie chart notes
@@ -5981,6 +6187,19 @@ function renderChartingTab(container, d) {
 // ==================== FORMS TAB ====================
 // Shows: Patient intake/medical forms (NOT SOAP notes — those go in Charting)
 function renderFormsTab(container, d) {
+    // Kiosk launch button in Intake Forms tab
+    const pendingKioskForms = (d.pending_forms || []).filter(f => f.status !== 'completed');
+    if (pendingKioskForms.length > 0) {
+        const kioskBtnDiv = document.createElement('div');
+        kioskBtnDiv.style.cssText = 'padding:8px 12px;';
+        kioskBtnDiv.innerHTML = `
+            <button class="kiosk-launch-btn-large" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify(pendingKioskForms).replace(/"/g, '&quot;')}, '${((d.demographics || {}).full_name || 'Patient').replace(/'/g, "\\'")}')">
+                📋 Hand iPad to Patient — ${pendingKioskForms.length} form${pendingKioskForms.length > 1 ? 's' : ''} pending
+            </button>
+        `;
+        container.appendChild(kioskBtnDiv);
+    }
+
     const allForms = d.healthie_chart_notes || [];
     const cleanAnswer = (txt) => (txt || '').replace(/Invalid Date/gi, '').replace(/&nbsp;/gi, ' ').replace(/<[^>]+>/g, '').replace(/\s{2,}/g, ' ').trim() || '—';
     // Filter OUT SOAP/chart notes — keep only patient-filled forms (intake, consent, history, etc.)
@@ -6652,7 +6871,7 @@ function renderFinancialTab(container, d) {
         try {
             if (!dateStr) return '';
             const dt = new Date(dateStr);
-            return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/Phoenix' });
+            return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE });
         } catch { return ''; }
     };
 
@@ -6753,7 +6972,7 @@ function renderDispenseTab(container, d) {
         try {
             if (!dateStr) return '';
             const dt = new Date(dateStr);
-            return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/Phoenix' });
+            return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE });
         } catch { return ''; }
     };
 
@@ -6849,7 +7068,7 @@ function renderDocumentsTab(container, d) {
             </div>
             <div class="chart-section-body">
                 ${hDocs.length > 0 ? hDocs.slice(0, 30).map(doc => {
-                    const formatDate = (d) => { try { if (!d) return ''; const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/Phoenix' }); } catch { return ''; } };
+                    const formatDate = (d) => { try { if (!d) return ''; const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE }); } catch { return ''; } };
                     return `<div class="chart-lab-card" style="cursor:pointer;" onclick="window.open('/ops/api/ipad/document/${doc.id}', '_blank')">
                         <div style="display:flex; align-items:center; gap:8px;">
                             <span style="font-size:18px;">${(doc.file_content_type || '').includes('pdf') ? '📄' : (doc.file_content_type || '').includes('image') ? '🖼️' : '📎'}</span>
@@ -7018,7 +7237,7 @@ function renderDEASection() {
                     </div>
                     <div class="modal-field half">
                         <label>Staged For Date</label>
-                        <input type="date" id="stageDoseDate" value="${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' })}">
+                        <input type="date" id="stageDoseDate" value="${new Date().toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE })}">
                     </div>
                 </div>
                 <div class="modal-field">
@@ -7090,7 +7309,8 @@ function openStageDoseModal() {
     if (input) {
         input.value = '';
         document.getElementById('stageDosePatientBadge').style.display = 'none';
-        input.addEventListener('input', () => {
+        // FIX: Use oninput assignment instead of addEventListener to prevent listener accumulation
+        input.oninput = () => {
             const q = input.value.trim();
             if (timeout) clearTimeout(timeout);
             if (q.length < 3) { results.innerHTML = ''; results.style.display = 'none'; return; }
@@ -7109,7 +7329,7 @@ function openStageDoseModal() {
                     }).join('');
                 } catch (e) { results.innerHTML = '<div class="patient-search-empty">Search error</div>'; }
             }, 300);
-        });
+        };
     }
 }
 
@@ -7413,7 +7633,7 @@ function renderSuppliesSection() {
 `;
 }
 
-let supplyItems = null;
+// supplyItems declared at top with other state variables
 let activeSupplyLocation = 'mens_health';
 let showLowStockOnly = false;
 
@@ -7774,7 +7994,7 @@ function formatDateDisplay(dateStr) {
         if (isNaN(d.getTime())) return dateStr;
         return d.toLocaleDateString('en-US', {
             month: '2-digit', day: '2-digit', year: 'numeric',
-            timeZone: 'America/Phoenix'
+            timeZone: CLINIC_TIMEZONE
         }).replace(/\//g, '-');
     } catch { return dateStr; }
 }
@@ -8611,11 +8831,17 @@ async function submitPeptideDispense(patientId, patientName) {
 
     try {
         showToast('Recording dispense…', 'info');
+        // FIX(2026-04-06): Include patient_dob so label has DOB
+        const _p360 = patient360Cache[patientId];
+        const _demo = _p360?.demographics || {};
+        const _pat = allPatients.find(p => String(p.id || p.patient_id) === String(patientId)) || {};
+        const _dob = _demo.dob || _demo.date_of_birth || _pat.dob || _pat.date_of_birth || '';
         const result = await apiFetch('/ops/api/peptides/dispenses/', {
             method: 'POST',
             body: JSON.stringify({
                 patient_name: patientName,
                 patient_id: patientId,
+                patient_dob: _dob,
                 product_id: productId,
                 quantity: qty,
                 unit_price: unitPrice,
@@ -8626,8 +8852,14 @@ async function submitPeptideDispense(patientId, patientName) {
         if (result?.success || result?.data) {
             showToast('Peptide dispensed! Label generated.', 'success');
             document.getElementById('peptideDispenseModal')?.remove();
-            // Print label
-            printLabel(patientId, patientName, productName);
+            // FIX(2026-04-06): Use printPeptideLabel with dispense_id for full DB-backed label
+            const dispenseId = result?.dispense_id || result?.sale_id || result?.data?.dispense_id || result?.data?.sale_id;
+            if (dispenseId) {
+                printPeptideLabel(dispenseId);
+            } else {
+                // Fallback: generic label with type forced to peptide
+                printLabel(patientId, patientName, productName, { type: 'peptide' });
+            }
             // Refresh patient detail
             selectPatient(patientId);
         } else {
@@ -8674,7 +8906,7 @@ function printLabel(patientId, patientName, medication, options = {}) {
         medication: labelMed,
         dosage: dosage,
         provider: 'Dr. Aaron Whitten NMD - DEA: MW6359574',
-        dateDispensed: new Date().toLocaleDateString('en-US', { timeZone: 'America/Phoenix' }),
+        dateDispensed: new Date().toLocaleDateString('en-US', { timeZone: CLINIC_TIMEZONE }),
         lotNumber: options.lotNumber || '',
         volume: options.volume || '',
         vialNumber: options.vialNumber || '',
@@ -8805,13 +9037,86 @@ function renderCEODashboard(container) {
                     </div>
                 `).join('')}
             </div>` : ''}
+
+            <!-- Recent Receipts Section -->
+            <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                    <h3 style="font-size:16px; margin:0; color:var(--text-primary);">🧾 Recent Payment Receipts</h3>
+                    <button onclick="loadRecentReceipts()" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">View All</button>
+                </div>
+                <div id="recentReceiptsContainer" style="min-height:60px;">
+                    <p style="color:var(--text-tertiary); font-size:14px;">Loading receipts...</p>
+                </div>
+            </div>
         </div>
     `;
+
+    // Load recent receipts on CEO dashboard load
+    loadRecentReceipts();
+}
+
+// ─── LOAD RECENT RECEIPTS FOR CEO DASHBOARD ────────────────
+async function loadRecentReceipts() {
+    const container = document.getElementById('recentReceiptsContainer');
+    if (!container) return;
+
+    try {
+        // FIX(2026-04-02): Was missing /ops base path and using wrong auth method
+        const response = await fetch('/ops/api/receipts?limit=10', {
+            method: 'GET',
+            credentials: 'include',
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to load receipts: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const receipts = data.transactions || [];
+
+        if (receipts.length === 0) {
+            container.innerHTML = '<p style="color:var(--text-tertiary); font-size:14px;">No receipts available</p>';
+            return;
+        }
+
+        // Render payment list
+        container.innerHTML = receipts.map(receipt => {
+            var dt = '';
+            try { dt = new Date(receipt.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); } catch(e) {}
+            var statusColor = receipt.status === 'succeeded' ? '#4ade80' : receipt.status === 'failed' ? '#ef4444' : '#94a3b8';
+            return `
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-light);">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-size:14px; color:var(--text-primary); font-weight:500;">${receipt.patientName || 'Unknown Patient'}</div>
+                    <div style="font-size:12px; color:var(--text-tertiary); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                        ${receipt.description || 'Payment'} · ${dt}
+                    </div>
+                </div>
+                <div style="text-align:right; flex-shrink:0; margin-left:8px;">
+                    <div style="font-size:14px; font-weight:600; color:var(--text-primary);">
+                        $${(receipt.amount || 0).toFixed(2)}
+                    </div>
+                    <div style="font-size:10px; color:${statusColor};">${receipt.status || 'pending'}</div>
+                    ${receipt.receiptNumber ? `<div style="font-size:10px; color:var(--text-tertiary);">${receipt.receiptNumber}</div>` : ''}
+                </div>
+                ${receipt.healthieDocumentId && receipt.healthieClientId ? `
+                    <button onclick="window.open('https://secure.gethealthie.com/client_portal/clients/${receipt.healthieClientId}/documents/${receipt.healthieDocumentId}', '_blank')"
+                        style="margin-left:8px; padding:6px 10px; background:rgba(0,212,255,0.15); color:var(--cyan); border:1px solid rgba(0,212,255,0.3); border-radius:6px; font-size:11px; cursor:pointer; flex-shrink:0;">
+                        View
+                    </button>
+                ` : ''}
+            </div>`;
+        }).join('');
+
+    } catch (error) {
+        console.error('Error loading receipts:', error);
+        container.innerHTML = `<p style="color:#ef4444; font-size:14px;">Error loading receipts: ${error.message}</p>`;
+    }
 }
 
 // ─── PROVIDER SCHEDULE TAB ──────────────────────────────────
 var scheduleProviderFilter = 'all';
-var scheduleAllData = [];
+// scheduleAllData declared at top with other state variables
 var scheduleViewMode = 'day';
 var scheduleSelectedDate = new Date();
 var scheduleAppointmentTypes = [];
@@ -8876,7 +9181,7 @@ function getMonthRange(date) {
 }
 
 function getPhoenixDateStr(date) {
-    return date.toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+    return date.toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE });
 }
 
 async function renderScheduleView(container) {
@@ -9066,7 +9371,7 @@ function renderScheduleWeekView(contentEl) {
             var match = p.date.match(/^(\d{4}-\d{2}-\d{2})/);
             apptDate = match ? match[1] : '';
             if (!apptDate) {
-                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }); } catch(e) {}
+                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE }); } catch(e) {}
             }
         }
         if (byDate[apptDate] !== undefined) {
@@ -9124,7 +9429,7 @@ function renderScheduleMonthView(contentEl) {
             var match = p.date.match(/^(\d{4}-\d{2}-\d{2})/);
             apptDate = match ? match[1] : '';
             if (!apptDate) {
-                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }); } catch(e) {}
+                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE }); } catch(e) {}
             }
         }
         if (!byDate[apptDate]) byDate[apptDate] = [];
@@ -10040,7 +10345,7 @@ function renderScheduleList(contentEl) {
                 var pillBg = done ? 'rgba(34,197,94,0.15)' : 'var(--surface-2)';
                 var pillColor = done ? '#22c55e' : 'var(--text-tertiary)';
                 var pillBorder = done ? 'rgba(34,197,94,0.3)' : 'var(--border)';
-                var tooltip = done && taskData.completed_by ? taskData.completed_by + (taskData.completed_at ? ' · ' + new Date(taskData.completed_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix' }) : '') : '';
+                var tooltip = done && taskData.completed_by ? taskData.completed_by + (taskData.completed_at ? ' · ' + new Date(taskData.completed_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: CLINIC_TIMEZONE }) : '') : '';
                 html += '<button onclick="event.stopPropagation(); togglePrevisitTask(\x27' + apptId + '\x27, \x27' + t.key + '\x27)" title="' + (tooltip || 'Click to complete') + '" style="padding:3px 8px; font-size:10px; font-weight:500; border-radius:6px; border:1px solid ' + pillBorder + '; background:' + pillBg + '; color:' + pillColor + '; cursor:pointer; font-family:inherit; transition:all 0.15s;">' + (done ? '✓ ' : '') + t.label + '</button>';
             });
             html += '</div>';
@@ -10054,7 +10359,7 @@ function renderScheduleList(contentEl) {
                 });
                 var lastData = pvState[lastTask.key];
                 if (lastData && lastData.completed_by) {
-                    var timeStr = lastData.completed_at ? new Date(lastData.completed_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix' }) : '';
+                    var timeStr = lastData.completed_at ? new Date(lastData.completed_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: CLINIC_TIMEZONE }) : '';
                     html += '<div style="font-size:9px; color:var(--text-tertiary); margin-top:3px;">Last: ' + lastData.completed_by + (timeStr ? ' at ' + timeStr : '') + '</div>';
                 }
             }
@@ -10730,7 +11035,7 @@ async function openQuickDispenseModal() {
             return aExp - bExp;
         });
 
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE });
 
     document.body.insertAdjacentHTML('beforeend', `
         <div id="quickDispenseModal" class="modal-overlay visible" style="display:flex;">
@@ -10811,7 +11116,8 @@ async function openQuickDispenseModal() {
     const input = document.getElementById('qdPatientSearch');
     const results = document.getElementById('qdPatientResults');
     if (input) {
-        input.addEventListener('input', () => {
+        // FIX: Use oninput assignment instead of addEventListener to prevent listener accumulation
+        input.oninput = () => {
             const q = input.value.trim();
             if (q.length < 2) { results.innerHTML = ''; results.style.display = 'none'; return; }
             clearTimeout(qdTimeout);
@@ -10836,12 +11142,12 @@ async function openQuickDispenseModal() {
                     results.style.display = 'block';
                 }
             }, 200);
-        });
+        };
     }
 }
 
 function updateDispenseSummary() {
-    const WASTE_PER_SYRINGE = 0.1;
+    // WASTE_PER_SYRINGE defined at top of file
     const doseMl = parseFloat(document.getElementById('qdDoseMl')?.value || 0);
     const syringes = parseInt(document.getElementById('qdSyringes')?.value || 1);
     const vialSelect = document.getElementById('qdVial');
@@ -10936,7 +11242,7 @@ function selectQuickDispensePatient(patientId, patientName, regimen) {
 }
 
 async function submitQuickDispense() {
-    const WASTE_PER_SYRINGE = 0.1;
+    // WASTE_PER_SYRINGE defined at top of file
     const btn = document.getElementById('qdSubmitBtn');
     const errorEl = document.getElementById('qdError');
     const successEl = document.getElementById('qdSuccess');
@@ -10968,7 +11274,7 @@ async function submitQuickDispense() {
     btn.disabled = true;
 
     try {
-        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE });
 
         if (!needsSplit) {
             // ─── SINGLE VIAL DISPENSE (unchanged logic) ───
@@ -11115,8 +11421,10 @@ async function submitQuickDispense() {
             if (resp1.error) throw new Error(resp1.error);
 
             // Submit second vial dispense (only if there's remaining removal)
+            // FIX(2026-04-06): Hoist resp2 so retirement check can access it
+            let resp2 = null;
             if (remainingRemoval > 0.01) {
-                const resp2 = await apiFetch('/ops/api/ipad/quick-dispense/', {
+                resp2 = await apiFetch('/ops/api/ipad/quick-dispense/', {
                     method: 'POST',
                     body: JSON.stringify({
                         vialExternalId: nextVialExternalId,
@@ -11163,11 +11471,11 @@ async function submitQuickDispense() {
                 }
             }
 
-            // Prompt to print dispense label (combined info)
+            // FIX(2026-04-06): Print label uses first vial ID only (not combined string)
             promptPrintLabel({
                 patientName, drugName, dosePerSyringe, syringes,
                 totalDose, totalWaste, totalRemoval,
-                vialExternalId: `${vialExternalId} + ${nextVialExternalId} (split)`,
+                vialExternalId,
                 lotNumber: vialLotNumber, expDate: vialExpDate,
                 date: today
             });
@@ -11205,7 +11513,7 @@ function promptPrintLabel(info) {
                 </div>
                 <div style="display:flex; gap:10px; justify-content:center;">
                     <button onclick="document.getElementById('printLabelPrompt').remove()" class="btn-cancel" style="flex:1;">No Thanks</button>
-                    <button onclick="(function(i){ printLabel(window._qdPatientId, i.patientName, i.drugName, { dosage: i.dosePerSyringe + 'mL x ' + i.syringes + ' syringe(s)', volume: String(i.totalDose), vialNumber: i.vialExternalId, amountDispensed: String(i.totalDose), lotNumber: i.lotNumber || '', expDate: i.expDate || '' }); document.getElementById('printLabelPrompt').remove(); })(window._lastDispenseInfo)" class="btn-primary" style="flex:1; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);">🖨️ Print Label</button>
+                    <button onclick="(function(i){ printLabel(window._qdPatientId, i.patientName, i.drugName, { volume: String(i.totalDose), vialNumber: i.vialExternalId, amountDispensed: String(i.totalDose), lotNumber: i.lotNumber || '', expDate: i.expDate || '' }); document.getElementById('printLabelPrompt').remove(); })(window._lastDispenseInfo)" class="btn-primary" style="flex:1; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);">🖨️ Print Label</button>
                 </div>
             </div>
         </div>
@@ -11218,22 +11526,6 @@ function promptPrintLabel(info) {
     }, 15000);
 }
 
-// FIX(2026-03-26): Use proper PDF label generator instead of old HTML format
-function openPrintLabelWindow(info) {
-    if (!info) return;
-    // Use the same PDF label system as the dashboard
-    printLabel(window._qdPatientId, info.patientName, info.drugName, {
-        dosage: info.dosePerSyringe + 'mL x ' + info.syringes + ' syringe(s)',
-        volume: String(info.totalDose),
-        vialNumber: info.vialExternalId,
-        amountDispensed: String(info.totalDose),
-        lotNumber: info.lotNumber || '',
-        expDate: info.expDate || ''
-    });
-    printWindow.document.close();
-    // Auto-trigger print dialog
-    printWindow.onload = () => { printWindow.print(); };
-}
 
 // ─── DEMOGRAPHICS EDITING MODAL ─────────────────────────────
 function openEditDemographicsModal(patientId) {
@@ -12677,7 +12969,7 @@ function renderConversationThread(containerEl, convo, messages) {
     } else {
         messages.forEach(function(msg) {
             var timeStr = msg.created_at ? parseHealthieDate(msg.created_at).toLocaleString('en-US', {
-                month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix'
+                month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: CLINIC_TIMEZONE
             }) : '';
             var isProvider = (msg.sender_name || '').toLowerCase().includes('whitten') || (msg.sender_name || '').toLowerCase().includes('schafer');
             var align = isProvider ? 'flex-end' : 'flex-start';
@@ -13000,4 +13292,831 @@ function startScribeFromChart(patientId, patientName) {
         }
         showToast(`Switched to Scribe for ${patientName}`, 'info');
     }, 300);
+}
+
+// ============================================================
+//  RESET PATIENT PASSWORD
+// ============================================================
+
+function showResetPasswordDialog() {
+    const d = chartPanelData;
+    if (!d) return;
+    const email = d.demographics?.email || d.healthie_profile?.email || '';
+    const healthieId = d.healthie_id || '';
+    const patientName = d.demographics?.full_name || 'Patient';
+
+    document.getElementById('resetPwOverlay')?.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'resetPwOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    overlay.innerHTML = `
+        <div style="background:var(--surface-1,#1a1d23);border-radius:12px;padding:20px;width:90vw;max-width:400px;border:1px solid var(--border,#333);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                <div style="font-size:16px;font-weight:700;color:var(--text-primary,#fff);">🔑 Reset Password</div>
+                <button onclick="document.getElementById('resetPwOverlay').remove()" style="background:none;border:none;color:var(--text-tertiary);font-size:20px;cursor:pointer;">✕</button>
+            </div>
+            <div style="font-size:13px;color:var(--cyan);font-weight:600;margin-bottom:4px;">${sanitize(patientName)}</div>
+            <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px;">${sanitize(email) || 'No email on file'}</div>
+
+            <div style="margin-bottom:12px;">
+                <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:4px;">New Password</label>
+                <input id="resetPwInput" type="text" placeholder="Min 8 characters" autocomplete="off"
+                    style="width:100%;padding:10px 12px;border-radius:8px;background:var(--surface-2,#252830);border:1px solid var(--border,#333);color:var(--text-primary,#fff);font-size:15px;outline:none;box-sizing:border-box;" />
+            </div>
+
+            <div id="resetPwError" style="color:#ef4444;font-size:12px;min-height:18px;margin-bottom:8px;"></div>
+
+            <div style="display:flex;gap:8px;">
+                <button id="resetPwSetBtn" onclick="submitResetPassword('set')" style="flex:2;padding:12px;border-radius:8px;background:linear-gradient(135deg,#f59e0b,#d97706);border:none;color:#0a0f1a;font-weight:700;font-size:14px;cursor:pointer;">Set Password</button>
+                <button id="resetPwEmailBtn" onclick="submitResetPassword('email')" style="flex:1;padding:12px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border);color:var(--text-secondary);font-weight:600;font-size:12px;cursor:pointer;">Send Reset Email</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(overlay);
+    setTimeout(() => document.getElementById('resetPwInput')?.focus(), 100);
+}
+
+async function submitResetPassword(mode) {
+    const d = chartPanelData;
+    if (!d) return;
+    const email = d.demographics?.email || d.healthie_profile?.email || '';
+    const healthieId = d.healthie_id || '';
+    const patientName = d.demographics?.full_name || 'Patient';
+    const password = document.getElementById('resetPwInput')?.value || '';
+    const errEl = document.getElementById('resetPwError');
+    const setBtn = document.getElementById('resetPwSetBtn');
+    const emailBtn = document.getElementById('resetPwEmailBtn');
+
+    if (errEl) errEl.textContent = '';
+
+    if (mode === 'set') {
+        if (password.length < 8) {
+            if (errEl) errEl.textContent = 'Password must be at least 8 characters';
+            return;
+        }
+        if (!healthieId) {
+            if (errEl) errEl.textContent = 'No Healthie ID found for this patient';
+            return;
+        }
+        if (setBtn) { setBtn.textContent = 'Setting...'; setBtn.disabled = true; }
+    } else {
+        if (!email) {
+            if (errEl) errEl.textContent = 'No email on file for this patient';
+            return;
+        }
+        if (emailBtn) { emailBtn.textContent = 'Sending...'; emailBtn.disabled = true; }
+    }
+
+    try {
+        const body = mode === 'set'
+            ? { healthie_id: healthieId, password, patient_name: patientName }
+            : { email, action: 'send_reset', patient_name: patientName };
+
+        const resp = await apiFetch('/ops/api/ipad/patient-chart/reset-password/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+
+        if (resp.success) {
+            document.getElementById('resetPwOverlay')?.remove();
+            if (mode === 'set') {
+                showToast(`✅ Password set for ${patientName}`, 'success');
+            } else {
+                showToast(`✅ Reset email sent to ${email}`, 'success');
+            }
+        } else {
+            if (errEl) errEl.textContent = resp.error || 'Failed';
+        }
+    } catch (err) {
+        if (errEl) errEl.textContent = 'Error: ' + (err.message || 'Request failed');
+    } finally {
+        if (setBtn) { setBtn.textContent = 'Set Password'; setBtn.disabled = false; }
+        if (emailBtn) { emailBtn.textContent = 'Send Reset Email'; emailBtn.disabled = false; }
+    }
+}
+
+// ============================================================
+//  KIOSK MODE — Patient-facing form overlay
+//  Locks iPad for patient to fill out their pending forms
+//  Staff enters 4-digit PIN to unlock and return to dashboard
+// ============================================================
+
+let kioskActive = false;
+let kioskSessionIds = [];
+let kioskPopstateHandler = null;
+let kioskOriginalOverscroll = '';
+
+/**
+ * Launch kiosk mode — fullscreen patient form overlay
+ * @param {string} patientId - Local patient UUID
+ * @param {string} healthieId - Healthie client ID
+ * @param {Array} pendingForms - [{id, name, status}]
+ * @param {string} patientName - Display name
+ */
+function launchKioskMode(patientId, healthieId, pendingForms, patientName) {
+    // Parse forms if passed as string (from inline HTML attribute)
+    if (typeof pendingForms === 'string') {
+        try { pendingForms = JSON.parse(pendingForms); } catch(e) { pendingForms = []; }
+    }
+
+    if (!pendingForms || pendingForms.length === 0) {
+        showToast('No pending forms for this patient', 'info');
+        return;
+    }
+
+    // Confirmation dialog
+    if (!confirm(`Lock iPad for patient use?\n\n${patientName} has ${pendingForms.length} form${pendingForms.length > 1 ? 's' : ''} to complete.\n\nA 4-digit PIN will be required to exit.`)) {
+        return;
+    }
+
+    kioskActive = true;
+    kioskSessionIds = [];
+
+    // Create overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'kioskOverlay';
+    overlay.className = 'kiosk-overlay';
+    document.body.appendChild(overlay);
+
+    // Lock navigation
+    kioskOriginalOverscroll = document.body.style.overscrollBehavior;
+    document.body.style.overscrollBehavior = 'contain';
+    history.pushState({ kiosk: true }, '');
+    kioskPopstateHandler = function(e) {
+        if (kioskActive) {
+            history.pushState({ kiosk: true }, '');
+        }
+    };
+    window.addEventListener('popstate', kioskPopstateHandler);
+
+    // Start with form select (or jump to first form if only one)
+    const formQueue = pendingForms.filter(f => f.status !== 'completed');
+    if (formQueue.length === 1) {
+        renderKioskForm(overlay, formQueue[0], { patientId, healthieId, patientName, formQueue, currentIndex: 0 });
+    } else {
+        renderKioskFormIntro(overlay, { patientId, healthieId, patientName, formQueue, currentIndex: 0 });
+    }
+}
+
+function renderKioskHeader(overlay, showLock) {
+    return `
+        <div class="kiosk-header">
+            <div class="kiosk-header-brand">
+                <img src="/ops/nowoptimal_logo.png" alt="NOW Optimal" style="height:36px; object-fit:contain;">
+            </div>
+            ${showLock !== false ? '<button class="kiosk-lock-btn" onclick="showKioskUnlockDialog()" title="Staff unlock">🔒</button>' : ''}
+        </div>
+    `;
+}
+
+function renderKioskProgress(formQueue, currentIndex) {
+    if (formQueue.length <= 1) return '';
+    return `
+        <div class="kiosk-progress-bar">
+            ${formQueue.map((f, i) => `<div class="kiosk-progress-dot ${i < currentIndex ? 'completed' : ''} ${i === currentIndex ? 'active' : ''}"></div>`).join('')}
+            <span class="kiosk-progress-label">Form ${currentIndex + 1} of ${formQueue.length}</span>
+        </div>
+    `;
+}
+
+/**
+ * Intro screen — shows patient name and all forms they need to complete
+ */
+function renderKioskFormIntro(overlay, ctx) {
+    overlay.innerHTML = `
+        ${renderKioskHeader(overlay)}
+        <div class="kiosk-body">
+            <div class="kiosk-patient-banner">
+                <div class="kiosk-patient-name">Welcome, ${sanitize(ctx.patientName)}</div>
+                <div class="kiosk-patient-subtitle">Please complete the following ${ctx.formQueue.length} form${ctx.formQueue.length > 1 ? 's' : ''}</div>
+            </div>
+            <div class="kiosk-form-list">
+                ${ctx.formQueue.map((f, i) => `
+                    <div class="kiosk-form-card">
+                        <div class="kiosk-form-card-title">${i + 1}. ${sanitize(f.name)}</div>
+                        <div class="kiosk-form-card-status">Tap "Begin" to start</div>
+                    </div>
+                `).join('')}
+            </div>
+            <div style="max-width:600px; margin:24px auto 0;">
+                <button class="kiosk-submit-btn" onclick="kioskStartFirstForm()">Begin</button>
+            </div>
+        </div>
+    `;
+
+    // Store context globally for callbacks
+    window._kioskCtx = ctx;
+}
+
+function kioskStartFirstForm() {
+    const overlay = document.getElementById('kioskOverlay');
+    const ctx = window._kioskCtx;
+    if (!overlay || !ctx) return;
+    renderKioskForm(overlay, ctx.formQueue[0], ctx);
+}
+
+/**
+ * Render a single form for patient to fill out
+ */
+async function renderKioskForm(overlay, form, ctx) {
+    window._kioskCtx = ctx;
+
+    overlay.innerHTML = `
+        ${renderKioskHeader(overlay)}
+        <div class="kiosk-body">
+            ${renderKioskProgress(ctx.formQueue, ctx.currentIndex)}
+            <div class="kiosk-form-container">
+                <div class="kiosk-form-title">${sanitize(form.name)}</div>
+                <div class="kiosk-form-desc">Please fill out all required fields below</div>
+                <div id="kioskFormFields" style="text-align:center; padding:40px;">
+                    <div class="spinner"></div>
+                    <div style="color:#64748b; margin-top:8px;">Loading form...</div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Fetch form structure from Healthie
+    try {
+        const resp = await fetch(`/ops/api/ipad/kiosk/form-structure/?form_id=${form.id}`, { credentials: 'include' });
+        if (resp.status === 401 || resp.status === 403) {
+            document.getElementById('kioskFormFields').innerHTML = `
+                <div style="color:#ef4444; text-align:center; padding:40px;">
+                    <div style="font-size:48px; margin-bottom:12px;">⚠️</div>
+                    <div style="font-size:18px; font-weight:600;">Session Expired</div>
+                    <div style="font-size:14px; color:#64748b; margin-top:8px;">Please return this iPad to the front desk.</div>
+                </div>
+            `;
+            return;
+        }
+        const data = await resp.json();
+        if (!data.success || !data.form) {
+            throw new Error(data.error || 'Failed to load form');
+        }
+
+        // Create audit record
+        const auditResp = await fetch('/ops/api/ipad/kiosk/submit/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                patient_id: ctx.patientId || null,
+                healthie_patient_id: ctx.healthieId,
+                form_id: form.id,
+                form_name: form.name,
+                answers: [],
+                device_info: { screen_width: screen.width, screen_height: screen.height, platform: navigator.platform },
+            }),
+        }).catch(() => null);
+        // We don't create a session here; we'll create on actual submit
+
+        renderKioskFormFields(data.form, form, ctx);
+    } catch (err) {
+        console.error('[Kiosk] Failed to load form:', err);
+        document.getElementById('kioskFormFields').innerHTML = `
+            <div style="color:#ef4444; text-align:center; padding:40px;">
+                <div style="font-size:48px; margin-bottom:12px;">❌</div>
+                <div style="font-size:18px; font-weight:600;">Could not load form</div>
+                <div style="font-size:14px; color:#64748b; margin-top:8px;">${sanitize(err.message)}</div>
+                <button class="kiosk-submit-btn" style="margin-top:20px; max-width:300px;" onclick="renderKioskForm(document.getElementById('kioskOverlay'), window._kioskCtx.formQueue[window._kioskCtx.currentIndex], window._kioskCtx)">Retry</button>
+            </div>
+        `;
+    }
+}
+
+function renderKioskFormFields(formData, form, ctx) {
+    const container = document.getElementById('kioskFormFields');
+    if (!container) return;
+
+    const fields = formData.fields || [];
+    window._kioskFormData = formData;
+    window._kioskSignaturePads = {};
+
+    let html = '';
+    for (const field of fields) {
+        html += renderKioskField(field);
+    }
+
+    html += `
+        <button class="kiosk-submit-btn" id="kioskSubmitBtn" onclick="submitKioskForm()">
+            Submit Form
+        </button>
+    `;
+
+    container.innerHTML = html;
+    container.style.textAlign = 'left';
+    container.style.padding = '0';
+
+    // Initialize signature pads
+    for (const field of fields) {
+        if (field.type === 'signature') {
+            initKioskSignaturePad('kioskSig_' + field.id);
+        }
+    }
+}
+
+function renderKioskField(field) {
+    const req = field.required ? 'required' : '';
+    const reqClass = field.required ? ' required' : '';
+    const desc = field.description ? `<div class="kiosk-field-description">${sanitize(field.description)}</div>` : '';
+    const id = 'kioskField_' + field.id;
+
+    let inputHtml = '';
+
+    switch (field.type) {
+        case 'text':
+        case 'string':
+            inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
+            break;
+
+        case 'textarea':
+        case 'long_text':
+            inputHtml = `<textarea id="${id}" class="kiosk-input" rows="4" placeholder="Enter your answer" data-field-id="${field.id}" ${req}></textarea>`;
+            break;
+
+        case 'number':
+            inputHtml = `<input type="number" id="${id}" class="kiosk-input" placeholder="Enter a number" data-field-id="${field.id}" ${req}>`;
+            break;
+
+        case 'phone':
+            inputHtml = `<input type="tel" id="${id}" class="kiosk-input" placeholder="(___) ___-____" data-field-id="${field.id}" ${req} oninput="formatKioskPhone(this)">`;
+            break;
+
+        case 'date':
+            inputHtml = `<input type="date" id="${id}" class="kiosk-input" data-field-id="${field.id}" ${req}>`;
+            break;
+
+        case 'radio':
+        case 'dropdown': {
+            const options = field.options || [];
+            inputHtml = `<div class="kiosk-radio-group" id="${id}" data-field-id="${field.id}">
+                ${options.map(opt => `
+                    <div class="kiosk-radio-option" onclick="selectKioskRadio(this)" data-value="${sanitize(opt)}">${sanitize(opt)}</div>
+                `).join('')}
+            </div>`;
+            break;
+        }
+
+        case 'checkbox': {
+            const options = field.options || [];
+            if (options.length > 0) {
+                inputHtml = `<div class="kiosk-checkbox-group" id="${id}" data-field-id="${field.id}">
+                    ${options.map(opt => `
+                        <div class="kiosk-checkbox-option" onclick="toggleKioskCheckbox(this)" data-value="${sanitize(opt)}">${sanitize(opt)}</div>
+                    `).join('')}
+                </div>`;
+            } else {
+                // Single checkbox (consent-style)
+                inputHtml = `<div class="kiosk-checkbox-group" id="${id}" data-field-id="${field.id}">
+                    <div class="kiosk-checkbox-option" onclick="toggleKioskCheckbox(this)" data-value="Yes" style="width:100%;">
+                        ☐ I agree
+                    </div>
+                </div>`;
+            }
+            break;
+        }
+
+        case 'signature':
+            inputHtml = `
+                <div class="kiosk-signature-wrapper">
+                    <canvas id="kioskSig_${field.id}" class="kiosk-signature-canvas" data-field-id="${field.id}"></canvas>
+                    <div class="kiosk-signature-actions">
+                        <button class="kiosk-signature-clear" onclick="clearKioskSignature('kioskSig_${field.id}')">Clear Signature</button>
+                        <span class="kiosk-signature-disclaimer">By signing, I acknowledge that I have read and agree to the above.</span>
+                    </div>
+                </div>
+            `;
+            break;
+
+        case 'file':
+        case 'image':
+            inputHtml = `<input type="file" id="${id}" class="kiosk-input" accept="image/*,application/pdf" data-field-id="${field.id}" ${req} style="padding:10px;">`;
+            break;
+
+        case 'read_only':
+        case 'label':
+        case 'header':
+            // Display-only field — just show label text, no input
+            return `<div class="kiosk-field"><div style="font-size:14px; color:#334155; line-height:1.5; padding:8px 0; border-bottom:1px solid #e2e8f0;">${sanitize(field.label)}</div>${desc}</div>`;
+
+        default:
+            inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
+    }
+
+    return `
+        <div class="kiosk-field" data-field-id="${field.id}">
+            <label class="kiosk-field-label${reqClass}">${sanitize(field.label)}</label>
+            ${desc}
+            ${inputHtml}
+            <div class="kiosk-field-error" id="kioskErr_${field.id}"></div>
+        </div>
+    `;
+}
+
+// ─── KIOSK FORM INTERACTIONS ──────────────────────────
+
+function selectKioskRadio(el) {
+    const group = el.parentElement;
+    group.querySelectorAll('.kiosk-radio-option').forEach(o => o.classList.remove('selected'));
+    el.classList.add('selected');
+}
+
+function toggleKioskCheckbox(el) {
+    el.classList.toggle('selected');
+    // Update visual checkbox indicator
+    if (el.classList.contains('selected')) {
+        el.innerHTML = el.innerHTML.replace('☐', '☑');
+    } else {
+        el.innerHTML = el.innerHTML.replace('☑', '☐');
+    }
+}
+
+function formatKioskPhone(input) {
+    let v = input.value.replace(/\D/g, '');
+    if (v.length > 10) v = v.slice(0, 10);
+    if (v.length >= 6) {
+        input.value = `(${v.slice(0,3)}) ${v.slice(3,6)}-${v.slice(6)}`;
+    } else if (v.length >= 3) {
+        input.value = `(${v.slice(0,3)}) ${v.slice(3)}`;
+    }
+}
+
+// ─── SIGNATURE PAD ────────────────────────────────────
+
+function initKioskSignaturePad(canvasId) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+
+    // Set canvas resolution
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * 2;
+    canvas.height = rect.height * 2;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(2, 2);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#000000';
+
+    let drawing = false;
+    let lastX = 0, lastY = 0;
+    let hasDrawn = false;
+
+    canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        drawing = true;
+        const touch = e.touches[0];
+        const r = canvas.getBoundingClientRect();
+        lastX = touch.clientX - r.left;
+        lastY = touch.clientY - r.top;
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (!drawing) return;
+        hasDrawn = true;
+        const touch = e.touches[0];
+        const r = canvas.getBoundingClientRect();
+        const x = touch.clientX - r.left;
+        const y = touch.clientY - r.top;
+        ctx.beginPath();
+        ctx.moveTo(lastX, lastY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        lastX = x;
+        lastY = y;
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', () => { drawing = false; });
+
+    // Mouse support (for testing on desktop)
+    canvas.addEventListener('mousedown', (e) => {
+        drawing = true;
+        const r = canvas.getBoundingClientRect();
+        lastX = e.clientX - r.left;
+        lastY = e.clientY - r.top;
+    });
+    canvas.addEventListener('mousemove', (e) => {
+        if (!drawing) return;
+        hasDrawn = true;
+        const r = canvas.getBoundingClientRect();
+        const x = e.clientX - r.left;
+        const y = e.clientY - r.top;
+        ctx.beginPath();
+        ctx.moveTo(lastX, lastY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        lastX = x;
+        lastY = y;
+    });
+    canvas.addEventListener('mouseup', () => { drawing = false; });
+    canvas.addEventListener('mouseleave', () => { drawing = false; });
+
+    window._kioskSignaturePads[canvasId] = {
+        isEmpty: () => !hasDrawn,
+        toDataURL: () => canvas.toDataURL('image/png'),
+        clear: () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            hasDrawn = false;
+        }
+    };
+}
+
+function clearKioskSignature(canvasId) {
+    const pad = window._kioskSignaturePads[canvasId];
+    if (pad) pad.clear();
+}
+
+// ─── FORM SUBMISSION ──────────────────────────────────
+
+async function submitKioskForm() {
+    const formData = window._kioskFormData;
+    const ctx = window._kioskCtx;
+    if (!formData || !ctx) return;
+
+    const fields = formData.fields || [];
+    const answers = [];
+    let hasErrors = false;
+    let signatureDataUrl = null;
+
+    // Collect and validate answers
+    for (const field of fields) {
+        // Skip display-only fields
+        if (['read_only', 'label', 'header'].includes(field.type)) continue;
+
+        const errEl = document.getElementById('kioskErr_' + field.id);
+        if (errEl) errEl.textContent = '';
+
+        let value = '';
+
+        if (field.type === 'signature') {
+            const pad = window._kioskSignaturePads['kioskSig_' + field.id];
+            if (pad && !pad.isEmpty()) {
+                value = 'Signed';
+                signatureDataUrl = pad.toDataURL();
+            }
+        } else if (field.type === 'radio' || field.type === 'dropdown') {
+            const group = document.getElementById('kioskField_' + field.id);
+            const selected = group?.querySelector('.selected');
+            value = selected?.dataset?.value || '';
+        } else if (field.type === 'checkbox') {
+            const group = document.getElementById('kioskField_' + field.id);
+            const selectedOpts = group?.querySelectorAll('.selected') || [];
+            value = Array.from(selectedOpts).map(o => o.dataset.value).join(', ');
+        } else if (field.type === 'file' || field.type === 'image') {
+            const input = document.getElementById('kioskField_' + field.id);
+            value = input?.files?.length > 0 ? input.files[0].name : '';
+        } else {
+            const input = document.getElementById('kioskField_' + field.id);
+            value = input?.value?.trim() || '';
+        }
+
+        // Validation
+        if (field.required && !value) {
+            hasErrors = true;
+            if (errEl) errEl.textContent = 'This field is required';
+            const fieldEl = document.querySelector(`.kiosk-field[data-field-id="${field.id}"]`);
+            if (fieldEl && hasErrors) {
+                fieldEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                hasErrors = true; // keep going to show all errors
+            }
+        }
+
+        if (value) {
+            answers.push({ custom_module_id: field.id, answer: value });
+        }
+    }
+
+    if (hasErrors) {
+        // Scroll to first error
+        const firstErr = document.querySelector('.kiosk-field-error:not(:empty)');
+        if (firstErr) firstErr.closest('.kiosk-field')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+    }
+
+    // Disable button
+    const btn = document.getElementById('kioskSubmitBtn');
+    if (btn) { btn.textContent = 'Submitting...'; btn.disabled = true; }
+
+    try {
+        const currentForm = ctx.formQueue[ctx.currentIndex];
+        const resp = await fetch('/ops/api/ipad/kiosk/submit/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                patient_id: ctx.patientId || null,
+                healthie_patient_id: ctx.healthieId,
+                form_id: currentForm.id,
+                form_name: currentForm.name,
+                answers: answers,
+                signature_data_url: signatureDataUrl,
+                device_info: { screen_width: screen.width, screen_height: screen.height, platform: navigator.platform },
+            }),
+        });
+
+        const data = await resp.json();
+
+        if (data.session_id) {
+            kioskSessionIds.push(data.session_id);
+        }
+
+        if (!resp.ok || !data.success) {
+            throw new Error(data.error || 'Submission failed');
+        }
+
+        // Show confirmation, then advance to next form
+        renderKioskConfirmation(data.completed_at, ctx);
+
+    } catch (err) {
+        console.error('[Kiosk] Submit error:', err);
+        if (btn) { btn.textContent = 'Submit Form'; btn.disabled = false; }
+        // Show error inline
+        const overlay = document.getElementById('kioskOverlay');
+        const errDiv = document.createElement('div');
+        errDiv.style.cssText = 'padding:12px; margin:12px 0; border-radius:8px; background:#fef2f2; border:1px solid #fecaca; color:#991b1b; font-size:14px; text-align:center;';
+        errDiv.textContent = 'Error: ' + (err.message || 'Could not submit form. Please try again.');
+        btn?.parentElement?.insertBefore(errDiv, btn);
+        setTimeout(() => errDiv.remove(), 5000);
+    }
+}
+
+function renderKioskConfirmation(completedAt, ctx) {
+    const overlay = document.getElementById('kioskOverlay');
+    if (!overlay) return;
+
+    const timestamp = completedAt ? new Date(completedAt).toLocaleString('en-US', {
+        timeZone: CLINIC_TIMEZONE,
+        month: 'long', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit', hour12: true
+    }) + ' MST' : new Date().toLocaleString();
+
+    const isLastForm = ctx.currentIndex >= ctx.formQueue.length - 1;
+
+    overlay.innerHTML = `
+        ${renderKioskHeader(overlay)}
+        <div class="kiosk-body" style="display:flex; align-items:center; justify-content:center;">
+            <div class="kiosk-confirmation">
+                <div class="kiosk-confirmation-icon">✅</div>
+                <div class="kiosk-confirmation-title">Form Submitted Successfully</div>
+                <div class="kiosk-confirmation-timestamp">${timestamp}</div>
+                ${isLastForm ? `
+                    <div style="margin-top:16px;">
+                        <button class="kiosk-next-btn" onclick="renderKioskReturnScreen()">Done</button>
+                    </div>
+                ` : `
+                    <div style="margin-top:16px;">
+                        <button class="kiosk-next-btn" onclick="kioskAdvanceToNextForm()">Continue to Next Form</button>
+                        <div style="font-size:13px; color:#64748b; margin-top:8px;">Form ${ctx.currentIndex + 1} of ${ctx.formQueue.length} complete</div>
+                    </div>
+                `}
+            </div>
+        </div>
+    `;
+
+    window._kioskCtx = ctx;
+}
+
+function kioskAdvanceToNextForm() {
+    const ctx = window._kioskCtx;
+    if (!ctx) return;
+    ctx.currentIndex++;
+    if (ctx.currentIndex >= ctx.formQueue.length) {
+        renderKioskReturnScreen();
+        return;
+    }
+    const overlay = document.getElementById('kioskOverlay');
+    if (!overlay) return;
+    renderKioskForm(overlay, ctx.formQueue[ctx.currentIndex], ctx);
+}
+
+function renderKioskReturnScreen() {
+    const overlay = document.getElementById('kioskOverlay');
+    if (!overlay) return;
+
+    overlay.innerHTML = `
+        ${renderKioskHeader(overlay)}
+        <div class="kiosk-return-screen">
+            <div class="kiosk-return-icon">🏥</div>
+            <div class="kiosk-return-title">All Done!</div>
+            <div class="kiosk-return-subtitle">Thank you. Please return this iPad to the front desk.</div>
+        </div>
+    `;
+}
+
+// ─── PIN UNLOCK DIALOG ────────────────────────────────
+
+function showKioskUnlockDialog() {
+    // Remove existing dialog if any
+    document.getElementById('kioskUnlockOverlay')?.remove();
+
+    const dialog = document.createElement('div');
+    dialog.id = 'kioskUnlockOverlay';
+    dialog.className = 'kiosk-unlock-overlay';
+    dialog.onclick = (e) => { if (e.target === dialog) dialog.remove(); };
+
+    dialog.innerHTML = `
+        <div class="kiosk-unlock-dialog">
+            <div class="kiosk-unlock-title">🔒 Staff Unlock</div>
+            <div class="kiosk-unlock-subtitle">Enter 4-digit PIN to exit patient mode</div>
+            <input type="tel" id="kioskPinInput" class="kiosk-pin-input" maxlength="4" pattern="\\d{4}" inputmode="numeric" autocomplete="off" autofocus>
+            <div class="kiosk-pin-error" id="kioskPinError"></div>
+            <div class="kiosk-unlock-actions">
+                <button class="kiosk-unlock-cancel" onclick="document.getElementById('kioskUnlockOverlay').remove()">Cancel</button>
+                <button class="kiosk-unlock-submit" id="kioskUnlockBtn" onclick="validateKioskPin()">Unlock</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(dialog);
+
+    // Focus and auto-submit on 4 digits
+    setTimeout(() => {
+        const input = document.getElementById('kioskPinInput');
+        if (input) {
+            input.focus();
+            input.addEventListener('input', () => {
+                if (input.value.length === 4) validateKioskPin();
+            });
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') validateKioskPin();
+            });
+        }
+    }, 100);
+}
+
+async function validateKioskPin() {
+    const input = document.getElementById('kioskPinInput');
+    const errEl = document.getElementById('kioskPinError');
+    const btn = document.getElementById('kioskUnlockBtn');
+    const pin = input?.value || '';
+
+    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+        if (errEl) errEl.textContent = 'Enter a 4-digit PIN';
+        return;
+    }
+
+    if (btn) { btn.textContent = 'Checking...'; btn.disabled = true; }
+
+    try {
+        const resp = await fetch('/ops/api/ipad/kiosk/unlock/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin, kiosk_session_ids: kioskSessionIds }),
+        });
+
+        const data = await resp.json();
+
+        if (resp.status === 429) {
+            if (errEl) errEl.textContent = 'Too many attempts. Wait 1 minute.';
+            if (btn) { btn.textContent = 'Unlock'; btn.disabled = false; }
+            return;
+        }
+
+        if (data.valid) {
+            exitKioskMode();
+        } else {
+            if (errEl) errEl.textContent = 'Incorrect PIN';
+            if (input) { input.value = ''; input.focus(); }
+            if (btn) { btn.textContent = 'Unlock'; btn.disabled = false; }
+        }
+    } catch (err) {
+        console.error('[Kiosk] Unlock error:', err);
+        if (errEl) errEl.textContent = 'Connection error. Try again.';
+        if (btn) { btn.textContent = 'Unlock'; btn.disabled = false; }
+    }
+}
+
+function exitKioskMode() {
+    kioskActive = false;
+
+    // Remove overlay
+    document.getElementById('kioskOverlay')?.remove();
+    document.getElementById('kioskUnlockOverlay')?.remove();
+
+    // Restore navigation
+    document.body.style.overscrollBehavior = kioskOriginalOverscroll;
+    if (kioskPopstateHandler) {
+        window.removeEventListener('popstate', kioskPopstateHandler);
+        kioskPopstateHandler = null;
+    }
+
+    // Clean up state
+    kioskSessionIds = [];
+    window._kioskCtx = null;
+    window._kioskFormData = null;
+    window._kioskSignaturePads = {};
+
+    showToast('Kiosk mode exited', 'success');
+
+    // Refresh chart data to show updated form status
+    if (chartPanelPatientId) {
+        loadChartData(chartPanelPatientId);
+    }
 }

@@ -50,6 +50,8 @@ type EditablePatient = {
   healthieBillingLabel: string;
   healthieBillingColor: string;
   healthieBillingReason: string | null;
+  patientType: string;
+  serviceTags: string[];
 };
 
 type EditableFieldKey = keyof EditablePatient;
@@ -401,6 +403,8 @@ function mapPatient(row: PatientDataEntryRow, supplement?: ProfessionalPatient):
     lastSupplyDate: toStringValue(chosenSupply),
     eligibleForNextSupply: toStringValue(eligibleSupply),
     lastSupplyFromDea: lastSupplyFromDea,
+    patientType: (row.patient_type as string) ?? 'member',
+    serviceTags: (row.service_tags as string[]) ?? [],
     ...healthieBilling
   };
 }
@@ -594,6 +598,7 @@ export default function PatientTable({
   const [rows, setRows] = useState<EditablePatient[]>(() =>
     patients.map((row) => mapPatient(row, professionalMap.get(row.patient_id)))
   );
+  const [patientTab, setPatientTab] = useState<'all' | 'member' | 'visit'>('all');
   const [filterStatus, setFilterStatus] = useState<string>(initialStatusFilter || 'all');
   const [searchTerm, setSearchTerm] = useState(initialSearchQuery || '');
   const [labsDueDays, setLabsDueDays] = useState<string>(initialLabsDueFilter || '');
@@ -646,8 +651,14 @@ export default function PatientTable({
   }
 
 
+  const memberCount = useMemo(() => rows.filter(r => r.patientType === 'member').length, [rows]);
+  const visitCount = useMemo(() => rows.filter(r => r.patientType === 'visit').length, [rows]);
+
   const filteredRows = useMemo(() => {
     const matches = rows.filter((row) => {
+      // Tab filter
+      if (patientTab !== 'all' && row.patientType !== patientTab) return false;
+
       let matchesStatus = filterStatus === 'all';
       if (!matchesStatus && filterStatus) {
         const rowStatusKey = row.statusKey?.toLowerCase() || '';
@@ -682,7 +693,7 @@ export default function PatientTable({
     });
     matches.sort(comparePatients);
     return matches;
-  }, [rows, filterStatus, searchTerm, labsDueDays]);
+  }, [rows, patientTab, filterStatus, searchTerm, labsDueDays]);
 
   const headerLabels = [
     'Patient Name',
@@ -703,6 +714,7 @@ export default function PatientTable({
     'Added By',
     'Date Added',
     'Last Modified',
+    'Tags',
     'Last Supply',
     'Eligible Date',
     ...(canDeletePatient ? ['Actions'] : [])
@@ -961,8 +973,39 @@ export default function PatientTable({
     );
   }
 
+  const TAG_COLORS: Record<string, string> = {
+    peptides: '#8b5cf6',
+    'weight-loss': '#f59e0b',
+    'iv-therapy': '#06b6d4',
+    evexipel: '#ec4899',
+    telehealth: '#10b981',
+  };
+
+  const tabStyle = (isActive: boolean): CSSProperties => ({
+    padding: '0.5rem 1.2rem',
+    borderRadius: '0.5rem',
+    border: 'none',
+    cursor: 'pointer',
+    fontWeight: isActive ? 600 : 400,
+    fontSize: '0.875rem',
+    background: isActive ? '#0f172a' : 'transparent',
+    color: isActive ? '#ffffff' : '#64748b',
+    transition: 'all 0.15s ease',
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div style={{ display: 'flex', gap: '0.25rem', background: '#f1f5f9', padding: '0.25rem', borderRadius: '0.625rem', width: 'fit-content' }}>
+        <button style={tabStyle(patientTab === 'all')} onClick={() => setPatientTab('all')}>
+          All ({rows.length})
+        </button>
+        <button style={tabStyle(patientTab === 'member')} onClick={() => setPatientTab('member')}>
+          Members ({memberCount})
+        </button>
+        <button style={tabStyle(patientTab === 'visit')} onClick={() => setPatientTab('visit')}>
+          Visits ({visitCount})
+        </button>
+      </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center' }}>
         <input
           type="search"
@@ -1356,6 +1399,27 @@ export default function PatientTable({
                       ) : (
                         '—'
                       )}
+                    </td>
+                    <td style={{ ...baseCell, minWidth: '100px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                        {row.serviceTags.length > 0 ? row.serviceTags.map((tag) => (
+                          <span
+                            key={tag}
+                            style={{
+                              display: 'inline-block',
+                              padding: '0.15rem 0.5rem',
+                              borderRadius: '9999px',
+                              fontSize: '0.7rem',
+                              fontWeight: 600,
+                              color: '#ffffff',
+                              background: TAG_COLORS[tag] || '#64748b',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {tag}
+                          </span>
+                        )) : <span style={{ color: '#cbd5e1', fontSize: '0.75rem' }}>—</span>}
+                      </div>
                     </td>
                     <td style={narrowCellStyle}>{formatDisplayDate(row.eligibleForNextSupply)}</td>
                     {canDeletePatient && (

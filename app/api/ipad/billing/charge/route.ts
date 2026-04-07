@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { createHealthieClient } from '@/lib/healthie';
+import { uploadSimpleReceiptToHealthie } from '@/lib/simpleReceiptUpload';
+import { v4 as uuidv4 } from 'uuid';
 
 /**
  * POST /api/ipad/billing/charge
@@ -80,11 +82,41 @@ export async function POST(request: NextRequest) {
 
         const patient = patientRows[0];
 
+        // FIX(2026-04-01): ALL iPad charges show "NOWOptimal Service" on Stripe receipts
+        // for compliance and brand consistency. Internal logs keep the original descriptions.
+        const internalDescription = description; // preserved for DB logging (CEO dashboard, internal tracking)
+        const stripeDescription = "NOWOptimal Service"; // standardized for ALL iPad charges
+
+        console.log(`[Billing] iPad charge — Receipt shows "NOWOptimal Service" (internal: ${description})`);
+
+        // Check if this is a peptide charge for internal tracking
+        let isPeptideCharge = false;
+        const productIdsToCheck: string[] = [];
+        if (product_id) productIdsToCheck.push(product_id);
+        if (items && Array.isArray(items)) {
+            items.forEach((item: any) => { if (item.product_id) productIdsToCheck.push(item.product_id); });
+        }
+
+        if (productIdsToCheck.length > 0) {
+            try {
+                const peptideCheck = await query<{ product_id: string }>(
+                    `SELECT product_id FROM peptide_products WHERE product_id = ANY($1) LIMIT 1`,
+                    [productIdsToCheck]
+                );
+                if (peptideCheck.length > 0) {
+                    isPeptideCharge = true;
+                    console.log(`[Billing] Peptide product detected in charge`);
+                }
+            } catch (err) {
+                console.warn('[Billing] Peptide check failed:', err);
+            }
+        }
+
         // Route to appropriate Stripe account
         if (stripe_account === 'healthie') {
-            return await chargeViaHealthie(resolvedPatientId, patient.full_name, amount, description);
+            return await chargeViaHealthie(resolvedPatientId, patient.full_name, amount, stripeDescription, internalDescription);
         } else {
-            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, description, product_id, items);
+            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, stripeDescription, product_id, items, internalDescription);
         }
 
     } catch (error: any) {
@@ -106,7 +138,8 @@ async function chargeViaHealthie(
     patientId: string,
     patientName: string,
     amount: number,
-    description: string
+    description: string,
+    internalDescription?: string  // Original description for internal tracking
 ) {
     const healthieClient = createHealthieClient();
     if (!healthieClient) {
@@ -155,13 +188,47 @@ async function chargeViaHealthie(
 
         console.log(`[chargeViaHealthie] SUCCESS - Billing item created: ${billingItem.id}, state: ${billingItem.state}`);
 
-        // Log the transaction
+        // Generate receipt with FIXED simple system
+        const receiptNumber = `RCP-${Date.now()}-${Math.random().toString(36).substring(7).toUpperCase()}`;
+        let healthieDocumentId: string | null = null;
+
+        // FIXED: Now uses actual charge data and simple single-page receipt
+        try {
+            // Determine if this is a men's health service
+            // (You can expand this logic based on actual service types)
+            const isMensHealth = internalDescription?.toLowerCase().includes('men') ||
+                                 internalDescription?.toLowerCase().includes('testosterone') ||
+                                 internalDescription?.toLowerCase().includes('trt');
+
+            healthieDocumentId = await uploadSimpleReceiptToHealthie({
+                healthieClientId,
+                receiptNumber,
+                date: new Date(),
+                patientName,
+                description: internalDescription || description,  // ACTUAL service description
+                amount,
+                paymentMethod: 'Credit Card (Healthie)',
+                clinicName: 'NOW Optimal Health',
+                providerName: 'NOW Optimal Staff',
+                isMensHealth
+            });
+
+            if (healthieDocumentId) {
+                console.log(`[Billing] Receipt ${receiptNumber} uploaded to Healthie document ${healthieDocumentId} for ${patientName}`);
+            }
+        } catch (receiptError) {
+            console.error('[Billing] Failed to upload receipt:', receiptError);
+            // Don't fail the charge if receipt upload fails
+        }
+
+        // Log the transaction with receipt info
         await query(
             `INSERT INTO payment_transactions (
                 patient_id, amount, description, stripe_account,
-                healthie_billing_item_id, status, created_at
-            ) VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW())`,
-            [patientId, amount, description, 'healthie', billingItem.id, billingItem.state]
+                healthie_billing_item_id, status, created_at,
+                receipt_number, healthie_document_id
+            ) VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW(), $7, $8)`,
+            [patientId, amount, internalDescription || description, 'healthie', billingItem.id, billingItem.state, receiptNumber, healthieDocumentId]
         );
 
         return NextResponse.json({
@@ -171,6 +238,7 @@ async function chargeViaHealthie(
             amount,
             charge_id: billingItem.id,
             status: billingItem.state,
+            receipt_number: receiptNumber,
             message: `Successfully charged ${patientName} $${amount.toFixed(2)} via Healthie Stripe`
         });
 
@@ -201,7 +269,8 @@ async function chargeViaDirectStripe(
     amount: number,
     description: string,
     product_id?: string,
-    items?: Array<{ product_id: string; name: string; amount: number; quantity?: number }>
+    items?: Array<{ product_id: string; name: string; amount: number; quantity?: number }>,
+    internalDescription?: string  // FIX(2026-04-01): Original description for DB logging (pre-sanitization)
 ) {
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
@@ -284,7 +353,7 @@ async function chargeViaDirectStripe(
             }
         });
 
-        // 5. Log transaction to database
+        // 5. Log transaction to database (use original internal description, not sanitized Stripe one)
         await query(
             `INSERT INTO payment_transactions (
                 patient_id, amount, description, stripe_account,
@@ -293,7 +362,7 @@ async function chargeViaDirectStripe(
             [
                 patientId,
                 amount,
-                description,
+                internalDescription || description,
                 'direct',
                 paymentIntent.id,
                 stripeCustomerId,
@@ -365,6 +434,56 @@ async function chargeViaDirectStripe(
         // For backwards compatibility, set dispenseId to the first one
         dispenseId = dispenseIds.length > 0 ? dispenseIds[0] : null;
 
+        // Generate receipt with FIXED simple system
+        const receiptNumber = `RCP-${Date.now()}-${Math.random().toString(36).substring(7).toUpperCase()}`;
+        let healthieDocumentId: string | null = null;
+
+        // FIXED: Now uses actual charge data and simple single-page receipt
+        try {
+            // Get Healthie client ID for receipt upload
+            const [clientMapping] = await query<{ healthie_client_id: string }>(
+                `SELECT healthie_client_id FROM healthie_clients
+                 WHERE patient_id = $1 AND is_active = TRUE LIMIT 1`,
+                [patientId]
+            );
+
+            if (clientMapping?.healthie_client_id) {
+                // Build consolidated description from items or single product
+                let receiptDescription = internalDescription || description;
+                if (items && items.length > 0) {
+                    // For multiple items, list them
+                    receiptDescription = items.map(item =>
+                        `${item.name}${item.quantity > 1 ? ` (x${item.quantity})` : ''}`
+                    ).join(', ');
+                }
+
+                // Determine if this is a men's health service
+                const isMensHealth = receiptDescription.toLowerCase().includes('men') ||
+                                     receiptDescription.toLowerCase().includes('testosterone') ||
+                                     receiptDescription.toLowerCase().includes('trt');
+
+                healthieDocumentId = await uploadSimpleReceiptToHealthie({
+                    healthieClientId: clientMapping.healthie_client_id,
+                    receiptNumber,
+                    date: new Date(),
+                    patientName,
+                    description: receiptDescription,  // ACTUAL service/products
+                    amount,
+                    paymentMethod: `${paymentMethod.card?.brand || 'Card'} ending ${paymentMethod.card?.last4 || '****'}`,
+                    clinicName: 'NOW Optimal Health',
+                    providerName: 'NOW Optimal Staff',
+                    isMensHealth
+                });
+
+                if (healthieDocumentId) {
+                    console.log(`[Billing] Receipt ${receiptNumber} uploaded to Healthie for ${patientName} - Service: "${receiptDescription}"`);
+                }
+            }
+        } catch (receiptError) {
+            console.error('[Billing] Failed to upload receipt:', receiptError);
+            // Don't fail the charge if receipt upload fails
+        }
+
         return NextResponse.json({
             success: true,
             stripe_account: 'direct',
@@ -372,6 +491,8 @@ async function chargeViaDirectStripe(
             amount,
             charge_id: paymentIntent.id,
             status: paymentIntent.status,
+            receipt_number: receiptNumber,
+            healthie_document_id: healthieDocumentId,
             message: `Successfully charged ${patientName} $${amount.toFixed(2)} via Direct Stripe (MindGravity)`,
             payment_method: {
                 brand: paymentMethod.card?.brand,

@@ -130,41 +130,9 @@ export async function GET(request: NextRequest) {
         }
         if (!healthieId) healthieId = patientId; // last resort fallback
 
-        // FIX(2026-03-19): Auto-provision patient if they exist in Healthie but not locally.
-        // This handles patients created directly in Healthie that were never synced.
-        if (!patient && !isUuid) {
-            try {
-                // Quick Healthie lookup to confirm this is a real client
-                const hCheck = await safeHealthieQuery<{ user: { id: string; first_name: string; last_name: string; email: string | null; phone_number: string | null; dob: string | null; gender: string | null } | null }>('autoProvision', `
-                    query CheckUser($id: ID) {
-                        user(id: $id) { id first_name last_name email phone_number dob gender }
-                    }
-                `, { id: healthieId });
-
-                const hu = hCheck?.user;
-                if (hu) {
-                    const fullName = `${hu.first_name || ''} ${hu.last_name || ''}`.trim() || 'Unknown';
-                    const [newPatient] = await query<any>(
-                        `INSERT INTO patients (full_name, email, phone_primary, dob, gender, healthie_client_id, status_key, created_at, updated_at)
-                         VALUES ($1, $2, $3, $4, $5, $6, 'active', NOW(), NOW())
-                         RETURNING *`,
-                        [fullName, hu.email || null, hu.phone_number || null, hu.dob || null, hu.gender || null, hu.id]
-                    );
-                    if (newPatient) {
-                        await query(
-                            `INSERT INTO healthie_clients (patient_id, healthie_client_id, match_method, is_active, created_at, updated_at)
-                             VALUES ($1, $2, 'auto_provision_chart', TRUE, NOW(), NOW())
-                             ON CONFLICT (healthie_client_id) DO UPDATE SET patient_id = EXCLUDED.patient_id, is_active = TRUE, updated_at = NOW()`,
-                            [newPatient.patient_id, hu.id]
-                        );
-                        patient = newPatient;
-                        console.log(`[Patient Chart] Auto-provisioned patient: ${fullName} (Healthie: ${hu.id} → ${newPatient.patient_id})`);
-                    }
-                }
-            } catch (provisionErr: any) {
-                console.warn('[Patient Chart] Auto-provision failed:', provisionErr?.message || provisionErr);
-            }
-        }
+        // REMOVED(2026-04-02): Auto-provision was creating sparse patient records with no
+        // payment_method, clinic, regimen, or added_by — causing 29+ ghost patients since Mar 19.
+        // Patients must be created manually through the dashboard with all required fields.
 
         // ✅ Enhanced demographics with GMH dashboard fields
         const localData: any = {
@@ -630,11 +598,11 @@ export async function GET(request: NextRequest) {
                     v.remaining_volume_ml
                 FROM dispenses d
                 LEFT JOIN vials v ON d.vial_id = v.vial_id
-                WHERE (d.patient_id = $1 OR d.patient_id = $2)
+                WHERE d.patient_id = $1
                     AND d.signature_status = 'signed'
                 ORDER BY d.dispense_date DESC
                 LIMIT 10
-            `, [localPatientId || '', healthieId || '']);
+            `, [localPatientId || '00000000-0000-0000-0000-000000000000']);
             console.log(`[Patient Chart] Found ${trtDispenses.length} TRT dispenses for patient ${localPatientId}`);
         } catch (err) {
             console.warn(`[Patient Chart] Failed to query TRT dispenses:`, err instanceof Error ? err.message : err);

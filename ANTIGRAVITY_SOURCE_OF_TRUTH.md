@@ -1,6 +1,6 @@
 # GMH Dashboard — AntiGravity Source of Truth
 
-**Last Updated**: March 26, 2026
+**Last Updated**: April 1, 2026
 **Primary AI Assistant**: Claude Code (Anthropic)
 **Sprint Period**: December 25, 2025 - March 14, 2026
 
@@ -400,7 +400,69 @@ pm2 save
 
 ---
 
-## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAR 23, 2026)
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - APR 1, 2026)
+
+### April 1, 2026: iPad Billing Standardization, Receipt System & ABX TAC Brand Separation
+
+#### 1. Standardized iPad Billing Receipts to "NOWOptimal Service"
+
+**Change**: ALL iPad charges now display "NOWOptimal Service" on Stripe receipts for compliance and brand consistency.
+
+**File Modified**: `/home/ec2-user/gmhdashboard/app/api/ipad/billing/charge/route.ts`
+
+**Technical Details**:
+- Stripe receipts show: "NOWOptimal Service" (sanitized)
+- Internal database stores: Original product/service descriptions
+- CEO Dashboard displays: Actual product names and details
+- iPad patient chart shows: Full transaction details with original descriptions
+
+#### 2. ✅ PDF Receipt System - FIXED AND RE-ENABLED
+
+**STATUS: ENABLED** - Receipt generation completely rewritten and fixed (April 1, 2026).
+
+**Critical Issue That Was Fixed**:
+- **Melody Smith Crisis**: She purchased **pelleting service for $400** but receipt showed **peptides** (BPC-157, Semaglutide, NAD+)
+- **Root Cause**: Hardcoded test data instead of actual purchase descriptions
+- **Resolution**: Complete rewrite using simple single-page receipts with actual charge data
+
+**New Receipt System Files**:
+- `/home/ec2-user/gmhdashboard/lib/pdf/simpleReceiptGenerator.ts` - Single-page receipt with actual service descriptions
+- `/home/ec2-user/gmhdashboard/lib/simpleReceiptUpload.ts` - Upload handler with validation
+
+**Key Features of Fixed System**:
+- Uses ACTUAL charge descriptions from database (not hardcoded)
+- Single-page PDF (bufferPages: false)
+- Correct clinic addresses: 215 N. McCormick for Men's Health, 404 S. Montezuma for others
+- Auto-detects service type (men's health, pelleting, peptides, etc.)
+
+**Current Status**:
+- ✅ Receipt generation RE-ENABLED in `/home/ec2-user/gmhdashboard/app/api/ipad/billing/charge/route.ts`
+- ✅ Receipts being sent to patients' Healthie accounts with CORRECT service descriptions
+- ✅ Stripe shows "NOWOptimal Service" for compliance
+- ✅ Internal receipts show actual services purchased
+
+#### 3. ABX TAC Brand Separation from NOW Optimal Network
+
+**Change**: Removed ABX TAC brand from nowoptimal.com website per business directive.
+
+**Files Modified**:
+- `/home/ec2-user/nowoptimal-website/app/page.tsx` - Removed ABX TAC from brands array
+- `/home/ec2-user/nowoptimal-website/components/Footer.tsx` - Removed ABX TAC from footer links
+
+**Context**: ABX TAC (abxtac.com) continues to operate independently on port 3009 as a separate e-commerce platform for research peptides. This change reflects a strategic separation of the peptide brand from the NOW Optimal healthcare network.
+
+**Commands Executed**:
+```bash
+# For billing changes
+cd /home/ec2-user/gmhdashboard
+npm run build
+pm2 restart gmh-dashboard
+
+# For website changes
+cd /home/ec2-user/nowoptimal-website
+npm run build
+pm2 restart nowoptimal-website
+```
 
 ### March 24, 2026: 🚀 ABXTac WordPress/WooCommerce E-commerce Platform Deployed
 
@@ -431,6 +493,40 @@ sudo systemctl status nginx      # Web server
 ```
 
 **Note**: This is separate from GMH Dashboard. WordPress/PHP stack managed by systemd, not PM2.
+
+### April 2, 2026: ABX TAC Website Overhaul & Vial Label Audit
+
+**Website overhaul**: Removed all NOW Optimal Network references. ABX TAC is now a fully independent brand. Updated messaging from tactical/military to clinical/wellness. Improved theme readability (lighter dark navy #0F1218). FDA-only product catalog.
+
+> [!CRITICAL]
+> **ABX TAC Vial Label → SKU Definitive Mapping (Audited April 2, 2026)**
+>
+> The vial mockup images (`/var/www/abxtac/3d-vials/YPB.###_mockup.png`) are the **SOURCE OF TRUTH** for product identity. The supplier SKU list and WooCommerce database do NOT match the vial labels. ALWAYS verify by viewing the actual image before assigning a product to a SKU.
+>
+> **Active FDA-Compliant Catalog (15 products with verified matching labels):**
+>
+> | SKU | Vial Label | Dose | Tier | Retail Price |
+> |-----|-----------|------|------|-------------|
+> | YPB.212 | BPC-157 | 5 mg | Heal | $149.99 |
+> | YPB.213 | BPC-157 | 10 mg | Heal | $179.99 |
+> | YPB.237 | BPC-157 | 20 mg | Heal | $229.99 |
+> | YPB.248 | AOD-9604 | 5 mg | Heal | $169.99 |
+> | YPB.221 | GHK-Cu | 50 mg | Heal | $129.99 |
+> | YPB.222 | GHK-Cu | 100 mg | Heal | $189.99 |
+> | YPB.230 | DSIP | 15 mg | Optimize | $149.99 |
+> | YPB.219 | CJC-1295 Without DAC | 10 mg | Optimize | $169.99 |
+> | YPB.220 | CJC-1295 With DAC | 5 mg | Optimize | $199.99 |
+> | YPB.229 | Semax | 10 mg | Optimize | $149.99 |
+> | YPB.228 | Selank | 10 mg | Optimize | $139.99 |
+> | YPB.244 | LL-37 (Cathelicidin) | 5 mg | Optimize | $169.99 |
+> | YPB.227 | MOTS-c | 10 mg | Thrive | $189.99 |
+> | YPB.232 | N-Acetyl Epitalon Amidate | 5 mg | Thrive | $179.99 |
+> | YPB.231 | Thymosin Alpha 1 (TA1) | 10 mg | Thrive | $189.99 |
+>
+> **FDA peptides WITHOUT matching vial images (cannot sell until new mockups created):**
+> GHRP-2, GHRP-6, Ipamorelin, Kisspeptin-10, KPV, Melanotan II, PEG-MGF, Thymosin Beta-4 Fragment (LKKTETQ)
+>
+> **Files**: `abxtac-website/lib/tiers.ts` (catalog), `abxtac-website/lib/product-images.ts` (image map)
 
 ---
 
@@ -491,6 +587,8 @@ Without query params, returns flat `PeptideDispense[]` array (legacy).
 - **Healthie Stripe** → For recurring packages & subscriptions managed in Healthie
 - **Direct Stripe (MindGravity)** → For retail items, supplements, peptides, and one-off purchases
 - **Why Hybrid**: Leverages strengths of both systems - Healthie's subscription management + MindGravity's retail flexibility
+
+> **CRITICAL (April 1, 2026)**: ALL iPad charges on Stripe receipts now show **"NOWOptimal Service"** for compliance and brand consistency. The actual product/service names are preserved in internal records (payment_transactions table, peptide_dispenses, CEO dashboard). This standardization is handled server-side in `app/api/ipad/billing/charge/route.ts` — ALL charges through the iPad billing system display "NOWOptimal Service" on customer receipts while maintaining detailed descriptions internally.
 
 **Implementation**:
 
@@ -1955,7 +2053,7 @@ billingItems(status: "failed") {
 
 **Jarvis Telegram Bot - Migrated to Google Gemini**
 - **Old**: AWS Bedrock Claude 3 Haiku
-- **New**: Google Gemini 2.0 Flash via REST API
+- **New**: Google Gemini 2.5 Flash via REST API (upgraded from 2.0 Flash on April 6, 2026 — Google deprecated 2.0)
 - **Why**: Cost savings, align with Vertex AI strategy
 - **File**: `/home/ec2-user/gmhdashboard/scripts/telegram-ai-bot-v2.ts`
 - **Change**: Added `callGemini()` helper, replaced 3 `InvokeModelCommand` calls
@@ -3494,6 +3592,19 @@ const patients = await query('SELECT * FROM patients WHERE full_name ILIKE $1', 
 - Any other Healthie mutation that references a patient
 
 **Existing endpoint**: `POST /api/ipad/messages/` with `action: 'search_patients'` already implements this correctly and can be reused from any frontend tab.
+
+### Inactive Patient Status Guard (MANDATORY — April 1, 2026)
+
+> [!CAUTION]
+> **NEVER change an inactive patient's status to active, hold, or any other status. Inactive is a deliberate clinical/administrative decision. Only a human admin can reverse it via direct database access.**
+
+**Code enforcement**: `lib/patientQueries.ts` → `updatePatient()` checks current `status_key` before any UPDATE. If the patient is `inactive` and the new status is anything other than `inactive`, the function throws an error.
+
+**Rules:**
+1. **No automated process** (cron, webhook, AI agent) may change `inactive` → any other status
+2. **No dashboard user** (read/write role) may change `inactive` → any other status via the UI
+3. **Only direct DB access** by an admin can reactivate a patient
+4. If you encounter an inactive patient during a batch operation, **skip them silently**
 
 ### Healthie GraphQL Type Rules (MANDATORY)
 
@@ -5042,6 +5153,47 @@ Patient SMS → GHL → Webhook → Port 3001 (Proxy) → Port 3003 (Handler)
 | `/refresh-schema` | Re-discover Snowflake schema |
 
 **Data Sources**: Snowflake (NLP queries), Healthie API (real-time financials), PostgreSQL (dashboard data), GHL (contacts)
+
+### JARVIS Mobile App (Patient-Facing AI Assistant) — Updated April 6, 2026
+
+**Architecture**: React Native (Expo) → API Gateway → Lambda (`lambda-ask-ai`) → Gemini 2.5 Flash + Snowflake
+**AI Model**: Google Gemini 2.5 Flash (migrated from 2.0 Flash on April 6, 2026 — Google deprecated 2.0)
+**API Gateway**: `https://o6rhh3wva6.execute-api.us-east-2.amazonaws.com/prod`
+**Lambda**: `NowOptimalHeadlessStack-AskAiLambda160D5144-qEQQ3FQOm7TG`
+
+**Source files** (`/home/ec2-user/.gemini/antigravity/scratch/nowoptimal-headless-app/backend/lambda-ask-ai/src/`):
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `index.js` | 170 | Router orchestrator — classifies intent, routes to handler |
+| `gemini.js` | 285 | Gemini 2.5 Flash integration — intent classification + answer generation |
+| `snowflake.js` | 301 | Snowflake PATIENT_360_VIEW queries with JWT key-pair auth |
+| `router.js` | 143 | Intent routing, suggested actions, loading messages |
+| `booking-handler.js` | 425 | Multi-turn booking flow with conversation history recovery |
+| `peptide-bot.js` | 440 | Peptide info/ordering with pickup vs ship channels |
+| `trt-bot.js` | 340 | TRT education + personal supply status calculation |
+| `share-handler.js` | 60 | Share conversation with care team (Google Chat + Healthie chart note) |
+
+**13 Intents**: greeting, health_data, billing_inquiry, trt_question, trt_status, peptide_info, peptide_order, book_appointment, check_availability, cancel_appointment, refill_request, general
+
+**Key fixes (April 6, 2026)**:
+- Gemini 2.0 Flash → 2.5 Flash (Google deprecated 2.0)
+- Secrets Manager `GOOGLE_AI_API_KEY` updated (old key was revoked)
+- Secrets Manager `JARVIS_SHARED_SECRET` created (was missing — broke share + peptide ordering)
+- Booking flow: conversation history recovery for multi-turn state (was losing appointment type between turns)
+- Peptide eligibility: fixed SQL crash (`first_name`/`last_name` → `full_name`)
+- All dates formatted to Phoenix (Arizona) time
+- General questions: clinic hours, phone numbers, and service info added to system prompt
+- Cancel appointment: now fetches and shows upcoming appointments
+- `createAppointment` dual-provider bug: `other_party_id` fix applied to booking Lambda
+
+**Dashboard endpoints used by Jarvis** (`/api/jarvis/`):
+- `share/` — Share conversation (Google Chat + Healthie chart note)
+- `peptide-eligibility/` — Check pickup/ship eligibility
+- `peptides/` — Peptide product catalog
+- `peptide-order/` — Submit peptide order
+- `balance/` — Patient account balance
+- `payment-link/` — Generate payment link
 
 ### Key Deployment Notes
 

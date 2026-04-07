@@ -527,6 +527,22 @@ export async function syncPatientToGHL(
 
     // STEP 4: If still no contact found, CREATE A NEW CONTACT
     if (!ghlContact) {
+      // FIX(2026-04-03): Skip creation if patient has no email AND no phone — GHL requires at least one
+      const hasEmail = !!(patient.email || patient.qbo_customer_email);
+      const hasPhone = !!patient.phone_number;
+      if (!hasEmail && !hasPhone) {
+        const errorMsg = `Cannot sync to GHL: patient has no email and no phone number`;
+        console.warn(`[GHL Sync] Step 4 SKIP: ${errorMsg} for ${patient.patient_name}`);
+        await query(
+          `UPDATE patients
+           SET ghl_sync_status = 'pending',
+               ghl_sync_error = $1
+           WHERE patient_id = $2`,
+          [errorMsg, patient.patient_id]
+        );
+        return { success: false, error: errorMsg };
+      }
+
       debugLog(`[GHL Sync] Step 4: Contact not found - creating new contact in GHL for ${patient.patient_name}`);
 
       const contactData = formatPatientForGHL(patient);
@@ -543,7 +559,7 @@ export async function syncPatientToGHL(
         const errorMsg = `Failed to create contact in GHL: ${createError instanceof Error ? createError.message : 'Unknown error'}`;
         console.error(`[GHL Sync] Step 4 ERROR: ${errorMsg}`);
         await query(
-          `UPDATE patients 
+          `UPDATE patients
            SET ghl_sync_status = 'error',
                ghl_sync_error = $1
            WHERE patient_id = $2`,
@@ -612,8 +628,26 @@ export async function syncPatientToGHL(
         console.log(`[GHL Sync] Successfully updated contact ${contactId}:`, JSON.stringify(updateResult, null, 2));
       }
     } catch (updateError) {
-      console.error(`[GHL Sync] ERROR updating contact ${contactId}:`, updateError);
-      throw updateError; // Re-throw to be caught by outer catch block
+      const updateErrMsg = updateError instanceof Error ? updateError.message : '';
+      // FIX(2026-04-03): On "duplicated contacts" error during UPDATE, retry with only
+      // custom fields and tags — strip name/email/phone/address that trigger duplicate detection.
+      if (updateErrMsg.includes('duplicated contacts') || updateErrMsg.includes('duplicate')) {
+        console.warn(`[GHL Sync] Duplicate detected on update for ${contactId}, retrying with custom fields only`);
+        try {
+          const fieldsOnlyData: Partial<GHLContact> = {
+            tags: contactData.tags,
+            customFields: contactData.customFields,
+          };
+          await ghlClient.updateContact(contactId, fieldsOnlyData);
+          console.log(`[GHL Sync] Retry succeeded for ${contactId} (custom fields + tags only)`);
+        } catch (retryError) {
+          console.error(`[GHL Sync] Retry also failed for ${contactId}:`, retryError);
+          throw retryError;
+        }
+      } else {
+        console.error(`[GHL Sync] ERROR updating contact ${contactId}:`, updateError);
+        throw updateError;
+      }
     }
 
     // Update patient record with successful sync
