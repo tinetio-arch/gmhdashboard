@@ -427,3 +427,35 @@ gmhdashboard/
 ---
 
 *Last updated: 2026-03-15 by Perplexity Computer*
+
+## SAFETY RULES (MANDATORY — ADDED APR 6, 2026)
+
+### NEVER DELETE FILES WITHOUT EXPLICIT APPROVAL
+1. **NEVER run rm -rf, rm -r, or any recursive delete on ANY directory** without first listing every file that will be deleted and getting explicit confirmation from Phil
+2. **NEVER delete files in app/, lib/, components/, public/, scripts/, docs/, migrations/** — these are production code
+3. **NEVER assume a directory contains only logs or temp files** — always ls first and verify
+4. If you need to clean disk space, ONLY delete files in: .tmp/, /tmp/, PM2 logs (pm2 flush), npm cache
+5. Before ANY delete operation, run: ls -la <path> and show the contents to Phil
+
+### MANDATORY PRE-FLIGHT CHECKS
+Before ANY work:
+1. Read docs/sot-modules/INDEX.md — identify relevant modules
+2. Read docs/DEPENDENCIES.md — understand what your changes affect
+3. Read docs/PROJECT_TRACKER.md — know current system state
+4. Pin critical facts from docs/CLAUDE_MEMORY_PINS.md into /memory
+
+After ANY work:
+1. Update docs/PROJECT_TRACKER.md with what you changed
+2. Run: bash ~/gmhdashboard/scripts/health-check.sh
+3. Verify nothing broke by checking the health check output
+
+### GIT SAFETY
+- The auto-backup cron commits every 6 hours — verify it's working
+- Before making risky changes, create a manual backup: git add -A && git commit -m Pre-change backup
+- NEVER force push, rebase, or reset --hard without Phil's approval
+
+### WHAT HAPPENED (INCIDENT LOG)
+- **Apr 6, 2026**: Claude Code session deleted frontend files thinking they were logs. 6 days of work was at risk because git auto-backup was silently failing (new directories not in git add path list).
+- **Feb 24, 2026**: Gemini Flash incident caused production bugs and data corruption (referenced in SOT).
+
+These rules exist because AI assistants have caused production incidents. Follow them without exception.

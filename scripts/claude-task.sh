@@ -72,7 +72,7 @@ if [ -n "$USER_INPUT" ]; then
 fi
 
 # Add standard preamble
-PREAMBLE="Before starting: (1) Read docs/sot-modules/INDEX.md (2) Read docs/DEPENDENCIES.md (3) Read docs/CLAUDE_MEMORY_PINS.md and pin critical facts to /memory. After completing work: update docs/PROJECT_TRACKER.md and run bash ~/gmhdashboard/scripts/health-check.sh."
+PREAMBLE="SAFETY RULES: NEVER delete any files in app/ lib/ components/ public/ scripts/ docs/ migrations/ without listing them first and getting explicit approval. NEVER assume a directory is safe to clean. NEVER run rm -rf on any project directory. Before starting: (1) Read docs/sot-modules/INDEX.md (2) Read docs/DEPENDENCIES.md (3) Read docs/CLAUDE_MEMORY_PINS.md and pin critical facts to /memory. After completing work: update docs/PROJECT_TRACKER.md and run bash ~/gmhdashboard/scripts/health-check.sh."
 
 FULL_PROMPT="${PREAMBLE} ${TASK_PROMPT}"
 
