@@ -17,6 +17,9 @@ function debugLog(...args: unknown[]): void {
 
 export type ClinicType = 'nowprimary.care' | 'nowmenshealth.care';
 
+// Client type keys used for Healthie group routing (new patients)
+export type ClientTypeKey = 'nowmenshealth' | 'nowprimarycare' | 'nowlongevity' | 'nowmentalhealth' | 'abxtac' | 'sick_visit';
+
 export type CreatePatientInHealthieInput = {
     patientName: string;
     email?: string | null;
@@ -27,6 +30,7 @@ export type CreatePatientInHealthieInput = {
     state?: string | null;
     zip?: string | null;
     clinic: ClinicType;
+    clientTypeKey?: ClientTypeKey | string | null;  // New: drives Healthie group assignment
 };
 
 export type HealthieSyncResult = {
@@ -77,31 +81,77 @@ function parseName(fullName: string): { firstName: string; lastName: string } {
     return { firstName, lastName };
 }
 
+// Provider IDs
+const PROVIDER_PHIL = process.env.HEALTHIE_PRIMARY_CARE_PROVIDER_ID || '12088269';
+const PROVIDER_WHITTEN = process.env.HEALTHIE_MENS_HEALTH_PROVIDER_ID || '12093125';
+
 /**
- * Get Healthie configuration (group ID and provider ID) based on clinic
+ * Client Type → Healthie Group + Provider mapping
+ * As of April 2026, client type (not clinic) drives Healthie group assignment for new patients.
  */
-function getHealthieConfig(clinic: ClinicType): {
+const CLIENT_TYPE_HEALTHIE_MAP: Record<string, {
+    groupId: string;
+    providerId: string;
+    groupName: string;
+    providerName: string;
+}> = {
+    nowmenshealth: {
+        groupId: process.env.HEALTHIE_MENS_HEALTH_GROUP_ID || '75522',
+        providerId: PROVIDER_WHITTEN,
+        groupName: 'NowMensHealth.Care',
+        providerName: 'Aaron Whitten, DO'
+    },
+    nowprimarycare: {
+        groupId: process.env.HEALTHIE_PRIMARY_CARE_GROUP_ID || '75523',
+        providerId: PROVIDER_PHIL,
+        groupName: 'NowPrimary.Care',
+        providerName: 'Phil Schafer, NP'
+    },
+    nowlongevity: {
+        groupId: process.env.HEALTHIE_LONGEVITY_GROUP_ID || '82532',
+        providerId: PROVIDER_PHIL,
+        groupName: 'NowLongevity.Care',
+        providerName: 'Phil Schafer, NP'
+    },
+    nowmentalhealth: {
+        groupId: process.env.HEALTHIE_MENTAL_HEALTH_GROUP_ID || '82533',
+        providerId: PROVIDER_PHIL,
+        groupName: 'NowMentalHealth.Care',
+        providerName: 'Phil Schafer, NP'
+    },
+    abxtac: {
+        groupId: process.env.HEALTHIE_ABXTAC_GROUP_ID || '82534',
+        providerId: PROVIDER_WHITTEN,
+        groupName: 'ABXTAC',
+        providerName: 'Aaron Whitten, DO'
+    },
+    sick_visit: {
+        groupId: process.env.HEALTHIE_SICK_VISIT_GROUP_ID || '77894',
+        providerId: PROVIDER_PHIL,
+        groupName: 'Sick Visit',
+        providerName: 'Phil Schafer, NP'
+    }
+};
+
+/**
+ * Get Healthie configuration based on client type (preferred) or clinic (fallback for existing patients)
+ */
+function getHealthieConfig(clinic: ClinicType, clientTypeKey?: string | null): {
     groupId: string;
     providerId: string;
     groupName: string;
     providerName: string;
 } {
-    if (clinic === 'nowprimary.care') {
-        return {
-            groupId: process.env.HEALTHIE_PRIMARY_CARE_GROUP_ID || '75523',
-            providerId: process.env.HEALTHIE_PRIMARY_CARE_PROVIDER_ID || '12088269',
-            groupName: 'NowPrimary.Care',
-            providerName: 'Phil Schafer, NP'
-        };
+    // If client type is provided, use the new mapping
+    if (clientTypeKey && CLIENT_TYPE_HEALTHIE_MAP[clientTypeKey]) {
+        return CLIENT_TYPE_HEALTHIE_MAP[clientTypeKey];
     }
 
-    // nowmenshealth.care
-    return {
-        groupId: process.env.HEALTHIE_MENS_HEALTH_GROUP_ID || '75522',
-        providerId: process.env.HEALTHIE_MENS_HEALTH_PROVIDER_ID || '12093125',
-        groupName: 'NowMensHealth.Care',
-        providerName: 'Aaron Whitten, DO'
-    };
+    // Fallback: route by clinic (for existing patients without new client type keys)
+    if (clinic === 'nowprimary.care') {
+        return CLIENT_TYPE_HEALTHIE_MAP.nowprimarycare;
+    }
+    return CLIENT_TYPE_HEALTHIE_MAP.nowmenshealth;
 }
 
 /**
@@ -134,8 +184,8 @@ export async function createPatientInHealthie(
             throw new Error('HEALTHIE_API_KEY not configured in environment');
         }
 
-        // 2. Get configuration based on clinic
-        const config = getHealthieConfig(patientData.clinic);
+        // 2. Get configuration based on client type (preferred) or clinic (fallback)
+        const config = getHealthieConfig(patientData.clinic, patientData.clientTypeKey);
         debugLog('Using Healthie config:', {
             group: config.groupName,
             provider: config.providerName

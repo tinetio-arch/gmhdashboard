@@ -66,7 +66,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
   const [form, setForm] = useState<FormState>({
     patientName: '',
     statusKey: defaultStatus,
-    paymentMethodKey: null,
+    paymentMethodKey: 'healthie',  // Hardcoded — all new patients use Healthie billing
     clientTypeKey: null,
     clinic: null,
     patientType: 'member',
@@ -108,10 +108,6 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
     }
     if (!form.statusKey) {
       setMessage('Alert status is required.');
-      return;
-    }
-    if (!form.paymentMethodKey) {
-      setMessage('Payment method is required.');
       return;
     }
     if (!form.clientTypeKey) {
@@ -183,7 +179,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
       setForm({
         patientName: '',
         statusKey: defaultStatus,
-        paymentMethodKey: null,
+        paymentMethodKey: 'healthie',
         clientTypeKey: null,
         clinic: null,
         patientType: 'member',
@@ -251,19 +247,12 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
         </div>
         <div style={{ flex: '1 1 200px' }}>
           <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Payment Method</label>
-          <select
-            value={form.paymentMethodKey ?? ''}
-            onChange={(event) => updateForm('paymentMethodKey', event.target.value || null)}
-            style={inputStyle}
-            disabled={isDisabled}
-          >
-            <option value="">(Unspecified)</option>
-            {lookups.paymentMethods.map((method) => (
-              <option key={method.method_key} value={method.method_key}>
-                {method.display_name}
-              </option>
-            ))}
-          </select>
+          <input
+            type="text"
+            value="Healthie"
+            readOnly
+            style={{ ...inputStyle, background: '#f1f5f9', color: '#64748b', cursor: 'not-allowed' }}
+          />
         </div>
         <div style={{ flex: '1 1 220px' }}>
           <label style={{ display: 'block', marginBottom: '0.35rem', color: '#475569' }}>Client Type *</label>
@@ -275,11 +264,12 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
             required
           >
             <option value="">Select Client Type...</option>
-            {lookups.clientTypes.map((type) => (
-              <option key={type.type_key} value={type.type_key}>
-                {type.display_name}
-              </option>
-            ))}
+            <option value="nowmenshealth">NOWMensHealth.Care</option>
+            <option value="nowprimarycare">NOWPrimary.Care</option>
+            <option value="nowlongevity">NOWLongevity.Care</option>
+            <option value="nowmentalhealth">NOWMentalHealth.Care</option>
+            <option value="abxtac">ABXTAC</option>
+            <option value="sick_visit">Sick Visit</option>
           </select>
         </div>
         <div style={{ flex: '1 1 220px' }}>

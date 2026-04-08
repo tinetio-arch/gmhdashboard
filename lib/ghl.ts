@@ -865,18 +865,44 @@ export function createGHLClientForPrimaryCare(): GHLClient | null {
 }
 
 /**
+ * Create a GHL client for ABXTAC location
+ * Uses the ABXTAC specific API token
+ */
+export function createGHLClientForABXTAC(): GHLClient | null {
+  const apiKey = process.env.GHL_ABXTAC_API_KEY;
+  const locationId = process.env.GHL_ABXTAC_LOCATION_ID || 'OyC2MESFDP3Pxm10tECz';
+  const baseUrl = process.env.GHL_BASE_URL;
+
+  if (!apiKey) {
+    console.warn('GHL ABXTAC API key not configured (GHL_ABXTAC_API_KEY)');
+    return null;
+  }
+
+  return new GHLClient({
+    apiKey,
+    locationId,
+    baseUrl,
+  });
+}
+
+/**
  * PRIMARY CARE client types - these go to Primary Care GHL location
- * Based on GMH Dashboard client type values
+ * Includes legacy types for existing patients + new brand-based types
  */
 const PRIMARY_CARE_CLIENT_TYPES = [
   'nowprimarycare',       // NowPrimary.Care
-  'primecare_premier',    // PrimeCare Premier $50/Month
-  'primecare_elite',      // PrimeCare Elite $100/Month
+  'primecare_premier',    // PrimeCare Premier $50/Month (legacy)
+  'primecare_elite',      // PrimeCare Elite $100/Month (legacy)
+  'nowlongevity',         // NOWLongevity.Care → Primary Care GHL
+  'nowmentalhealth',      // NOWMentalHealth.Care → Primary Care GHL
+  'sick_visit',           // Sick Visit → Primary Care GHL
 ];
+
+/** ABXTAC client types - route to ABXTAC GHL sub-account */
+const ABXTAC_CLIENT_TYPES = ['abxtac'];
 
 /**
  * Determine if a client type key belongs to Primary Care
- * All other types default to Men's Health
  */
 function isPrimaryCareClientType(clientType: string | null | undefined): boolean {
   if (!clientType) return false;
@@ -885,25 +911,40 @@ function isPrimaryCareClientType(clientType: string | null | undefined): boolean
 }
 
 /**
+ * Determine if a client type key belongs to ABXTAC
+ */
+function isABXTACClientType(clientType: string | null | undefined): boolean {
+  if (!clientType) return false;
+  const normalized = clientType.toLowerCase();
+  return ABXTAC_CLIENT_TYPES.some(t => normalized.includes(t));
+}
+
+/**
  * Get the appropriate GHL client based on patient's clinic/type
- * 
- * ROUTING RULES (as of Jan 2026):
- * 
- * Men's Health Location (0dpAFAovcFXbe0G5TUFr):
- *   - QBO TCMH $180/Month (qbo_tcmh)
- *   - QBO F&F/FR/Veteran $140/Month (qbo_f_f_fr_veteran)
- *   - Jane TCMH $180/Month (jane_tcmh)
- *   - Jane F&F/FR/Veteran $140/Month (jane_f_f_fr_veteran)
- *   - Approved Disc / Pro-Bono PT (approved_disc)
- *   - NowMensHealth.Care (nowmenshealth)
- *   - Ins. Supp. $60/Month (ins_supp)
- * 
+ *
+ * ROUTING RULES (updated April 2026):
+ *
+ * ABXTAC Location (OyC2MESFDP3Pxm10tECz):
+ *   - ABXTAC (abxtac)
+ *
  * Primary Care Location (NyfcCiwUMdmXafnUMML8):
  *   - NowPrimary.Care (nowprimarycare)
- *   - PrimeCare Premier $50/Month (primecare_premier)
- *   - PrimeCare Elite $100/Month (primecare_elite)
+ *   - NOWLongevity.Care (nowlongevity)
+ *   - NOWMentalHealth.Care (nowmentalhealth)
+ *   - Sick Visit (sick_visit)
+ *   - PrimeCare Premier (primecare_premier) — legacy
+ *   - PrimeCare Elite (primecare_elite) — legacy
+ *
+ * Men's Health Location (0dpAFAovcFXbe0G5TUFr):
+ *   - NowMensHealth.Care (nowmenshealth)
+ *   - All legacy men's health types (TCMH, F&F, etc.)
  */
 export function getGHLClientForPatient(clinic?: string | null, clientType?: string | null): GHLClient | null {
+  // Check ABXTAC first (most specific)
+  if (isABXTACClientType(clientType)) {
+    return createGHLClientForABXTAC();
+  }
+
   // Check if this is a Primary Care patient
   const isPrimaryCare =
     clinic?.toLowerCase().includes('primarycare') ||
@@ -915,7 +956,6 @@ export function getGHLClientForPatient(clinic?: string | null, clientType?: stri
   }
 
   // Default to Men's Health for all other patients
-  // This includes: TCMH, F&F/FR/Veteran, Approved Disc, NowMensHealth, Ins.Supp, etc.
   return createGHLClientForMensHealth();
 }
 

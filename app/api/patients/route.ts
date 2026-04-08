@@ -151,11 +151,12 @@ export async function POST(request: NextRequest) {
       console.log(`[API] ✅ Auto-linked to existing Healthie patient: ${existingHealthieId}`);
     }
 
-    // === NEW: Sync to Healthie (synchronous - wait for completion) ===
+    // === Sync to Healthie (synchronous - wait for completion) ===
+    // Client type drives Healthie group assignment; clinic is fallback for location
     let healthieClientId: string | null = null;
     if (body.clinic && (body.clinic === 'nowprimary.care' || body.clinic === 'nowmenshealth.care')) {
       try {
-        console.log(`[API] 🏥 Creating patient in Healthie for clinic: ${body.clinic}`);
+        console.log(`[API] 🏥 Creating patient in Healthie — clientType: ${body.clientTypeKey || 'none'}, clinic: ${body.clinic}`);
 
         const healthieResult = await createPatientInHealthie({
           patientName: created.patient_name,
@@ -166,7 +167,8 @@ export async function POST(request: NextRequest) {
           city: created.city,
           state: created.state,
           zip: created.postal_code,
-          clinic: body.clinic as ClinicType
+          clinic: body.clinic as ClinicType,
+          clientTypeKey: body.clientTypeKey || null
         });
 
         if (healthieResult.success && healthieResult.healthieClientId) {

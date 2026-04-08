@@ -901,10 +901,13 @@
             return false;
         }
 
+        // FIX(2026-04-07): Full patient chart — matches main iPad app exactly.
+        // Previously missing: HID, address, insurance, tags, diagnoses, TRT/peptide
+        // dispenses, documents, pending forms, payment history, packages, payment methods.
         function renderChart(d) {
             var h = '', demo = d.demographics || {};
 
-            // ─── Demographics (matches main chart format) ───
+            // ─── Demographics ───
             h += '<div class="sec"><div class="sec-t">Patient Info</div><div class="crd">';
             h += '<div style="font-weight:600;color:#e2e8f0;font-size:13px;margin-bottom:2px;">' + esc(demo.full_name || patientName) + '</div>';
             var infoParts = [];
@@ -914,22 +917,57 @@
                 infoParts.push('DOB: ' + esc(dobDisplay) + (age ? ' (' + age + 'yo)' : ''));
             }
             if (demo.gender) infoParts.push(esc(demo.gender));
-            if (demo.pronouns) infoParts.push(esc(demo.pronouns));
-            if (infoParts.length) h += '<div style="font-size:10px;color:#94a3b8;">' + infoParts.join(' · ') + '</div>';
+            if (demo.pronouns) infoParts.push('(' + esc(demo.pronouns) + ')');
+            if (d.healthie_id) infoParts.push('<span style="font-family:monospace;font-size:9px;opacity:0.6;">HID: ' + esc(d.healthie_id) + '</span>');
+            if (infoParts.length) h += '<div style="font-size:10px;color:#94a3b8;">' + infoParts.join(' &middot; ') + '</div>';
             var contactParts = [];
             if (demo.phone_primary || demo.phone) contactParts.push(esc(demo.phone_primary || demo.phone));
             if (demo.email) contactParts.push(esc(demo.email));
-            if (contactParts.length) h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + contactParts.join(' · ') + '</div>';
+            if (contactParts.length) h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + contactParts.join(' &middot; ') + '</div>';
             if (demo.user_group || demo.group_name) h += '<div style="font-size:10px;margin-top:2px;">Group: <span style="color:#00D4FF;">' + esc(demo.user_group || demo.group_name) + '</span></div>';
             if (demo.height || demo.weight) {
                 var hw = [];
                 if (demo.height) hw.push('Ht: ' + esc(demo.height));
                 if (demo.weight) hw.push('Wt: ' + esc(demo.weight));
-                h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + hw.join(' · ') + '</div>';
+                h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + hw.join(' &middot; ') + '</div>';
             }
+            // Address
+            var addr = [demo.address_line_1, demo.address_line_2].filter(Boolean).join(', ');
+            var cityState = [demo.city, demo.state].filter(Boolean).join(', ');
+            if (demo.zip) cityState += ' ' + demo.zip;
+            if (addr || cityState) h += '<div style="font-size:10px;color:#64748b;margin-top:1px;">' + esc([addr, cityState].filter(Boolean).join(', ')) + '</div>';
+            // Insurance
+            if (demo.insurance) {
+                var ins = demo.insurance;
+                var insParts = [ins.payer_name, ins.plan_name, ins.member_id ? 'ID: ' + ins.member_id : ''].filter(Boolean);
+                if (insParts.length) h += '<div style="font-size:10px;color:#94a3b8;margin-top:2px;">Insurance: <span style="color:#a78bfa;">' + esc(insParts.join(' — ')) + '</span></div>';
+            }
+            // Status & dates
+            if (demo.status_display || demo.status_key) h += '<div style="font-size:10px;margin-top:2px;">Status: <span style="color:#4ade80;">' + esc(demo.status_display || demo.status_key) + '</span></div>';
+            if (demo.method_of_payment) h += '<div style="font-size:10px;color:#94a3b8;">Payment: ' + esc(demo.method_of_payment) + '</div>';
+            // Tags
+            var tags = demo.tags || [];
+            if (tags.length) {
+                h += '<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">';
+                tags.forEach(function(t) {
+                    var tn = typeof t === 'string' ? t : t.name || '';
+                    if (tn) h += '<span style="font-size:9px;padding:1px 6px;border-radius:8px;background:rgba(0,212,255,0.1);color:#00D4FF;border:1px solid rgba(0,212,255,0.2);">' + esc(tn) + '</span>';
+                });
+                h += '</div>';
+            }
+            // Patient notes & lab notes
+            if (demo.patient_notes) h += '<div style="font-size:10px;color:#f59e0b;margin-top:3px;padding:3px 6px;border-radius:4px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.15);">Notes: ' + esc(demo.patient_notes) + '</div>';
+            if (demo.lab_notes) h += '<div style="font-size:10px;color:#a78bfa;margin-top:2px;">Lab: ' + esc(demo.lab_notes) + '</div>';
+            // Lab tracking dates
+            var dateParts = [];
+            if (demo.last_lab_date) dateParts.push('Last Lab: ' + fmtDate(demo.last_lab_date));
+            if (demo.next_lab_date) dateParts.push('Next Lab: ' + fmtDate(demo.next_lab_date));
+            if (demo.last_supply_date) dateParts.push('Last Supply: ' + fmtDate(demo.last_supply_date));
+            if (demo.next_eligible_date) dateParts.push('Next Eligible: ' + fmtDate(demo.next_eligible_date));
+            if (dateParts.length) h += '<div style="font-size:9px;color:#64748b;margin-top:2px;">' + dateParts.map(esc).join(' &middot; ') + '</div>';
             h += '</div></div>';
 
-            // ─── Allergies (match main app: NKDA badge, severity colors) ───
+            // ─── Allergies ───
             var al = d.allergies || [];
             h += '<div class="sec"><div class="sec-t">Allergies</div>';
             if (al.length > 0) {
@@ -939,8 +977,11 @@
                         h += '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid rgba(34,197,94,0.2);">NKDA</span>';
                     } else {
                         var sev = (a.severity||'').toLowerCase();
-                        var sc = sev==='severe' ? '#ef4444' : sev==='moderate' ? '#f59e0b' : '#f87171';
-                        h += '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:rgba(239,68,68,0.12);color:'+sc+';border:1px solid rgba(239,68,68,0.2);">' + esc(a.name||'Unknown') + (a.severity ? ' ('+esc(a.severity)+')' : '') + '</span>';
+                        var sc = sev==='severe' ? '#ef4444' : sev==='moderate' ? '#f59e0b' : sev==='mild' ? '#22c55e' : '#f87171';
+                        var label = esc(a.name||'Unknown');
+                        if (a.severity) label += ' (' + esc(a.severity) + ')';
+                        if (a.reaction) label += ' — ' + esc(a.reaction);
+                        h += '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:rgba(239,68,68,0.12);color:'+sc+';border:1px solid rgba(239,68,68,0.2);">' + label + '</span>';
                     }
                 });
                 h += '</div>';
@@ -949,27 +990,54 @@
             }
             h += '</div>';
 
-            // ─── Medications ───
-            var meds = d.medications || [];
-            if (meds.length) {
-                h += '<div class="sec"><div class="sec-t">Medications (' + meds.length + ')</div><div class="crd" style="padding:6px;">';
-                meds.slice(0,10).forEach(function(m) {
-                    var name = esc(m.name||m.drug_name||'');
-                    var dose = esc(m.dosage||m.strength||'');
-                    var freq = esc(m.frequency||m.directions||'');
-                    h += '<div style="padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:10px;">';
-                    h += '<span style="color:#e2e8f0;font-weight:500;">' + name + '</span>';
-                    if (dose) h += ' <span style="color:#94a3b8;">' + dose + '</span>';
-                    if (freq) h += '<div style="color:#64748b;font-size:9px;">' + freq + '</div>';
+            // ─── Working Diagnoses (ICD-10 from scribe notes) ───
+            var removedDx = d.removed_diagnoses || [];
+            var allCodes = {};
+            (d.scribe_history || []).forEach(function(s) {
+                var note = s.note || s;
+                var codes = note.icd10_codes || s.icd10_codes || [];
+                codes.forEach(function(c) {
+                    var code = typeof c === 'string' ? c : c.code || '';
+                    var desc = typeof c === 'object' ? (c.description||'') : '';
+                    if (code && removedDx.indexOf(code) === -1 && !allCodes[code]) {
+                        allCodes[code] = desc;
+                    }
+                });
+            });
+            var dxKeys = Object.keys(allCodes);
+            if (dxKeys.length) {
+                h += '<div class="sec"><div class="sec-t">Working Diagnoses (' + dxKeys.length + ')</div>';
+                h += '<div style="display:flex;flex-direction:column;gap:2px;">';
+                dxKeys.forEach(function(code) {
+                    h += '<div style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.15);">';
+                    h += '<span style="color:#a855f7;font-family:monospace;font-weight:600;">' + esc(code) + '</span>';
+                    if (allCodes[code]) h += ' <span style="color:#94a3b8;">' + esc(allCodes[code]) + '</span>';
                     h += '</div>';
                 });
-                if (meds.length > 10) h += '<div style="font-size:9px;color:#64748b;padding-top:3px;">+' + (meds.length-10) + ' more</div>';
                 h += '</div></div>';
             }
 
-            // ─── Vitals (match main app: grid, BP merge, out-of-range, units) ───
+            // ─── Medications ───
+            var meds = (d.medications || []).filter(function(m) { return m.active !== false; });
+            if (meds.length) {
+                h += '<div class="sec"><div class="sec-t">Active Medications (' + meds.length + ')</div><div class="crd" style="padding:6px;">';
+                meds.forEach(function(m) {
+                    var name = esc(m.name||m.drug_name||'');
+                    var dose = esc(m.dosage||m.strength||'');
+                    var freq = esc(m.frequency||m.directions||'');
+                    var route = m.route ? esc(m.route) : '';
+                    h += '<div style="padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:10px;">';
+                    h += '<span style="color:#e2e8f0;font-weight:500;">' + name + '</span>';
+                    if (dose) h += ' <span style="color:#94a3b8;">' + dose + '</span>';
+                    if (route) h += ' <span style="color:#64748b;font-size:9px;">(' + route + ')</span>';
+                    if (freq) h += '<div style="color:#64748b;font-size:9px;">' + freq + '</div>';
+                    h += '</div>';
+                });
+                h += '</div></div>';
+            }
+
+            // ─── Vitals (grid, BP merge, out-of-range, units) ───
             var vit = d.vitals || [];
-            // Clean values
             vit.forEach(function(v) {
                 if (v.metric_stat != null) {
                     var s = String(v.metric_stat);
@@ -978,7 +1046,6 @@
                     v.metric_stat = s;
                 }
             });
-            // Dedupe
             var seen = {}, deduped = [];
             vit.forEach(function(v) {
                 var cat = (v.category||'').toLowerCase();
@@ -987,7 +1054,6 @@
                 var key = cat + '_' + val + '_' + Math.floor(ts/300000);
                 if (!seen[key]) { seen[key] = true; deduped.push(v); }
             });
-            // Merge BP
             var merged = [], bpSys = {}, bpDia = {}, bpUsed = {};
             deduped.forEach(function(v) {
                 var cat = (v.category||'').toLowerCase();
@@ -1032,11 +1098,11 @@
                 h += '</div></div>';
             }
 
-            // ─── Scribe History (SOAP notes from AI scribe) ───
+            // ─── Scribe History (ALL SOAP notes) ───
             var scribes = d.scribe_history || [];
             if (scribes.length) {
                 h += '<div class="sec"><div class="sec-t">Scribe Notes (' + scribes.length + ')</div>';
-                scribes.slice(0,3).forEach(function(s) {
+                scribes.forEach(function(s) {
                     var dt = fmtDate(s.encounter_date || s.created_at || '');
                     var vt = s.visit_type || '';
                     h += '<div class="note-c">';
@@ -1044,18 +1110,16 @@
                     h += '<span>' + esc(dt) + '</span>';
                     if (vt) h += '<span style="color:#a855f7;">' + esc(vt) + '</span>';
                     h += '</div>';
-                    // Show SOAP sections if available
                     var note = s.note || s;
-                    if (note.soap_subjective) h += '<div style="font-size:9px;margin-top:2px;"><span style="color:#22d3ee;font-weight:600;">S:</span> <span style="color:#94a3b8;">' + esc(note.soap_subjective.substring(0,150)) + '</span></div>';
-                    if (note.soap_assessment) h += '<div style="font-size:9px;margin-top:1px;"><span style="color:#f59e0b;font-weight:600;">A:</span> <span style="color:#94a3b8;">' + esc(note.soap_assessment.substring(0,150)) + '</span></div>';
-                    if (note.soap_plan) h += '<div style="font-size:9px;margin-top:1px;"><span style="color:#4ade80;font-weight:600;">P:</span> <span style="color:#94a3b8;">' + esc(note.soap_plan.substring(0,150)) + '</span></div>';
-                    // ICD codes
+                    if (note.soap_subjective) h += '<div style="font-size:9px;margin-top:2px;"><span style="color:#22d3ee;font-weight:600;">S:</span> <span style="color:#94a3b8;">' + esc(note.soap_subjective.substring(0,300)) + '</span></div>';
+                    if (note.soap_objective) h += '<div style="font-size:9px;margin-top:1px;"><span style="color:#60a5fa;font-weight:600;">O:</span> <span style="color:#94a3b8;">' + esc(note.soap_objective.substring(0,300)) + '</span></div>';
+                    if (note.soap_assessment) h += '<div style="font-size:9px;margin-top:1px;"><span style="color:#f59e0b;font-weight:600;">A:</span> <span style="color:#94a3b8;">' + esc(note.soap_assessment.substring(0,300)) + '</span></div>';
+                    if (note.soap_plan) h += '<div style="font-size:9px;margin-top:1px;"><span style="color:#4ade80;font-weight:600;">P:</span> <span style="color:#94a3b8;">' + esc(note.soap_plan.substring(0,300)) + '</span></div>';
                     var codes = note.icd10_codes || s.icd10_codes || [];
                     if (codes.length) {
                         h += '<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px;">';
-                        codes.slice(0,4).forEach(function(c) {
+                        codes.forEach(function(c) {
                             var code = typeof c === 'string' ? c : c.code || '';
-                            var desc = typeof c === 'object' ? (c.description||'') : '';
                             h += '<span style="font-size:8px;padding:1px 4px;border-radius:3px;background:rgba(168,85,247,0.12);color:#a855f7;font-family:monospace;">' + esc(code) + '</span>';
                         });
                         h += '</div>';
@@ -1065,40 +1129,147 @@
                 h += '</div>';
             }
 
-            // ─── Chart Notes (Healthie form answer groups) ───
+            // ─── Chart Notes (Healthie forms) ───
             var notes = d.chart_notes || [];
             if (notes.length) {
                 h += '<div class="sec"><div class="sec-t">Healthie Notes (' + notes.length + ')</div>';
-                notes.slice(0,4).forEach(function(n) {
+                notes.forEach(function(n) {
                     var dt = fmtDate(n.created_at || '');
                     var name = n.name || n.form_name || '';
                     var content = n.content || n.note || '';
-                    // Try to extract useful text from form answers
                     if (!content && n.form_answers) {
-                        try { content = n.form_answers.map(function(a){return a.answer||''}).filter(Boolean).join(' · ').substring(0,200); } catch(e){}
+                        try { content = n.form_answers.map(function(a){return a.answer||''}).filter(Boolean).join(' · ').substring(0,300); } catch(e){}
                     }
                     h += '<div class="note-c">';
                     h += '<div style="font-size:8px;color:#64748b;">' + esc(dt);
                     if (name) h += ' — <span style="color:#22d3ee;">' + esc(name) + '</span>';
                     h += '</div>';
-                    if (content) h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + esc(content.substring(0,200)) + '</div>';
+                    if (content) h += '<div style="font-size:10px;color:#94a3b8;margin-top:1px;">' + esc(content.substring(0,300)) + '</div>';
                     h += '</div>';
                 });
                 h += '</div>';
             }
 
-            // ─── Appointments (recent + upcoming) ───
+            // ─── TRT Dispenses ───
+            var trt = d.trt_dispenses || [];
+            if (trt.length) {
+                h += '<div class="sec"><div class="sec-t">TRT Dispenses (' + trt.length + ')</div><div class="crd" style="padding:6px;">';
+                trt.forEach(function(t) {
+                    var dt = fmtDate(t.dispense_date || '');
+                    var dose = t.dose_per_syringe_ml ? t.dose_per_syringe_ml + 'mL' : '';
+                    var count = t.syringe_count ? ' x' + t.syringe_count : '';
+                    h += '<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:10px;">';
+                    h += '<span style="color:#94a3b8;">' + esc(dt) + '</span> ';
+                    h += '<span style="color:#e2e8f0;">' + esc(dose + count) + '</span>';
+                    if (t.dea_drug_name) h += ' <span style="color:#64748b;font-size:9px;">(' + esc(t.dea_drug_name) + ')</span>';
+                    if (t.notes) h += '<div style="color:#64748b;font-size:9px;">' + esc(t.notes) + '</div>';
+                    h += '</div>';
+                });
+                h += '</div></div>';
+            }
+
+            // ─── Peptide Dispenses ───
+            var pep = d.peptide_dispenses || [];
+            if (pep.length) {
+                h += '<div class="sec"><div class="sec-t">Peptide Dispenses (' + pep.length + ')</div><div class="crd" style="padding:6px;">';
+                pep.forEach(function(p) {
+                    var dt = fmtDate(p.sale_date || '');
+                    h += '<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:10px;">';
+                    h += '<span style="color:#94a3b8;">' + esc(dt) + '</span> ';
+                    h += '<span style="color:#e2e8f0;">' + esc(p.product_name || '') + '</span>';
+                    if (p.quantity) h += ' <span style="color:#64748b;">x' + p.quantity + '</span>';
+                    if (p.amount_charged) h += ' <span style="color:#4ade80;">$' + parseFloat(p.amount_charged).toFixed(2) + '</span>';
+                    h += '</div>';
+                });
+                h += '</div></div>';
+            }
+
+            // ─── Documents & Pending Forms ───
+            var docs = d.documents || [];
+            var forms = d.pending_forms || [];
+            if (docs.length || forms.length) {
+                h += '<div class="sec"><div class="sec-t">Documents & Forms</div>';
+                if (forms.length) {
+                    h += '<div style="margin-bottom:4px;">';
+                    forms.forEach(function(f) {
+                        var fname = f.custom_module_form ? f.custom_module_form.name : '';
+                        var fstatus = f.status || '';
+                        var sc = fstatus === 'completed' ? '#4ade80' : '#f59e0b';
+                        h += '<div style="font-size:10px;padding:2px 0;"><span style="color:' + sc + ';">' + esc(fstatus) + '</span> ' + esc(fname) + '</div>';
+                    });
+                    h += '</div>';
+                }
+                if (docs.length) {
+                    h += '<div class="crd" style="padding:6px;">';
+                    docs.forEach(function(dc) {
+                        h += '<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:10px;">';
+                        h += '<span style="color:#94a3b8;">' + fmtDate(dc.created_at||'') + '</span> ';
+                        h += '<span style="color:#e2e8f0;">' + esc(dc.display_name||dc.friendly_type||'Document') + '</span>';
+                        h += '</div>';
+                    });
+                    h += '</div>';
+                }
+                h += '</div>';
+            }
+
+            // ─── Appointments ───
             var appts = d.appointments || [];
             if (appts.length) {
-                h += '<div class="sec"><div class="sec-t">Appointments</div><div class="crd">';
-                appts.slice(0,5).forEach(function(a) {
+                h += '<div class="sec"><div class="sec-t">Appointments (' + appts.length + ')</div><div class="crd">';
+                appts.forEach(function(a) {
                     var dt = fmtDateShort(a.date);
                     var st = a.pm_status || a.status || '';
-                    var stColor = st === 'Completed' ? '#4ade80' : st === 'No Show' ? '#ef4444' : '#94a3b8';
+                    var stColor = st === 'Completed' ? '#4ade80' : st === 'No Show' ? '#ef4444' : st === 'Scheduled' ? '#60a5fa' : '#94a3b8';
                     h += '<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:10px;display:flex;justify-content:space-between;">';
                     h += '<span><span style="color:#94a3b8;">' + esc(dt) + '</span> <span style="color:#e2e8f0;">' + esc(a.appointment_type||a.type||'') + '</span></span>';
                     if (st) h += '<span style="color:' + stColor + ';font-size:9px;">' + esc(st) + '</span>';
                     h += '</div>';
+                });
+                h += '</div></div>';
+            }
+
+            // ─── Financial: Payment History ───
+            var payments = d.last_payments || [];
+            if (payments.length) {
+                h += '<div class="sec"><div class="sec-t">Recent Payments (' + payments.length + ')</div><div class="crd" style="padding:6px;">';
+                payments.forEach(function(p) {
+                    var dt = fmtDate(p.payment_date || p.created_at || '');
+                    var amt = p.amount ? '$' + parseFloat(p.amount).toFixed(2) : '';
+                    var st = p.status || '';
+                    var sc = st === 'succeeded' || st === 'paid' ? '#4ade80' : st === 'failed' ? '#ef4444' : '#94a3b8';
+                    h += '<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:10px;display:flex;justify-content:space-between;">';
+                    h += '<span><span style="color:#94a3b8;">' + esc(dt) + '</span> <span style="color:#e2e8f0;">' + esc(p.description||'') + '</span></span>';
+                    h += '<span style="color:' + sc + ';">' + esc(amt) + '</span>';
+                    h += '</div>';
+                });
+                h += '</div></div>';
+            }
+
+            // ─── Active Packages ───
+            var pkgs = d.active_packages || [];
+            if (pkgs.length) {
+                h += '<div class="sec"><div class="sec-t">Active Packages</div><div class="crd" style="padding:6px;">';
+                pkgs.forEach(function(p) {
+                    h += '<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:10px;">';
+                    h += '<span style="color:#e2e8f0;">' + esc(p.package_name||p.name||'') + '</span>';
+                    if (p.amount) h += ' <span style="color:#4ade80;">$' + parseFloat(p.amount).toFixed(2) + '/' + esc(p.frequency||p.billing_frequency||'mo') + '</span>';
+                    if (p.next_charge_date) h += '<div style="font-size:9px;color:#64748b;">Next charge: ' + fmtDate(p.next_charge_date) + '</div>';
+                    h += '</div>';
+                });
+                h += '</div></div>';
+            }
+
+            // ─── Payment Methods ───
+            var cards = d.payment_methods || [];
+            if (cards.length) {
+                h += '<div class="sec"><div class="sec-t">Payment Methods</div>';
+                h += '<div style="display:flex;flex-wrap:wrap;gap:3px;">';
+                cards.forEach(function(c) {
+                    var label = (c.card_type_label||c.card_type||'Card') + ' ···' + (c.last_four||'????');
+                    var exp = c.expiration || '';
+                    h += '<span style="font-size:10px;padding:2px 7px;border-radius:6px;background:rgba(255,255,255,0.06);color:#94a3b8;border:1px solid rgba(255,255,255,0.08);">' + esc(label);
+                    if (exp) h += ' <span style="font-size:8px;">exp ' + esc(exp) + '</span>';
+                    h += '</span>';
                 });
                 h += '</div></div>';
             }
