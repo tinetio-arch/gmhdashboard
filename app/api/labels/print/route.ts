@@ -35,10 +35,14 @@ import { generateLabLabels, LabLabelParams } from '@/lib/pdf/labLabelGenerator';
 export const dynamic = 'force-dynamic';
 
 // Printer name mapping
+// Exact CUPS printer names from clinic Mac (lpstat -a on 2026-04-09)
 const PRINTERS: Record<string, string> = {
     zebra: 'Zebra_Technologies_ZTC_GK420d__EPL_',
-    zebra2: 'Zebra_Technologies_ZTC_GK420d__EPL__2',
+    zebra2: 'Zebra_Technologies_ZTC_GK420d_',
+    dymo: 'DYMO_LabelWriter_450',
+    hp: 'HP_ColorLaserJet_MFP_M282-M285',
     brother: 'Brother_MFC_L5850DW_series',
+    canon: 'Canon_MF642C_643C_644C__e0_ac_58___12___e0_ac_5___e0_ac_58___7_',
 };
 
 /**
@@ -57,14 +61,51 @@ export async function POST(request: NextRequest) {
         let pdfBuffer: Buffer;
 
         if (label_type === 'lab') {
-            // Lab specimen labels
-            const labParams: LabLabelParams = {
-                patientName: params.patientName || '',
-                patientDob: params.patientDob || '',
-                drawDateTime: params.drawDateTime || new Date().toISOString(),
-                orderId: params.orderId,
-            };
-            pdfBuffer = await generateLabLabels(labParams);
+            // Lab specimen labels — look up patient info from lab_orders
+            const orderId = params.orderId || dispense_id;
+            if (orderId) {
+                const orderResult = await query<any>(
+                    `SELECT patient_first_name, patient_last_name, patient_dob,
+                            external_order_id, created_at
+                     FROM lab_orders WHERE id = $1`, [orderId]);
+                if (orderResult.length > 0) {
+                    const order = orderResult[0];
+                    const labParams: LabLabelParams = {
+                        patientName: `${order.patient_first_name || ''} ${order.patient_last_name || ''}`.trim(),
+                        patientDob: order.patient_dob || '',
+                        drawDateTime: order.created_at || new Date().toISOString(),
+                        orderId: order.external_order_id || `GMH-${orderId}`,
+                    };
+                    pdfBuffer = await generateLabLabels(labParams);
+                } else {
+                    return NextResponse.json({ error: 'Lab order not found' }, { status: 404 });
+                }
+            } else {
+                // Fallback: use params directly
+                const labParams: LabLabelParams = {
+                    patientName: params.patientName || '',
+                    patientDob: params.patientDob || '',
+                    drawDateTime: params.drawDateTime || new Date().toISOString(),
+                    orderId: params.orderId,
+                };
+                pdfBuffer = await generateLabLabels(labParams);
+            }
+
+        } else if (label_type === 'requisition') {
+            // Requisition form — fetch the existing PDF from the requisition endpoint
+            const orderId = params.orderId || dispense_id;
+            if (!orderId) {
+                return NextResponse.json({ error: 'orderId required for requisition' }, { status: 400 });
+            }
+            // Fetch the requisition PDF internally
+            const reqUrl = `${request.nextUrl.origin}/ops/api/labs/orders/${orderId}/requisition/`;
+            const reqResp = await fetch(reqUrl, {
+                headers: { cookie: request.headers.get('cookie') || '' },
+            });
+            if (!reqResp.ok) {
+                return NextResponse.json({ error: 'Requisition not found' }, { status: 404 });
+            }
+            pdfBuffer = Buffer.from(await reqResp.arrayBuffer());
 
         } else if (label_type === 'dispense' && dispense_id) {
             // Peptide dispense label — look up from DB (same as /api/ipad/billing/label)

@@ -8,9 +8,12 @@ export interface LabLabelParams {
 }
 
 /**
- * Generate 3 specimen labels on a single page for Dymo printing.
- * Each label: 3.5" x 1.125" (standard Dymo 30252 address label)
- * Layout: 3 labels stacked vertically on one page
+ * Generate 3 specimen labels for Dymo 30252 printing.
+ * Each label: 3.5" x 1.125" (252pt x 81pt)
+ *
+ * FIX(2026-04-09): Each label is now a SEPARATE PDF PAGE so the Dymo
+ * feeds one label per page. Previously all 3 were on a single canvas
+ * which the Dymo couldn't print correctly.
  *
  * Each label contains:
  *   - Patient full name (large, bold)
@@ -24,12 +27,11 @@ export async function generateLabLabels(params: LabLabelParams): Promise<Buffer>
     // Dymo 30252 label: 3.5" x 1.125" = 252pt x 81pt
     const labelWidth = 252;
     const labelHeight = 81;
-    const labelGap = 8;
-    const pageHeight = (labelHeight * 3) + (labelGap * 2) + 20; // 3 labels + gaps + margin
 
     const doc = new PDFDocument({
-        size: [labelWidth + 20, pageHeight],
-        margins: { top: 10, left: 10, right: 10, bottom: 10 },
+        size: [labelWidth, labelHeight],
+        margins: { top: 4, left: 6, right: 6, bottom: 4 },
+        autoFirstPage: false,
     });
 
     const buffers: Buffer[] = [];
@@ -41,64 +43,63 @@ export async function generateLabLabels(params: LabLabelParams): Promise<Buffer>
     // Format DOB
     const dob = formatDate(patientDob);
 
-    // Format draw date/time
+    // Format draw date/time in Arizona timezone
     const drawDate = new Date(drawDateTime);
     const drawStr = drawDate.toLocaleDateString('en-US', {
-        month: '2-digit', day: '2-digit', year: 'numeric'
+        month: '2-digit', day: '2-digit', year: 'numeric', timeZone: 'America/Phoenix'
     }) + ' ' + drawDate.toLocaleTimeString('en-US', {
-        hour: '2-digit', minute: '2-digit', hour12: true
+        hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/Phoenix'
     });
 
-    // Draw 3 identical labels
-    for (let i = 0; i < 3; i++) {
-        const y = 10 + (i * (labelHeight + labelGap));
+    const printableWidth = labelWidth - 12;
 
-        // Label border (light gray dashed for cut guide)
-        doc.rect(10, y, labelWidth, labelHeight)
-           .dash(3, { space: 3 })
-           .strokeColor('#CCCCCC')
-           .stroke()
-           .undash();
+    // 3 identical labels — each on its own page
+    for (let i = 0; i < 3; i++) {
+        doc.addPage({ size: [labelWidth, labelHeight], margins: { top: 4, left: 6, right: 6, bottom: 4 } });
 
         // Patient name — large and bold
-        doc.fontSize(14).font('Helvetica-Bold')
+        doc.fontSize(13).font('Helvetica-Bold')
            .fillColor('#000000')
-           .text(patientName.toUpperCase(), 16, y + 6, {
-               width: labelWidth - 12,
+           .text(patientName.toUpperCase(), 6, 4, {
+               width: printableWidth,
                align: 'left',
+               lineBreak: false,
            });
 
         // DOB
-        doc.fontSize(10).font('Helvetica')
-           .fillColor('#333333')
-           .text(`DOB: ${dob}`, 16, y + 26, {
-               width: labelWidth - 12,
+        doc.fontSize(9).font('Helvetica')
+           .fillColor('#000000')
+           .text(`DOB: ${dob}`, 6, 22, {
+               width: printableWidth,
            });
 
         // Draw date/time
-        doc.fontSize(10).font('Helvetica-Bold')
+        doc.fontSize(9).font('Helvetica-Bold')
            .fillColor('#000000')
-           .text(`Draw: ${drawStr}`, 16, y + 40, {
-               width: labelWidth - 12,
+           .text(`Draw: ${drawStr}`, 6, 36, {
+               width: printableWidth,
            });
 
-        // Order ID (small, bottom right)
+        // Bottom row: clinic name left, order ID right
+        doc.fontSize(6.5).font('Helvetica')
+           .fillColor('#666666')
+           .text('NOW Optimal Health', 6, 52, {
+               width: printableWidth / 2,
+               align: 'left',
+           });
+
         if (orderId) {
-            doc.fontSize(7).font('Helvetica')
-               .fillColor('#999999')
-               .text(`Order: ${orderId}`, 16, y + 56, {
-                   width: labelWidth - 12,
+            doc.fontSize(6.5).font('Helvetica')
+               .fillColor('#666666')
+               .text(`#${orderId}`, labelWidth / 2, 52, {
+                   width: printableWidth / 2,
                    align: 'right',
                });
         }
 
-        // Clinic name (small, bottom left)
-        doc.fontSize(7).font('Helvetica')
-           .fillColor('#999999')
-           .text('NOW Optimal Health', 16, y + 56, {
-               width: labelWidth - 12,
-               align: 'left',
-           });
+        // Thin separator line at bottom
+        doc.moveTo(6, 64).lineTo(labelWidth - 6, 64)
+           .strokeColor('#CCCCCC').lineWidth(0.5).stroke();
     }
 
     doc.end();
