@@ -18,21 +18,22 @@ export async function GET(req: NextRequest) {
     }
 
     // Get patient tags
-    const tagResult = healthieUserId
-        ? await query(`SELECT tag FROM patient_service_tags WHERE healthie_user_id = $1`, [healthieUserId])
-        : await query(`SELECT tag FROM patient_service_tags WHERE patient_id = $1`, [patientId]);
+    // FIX(2026-04-09): query() returns rows directly (not {rows}), was causing crash
+    const tagRows = healthieUserId
+        ? await query<{ tag: string }>(`SELECT tag FROM patient_service_tags WHERE healthie_user_id = $1`, [healthieUserId])
+        : await query<{ tag: string }>(`SELECT tag FROM patient_service_tags WHERE patient_id = $1`, [patientId]);
 
-    const tags = tagResult.rows.map((r: any) => r.tag);
+    const tags = tagRows.map((r) => r.tag);
 
     // Get unlocked appointment type IDs from those tags
-    const configResult = tags.length > 0
-        ? await query(
+    const configRows = tags.length > 0
+        ? await query<{ appointment_type_id: string }>(
             `SELECT DISTINCT appointment_type_id FROM service_tag_config WHERE tag = ANY($1) AND appointment_type_id IS NOT NULL AND active = true`,
             [tags]
         )
-        : { rows: [] };
+        : [];
 
-    const unlockedAppointmentTypeIds = configResult.rows.map((r: any) => r.appointment_type_id);
+    const unlockedAppointmentTypeIds = configRows.map((r) => r.appointment_type_id);
 
     return NextResponse.json({
         tags,
