@@ -462,6 +462,26 @@ export async function POST(request: NextRequest) {
                 }, { status: 400 });
             }
 
+            // FIX(2026-04-09): Appointments booked at wrong times — 3 issues:
+            // 1. Missing timezone param — Healthie misinterpreted times without explicit timezone
+            // 2. Missing appointment_location_id — appointments not associated with correct location
+            // 3. Ensure datetime always has -07:00 offset (Arizona MST, no DST)
+            const TIMEZONE = 'America/Phoenix';
+            const ARIZONA_OFFSET = '-07:00';
+
+            // Ensure datetime has timezone offset
+            let fixedDatetime = datetime;
+            if (datetime && !datetime.includes('+') && !datetime.includes('Z') && !datetime.match(/-\d{2}:\d{2}$/)) {
+                fixedDatetime = `${datetime}${ARIZONA_OFFSET}`;
+            }
+
+            // Map provider to Healthie location ID
+            const LOCATION_MAP: Record<string, string> = {
+                '12093125': '13029260',  // Dr. Whitten → NowMensHealth.Care
+                '12088269': '13023235',  // Phil Schafer NP → NowPrimary.Care
+            };
+            const locationId = LOCATION_MAP[provider_id] || null;
+
             const data = await healthieGraphQL<{
                 createAppointment: {
                     appointment: {
@@ -478,6 +498,8 @@ export async function POST(request: NextRequest) {
                     $providerId: String!,
                     $typeId: String!,
                     $datetime: String!,
+                    $timezone: String,
+                    $locationId: String,
                     $location: String,
                     $contactType: String
                 ) {
@@ -487,6 +509,8 @@ export async function POST(request: NextRequest) {
                         providers: $providerId,
                         appointment_type_id: $typeId,
                         datetime: $datetime,
+                        timezone: $timezone,
+                        appointment_location_id: $locationId,
                         location: $location,
                         contact_type: $contactType
                     }) {
@@ -502,7 +526,9 @@ export async function POST(request: NextRequest) {
                 patientId: patient_id,
                 providerId: provider_id,
                 typeId: appointment_type_id,
-                datetime,
+                datetime: fixedDatetime,
+                timezone: TIMEZONE,
+                locationId,
                 location: location || null,
                 contactType: contact_type || null,
             });
