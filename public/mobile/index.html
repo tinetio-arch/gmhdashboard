@@ -3,9 +3,15 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
+    <meta http-equiv="Expires" content="-1">
+    <script>
+    // Force reload if running stale cached version
+    if (!window._appVersion || window._appVersion !== '20260409-0108') {
+        window._appVersion = '20260409-0108';
+    }
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -91,7 +97,7 @@
         </div>
     </div>
     <script>
-    // Inline login handler — works even if app.8e23e7d8.js is cached/broken
+    // Inline login handler — works even if app.7ccad2cb.js is cached/broken
     function authOverlayLogin() {
         var email = document.getElementById('authLoginEmail').value.trim();
         var pw = document.getElementById('authLoginPassword').value;
@@ -128,6 +134,7 @@
                 <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
             </svg>
             <span class="tab-label">Today</span>
+            <span class="tab-badge hidden" id="taskBadge" style="background:#ef4444; color:#fff;">0</span>
         </button>
         <button class="tab-item" data-tab="labs">
             <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -209,7 +216,7 @@
     <!-- Footer -->
     <div class="footer-note">Powered by GMH Ops — Live Data</div>
 
-    <script>document.write('<scr'+'ipt src="./app.8e23e7d8.js?v='+Date.now()+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="./app.7ccad2cb.js?v='+Date.now()+'"></scr'+'ipt>');</script>
 </body>
 
 </html>
