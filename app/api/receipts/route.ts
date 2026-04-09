@@ -37,7 +37,8 @@ export async function GET(request: NextRequest) {
             FROM payment_transactions pt
             LEFT JOIN patients p ON pt.patient_id = p.patient_id
             LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id
-            WHERE 1=1
+            WHERE pt.status NOT IN ('consent_signed', 'consent_sent')
+              AND pt.amount != 0
         `;
 
         const params: any[] = [];
@@ -67,7 +68,8 @@ export async function GET(request: NextRequest) {
         let countQuery = `
             SELECT COUNT(*) as total
             FROM payment_transactions pt
-            WHERE 1=1
+            WHERE pt.status NOT IN ('consent_signed', 'consent_sent')
+              AND pt.amount != 0
         `;
         const countParams: any[] = [];
         let countParamIndex = 1;

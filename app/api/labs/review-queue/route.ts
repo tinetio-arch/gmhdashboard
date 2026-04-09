@@ -45,6 +45,71 @@ interface LabQueueItem {
     approved_by?: string;
 }
 
+/**
+ * Parse raw_result (Access Labs API response) into summary + results_json
+ * for frontend display. Extracts test values from nested Ordered Codes.
+ */
+function parseRawResult(item: any): any {
+    if (!item?.raw_result) return item;
+
+    const raw = typeof item.raw_result === 'string' ? JSON.parse(item.raw_result) : item.raw_result;
+    const orderedCodes = raw?.['Ordered Codes'] || [];
+
+    // Extract flat key-value results from nested structure
+    const results: Record<string, string> = {};
+    const flagged: string[] = [];
+
+    for (const panel of orderedCodes) {
+        const components = panel?.Components || [];
+        for (const comp of components) {
+            // Handle nested sub-panels (e.g. CBC within MALE PRE REQUIRED)
+            if (comp.Components && Array.isArray(comp.Components)) {
+                for (const sub of comp.Components) {
+                    const name = sub['Test Name'];
+                    const val = sub['Result'];
+                    if (name && val) {
+                        const flag = sub['Abnormal Flag'] || '';
+                        const units = sub['Test Units'] || '';
+                        const range = sub['Range'] || '';
+                        const flagMarker = (flag === 'H' || flag === 'HH') ? ' HIGH' : (flag === 'L' || flag === 'LL') ? ' LOW' : '';
+                        results[name] = `${val} ${units}${flagMarker}${range ? ` (${range})` : ''}`.trim();
+                        if (flag && flag !== 'N') flagged.push(`${name}: ${val} ${units} [${flag}]`);
+                    }
+                }
+            } else {
+                const name = comp['Test Name'];
+                const val = comp['Result'];
+                if (name && val) {
+                    const flag = comp['Abnormal Flag'] || '';
+                    const units = comp['Test Units'] || '';
+                    const range = comp['Range'] || '';
+                    const flagMarker = (flag === 'H' || flag === 'HH') ? ' HIGH' : (flag === 'L' || flag === 'LL') ? ' LOW' : '';
+                    results[name] = `${val} ${units}${flagMarker}${range ? ` (${range})` : ''}`.trim();
+                    if (flag && flag !== 'N') flagged.push(`${name}: ${val} ${units} [${flag}]`);
+                }
+            }
+        }
+    }
+
+    // Build summary
+    const panelNames = orderedCodes.map((p: any) => p['Profile Name']).filter(Boolean).join(', ');
+    const totalTests = Object.keys(results).length;
+    let summary = `${panelNames || 'Lab Panel'} — ${totalTests} results.`;
+    if (flagged.length > 0) {
+        summary += ` ${flagged.length} abnormal: ${flagged.slice(0, 5).join('; ')}${flagged.length > 5 ? '...' : ''}`;
+    } else {
+        summary += ' All values within normal range.';
+    }
+
+    // Add computed fields without removing raw_result
+    return {
+        ...item,
+        summary,
+        results_json: results,
+        tests_found: item.tests_found || orderedCodes.map((p: any) => p['Profile Name']).filter(Boolean),
+    };
+}
+
 /** Load a single queue item by ID from the database */
 async function loadQueueItem(id: string): Promise<LabQueueItem | null> {
     const rows = await query<LabQueueItem>(
@@ -448,9 +513,17 @@ export async function GET(request: NextRequest): Promise<Response> {
         counts[row.status] = parseInt(row.count, 10);
     }
 
+    // Parse raw_result into summary + results_json for frontend display,
+    // then strip raw_result from response to keep payload small
+    const enriched = filtered.map(item => {
+        const parsed = parseRawResult(item);
+        const { raw_result, ...rest } = parsed;
+        return rest;
+    });
+
     return NextResponse.json({
         success: true,
-        items: filtered,
+        items: enriched,
         counts,
     });
 }

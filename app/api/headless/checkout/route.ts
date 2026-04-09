@@ -93,9 +93,9 @@ export async function POST(request: NextRequest) {
             }, { status: 400 });
         }
 
-        // 2. Calculate total
+        // 2. Calculate total — $20 flat rate shipping, free over $400
         const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-        const shippingCost = subtotal >= 200 ? 0 : (shipping_method === 'express' ? 24.99 : 9.99);
+        const shippingCost = subtotal >= 400 ? 0 : 20;
         const total = subtotal + shippingCost;
         const totalCents = Math.round(total * 100);
         const description = items.map(i => `${i.name} x${i.quantity}`).join(', ');
@@ -160,9 +160,10 @@ export async function POST(request: NextRequest) {
         let healthieDocumentId: string | null = null;
 
         try {
-            const { uploadSimpleReceiptToHealthie } = await import('@/lib/healthie');
+            // FIX(2026-04-08): Import from correct module (was @/lib/healthie, should be @/lib/simpleReceiptUpload)
+            const { uploadSimpleReceiptToHealthie } = await import('@/lib/simpleReceiptUpload');
             if (typeof uploadSimpleReceiptToHealthie === 'function') {
-                healthieDocumentId = await (uploadSimpleReceiptToHealthie as any)({
+                healthieDocumentId = await uploadSimpleReceiptToHealthie({
                     healthieClientId: healthie_id,
                     receiptNumber,
                     date: new Date(),
@@ -227,9 +228,9 @@ export async function POST(request: NextRequest) {
                             sku: i.sku,
                         })),
                         shipping_lines: [{
-                            method_id: shipping_method === 'express' ? 'usps_express' : 'usps_priority',
-                            method_title: shipping_method === 'express' ? 'USPS Priority Express' : 'USPS Priority Mail',
-                            total: (subtotal >= 200 ? 0 : shippingCost).toFixed(2),
+                            method_id: 'flat_rate',
+                            method_title: 'USPS Priority Mail',
+                            total: shippingCost.toFixed(2),
                         }],
                         set_paid: true,
                         transaction_id: paymentIntent.id,

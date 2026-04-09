@@ -87,30 +87,33 @@ async function generateConsentPDF(
            .fillColor(accentColor).text('Optimal', 125, 35);
     }
 
-    // Clinic info on right side
-    doc.fontSize(9).font('Helvetica')
-       .fillColor('#666666')
-       .text('NOW Optimal Health', 350, 35, { width: 200, align: 'right' })
-       .fontSize(8)
-       .text('404 S. Montezuma St, Prescott, AZ 86301', 350, 48, { width: 200, align: 'right' })
-       .text('(928) 277-0001 | nowoptimal.com', 350, 60, { width: 200, align: 'right' });
+    // Clinic info on right side (absolute positioned — does NOT move the cursor)
+    doc.fontSize(9).font('Helvetica').fillColor('#666666');
+    doc.text('NOW Optimal Health', 350, 35, { width: 200, align: 'right' });
+    doc.fontSize(8);
+    doc.text('404 S. Montezuma St, Prescott, AZ 86301', 350, 48, { width: 200, align: 'right' });
+    doc.text('(928) 277-0001 | nowoptimal.com', 350, 60, { width: 200, align: 'right' });
 
-    doc.moveDown(3);
+    // FIX(2026-04-08): Reset cursor to left margin after absolute-positioned header
+    // Without this, all subsequent text renders on the right half of the page
+    doc.x = 60;
+    doc.y = 90;
+
     doc.moveTo(60, doc.y).lineTo(552, doc.y).strokeColor('#CCCCCC').stroke();
-    doc.moveDown(0.5);
+    doc.y += 24;
 
     // Title
     doc.fontSize(18).fillColor('#000000')
-        .text('PEPTIDE INFORMED CONSENT', { align: 'center' })
+        .text('PEPTIDE INFORMED CONSENT', 60, doc.y, { align: 'center', width: 492 })
         .moveDown(0.3);
 
     doc.fontSize(10).fillColor('#666666')
-        .text(`Date: ${dateStr}  |  Patient: ${patientName}`, { align: 'center' })
+        .text(`Date: ${dateStr}  |  Patient: ${patientName}`, 60, doc.y, { align: 'center', width: 492 })
         .moveDown(1);
 
     // Products section
     doc.fontSize(12).fillColor('#000000')
-        .text('Products Being Purchased:', { underline: true })
+        .text('Products Being Purchased:', 60, doc.y, { underline: true, width: 492 })
         .moveDown(0.3);
 
     doc.fontSize(10).fillColor('#333333');
@@ -123,9 +126,9 @@ async function generateConsentPDF(
         .text(`  Total: $${total.toFixed(2)}`, { bold: true } as any);
     doc.moveDown(1);
 
-    // Research Peptide Acknowledgment
+    // Consent sections — each marked with ✓ to show patient acknowledged
     doc.fontSize(12).fillColor('#000000')
-        .text('1. RESEARCH PEPTIDE ACKNOWLEDGMENT', { underline: true })
+        .text('1. RESEARCH PEPTIDE ACKNOWLEDGMENT  ✓', { underline: true })
         .moveDown(0.3);
 
     doc.fontSize(10).fillColor('#333333')
@@ -137,7 +140,7 @@ async function generateConsentPDF(
 
     // Understanding of Risks
     doc.fontSize(12).fillColor('#000000')
-        .text('2. UNDERSTANDING OF RISKS', { underline: true })
+        .text('2. UNDERSTANDING OF RISKS  ✓', { underline: true })
         .moveDown(0.3);
 
     doc.fontSize(10).fillColor('#333333');
@@ -155,7 +158,7 @@ async function generateConsentPDF(
 
     // Provider Supervision
     doc.fontSize(12).fillColor('#000000')
-        .text('3. PROVIDER SUPERVISION', { underline: true })
+        .text('3. PROVIDER SUPERVISION  ✓', { underline: true })
         .moveDown(0.3);
 
     doc.fontSize(10).fillColor('#333333')
@@ -167,7 +170,7 @@ async function generateConsentPDF(
 
     // Administration & Storage
     doc.fontSize(12).fillColor('#000000')
-        .text('4. ADMINISTRATION & STORAGE', { underline: true })
+        .text('4. ADMINISTRATION & STORAGE  ✓', { underline: true })
         .moveDown(0.3);
 
     doc.fontSize(10).fillColor('#333333');
@@ -185,19 +188,19 @@ async function generateConsentPDF(
 
     // Payment Authorization
     doc.fontSize(12).fillColor('#000000')
-        .text('5. PAYMENT & SHIPPING AUTHORIZATION', { underline: true })
+        .text('5. PAYMENT & SHIPPING AUTHORIZATION  ✓', { underline: true })
         .moveDown(0.3);
 
     doc.fontSize(10).fillColor('#333333')
         .text(
-            `I authorize NOW Optimal Health to charge my card on file $${total.toFixed(2)} for the products listed above, plus applicable shipping fees (USPS Priority Mail; free on orders over $200). Products will be shipped to my address on file. I understand that all sales of research peptides are final and non-refundable.`,
+            `I authorize NOW Optimal Health to charge my card on file $${total.toFixed(2)} for the products listed above, plus applicable shipping ($20 flat rate via USPS Priority Mail; free on orders over $400). Products will be shipped to my address on file. I understand that all sales of research peptides are final and non-refundable.`,
             { lineGap: 2 }
         )
         .moveDown(0.8);
 
     // Voluntary Consent
     doc.fontSize(12).fillColor('#000000')
-        .text('6. VOLUNTARY CONSENT', { underline: true })
+        .text('6. VOLUNTARY CONSENT  ✓', { underline: true })
         .moveDown(0.3);
 
     doc.fontSize(10).fillColor('#333333')
@@ -303,7 +306,7 @@ export async function POST(request: NextRequest) {
 
         console.log(`[Consent] Uploaded to Healthie: document ${documentId} for patient ${healthie_id}`);
 
-        // 3. Log in database
+        // 3. Log consent in pending_peptide_consents (NOT payment_transactions — consents are not payments)
         try {
             const [patient] = await query<any>(
                 `SELECT patient_id FROM patients WHERE healthie_client_id = $1 LIMIT 1`,
@@ -311,10 +314,10 @@ export async function POST(request: NextRequest) {
             );
             if (patient) {
                 await query(
-                    `INSERT INTO payment_transactions
-                     (patient_id, amount, description, stripe_account, status, created_at, healthie_document_id)
-                     VALUES ($1::uuid, 0, $2, 'none', 'consent_signed', NOW(), $3)`,
-                    [patient.patient_id, `Peptide consent signed: ${peptides.map(p => p.name).join(', ')}`, documentId]
+                    `UPDATE pending_peptide_consents
+                     SET status = 'signed', signed_at = NOW(), document_id = $1
+                     WHERE patient_id = $2 AND status = 'pending'`,
+                    [documentId, patient.patient_id]
                 );
             }
         } catch (dbErr) {

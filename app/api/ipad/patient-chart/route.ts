@@ -572,7 +572,7 @@ export async function GET(request: NextRequest) {
         if (localPatientId) {
             try {
                 const localPayments = await query<any>(
-                    `SELECT transaction_id, amount, description, stripe_account, status, created_at, created_by
+                    `SELECT transaction_id, amount, description, stripe_account, stripe_charge_id, status, created_at, created_by
                      FROM payment_transactions
                      WHERE patient_id = $1
                      ORDER BY created_at DESC
@@ -587,6 +587,8 @@ export async function GET(request: NextRequest) {
                         description: lp.description || '',
                         status: lp.status || 'completed',
                         local_id: lp.transaction_id,
+                        transaction_id: lp.transaction_id,
+                        stripe_charge_id: lp.stripe_charge_id || null,
                     });
                 }
             } catch (err) {

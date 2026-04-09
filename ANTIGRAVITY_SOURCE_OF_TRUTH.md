@@ -3459,6 +3459,40 @@ location /ops/ {
 }
 ```
 
+### MANDATORY: iPad + Mobile App Sync (April 2026)
+
+> **CRITICAL**: The staff app exists in TWO locations that MUST stay in sync:
+> - **iPad**: `public/ipad/app.js` + `public/ipad/style.css` → served at `nowoptimal.com/ops/ipad/`
+> - **Mobile**: `public/mobile/app.js` + `public/mobile/style.css` → served at `nowoptimal.com/mobile/`
+>
+> **After ANY change to `public/ipad/app.js`**, run:
+> ```bash
+> bash scripts/sync-mobile.sh
+> ```
+> This ONLY copies `app.js`. The mobile `style.css` and `index.html` are **phone-optimized and SEPARATE** — do NOT overwrite them.
+>
+> **NEVER edit `public/mobile/app.js` directly** — always edit `public/ipad/app.js` and sync.
+> **NEVER copy `public/ipad/style.css` to `public/mobile/style.css`** — they are different files optimized for different screen sizes.
+> Incident: April 9, 2026 — 28 features built on iPad but mobile was running March 18 code. Then CSS was incorrectly synced, breaking the phone layout.
+
+### iPad app.js — Search Input Focus Loss Pattern (April 2026)
+
+> **CRITICAL PATTERN**: When building search/filter UIs in `public/ipad/app.js`, NEVER re-render the entire modal innerHTML on each keystroke. This destroys and recreates the `<input>` element, causing focus loss — the user can only type one character at a time.
+>
+> **Correct pattern**: Build a static shell (header + search input) once, then only re-render the dynamic content (product grid, results list) into a child `<div>` using `getElementById().innerHTML`. Attach the `input` event listener via `addEventListener()` AFTER the element exists in the DOM.
+>
+> **Example** (from ship-to-patient peptide browser):
+> ```javascript
+> // Static shell with persistent input
+> modal.innerHTML = `<div id="search-container"><input id="my-search" /></div><div id="results"></div>`;
+> document.getElementById('my-search').addEventListener('input', (e) => renderResults(e.target.value));
+> function renderResults(query) {
+>     document.getElementById('results').innerHTML = /* filtered results */;
+> }
+> ```
+>
+> This pattern applies to ALL search modals in the iPad app. Incidents: patient name search (Feb 2026), peptide product search (Apr 2026).
+
 ### PM2 Operations
 
 **Check process status**:

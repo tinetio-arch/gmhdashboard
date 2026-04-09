@@ -1783,7 +1783,7 @@ export class HealthieClient {
    */
   async requestFormCompletion(userId: string, formId: string): Promise<string> {
     const mutation = `
-      mutation RequestFormCompletion($input: createRequestedFormCompletionInput!) {
+      mutation RequestFormCompletion($input: createRequestedFormInput!) {
         createRequestedFormCompletion(input: $input) {
           requestedFormCompletion {
             id

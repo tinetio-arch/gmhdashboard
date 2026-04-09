@@ -607,6 +607,23 @@ export class GHLClient {
   }
 
   /**
+   * Add a tag to a contact. Finds or creates the tag, then adds it to the contact's existing tags.
+   */
+  async addTag(contactId: string, tagName: string): Promise<void> {
+    // Ensure the tag exists
+    await this.findOrCreateTag(tagName);
+
+    // Get contact's current tags
+    const contact = await this.getContact(contactId);
+    const currentTags: string[] = (contact as any)?.tags || [];
+
+    // Add new tag if not already present
+    if (!currentTags.includes(tagName)) {
+      await this.updateContact(contactId, { tags: [...currentTags, tagName] });
+    }
+  }
+
+  /**
    * Create an opportunity for a contact
    */
   async createOpportunity(opportunity: Partial<GHLOpportunity>): Promise<GHLOpportunity> {

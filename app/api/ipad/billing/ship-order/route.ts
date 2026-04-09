@@ -63,9 +63,8 @@ async function createWooCommerceOrder(
     sku: item.sku,
   }));
 
-  const shippingCost = shippingMethod === 'express' ? '24.99' : '9.99';
   const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-  const freeShipping = subtotal >= 200;
+  const shippingCost = subtotal >= 400 ? 0 : 20;
 
   const orderPayload = {
     status: 'processing',
@@ -91,9 +90,9 @@ async function createWooCommerceOrder(
     },
     line_items: lineItems,
     shipping_lines: [{
-      method_id: shippingMethod === 'express' ? 'usps_express' : 'usps_priority',
-      method_title: shippingMethod === 'express' ? 'USPS Priority Express' : 'USPS Priority Mail',
-      total: freeShipping ? '0.00' : shippingCost,
+      method_id: 'flat_rate',
+      method_title: 'USPS Priority Mail',
+      total: shippingCost.toFixed(2),
     }],
     set_paid: true,
     transaction_id: stripeChargeId,
@@ -106,17 +105,14 @@ async function createWooCommerceOrder(
   };
 
   try {
+    // FIX(2026-04-08): Single headers object — was duplicated causing fragile override
     const response = await fetch(`${WC_URL}/wp-json/wc/v3/orders`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${WC_KEY}:${WC_SECRET}`).toString('base64'),
+      },
       body: JSON.stringify(orderPayload),
-      // Basic auth with WooCommerce API keys
-      ...(WC_KEY && WC_SECRET ? {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Basic ' + Buffer.from(`${WC_KEY}:${WC_SECRET}`).toString('base64'),
-        },
-      } : {}),
     });
 
     if (!response.ok) {
@@ -155,8 +151,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 1: Get patient details
+    // FIX(2026-04-08): Correct column names — address_line1, postal_code (not address, zip)
     const [patient] = await query<any>(
-      `SELECT patient_id, full_name, email, phone_primary, address, city, state, zip, stripe_customer_id
+      `SELECT patient_id, full_name, email, phone_primary,
+              address_line1, address_line2, city, state, postal_code,
+              stripe_customer_id, client_type_key, healthie_client_id
        FROM patients WHERE patient_id = $1`,
       [resolvedId]
     );
@@ -171,15 +170,22 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    if (!patient.address || !patient.city || !patient.state || !patient.zip) {
+    // Allow override shipping address from request body (staff can edit on iPad)
+    const shipAddress = body.shipping_address || null;
+    const shippingAddr = shipAddress?.address || patient.address_line1;
+    const shippingCity = shipAddress?.city || patient.city;
+    const shippingState = shipAddress?.state || patient.state;
+    const shippingZip = shipAddress?.zip || patient.postal_code;
+
+    if (!shippingAddr || !shippingCity || !shippingState || !shippingZip) {
       return NextResponse.json({
-        error: 'Patient shipping address is incomplete. Update demographics first.'
+        error: 'Patient shipping address is incomplete. Update demographics or provide a shipping address.'
       }, { status: 400 });
     }
 
-    // Step 2: Calculate total
+    // Step 2: Calculate total — $20 flat rate shipping, free over $400
     const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-    const shippingCost = subtotal >= 200 ? 0 : (shipping_method === 'express' ? 24.99 : 9.99);
+    const shippingCost = subtotal >= 400 ? 0 : 20;
     const total = subtotal + shippingCost;
     const totalCents = Math.round(total * 100);
 
@@ -207,7 +213,7 @@ export async function POST(request: NextRequest) {
       automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
       description: 'NOWOptimal Service', // Sanitized for Stripe receipt
       metadata: {
-        patient_id,
+        patient_id: resolvedId,
         patient_name: patient.full_name,
         source: 'ipad_ship_to_patient',
         items: description,
@@ -223,12 +229,47 @@ export async function POST(request: NextRequest) {
 
     console.log(`[Ship Order] Stripe charge succeeded: ${paymentIntent.id} for $${total.toFixed(2)}`);
 
-    // Step 5: Log payment transaction
+    // Step 5: Upload itemized receipt to patient's Healthie chart
+    const receiptNumber = `RCP-${Date.now()}-${Math.random().toString(36).substring(7).toUpperCase()}`;
+    let healthieDocumentId: string | null = null;
+
+    if (patient.healthie_client_id || resolvedId) {
+      try {
+        const { uploadSimpleReceiptToHealthie } = await import('@/lib/simpleReceiptUpload');
+        // Look up Healthie client ID
+        const [hc] = await query<{ healthie_client_id: string }>(
+          'SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1',
+          [resolvedId]
+        );
+        const healthieClientId = hc?.healthie_client_id;
+        if (healthieClientId) {
+          healthieDocumentId = await uploadSimpleReceiptToHealthie({
+            healthieClientId,
+            receiptNumber,
+            date: new Date(),
+            patientName: patient.full_name,
+            description: `Peptide Shipment: ${description}`,
+            amount: total,
+            paymentMethod: `Card ending ${paymentMethod.card?.last4 || '****'}`,
+            clinicName: 'NOW Optimal Health',
+            providerName: 'NOW Optimal Staff',
+            isMensHealth: false,
+          });
+          if (healthieDocumentId) {
+            console.log(`[Ship Order] Receipt ${receiptNumber} uploaded to Healthie chart`);
+          }
+        }
+      } catch (receiptErr) {
+        console.error('[Ship Order] Receipt upload failed (non-blocking):', receiptErr);
+      }
+    }
+
+    // Step 5b: Log payment transaction
     await query(
       `INSERT INTO payment_transactions
-       (patient_id, amount, description, stripe_account, stripe_charge_id, stripe_customer_id, status, created_at)
-       VALUES ($1, $2, $3, 'direct', $4, $5, 'succeeded', NOW())`,
-      [patient_id, total, `Ship-to-patient: ${description}`, paymentIntent.id, patient.stripe_customer_id]
+       (patient_id, amount, description, stripe_account, stripe_charge_id, stripe_customer_id, status, created_at, receipt_number, healthie_document_id)
+       VALUES ($1, $2, $3, 'direct', $4, $5, 'succeeded', NOW(), $6, $7)`,
+      [resolvedId, total, `Ship-to-patient: ${description}`, paymentIntent.id, patient.stripe_customer_id, receiptNumber, healthieDocumentId]
     );
 
     // Step 6: Create WooCommerce order (for ShipStation pickup)
@@ -242,10 +283,10 @@ export async function POST(request: NextRequest) {
         lastName,
         email: patient.email || '',
         phone: patient.phone_primary || '',
-        address: patient.address || '',
-        city: patient.city || '',
-        state: patient.state || '',
-        zip: patient.zip || '',
+        address: shippingAddr,
+        city: shippingCity,
+        state: shippingState,
+        zip: shippingZip,
       },
       items,
       shipping_method,
@@ -289,7 +330,7 @@ export async function POST(request: NextRequest) {
         method: shipping_method,
         cost: shippingCost,
         free: shippingCost === 0,
-        address: `${patient.address}, ${patient.city}, ${patient.state} ${patient.zip}`,
+        address: `${shippingAddr}, ${shippingCity}, ${shippingState} ${shippingZip}`,
       },
       dispense_ids: dispenseIds,
       message: `Charged $${total.toFixed(2)} via Stripe. ${wooOrder ? `WooCommerce order #${wooOrder.orderNumber} created for ShipStation.` : 'WooCommerce order pending (credentials not configured).'}`,

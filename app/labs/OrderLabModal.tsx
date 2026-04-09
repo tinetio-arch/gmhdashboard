@@ -48,6 +48,7 @@ export default function OrderLabModal({ onClose, onSuccess }: Props) {
     const [step, setStep] = useState(1);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [completedOrder, setCompletedOrder] = useState<any>(null);
 
     // Form State
     const [clinicId, setClinicId] = useState('22937');
@@ -209,7 +210,8 @@ export default function OrderLabModal({ onClose, onSuccess }: Props) {
 
             if (res.ok) {
                 onSuccess(data);
-                onClose();
+                // Show print screen instead of closing
+                setCompletedOrder(data);
             } else {
                 setError(data.error || 'Failed to create order');
             }
@@ -225,6 +227,94 @@ export default function OrderLabModal({ onClose, onSuccess }: Props) {
         customCodes.length > 0
     );
 
+    // ========== PRINT SCREEN (after successful order) ==========
+    if (completedOrder) {
+        const orderId = completedOrder.order_id;
+        const hasPdf = completedOrder.requisition_pdf_available;
+        const isPending = completedOrder.status === 'pending_approval';
+
+        return (
+            <div style={{
+                position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                background: 'rgba(0,0,0,0.5)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
+            }}>
+                <div style={{
+                    background: '#fff', width: '500px', maxWidth: '90vw',
+                    borderRadius: '0.75rem', padding: '2rem', textAlign: 'center',
+                }}>
+                    <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>
+                        {isPending ? '⏳' : '✅'}
+                    </div>
+                    <h2 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+                        {isPending ? 'Order Pending Approval' : 'Lab Order Submitted'}
+                    </h2>
+                    <p style={{ color: '#666', marginBottom: '1.5rem', fontSize: '0.95rem' }}>
+                        {isPending
+                            ? `Order #${orderId} requires admin approval before printing.`
+                            : `Order #${orderId} submitted successfully.`}
+                    </p>
+
+                    {!isPending && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
+                            {/* Print Requisition — Canon (full page) */}
+                            {hasPdf && (
+                                <button
+                                    onClick={() => {
+                                        const printWindow = window.open(`/ops/api/labs/orders/${orderId}/requisition`, '_blank');
+                                        if (printWindow) {
+                                            printWindow.onload = () => printWindow.print();
+                                        }
+                                    }}
+                                    style={{
+                                        padding: '1rem 1.5rem', borderRadius: '0.75rem',
+                                        border: 'none', cursor: 'pointer',
+                                        background: '#2563EB', color: '#fff',
+                                        fontSize: '1.1rem', fontWeight: 600,
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem',
+                                    }}
+                                >
+                                    🖨️ Print Requisition (Canon)
+                                </button>
+                            )}
+
+                            {/* Print Labels — Dymo (3 specimen labels) */}
+                            <button
+                                onClick={() => {
+                                    const printWindow = window.open(`/ops/api/labs/orders/${orderId}/labels`, '_blank');
+                                    if (printWindow) {
+                                        printWindow.onload = () => printWindow.print();
+                                    }
+                                }}
+                                style={{
+                                    padding: '1rem 1.5rem', borderRadius: '0.75rem',
+                                    border: 'none', cursor: 'pointer',
+                                    background: '#10B981', color: '#fff',
+                                    fontSize: '1.1rem', fontWeight: 600,
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem',
+                                }}
+                            >
+                                🏷️ Print 3 Specimen Labels (Dymo)
+                            </button>
+                        </div>
+                    )}
+
+                    <button
+                        onClick={onClose}
+                        style={{
+                            padding: '0.75rem 2rem', borderRadius: '0.5rem',
+                            border: '1px solid #e2e8f0', background: '#fff',
+                            cursor: 'pointer', fontSize: '1rem', color: '#666',
+                        }}
+                    >
+                        Done
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    // ========== ORDER FORM ==========
     return (
         <div style={{
             position: 'fixed',

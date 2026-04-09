@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { getTestosteroneInventoryByVendor } from '@/lib/testosteroneInventory';
 
 export const dynamic = 'force-dynamic';
 
@@ -180,6 +181,54 @@ export async function GET(request: NextRequest) {
       quickbooks_month: qbRev.month
     };
 
+    // === CEO-ONLY DATA (loaded in parallel, non-blocking) ===
+    const [testosteroneInventory, accountsReceivable, patientRetention, peptideSales] = await Promise.all([
+      // Testosterone inventory by vendor
+      getTestosteroneInventoryByVendor().catch(e => {
+        console.warn('[iPad Dashboard] T-inventory error:', e);
+        return [];
+      }),
+
+      // Accounts receivable — failed/declined charges in last 30 days
+      query<any>(`
+        SELECT pt.patient_id, p.full_name as patient_name, pt.amount, pt.status,
+               pt.description, pt.created_at, pt.stripe_charge_id,
+               EXTRACT(DAY FROM NOW() - pt.created_at)::int as days_ago
+        FROM payment_transactions pt
+        JOIN patients p ON pt.patient_id = p.patient_id
+        WHERE pt.status IN ('failed', 'error', 'declined')
+          AND pt.created_at >= NOW() - INTERVAL '30 days'
+        ORDER BY pt.created_at DESC
+        LIMIT 20
+      `).catch(() => []),
+
+      // Patient retention — contract expiring within 30 days + not seen in 60+ days
+      query<any>(`
+        SELECT
+          (SELECT COUNT(*) FROM patients WHERE status_key = 'Active'
+           AND contract_end IS NOT NULL
+           AND contract_end::date <= (NOW() AT TIME ZONE 'America/Phoenix')::date + INTERVAL '30 days'
+           AND contract_end::date >= (NOW() AT TIME ZONE 'America/Phoenix')::date
+          ) as expiring_contracts,
+          (SELECT COUNT(*) FROM patients WHERE status_key = 'Active'
+           AND (last_visit_date IS NULL OR last_visit_date < (NOW() AT TIME ZONE 'America/Phoenix')::date - INTERVAL '60 days')
+          ) as no_recent_visit
+      `).catch(() => [{ expiring_contracts: 0, no_recent_visit: 0 }]),
+
+      // Peptide sales today + pending shipments
+      query<any>(`
+        SELECT
+          COALESCE((SELECT SUM(amount) FROM payment_transactions
+                    WHERE description ILIKE '%ship-to-patient%'
+                      AND status = 'succeeded'
+                      AND created_at >= (NOW() AT TIME ZONE 'America/Phoenix')::date), 0) as today_peptide_revenue,
+          COALESCE((SELECT COUNT(*) FROM payment_transactions
+                    WHERE description ILIKE '%ship-to-patient%'
+                      AND status = 'succeeded'
+                      AND created_at >= (NOW() AT TIME ZONE 'America/Phoenix')::date), 0) as today_peptide_orders
+      `).catch(() => [{ today_peptide_revenue: 0, today_peptide_orders: 0 }]),
+    ]);
+
     // Strip time from date-only columns to prevent UTC midnight → Arizona timezone shift
     const toDateOnly = (v: any): string | null => {
       if (!v) return null;
@@ -209,6 +258,13 @@ export async function GET(request: NextRequest) {
           total_patients: todayPatients.length,
           total_staged_doses: stagedDoses.length,
           total_payment_alerts: paymentIssues.length,
+        },
+        // CEO-only data
+        ceo: {
+          testosterone_inventory: testosteroneInventory,
+          accounts_receivable: accountsReceivable,
+          patient_retention: patientRetention[0] || { expiring_contracts: 0, no_recent_visit: 0 },
+          peptide_sales: peptideSales[0] || { today_peptide_revenue: 0, today_peptide_orders: 0 },
         },
       },
     });
