@@ -92,20 +92,19 @@ export async function POST(request: NextRequest) {
             }
 
         } else if (label_type === 'requisition') {
-            // Requisition form — fetch the existing PDF from the requisition endpoint
+            // FIX(2026-04-09): Read requisition PDF directly from DB instead of self-fetching
+            // (self-fetch fails behind nginx — "fetch failed" on internal URL)
             const orderId = params.orderId || dispense_id;
             if (!orderId) {
                 return NextResponse.json({ error: 'orderId required for requisition' }, { status: 400 });
             }
-            // Fetch the requisition PDF internally
-            const reqUrl = `${request.nextUrl.origin}/ops/api/labs/orders/${orderId}/requisition/`;
-            const reqResp = await fetch(reqUrl, {
-                headers: { cookie: request.headers.get('cookie') || '' },
-            });
-            if (!reqResp.ok) {
-                return NextResponse.json({ error: 'Requisition not found' }, { status: 404 });
+            const reqResult = await query<{ requisition_pdf: string }>(
+                `SELECT requisition_pdf FROM lab_orders WHERE id = $1`, [orderId]
+            );
+            if (reqResult.length === 0 || !reqResult[0].requisition_pdf) {
+                return NextResponse.json({ error: 'Requisition PDF not available' }, { status: 404 });
             }
-            pdfBuffer = Buffer.from(await reqResp.arrayBuffer());
+            pdfBuffer = Buffer.from(reqResult[0].requisition_pdf, 'base64');
 
         } else if (label_type === 'dispense' && dispense_id) {
             // Peptide dispense label — look up from DB (same as /api/ipad/billing/label)
