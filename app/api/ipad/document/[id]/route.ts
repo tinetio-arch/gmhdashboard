@@ -25,14 +25,15 @@ export async function GET(
 
     try {
 
-        // Query Healthie for the document - use url field which gives a downloadable link
+        // FIX(2026-04-09): Healthie Document type uses "expiring_url" not "url"
+        // (url doesn't exist — was returning GraphQL error, documents could never open)
         const result = await healthieGraphQL<any>(`
             query GetDocument($id: ID!) {
                 document(id: $id) {
                     id
                     display_name
                     file_content_type
-                    url
+                    expiring_url
                 }
             }
         `, { id: documentId });
@@ -42,15 +43,13 @@ export async function GET(
             return NextResponse.json({ error: 'Document not found' }, { status: 404 });
         }
 
-        if (!doc.url) {
+        if (!doc.expiring_url) {
             return NextResponse.json({ error: 'Document has no download URL' }, { status: 404 });
         }
 
-        // The URL field provides a direct download link - just redirect to it
         console.log(`[Document] Redirecting to ${doc.display_name} from Healthie`);
 
-        // Return a redirect to the Healthie URL
-        return NextResponse.redirect(doc.url, 302);
+        return NextResponse.redirect(doc.expiring_url, 302);
     } catch (error) {
         console.error('[Document] Error:', error);
         return NextResponse.json(
