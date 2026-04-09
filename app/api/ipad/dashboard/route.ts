@@ -145,40 +145,11 @@ export async function GET(request: NextRequest) {
       ptByType[row.client_type_key] = parseInt(row.count, 10);
     }
 
-    // Also fetch QuickBooks revenue (cash payments, insurance, etc. not in Healthie)
-    let qbRev = { today: 0, week: 0, month: 0 };
-    try {
-      const qbData = await query<any>(`
-        SELECT
-          COALESCE(SUM(CASE WHEN receipt_date >= (NOW() AT TIME ZONE 'America/Phoenix')::date
-                        THEN amount ELSE 0 END), 0) as today,
-          COALESCE(SUM(CASE WHEN receipt_date >= date_trunc('week', (NOW() AT TIME ZONE 'America/Phoenix')::date)
-                        THEN amount ELSE 0 END), 0) as week,
-          COALESCE(SUM(CASE WHEN receipt_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
-                        THEN amount ELSE 0 END), 0) as month
-        FROM quickbooks_sales_receipts
-        WHERE receipt_date >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)
-      `);
-      qbRev = {
-        today: parseFloat(qbData[0]?.today || '0'),
-        week: parseFloat(qbData[0]?.week || '0'),
-        month: parseFloat(qbData[0]?.month || '0')
-      };
-    } catch (e) {
-      console.warn('[iPad Dashboard] QuickBooks revenue query failed (non-critical):', e);
-    }
-
-    // Combine all revenue sources (Healthie is primary, QuickBooks is supplementary)
+    // Revenue from Healthie only (QuickBooks removed per Phil's request — data unreliable)
     const combinedRevenue = {
-      today: parseFloat(healthieRev.today || '0') + qbRev.today,
-      week: parseFloat(healthieRev.week || '0') + qbRev.week,
-      month: parseFloat(healthieRev.month || '0') + qbRev.month,
-      healthie_today: parseFloat(healthieRev.today || '0'),
-      healthie_week: parseFloat(healthieRev.week || '0'),
-      healthie_month: parseFloat(healthieRev.month || '0'),
-      quickbooks_today: qbRev.today,
-      quickbooks_week: qbRev.week,
-      quickbooks_month: qbRev.month
+      today: parseFloat(healthieRev.today || '0'),
+      week: parseFloat(healthieRev.week || '0'),
+      month: parseFloat(healthieRev.month || '0'),
     };
 
     // === CEO-ONLY DATA (loaded in parallel, non-blocking) ===

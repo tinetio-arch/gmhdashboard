@@ -1415,7 +1415,15 @@ function renderTodayView(container) {
         <div id="criticalLabAlerts"></div>
 
         <!-- My Tasks — right after alerts -->
-        <div id="myStaffTasks"></div>
+        <div id="myStaffTasks">
+            <div class="section-header">
+                <h2>📋 My Tasks</h2>
+                <div style="display:flex; gap:6px;">
+                    <button onclick="showCreateTaskModal()" style="padding:6px 12px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:6px; color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">+ New Task</button>
+                </div>
+            </div>
+            <div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">Loading tasks...</div>
+        </div>
 
         ${actions.length > 0 ? `
             <div class="section-header">
@@ -1622,18 +1630,23 @@ async function loadMyStaffTasks() {
         ${tasks.length === 0 ? '<div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">No tasks assigned to you</div>' :
             tasks.map(t => {
                 const priColor = t.priority === 'critical' ? '#ef4444' : t.priority === 'high' ? '#f59e0b' : t.priority === 'medium' ? '#3b82f6' : '#6b7280';
+                const priIcon = t.priority === 'critical' ? '🔴' : t.priority === 'high' ? '🟠' : t.priority === 'medium' ? '🔵' : '⚪';
+                const priBg = t.priority === 'critical' ? 'rgba(239,68,68,0.06)' : t.priority === 'high' ? 'rgba(245,158,11,0.04)' : 'var(--card)';
                 const dueStr = t.due_date ? formatDate(t.due_date) : '';
                 const overdue = t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed';
+                const statusLabel = t.status === 'in_progress' ? '🔄 In Progress' : '⏳ Pending';
                 return `
-                <div style="background:var(--card); border:1px solid ${overdue ? 'rgba(239,68,68,0.3)' : 'var(--border-light)'}; border-left:4px solid ${priColor}; border-radius:10px; padding:12px; margin-bottom:8px;">
+                <div style="background:${priBg}; border:1px solid ${overdue ? 'rgba(239,68,68,0.4)' : priColor + '30'}; border-left:5px solid ${priColor}; border-radius:12px; padding:14px; margin-bottom:10px;">
                     <div style="display:flex; justify-content:space-between; align-items:start;">
                         <div style="flex:1;">
-                            <div style="font-size:14px; font-weight:600; color:var(--text-primary);">${sanitize(t.title)}</div>
-                            ${t.description ? `<div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">${sanitize(t.description)}</div>` : ''}
-                            <div style="font-size:11px; color:var(--text-tertiary); margin-top:4px;">
-                                From: ${sanitize(t.created_by_name || t.created_by)} · ${t.priority.toUpperCase()}
-                                ${dueStr ? ` · Due: ${dueStr}` : ''}
-                                ${overdue ? ' · <span style="color:#ef4444; font-weight:600;">OVERDUE</span>' : ''}
+                            <div style="font-size:15px; font-weight:700; color:var(--text-primary);">${priIcon} ${sanitize(t.title)}</div>
+                            ${t.description ? `<div style="font-size:13px; color:var(--text-secondary); margin-top:4px; line-height:1.4;">${sanitize(t.description)}</div>` : ''}
+                            <div style="font-size:11px; color:var(--text-tertiary); margin-top:6px; display:flex; flex-wrap:wrap; gap:8px;">
+                                <span>From: <strong>${sanitize(t.created_by_name || t.created_by)}</strong></span>
+                                <span style="color:${priColor};">${t.priority.toUpperCase()}</span>
+                                <span>${statusLabel}</span>
+                                ${dueStr ? `<span>Due: ${dueStr}</span>` : ''}
+                                ${overdue ? '<span style="color:#ef4444; font-weight:700;">⚠️ OVERDUE</span>' : ''}
                             </div>
                             ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
                         </div>
@@ -1650,48 +1663,61 @@ async function loadMyStaffTasks() {
 }
 
 function showCreateTaskModal() {
-    // Get staff list from known users
-    const staffOptions = [
-        { email: 'admin@nowoptimal.com', name: 'Phil Schafer' },
-        { email: currentUser?.email || '', name: currentUser?.display_name || 'Me' },
+    const STAFF = [
+        { email: 'admin@nowoptimal.com', name: 'Phil Schafer, NP' },
+        { email: 'drwhitten@tricitymenshealth.com', name: 'Dr. Whitten, NMD' },
+        { email: 'hannah@nowoptimal.com', name: 'Hannah Schafer, RN' },
+        { email: 'alyssa@granitemountainhealth.com', name: 'Alyssa Strowd' },
+        { email: 'audrey@nowoptimal.com', name: 'Audrey Black' },
+        { email: 'joanne@nowoptimal.com', name: 'Joanne Finch' },
+        { email: 'michele@nowoptimal.com', name: 'Michele Myer' },
+        { email: 'josh@granitemountainhealth.com', name: 'Josh Straight' },
+        { email: 'ebayprescottaz@gmail.com', name: 'Jeff Jones' },
     ];
+
+    const staffOptions = STAFF.map(s =>
+        `<option value="${s.email}" ${s.email === currentUser?.email ? 'selected' : ''}>${s.name}</option>`
+    ).join('');
 
     const modal = document.createElement('div');
     modal.id = 'task-modal';
     modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:10001; display:flex; align-items:center; justify-content:center;';
     modal.innerHTML = `
-        <div style="background:var(--bg-primary, #1a1a2e); border-radius:16px; width:90%; max-width:500px; padding:24px; border:1px solid var(--border-light);">
-            <div style="font-size:18px; font-weight:700; color:var(--text-primary); margin-bottom:16px;">📋 Create Task</div>
+        <div style="background:var(--bg-primary, #1a1a2e); border-radius:16px; width:90%; max-width:500px; padding:24px; border:1px solid var(--border-light); max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div style="font-size:18px; font-weight:700; color:var(--text-primary);">📋 Assign Task</div>
+                <button onclick="document.getElementById('task-modal')?.remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+            </div>
+
+            <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Assign To *</label>
+            <select id="taskAssignTo" style="width:100%; padding:12px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;">
+                <option value="">Select staff member...</option>
+                ${staffOptions}
+            </select>
 
             <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Task Title *</label>
             <input type="text" id="taskTitle" placeholder="What needs to be done?" style="width:100%; padding:10px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;" />
 
             <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Description</label>
-            <textarea id="taskDesc" rows="2" placeholder="Additional details..." style="width:100%; padding:10px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; box-sizing:border-box;"></textarea>
+            <textarea id="taskDesc" rows="3" placeholder="Details, context, instructions..." style="width:100%; padding:10px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; box-sizing:border-box;"></textarea>
 
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
                 <div>
-                    <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Assign To *</label>
-                    <input type="email" id="taskAssignTo" placeholder="staff@email.com" style="width:100%; padding:10px; margin:6px 0 0; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;" />
-                </div>
-                <div>
                     <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Priority</label>
-                    <select id="taskPriority" style="width:100%; padding:10px; margin:6px 0 0; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px;">
-                        <option value="medium">Medium</option>
-                        <option value="critical">Critical</option>
-                        <option value="high">High</option>
-                        <option value="low">Low</option>
+                    <select id="taskPriority" style="width:100%; padding:10px; margin:6px 0 0; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;">
+                        <option value="medium">🔵 Medium</option>
+                        <option value="critical">🔴 Critical</option>
+                        <option value="high">🟠 High</option>
+                        <option value="low">⚪ Low</option>
                     </select>
                 </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Due Date</label>
+                    <input type="date" id="taskDueDate" style="width:100%; padding:10px; margin:6px 0 0; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;" />
+                </div>
             </div>
 
-            <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Due Date</label>
-            <input type="date" id="taskDueDate" style="width:100%; padding:10px; margin:6px 0 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;" />
-
-            <div style="display:flex; gap:10px;">
-                <button onclick="document.getElementById('task-modal')?.remove()" style="flex:1; padding:12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>
-                <button onclick="createStaffTask()" style="flex:2; padding:12px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:10px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer;">Create Task</button>
-            </div>
+            <button onclick="createStaffTask()" style="width:100%; padding:14px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:10px; color:#0a0f1a; font-weight:700; font-size:15px; cursor:pointer; margin-top:4px;">Assign Task</button>
         </div>
     `;
     document.body.appendChild(modal);
@@ -1700,17 +1726,19 @@ function showCreateTaskModal() {
 async function createStaffTask() {
     const title = document.getElementById('taskTitle')?.value?.trim();
     const desc = document.getElementById('taskDesc')?.value?.trim();
-    const assignTo = document.getElementById('taskAssignTo')?.value?.trim();
+    const assignToSelect = document.getElementById('taskAssignTo');
+    const assignTo = assignToSelect?.value?.trim();
+    const assignToName = assignToSelect?.options[assignToSelect.selectedIndex]?.text || assignTo;
     const priority = document.getElementById('taskPriority')?.value;
     const dueDate = document.getElementById('taskDueDate')?.value;
 
-    if (!title || !assignTo) { showToast('Title and assignee required', 'error'); return; }
+    if (!title || !assignTo) { showToast('Select a staff member and enter a title', 'error'); return; }
 
     try {
         const response = await fetch('/ops/api/ipad/staff-tasks/', {
             method: 'POST', credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, description: desc, priority, assigned_to: assignTo, due_date: dueDate || null })
+            body: JSON.stringify({ title, description: desc, priority, assigned_to: assignTo, assigned_to_name: assignToName, due_date: dueDate || null })
         });
         const result = await response.json();
         if (result.success) {
@@ -8253,7 +8281,7 @@ function renderPatientsView(container) {
         const color = p.avatar_color || getAvatarColor(name);
         const pType = formatClientType(p.client_type_key || p.client_type || '');
         return `
-                        <div class="recent-patient-card" onclick="selectPatient('${p.id || p.patient_id}')">
+                        <div class="recent-patient-card" onclick="openChartPanel('${p.healthie_client_id || p.healthie_id || p.id || p.patient_id}')">
                             ${p.avatar_url ? `<div class="patient-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>`}
                             <div class="recent-patient-name">${name}</div>
                             ${pType ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${pType}</div>` : ''}
@@ -8330,14 +8358,18 @@ function renderPatientListItem(p) {
     const clientType = formatClientType(p.client_type_key || p.client_type || '');
     const hasHealthie = !!(p.healthie_client_id || p.healthie_id);
 
+    const pid = p.healthie_client_id || p.healthie_id || p.id || p.patient_id;
     return `
-        <div class="patient-list-item" onclick="selectPatient('${p.id || p.patient_id}')">
+        <div class="patient-list-item" onclick="openChartPanel('${pid}')" style="cursor:pointer;">
             ${p.avatar_url ? `<div class="patient-list-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>`}
             <div class="patient-list-info">
                 <div class="patient-list-name">${sanitize(name)}
-                    ${hasHealthie ? '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:#22c55e; font-weight:500;">✓ Healthie</span>' : '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(239,68,68,0.1); color:#ef4444; font-weight:500;">✗ Not linked</span>'}
+                    ${hasHealthie ? '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:#22c55e; font-weight:500;">✓</span>' : ''}
                 </div>
-                ${clientType ? `<div style="font-size:11px; color:var(--text-tertiary); margin-top:1px;">${sanitize(clientType)}</div>` : ''}
+                <div style="font-size:11px; color:var(--text-tertiary); margin-top:1px;">
+                    ${clientType ? sanitize(clientType) : ''}
+                    ${p.phone_primary || p.phone ? ' · ' + (p.phone_primary || p.phone) : ''}
+                </div>
             </div>
             <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${label}</span>
         </div>
@@ -8357,7 +8389,7 @@ function setPatientFilter(filterKind, value) {
         window._patientFilterStatus = window._patientFilterStatus === value ? '' : value;
     }
     // Re-render the patients view to update filter chip styling + list
-    const view = document.getElementById('mainView');
+    const view = document.getElementById('view-patients');
     if (view) renderPatientsView(view);
 }
 
@@ -8435,7 +8467,7 @@ async function selectPatient(id) {
                         ${patient.healthie_client_id ? '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ Healthie</span>' : '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(239,68,68,0.12); color:#ef4444;">❌ Not linked</span>'}
                     </div>
                 </div>
-                <button class="quick-action-btn-sm" onclick="openStatusChangeModal('${id}', '${rawStatus}')" title="Change Status">✏️</button>
+                <button onclick="openChartPanel('${patient.healthie_client_id || id}')" style="padding:6px 14px; border-radius:8px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; color:#0a0f1a; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap;">Open Chart</button>
             </div>
             <div id="patient360Data">
                 <div class="patient-360-loading">
@@ -9658,82 +9690,131 @@ function renderCEODashboard(container) {
 }
 
 // ─── LOAD RECENT RECEIPTS FOR CEO DASHBOARD ────────────────
-function showRevenueBreakdown() {
-    const dd = dashboardData || {};
-    const rev = dd.revenue || {};
-
-    const hToday = Number(rev.healthie_today || 0);
-    const hWeek = Number(rev.healthie_week || 0);
-    const hMonth = Number(rev.healthie_month || 0);
-    const qToday = Number(rev.quickbooks_today || 0);
-    const qWeek = Number(rev.quickbooks_week || 0);
-    const qMonth = Number(rev.quickbooks_month || 0);
-    const total = Number(rev.today || 0);
-    const totalWeek = Number(rev.week || 0);
-    const totalMonth = Number(rev.month || 0);
-
+async function showRevenueBreakdown() {
     const modal = document.createElement('div');
     modal.id = 'revenue-breakdown-modal';
-    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:10001; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(4px);';
-    modal.innerHTML = `
-        <div style="background:var(--bg-primary, #0C141D); border:1px solid rgba(0,212,255,0.2); border-radius:16px; width:90%; max-width:500px; padding:24px; max-height:85vh; overflow-y:auto;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-                <div style="font-size:18px; font-weight:700; color:var(--text-primary);">💰 Revenue Breakdown</div>
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10001; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(4px);';
+    modal.innerHTML = '<div style="color:var(--text-tertiary); font-size:14px;">Loading revenue data...</div>';
+    document.body.appendChild(modal);
+
+    let period = 'month';
+
+    async function loadBreakdown(p) {
+        period = p;
+        try {
+            const resp = await fetch('/ops/api/ipad/ceo/revenue-breakdown/?period=' + p, { credentials: 'include' });
+            if (!resp.ok) throw new Error('Failed');
+            const data = await resp.json();
+            renderBreakdown(data);
+        } catch (e) {
+            modal.innerHTML = `<div style="background:var(--bg-primary, #0C141D); border-radius:16px; padding:24px; width:90%; max-width:550px;">
+                <div style="color:#ef4444;">Failed to load revenue data</div>
+                <button onclick="document.getElementById('revenue-breakdown-modal')?.remove()" style="margin-top:12px; padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); cursor:pointer;">Close</button>
+            </div>`;
+        }
+    }
+
+    function renderBreakdown(data) {
+        const netRevenue = data.grand_total - (data.refunds?.total || 0);
+        modal.innerHTML = `
+        <div style="background:var(--bg-primary, #0C141D); border:1px solid rgba(0,212,255,0.15); border-radius:16px; width:90%; max-width:550px; max-height:90vh; overflow-y:auto; padding:24px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div style="font-size:18px; font-weight:700; color:var(--text-primary);">💰 Revenue Intelligence</div>
                 <button onclick="document.getElementById('revenue-breakdown-modal')?.remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
             </div>
 
-            <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px;">Data Sources</div>
-            <div style="background:var(--surface); border-radius:10px; padding:14px; margin-bottom:16px; font-size:13px; color:var(--text-secondary); line-height:1.8;">
-                <strong style="color:var(--cyan);">Healthie EHR</strong> — Patient billing items (consultations, TRT, peptides, subscriptions, packages)<br/>
-                <strong style="color:#f59e0b;">QuickBooks</strong> — Cash payments, insurance, sales receipts not in Healthie<br/>
-                <span style="font-size:11px; color:var(--text-tertiary);">Healthie data from billing API cache · QB from sales_receipts table</span>
+            <!-- Period Tabs -->
+            <div style="display:flex; gap:6px; margin-bottom:16px;">
+                <button onclick="window._loadRevBreakdown('today')" style="flex:1; padding:8px; border-radius:8px; border:1px solid ${period === 'today' ? '#22d3ee' : 'var(--border-light)'}; background:${period === 'today' ? 'rgba(34,211,238,0.15)' : 'var(--surface)'}; color:${period === 'today' ? '#22d3ee' : 'var(--text-secondary)'}; font-size:12px; font-weight:600; cursor:pointer;">Today</button>
+                <button onclick="window._loadRevBreakdown('week')" style="flex:1; padding:8px; border-radius:8px; border:1px solid ${period === 'week' ? '#a855f7' : 'var(--border-light)'}; background:${period === 'week' ? 'rgba(168,85,247,0.15)' : 'var(--surface)'}; color:${period === 'week' ? '#a855f7' : 'var(--text-secondary)'}; font-size:12px; font-weight:600; cursor:pointer;">This Week</button>
+                <button onclick="window._loadRevBreakdown('month')" style="flex:1; padding:8px; border-radius:8px; border:1px solid ${period === 'month' ? '#22c55e' : 'var(--border-light)'}; background:${period === 'month' ? 'rgba(34,197,94,0.15)' : 'var(--surface)'}; color:${period === 'month' ? '#22c55e' : 'var(--text-secondary)'}; font-size:12px; font-weight:600; cursor:pointer;">This Month</button>
             </div>
 
-            <!-- Today -->
+            <!-- Net Revenue Summary -->
+            <div style="background:linear-gradient(135deg, #0C141D, #1a2744); border:1px solid rgba(0,212,255,0.1); border-radius:12px; padding:16px; margin-bottom:16px;">
+                <div style="text-align:center; margin-bottom:10px;">
+                    <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Net Revenue</div>
+                    <div style="font-size:32px; font-weight:800; color:#22c55e;">$${netRevenue.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                </div>
+                <div style="display:flex; justify-content:space-around; padding-top:10px; border-top:1px solid rgba(255,255,255,0.06);">
+                    <div style="text-align:center;">
+                        <div style="font-size:18px; font-weight:700; color:#22d3ee;">$${data.grand_total.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                        <div style="font-size:9px; color:var(--text-tertiary);">Stripe Charges</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:18px; font-weight:700; color:#a855f7;">$${data.healthie_recurring.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                        <div style="font-size:9px; color:var(--text-tertiary);">Healthie Recurring</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:18px; font-weight:700; color:#ef4444;">-$${(data.refunds?.total || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                        <div style="font-size:9px; color:var(--text-tertiary);">Refunds</div>
+                    </div>
+                </div>
+            </div>
+
+            ${(data.failed_charges?.count || 0) > 0 ? '<div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; padding:12px; margin-bottom:16px;">' +
+                '<div style="font-size:12px; font-weight:700; color:#ef4444; margin-bottom:6px;">⚠️ ' + data.failed_charges.count + ' Failed Charge' + (data.failed_charges.count > 1 ? 's' : '') + ' — $' + data.failed_charges.total.toLocaleString('en-US', {minimumFractionDigits: 0}) + '</div>' +
+                data.failed_charges.items.slice(0, 5).map(function(f) { return '<div style="display:flex; justify-content:space-between; padding:4px 0; font-size:12px;"><span style="color:var(--text-secondary);">' + (f.patient || 'Unknown') + '</span><span style="color:#ef4444;">$' + f.amount.toFixed(0) + ' ' + f.status + '</span></div>'; }).join('') +
+            '</div>' : ''}
+
+            <!-- SECTION 1: Healthie Recurring Revenue -->
             <div style="margin-bottom:16px;">
-                <div style="font-size:13px; font-weight:700; color:#22d3ee; margin-bottom:8px;">TODAY — $${total.toLocaleString('en-US', {minimumFractionDigits: 2})}</div>
-                <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">
-                    <span style="color:var(--text-secondary);">Healthie Billing</span>
-                    <span style="color:var(--cyan); font-weight:600;">$${hToday.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; padding:8px 0;">
-                    <span style="color:var(--text-secondary);">QuickBooks</span>
-                    <span style="color:#f59e0b; font-weight:600;">$${qToday.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
+                <div style="font-size:13px; font-weight:700; color:#a855f7; margin-bottom:8px; border-bottom:2px solid #a855f7; padding-bottom:6px;">🔄 Healthie Recurring (Subscriptions & Packages)</div>
+                <div style="padding:10px; background:var(--surface); border-radius:8px; font-size:13px; color:var(--text-secondary);">
+                    <div style="font-size:20px; font-weight:700; color:#a855f7; margin-bottom:4px;">$${data.healthie_recurring.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary);">Monthly subscriptions, TRT packages, membership billing via Healthie Stripe. Includes all recurring billing items processed through patient cards stored in Healthie.</div>
                 </div>
             </div>
 
-            <!-- This Week -->
+            <!-- SECTION 2: Direct Stripe (iPad) — By Service -->
             <div style="margin-bottom:16px;">
-                <div style="font-size:13px; font-weight:700; color:#a855f7; margin-bottom:8px;">THIS WEEK — $${totalWeek.toLocaleString('en-US', {minimumFractionDigits: 2})}</div>
-                <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">
-                    <span style="color:var(--text-secondary);">Healthie Billing</span>
-                    <span style="color:var(--cyan); font-weight:600;">$${hWeek.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; padding:8px 0;">
-                    <span style="color:var(--text-secondary);">QuickBooks</span>
-                    <span style="color:#f59e0b; font-weight:600;">$${qWeek.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
-                </div>
+                <div style="font-size:13px; font-weight:700; color:#22d3ee; margin-bottom:8px; border-bottom:2px solid #22d3ee; padding-bottom:6px;">💳 Direct Stripe (iPad Charges) — $${data.grand_total.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                ${data.by_category.map(function(c) {
+                    var pct = data.grand_total > 0 ? Math.round(c.total / data.grand_total * 100) : 0;
+                    return '<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border-light);">' +
+                        '<span style="font-size:18px;">' + c.icon + '</span>' +
+                        '<div style="flex:1;"><div style="font-size:13px; color:var(--text-primary); font-weight:600;">' + c.label + '</div>' +
+                        '<div style="height:4px; background:var(--surface); border-radius:2px; margin-top:4px;"><div style="height:100%; width:' + pct + '%; background:#22d3ee; border-radius:2px;"></div></div></div>' +
+                        '<div style="text-align:right;"><div style="font-size:14px; font-weight:700; color:var(--text-primary);">$' + c.total.toLocaleString('en-US', {minimumFractionDigits: 0}) + '</div>' +
+                        '<div style="font-size:10px; color:var(--text-tertiary);">' + c.count + ' charges · ' + pct + '%</div></div></div>';
+                }).join('')}
             </div>
 
-            <!-- This Month -->
+            <!-- By Brand/Location -->
             <div style="margin-bottom:16px;">
-                <div style="font-size:13px; font-weight:700; color:#22c55e; margin-bottom:8px;">THIS MONTH — $${totalMonth.toLocaleString('en-US', {minimumFractionDigits: 2})}</div>
-                <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">
-                    <span style="color:var(--text-secondary);">Healthie Billing</span>
-                    <span style="color:var(--cyan); font-weight:600;">$${hMonth.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; padding:8px 0;">
-                    <span style="color:var(--text-secondary);">QuickBooks</span>
-                    <span style="color:#f59e0b; font-weight:600;">$${qMonth.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
-                </div>
+                <div style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; font-weight:600;">By Location / Brand</div>
+                ${data.by_brand.map(function(b) { return '<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">' +
+                    '<div style="display:flex; align-items:center; gap:8px;"><div style="width:10px; height:10px; border-radius:50%; background:' + b.color + ';"></div>' +
+                    '<span style="font-size:13px; color:var(--text-primary);">' + b.label + '</span></div>' +
+                    '<div style="font-size:14px; font-weight:700; color:var(--text-primary);">$' + b.total.toLocaleString('en-US', {minimumFractionDigits: 0}) + ' <span style="font-size:10px; color:var(--text-tertiary);">(' + b.count + ')</span></div></div>'; }).join('')}
             </div>
 
-            <div style="font-size:10px; color:var(--text-tertiary); text-align:center; margin-top:8px;">
-                Healthie cache refreshes every 15 min · QuickBooks syncs daily
+            ${(data.refunds?.count || 0) > 0 ? '<div style="margin-bottom:16px;">' +
+                '<div style="font-size:12px; color:#ef4444; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; font-weight:600;">Refunds Issued</div>' +
+                data.refunds.items.map(function(r) { return '<div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border-light);">' +
+                    '<div style="flex:1; min-width:0;"><div style="font-size:12px; color:var(--text-primary);">' + (r.description || 'Refund') + '</div>' +
+                    '<div style="font-size:10px; color:var(--text-tertiary);">' + (r.patient || '') + '</div></div>' +
+                    '<span style="font-size:13px; font-weight:600; color:#ef4444; margin-left:8px;">-$' + r.amount.toFixed(0) + '</span></div>'; }).join('') +
+            '</div>' : ''}
+
+            <!-- Recent Direct Stripe Charges -->
+            ${data.top_transactions.length > 0 ? '<div style="margin-bottom:12px;"><div style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; font-weight:600;">Recent Charges</div>' +
+                data.top_transactions.slice(0, 8).map(function(tx) { return '<div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border-light);">' +
+                    '<div style="flex:1; min-width:0;"><div style="font-size:12px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (tx.description || 'Charge') + '</div>' +
+                    '<div style="font-size:10px; color:var(--text-tertiary);">' + (tx.patient || '') + '</div></div>' +
+                    '<span style="font-size:13px; font-weight:600; color:#22c55e; margin-left:8px;">$' + tx.amount.toFixed(0) + '</span></div>'; }).join('') + '</div>' : ''}
+
+            <div style="font-size:9px; color:var(--text-tertiary); text-align:center; margin-top:8px;">
+                Stripe = iPad one-time charges · Healthie = recurring subscriptions (cache refreshes every 15 min)<br/>
+                Refunded charges excluded from totals · Failed charges shown as alerts
             </div>
-        </div>
-    `;
-    document.body.appendChild(modal);
+        </div>`;
+    }
+
+    window._loadRevBreakdown = loadBreakdown;
+    await loadBreakdown(period);
+    // Remove old function
+    return;
 }
 
 async function loadRecentReceipts() {

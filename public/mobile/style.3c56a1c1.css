@@ -5232,6 +5232,7 @@ textarea.kiosk-input {
     right: -100% !important;
     border-radius: 0;
     border-left: none;
+    padding-top: env(safe-area-inset-top, 0);
   }
 
   .chart-panel.open {
@@ -5265,6 +5266,21 @@ textarea.kiosk-input {
     font-size: 22px !important;
     border-radius: 10px !important;
     flex-shrink: 0;
+  }
+
+  .chart-panel-content {
+    padding: 8px !important;
+    overflow-x: hidden !important;
+  }
+
+  .chart-panel-content [style*="padding:16px"],
+  .chart-panel-content [style*="padding: 16px"] {
+    padding: 10px !important;
+  }
+
+  /* Chart panel inner grids — stack on phone */
+  .chart-panel-content [style*="display:grid"] {
+    grid-template-columns: 1fr !important;
   }
 
   .chart-panel-btn {
@@ -5425,6 +5441,8 @@ textarea.kiosk-input {
   [style*="width: 500px"],
   [style*="max-width:420px"],
   [style*="max-width: 420px"],
+  [style*="max-width:440px"],
+  [style*="max-width: 440px"],
   [style*="max-width:500px"],
   [style*="max-width: 500px"] {
     width: 95vw !important;
