@@ -414,6 +414,38 @@ cd /home/ec2-user/gmhdashboard && npm run build && pm2 restart gmh-dashboard
 | 6 | P2-01+02: Dashboard peptide shop + cart badge | `DashboardScreen.tsx` | (next) |
 | 7 | P2-04: Remove unused opentok dep | `package.json` | (next) |
 | 8 | P2-05: Fix duplicate nav screen names | `AppNavigator.tsx` | (next) |
+| 9 | SQL injection in CEO revenue | `app/api/ipad/ceo/revenue-breakdown/route.ts` | `bafa505` |
+| 10 | Vonage API key to env var | `app/api/ipad/patient/route.ts`, `.env.local` | `bafa505` |
+| 11 | Auth on billing-status | `app/api/headless/billing-status/route.ts` | `bafa505` |
+| 12 | Auth on patient-services | `app/api/headless/patient-services/route.ts` | `bafa505` |
+| 13 | Auth on record-app-login | `app/api/headless/record-app-login/route.ts` | `bafa505` |
+| 14 | Lambda booking auth headers | `lambda-booking/src/index.js` | `b76010a` |
+
+---
+
+## ADDITIONAL FINDINGS FROM DEEP AUDIT (iPad APIs)
+
+### CRITICAL: SQL Injection in CEO Revenue (FIXED)
+- **File**: `app/api/ipad/ceo/revenue-breakdown/route.ts:73`
+- **Was**: `dateFilter = \`pt.created_at::date = '${specificDate}'::date\``
+- **Fix**: Parameterized query with `$1::date` + format validation (YYYY-MM-DD)
+
+### CRITICAL: 6 Headless Endpoints Were Unauthenticated (FIXED)
+All now require `x-jarvis-secret`:
+- pending-consent, billing-status, patient-services, record-app-login, (access-check and update-avatar remain public by design)
+
+### HIGH: Hardcoded Provider IDs in Schedule (NOT FIXED — needs discussion)
+- **File**: `app/api/ipad/schedule/route.ts:67-70`
+- Provider IDs `12088269` (Phil) and `12093125` (Dr. Whitten) hardcoded
+- Should be moved to env vars or database, but changing could break schedule if not careful
+
+### MEDIUM: No Stripe Idempotency Keys (NOT FIXED — needs design)
+- iPad billing charge endpoint doesn't use Stripe idempotency keys
+- Double-charge risk if request retried on network timeout
+
+### LOW: Patient Metrics Table Created on Every Request (NOT FIXED)
+- `app/api/ipad/patient/[id]/metrics/route.ts` runs `CREATE TABLE IF NOT EXISTS` on every GET/POST
+- Should be a migration
 
 ---
 
