@@ -273,6 +273,63 @@ export async function GET(request: NextRequest) {
           date: f.created_at,
         })),
       },
+      // FIX(2026-04-09): Healthie recurring failures weren't showing — they only exist
+      // in patients.notes + alert_status, NOT in payment_transactions
+      payment_holds: await (async () => {
+        try {
+          const holds = await query<any>(`
+            SELECT full_name, client_type, membership_owes, notes,
+                   updated_at
+            FROM patients
+            WHERE alert_status = 'Hold - Payment Research'
+            ORDER BY updated_at DESC
+          `);
+          return {
+            count: holds.length,
+            total_owes: holds.reduce((s: number, h: any) => s + parseFloat(h.membership_owes || 0), 0),
+            patients: holds.map((h: any) => {
+              // Extract most recent failure note
+              const failNote = (h.notes || '').split('\n')
+                .filter((l: string) => /PAYMENT FAILED|PAYMENT DECLINED/i.test(l))
+                .pop() || null;
+              return {
+                patient: h.full_name,
+                package: h.client_type || 'Unknown',
+                owes: parseFloat(h.membership_owes || 0),
+                last_failure: failNote,
+              };
+            }),
+          };
+        } catch { return { count: 0, total_owes: 0, patients: [] }; }
+      })(),
+      // Recurring revenue by package — active patients grouped by client_type
+      recurring_by_package: await (async () => {
+        try {
+          const packages = await query<any>(`
+            SELECT client_type,
+                   count(*) as active_patients,
+                   SUM(membership_owes) as total_outstanding
+            FROM patients
+            WHERE status_key NOT IN ('inactive', 'discharged', 'hold_payment_research')
+              AND client_type IS NOT NULL
+            GROUP BY client_type
+            ORDER BY count(*) DESC
+          `);
+          // Extract monthly rate from client_type name (e.g. "PrimeCare Premier $50/Month" → 50)
+          return packages.map((p: any) => {
+            const match = (p.client_type || '').match(/\$(\d+)/);
+            const monthlyRate = match ? parseInt(match[1]) : 0;
+            const count = parseInt(p.active_patients);
+            return {
+              package: p.client_type,
+              active_patients: count,
+              monthly_rate: monthlyRate,
+              estimated_mrr: monthlyRate * count,
+              outstanding: parseFloat(p.total_outstanding || 0),
+            };
+          });
+        } catch { return []; }
+      })(),
     });
   } catch (error: any) {
     if (error?.status === 401) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

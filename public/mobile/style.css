@@ -5185,29 +5185,33 @@ textarea.kiosk-input {
     white-space: nowrap;
   }
 
-  /* ─── TAB BAR: fit all 5 tabs without overflow ─── */
+  /* ─── TAB BAR: fit all 5 tabs evenly without overflow ─── */
+  /* FIX(2026-04-09): tabs were misaligned — space-around + min-width caused uneven spacing */
   .tab-bar {
     height: 56px;
-    padding: 2px 4px calc(2px + env(safe-area-inset-bottom));
+    padding: 2px 0 calc(2px + env(safe-area-inset-bottom));
     gap: 0;
+    justify-content: stretch;
   }
 
   .tab-item {
     min-width: 0;
-    flex: 1;
-    padding: 4px 2px;
+    flex: 1 1 0%;
+    padding: 6px 0;
+    gap: 2px;
   }
 
   .tab-icon {
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
   }
 
   .tab-label {
-    font-size: 9px;
+    font-size: 10px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    max-width: 100%;
   }
 
   .tab-badge {
@@ -5215,8 +5219,9 @@ textarea.kiosk-input {
     min-width: 16px;
     height: 16px;
     padding: 0 4px;
-    top: 2px;
-    right: 2px;
+    top: 0;
+    right: 50%;
+    transform: translateX(calc(50% + 10px));
   }
 
   /* ─── MAIN CONTENT ─── */
