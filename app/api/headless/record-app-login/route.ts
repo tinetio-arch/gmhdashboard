@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 
+// FIX(2026-04-09): Added x-jarvis-secret auth — endpoint was previously unauthenticated
 // POST: Record first app login timestamp for a patient
 // Called by Lambda on every get_dashboard_stats — only stamps once (first time)
 export async function POST(req: NextRequest) {
+    const secret = req.headers.get('x-jarvis-secret');
+    if (secret !== process.env.JARVIS_SHARED_SECRET) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     try {
         const { healthie_user_id } = await req.json();
         if (!healthie_user_id) {

@@ -11,6 +11,12 @@ const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY;
 const PORTAL_URL = 'https://secure.gethealthie.com/go/nowoptimalnetwork';
 
 export async function GET(request: NextRequest) {
+    // FIX(2026-04-09): Added x-jarvis-secret auth — endpoint was previously unauthenticated
+    const secret = request.headers.get('x-jarvis-secret');
+    if (secret !== process.env.JARVIS_SHARED_SECRET) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     try {
         const { searchParams } = new URL(request.url);
         const healthieId = searchParams.get('healthie_id');

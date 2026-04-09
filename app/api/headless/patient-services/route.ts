@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 
+// FIX(2026-04-09): Added x-jarvis-secret auth — endpoint was previously unauthenticated
 // GET: Returns patient tags and unlocked appointment type IDs
 // Called by the Lambda to determine what services a patient can book
 export async function GET(req: NextRequest) {
+    const secret = req.headers.get('x-jarvis-secret');
+    if (secret !== process.env.JARVIS_SHARED_SECRET) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const healthieUserId = req.nextUrl.searchParams.get('healthie_user_id');
     const patientId = req.nextUrl.searchParams.get('patient_id');
 

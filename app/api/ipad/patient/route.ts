@@ -100,7 +100,8 @@ export async function GET(request: NextRequest) {
                     // Vonage/OpenTok native video (Healthie Video Call)
                     sessionId: appt.session_id || null,
                     token: appt.generated_token || null,
-                    vonageApiKey: '45624682',
+                    // FIX(2026-04-09): Moved Vonage API key to env var (was hardcoded)
+                    vonageApiKey: process.env.VONAGE_API_KEY || '',
                     // Zoom fallback
                     zoomJoinUrl: appt.zoom_join_url || null,
                     zoomMeetingId: appt.zoom_meeting_id || null,

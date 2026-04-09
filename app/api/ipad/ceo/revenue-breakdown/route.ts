@@ -64,13 +64,30 @@ export async function GET(request: NextRequest) {
     }
 
     const period = request.nextUrl.searchParams.get('period') || 'month';
+    const specificDate = request.nextUrl.searchParams.get('date'); // YYYY-MM-DD for drill-down
+
     let dateFilter: string;
-    if (period === 'today') {
+    let dateLabel: string;
+    // FIX(2026-04-09): Parameterize specificDate to prevent SQL injection
+    // Previously used string interpolation: `'${specificDate}'::date`
+    const dateParams: any[] = [];
+    if (specificDate) {
+      // Validate date format before using as parameter
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(specificDate)) {
+        return NextResponse.json({ error: 'Invalid date format. Use YYYY-MM-DD.' }, { status: 400 });
+      }
+      dateFilter = `pt.created_at::date = $1::date`;
+      dateParams.push(specificDate);
+      dateLabel = specificDate;
+    } else if (period === 'today') {
       dateFilter = `pt.created_at >= (NOW() AT TIME ZONE 'America/Phoenix')::date`;
+      dateLabel = 'today';
     } else if (period === 'week') {
       dateFilter = `pt.created_at >= date_trunc('week', (NOW() AT TIME ZONE 'America/Phoenix')::date)`;
+      dateLabel = 'this week';
     } else {
       dateFilter = `pt.created_at >= date_trunc('month', (NOW() AT TIME ZONE 'America/Phoenix')::date)`;
+      dateLabel = 'this month';
     }
 
     // Get all succeeded transactions for the period — EXCLUDE refunded
@@ -83,7 +100,7 @@ export async function GET(request: NextRequest) {
         AND pt.stripe_refund_id IS NULL
         AND pt.refunded_at IS NULL
       ORDER BY pt.created_at DESC
-    `);
+    `, dateParams);
 
     // Get refunded transactions for the period
     const refunds = await query<any>(`
@@ -93,7 +110,7 @@ export async function GET(request: NextRequest) {
       LEFT JOIN patients p ON pt.patient_id = p.patient_id
       WHERE (pt.status = 'refund' OR pt.status = 'refunded') AND ${dateFilter}
       ORDER BY pt.created_at DESC
-    `).catch(() => []);
+    `, dateParams).catch(() => []);
 
     // Get failed/declined charges
     const failedCharges = await query<any>(`
@@ -103,7 +120,7 @@ export async function GET(request: NextRequest) {
       LEFT JOIN patients p ON pt.patient_id = p.patient_id
       WHERE pt.status IN ('failed', 'error', 'declined') AND pt.amount > 0 AND ${dateFilter}
       ORDER BY pt.created_at DESC
-    `).catch(() => []);
+    `, dateParams).catch(() => []);
 
     // By category
     const byCategory: Record<string, { count: number; total: number; label: string; icon: string }> = {};
@@ -176,6 +193,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      generated_at: new Date().toISOString(),
+      stripe_data_source: 'payment_transactions (real-time)',
+      healthie_data_source: 'billing cache (refreshes every 15 min)',
       period,
       grand_total: grandTotal,
       healthie_recurring: healthieRecurring,
@@ -194,6 +214,44 @@ export async function GET(request: NextRequest) {
         .sort((a, b) => b.total - a.total),
       transaction_count: transactions.length,
       top_transactions: topTransactions,
+      date_label: dateLabel,
+      // Daily breakdown from both sources
+      daily_history: await (async () => {
+        try {
+          // Direct Stripe daily
+          const stripeDays = await query<any>(`
+            SELECT created_at::date as day, COUNT(*) as txns, SUM(amount)::numeric(10,2) as total
+            FROM payment_transactions
+            WHERE status = 'succeeded' AND amount > 0 AND stripe_refund_id IS NULL
+              AND created_at >= NOW() - INTERVAL '30 days'
+            GROUP BY created_at::date ORDER BY day DESC
+          `);
+          // Healthie daily from cache
+          const fs = require('fs');
+          let healthieDays: any[] = [];
+          try {
+            const cache = JSON.parse(fs.readFileSync('/tmp/healthie-revenue-cache.json', 'utf8'));
+            healthieDays = cache.daily || [];
+          } catch {}
+          // Merge into combined daily view
+          const dayMap: Record<string, { stripe: number; healthie: number; total: number; txns: number }> = {};
+          for (const d of stripeDays) {
+            const day = typeof d.day === 'string' ? d.day : d.day.toISOString().split('T')[0];
+            if (!dayMap[day]) dayMap[day] = { stripe: 0, healthie: 0, total: 0, txns: 0 };
+            dayMap[day].stripe = parseFloat(d.total);
+            dayMap[day].txns = parseInt(d.txns);
+          }
+          for (const d of healthieDays) {
+            if (!dayMap[d.day]) dayMap[d.day] = { stripe: 0, healthie: 0, total: 0, txns: 0 };
+            dayMap[d.day].healthie = d.amount;
+          }
+          Object.values(dayMap).forEach(d => d.total = d.stripe + d.healthie);
+          return Object.entries(dayMap)
+            .map(([day, data]) => ({ day, ...data }))
+            .sort((a, b) => b.day.localeCompare(a.day))
+            .slice(0, 30);
+        } catch { return []; }
+      })(),
       refunds: {
         count: refunds.length,
         total: refunds.reduce((s: number, r: any) => s + parseFloat(r.amount || 0), 0),
