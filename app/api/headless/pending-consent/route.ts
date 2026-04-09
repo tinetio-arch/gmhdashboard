@@ -15,7 +15,18 @@ import { query } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
+// FIX(2026-04-09): Added x-jarvis-secret auth — endpoint was previously unauthenticated,
+// exposing patient consent data to anyone with a healthie_id
+function checkAuth(request: NextRequest): boolean {
+  const secret = request.headers.get('x-jarvis-secret');
+  return secret === process.env.JARVIS_SHARED_SECRET;
+}
+
 export async function GET(request: NextRequest) {
+  if (!checkAuth(request)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const healthieId = request.nextUrl.searchParams.get('healthie_id');
   if (!healthieId) {
     return NextResponse.json({ error: 'healthie_id required' }, { status: 400 });
@@ -57,6 +68,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!checkAuth(request)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
     const body = await request.json();
     const { healthie_id, consent_id, document_id } = body;
