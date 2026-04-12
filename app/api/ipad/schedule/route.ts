@@ -77,6 +77,7 @@ export async function GET(request: NextRequest) {
                     should_paginate: false
                 ) {
                     id date length pm_status location other_party_id
+                    is_blocker notes end_datetime
                     appointment_type { name }
                     provider { id full_name }
                     attendees { id first_name last_name }
@@ -141,21 +142,30 @@ export async function GET(request: NextRequest) {
             return NextResponse.json({ success: true, patients: [], error: 'Could not reach Healthie — try again' });
         }
 
-        // Filter out entries with no patient (Breaks, holds, blocked time, etc.)
+        // Split into patient appointments vs. blockers (breaks / blocked time).
+        // Blockers are returned separately so the iPad can render them as grey bars
+        // and let staff tap to remove. Availability is enforced by Healthie's API
+        // natively — booking sites, Google Cal sync, etc. all honor is_blocker=true.
+        const blocks = appointments
+            .filter((a: any) => a.is_blocker === true)
+            .map((a: any) => ({
+                id: a.id,
+                provider_id: a.provider?.id || '',
+                provider_name: a.provider?.full_name || '',
+                start: a.date || null,
+                end: a.end_datetime || null,
+                notes: a.notes || 'Blocked time',
+            }));
+
         appointments = appointments.filter((a: any) => {
-            // ONLY include appointments with actual attendees or user (NOT other_party_id alone, as that's often the provider)
+            if (a.is_blocker) return false;
+            // ONLY include appointments with actual attendees or user
             if (a.attendees?.length > 0 || a.user) return true;
-            // Skip entries with no patient data (Breaks, blocked time, or other_party_id = provider)
-            console.log('[iPad Schedule] Skipping no-patient entry:', a.appointment_type?.name || 'unknown type',
-                a.location || '',
-                a.other_party_id ? `(other_party=${a.other_party_id})` : '',
-                `provider=${a.provider?.id || 'none'}:${a.provider?.full_name || 'none'}`
-            );
             return false;
         });
 
         if (appointments.length === 0) {
-            return NextResponse.json({ success: true, patients: [] });
+            return NextResponse.json({ success: true, patients: [], blocks });
         }
 
         // Cross-reference with local patients
@@ -254,7 +264,7 @@ export async function GET(request: NextRequest) {
         // Sort by appointment time
         result.sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());
 
-        return NextResponse.json({ success: true, patients: result });
+        return NextResponse.json({ success: true, patients: result, blocks });
     } catch (error) {
         console.error('[iPad Schedule] Error:', error);
         return NextResponse.json(

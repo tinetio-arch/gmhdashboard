@@ -933,6 +933,12 @@ async function loadAllData() {
 
     anySuccess = results.some(r => r.status === 'fulfilled' && r.value === true);
 
+    // FIX(2026-04-10): Show targeted warnings for individual data load failures
+    const scheduleResult = results[3]; // loadHealthieAppointments is index 3
+    if (scheduleResult.status === 'fulfilled' && scheduleResult.value === false) {
+        showToast('Schedule failed to load — tap to retry', 'warning');
+    }
+
     if (anySuccess) {
         setConnectionStatus(true);
         showToast('Data synced', 'success');
@@ -1458,15 +1464,13 @@ function renderTodayView(container) {
             </div>
         `).join('') : renderEmptyState('📅', 'No Appointments Today', 'No patients are scheduled for today')}
 
-        ${stagedDoses.length > 0 ? `
-            <div class="section-header" id="stagedDosesSection">
-                <h2>Staged Doses</h2>
-                <span class="section-action">${stagedCount} staged</span>
-            </div>
-            <div class="schedule-timeline stagger-in">
-                ${buildSchedule(stagedDoses).map(s => renderScheduleItem(s)).join('')}
-            </div>
-        ` : ''}
+        <div class="section-header">
+            <h2>📠 Sent Faxes</h2>
+            <button class="section-action" onclick="loadSentFaxes()">Refresh</button>
+        </div>
+        <div id="sentFaxesList" class="stagger-in">
+            <div style="padding:12px; text-align:center; color:var(--text-tertiary); font-size:13px;">Loading faxes...</div>
+        </div>
     `;
 
     // Setup swipe gestures on action cards
@@ -1678,22 +1682,22 @@ async function loadMyStaffTasks() {
         renderStaffTasksUI(container, tasks, isAdmin);
     }
 
-    // Fetch tasks independently — DO NOT use apiFetch (it triggers auth refresh loops)
-    // Use a simple fetch with a 4-second timeout
+    // Fetch tasks assigned TO me AND tasks created BY me (so I can see what I assigned)
     try {
         const ac = new AbortController();
         const tid = setTimeout(() => ac.abort(), 4000);
-        const url = myEmail
-            ? '/ops/api/ipad/staff-tasks/?assigned_to=' + encodeURIComponent(myEmail)
-            : '/ops/api/ipad/staff-tasks/';
-        const resp = await fetch(url, { credentials: 'include', signal: ac.signal });
+        // Fetch all active tasks — filter client-side so we get both assigned + created
+        const resp = await fetch('/ops/api/ipad/staff-tasks/', { credentials: 'include', signal: ac.signal });
         clearTimeout(tid);
         if (resp.ok) {
             const data = await resp.json();
-            tasks = data.tasks || [];
+            const allTasks = data.tasks || [];
+            // Show tasks assigned to me OR created by me
+            tasks = allTasks.filter(function(t) {
+                return t.assigned_to === myEmail || t.created_by === myEmail || isAdmin;
+            });
             window._cachedStaffTasks = tasks;
         }
-        // If not ok (401 etc), just use cache/empty — don't throw
     } catch (e) {
         // Timeout or network error — use whatever we have cached
     }
@@ -1713,47 +1717,63 @@ function renderStaffTasksUI(container, tasks, isAdmin) {
             taskBadge.classList.add('hidden');
         }
     }
+    const myEmail = currentUser?.email || '';
+    // Split into tasks assigned to me vs tasks I assigned to others
+    const assignedToMe = tasks.filter(t => t.assigned_to === myEmail);
+    const assignedByMe = tasks.filter(t => t.created_by === myEmail && t.assigned_to !== myEmail);
+
     container.innerHTML = `
         <div class="section-header">
-            <h2>📋 My Tasks</h2>
+            <h2>📋 Tasks</h2>
             <div style="display:flex; gap:6px;">
                 ${isAdmin ? '<button onclick="showAllStaffTasks()" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">All Staff</button>' : ''}
                 <button onclick="showCreateTaskModal()" style="padding:6px 12px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:6px; color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">+ New Task</button>
             </div>
         </div>
-        ${tasks.length === 0 ? '<div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">No tasks assigned to you</div>' :
-            tasks.map(t => {
-                const priColor = t.priority === 'critical' ? '#ef4444' : t.priority === 'high' ? '#f59e0b' : t.priority === 'medium' ? '#3b82f6' : '#6b7280';
-                const priIcon = t.priority === 'critical' ? '🔴' : t.priority === 'high' ? '🟠' : t.priority === 'medium' ? '🔵' : '⚪';
-                const priBg = t.priority === 'critical' ? 'rgba(239,68,68,0.06)' : t.priority === 'high' ? 'rgba(245,158,11,0.04)' : 'var(--card)';
-                const dueStr = t.due_date ? formatDate(t.due_date) : '';
-                const overdue = t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed';
-                const statusLabel = t.status === 'in_progress' ? '🔄 In Progress' : '⏳ Pending';
-                return `
-                <div style="background:${priBg}; border:1px solid ${overdue ? 'rgba(239,68,68,0.4)' : priColor + '30'}; border-left:5px solid ${priColor}; border-radius:12px; padding:14px; margin-bottom:10px;">
-                    <div style="display:flex; justify-content:space-between; align-items:start;">
-                        <div style="flex:1;">
-                            <div style="font-size:15px; font-weight:700; color:var(--text-primary);">${priIcon} ${sanitize(t.title)}</div>
-                            ${t.description ? `<div style="font-size:13px; color:var(--text-secondary); margin-top:4px; line-height:1.4;">${sanitize(t.description)}</div>` : ''}
-                            <div style="font-size:11px; color:var(--text-tertiary); margin-top:6px; display:flex; flex-wrap:wrap; gap:8px;">
-                                <span>From: <strong>${sanitize(t.created_by_name || t.created_by)}</strong></span>
-                                <span style="color:${priColor};">${t.priority.toUpperCase()}</span>
-                                <span>${statusLabel}</span>
-                                ${dueStr ? `<span>Due: ${dueStr}</span>` : ''}
-                                ${overdue ? '<span style="color:#ef4444; font-weight:700;">⚠️ OVERDUE</span>' : ''}
-                            </div>
-                            ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
-                        </div>
-                        <span style="font-size:10px; padding:3px 8px; border-radius:6px; background:${priColor}15; color:${priColor}; font-weight:600; white-space:nowrap;">${t.priority.toUpperCase()}</span>
-                    </div>
-                    <div style="display:flex; gap:6px; margin-top:8px;">
-                        <button onclick="showTaskNoteModal(${t.id})" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:11px; cursor:pointer;">Add Note</button>
-                        ${t.status === 'pending' ? `<button onclick="updateStaffTask(${t.id}, 'in_progress')" style="padding:6px 10px; background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:6px; color:#3b82f6; font-size:11px; font-weight:600; cursor:pointer;">Start</button>` : ''}
-                        <button onclick="updateStaffTask(${t.id}, 'completed')" style="padding:6px 10px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.3); border-radius:6px; color:#22c55e; font-size:11px; font-weight:600; cursor:pointer;">Complete</button>
-                    </div>
-                </div>`;
-            }).join('')}
+
+        ${assignedToMe.length > 0 ? '<div style="font-size:12px; font-weight:700; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Assigned to Me (' + assignedToMe.length + ')</div>' : ''}
+        ${assignedToMe.length === 0 && assignedByMe.length === 0 ? '<div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">No active tasks</div>' : ''}
+        ${assignedToMe.map(t => renderTaskCard(t, myEmail)).join('')}
+
+        ${assignedByMe.length > 0 ? '<div style="font-size:12px; font-weight:700; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.05em; margin:12px 0 6px;">Assigned by Me (' + assignedByMe.length + ')</div>' : ''}
+        ${assignedByMe.map(t => renderTaskCard(t, myEmail)).join('')}
         `;
+}
+
+function renderTaskCard(t, myEmail) {
+    const priColor = t.priority === 'critical' ? '#ef4444' : t.priority === 'high' ? '#f59e0b' : t.priority === 'medium' ? '#3b82f6' : '#6b7280';
+    const priIcon = t.priority === 'critical' ? '🔴' : t.priority === 'high' ? '🟠' : t.priority === 'medium' ? '🔵' : '⚪';
+    const priBg = t.priority === 'critical' ? 'rgba(239,68,68,0.06)' : t.priority === 'high' ? 'rgba(245,158,11,0.04)' : 'var(--card)';
+    const dueStr = t.due_date ? formatDate(t.due_date) : '';
+    const overdue = t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed';
+    const statusLabel = t.status === 'in_progress' ? '🔄 In Progress' : '⏳ Pending';
+    const isAssignedToMe = t.assigned_to === myEmail;
+    const isCreatedByMe = t.created_by === myEmail;
+
+    return `
+    <div style="background:${priBg}; border:1px solid ${overdue ? 'rgba(239,68,68,0.4)' : priColor + '30'}; border-left:5px solid ${priColor}; border-radius:12px; padding:14px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:start;">
+            <div style="flex:1;">
+                <div style="font-size:15px; font-weight:700; color:var(--text-primary);">${priIcon} ${sanitize(t.title)}</div>
+                ${t.description ? `<div style="font-size:13px; color:var(--text-secondary); margin-top:4px; line-height:1.4;">${sanitize(t.description)}</div>` : ''}
+                <div style="font-size:11px; color:var(--text-tertiary); margin-top:6px; display:flex; flex-wrap:wrap; gap:8px;">
+                    ${isAssignedToMe ? `<span>From: <strong>${sanitize(t.created_by_name || t.created_by)}</strong></span>` : `<span>To: <strong>${sanitize(t.assigned_to_name || t.assigned_to)}</strong></span>`}
+                    <span style="color:${priColor};">${t.priority.toUpperCase()}</span>
+                    <span>${statusLabel}</span>
+                    ${dueStr ? `<span>Due: ${dueStr}</span>` : ''}
+                    ${overdue ? '<span style="color:#ef4444; font-weight:700;">⚠️ OVERDUE</span>' : ''}
+                </div>
+                ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
+            </div>
+            <span style="font-size:10px; padding:3px 8px; border-radius:6px; background:${priColor}15; color:${priColor}; font-weight:600; white-space:nowrap;">${t.priority.toUpperCase()}</span>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+            <button onclick="showTaskNoteModal(${t.id})" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:11px; cursor:pointer;">📝 Note</button>
+            <button onclick="showEditTaskModal(${t.id}, '${sanitize(t.title).replace(/'/g, '')}', '${sanitize(t.description || '').replace(/'/g, '')}', '${t.priority}', '${t.assigned_to}', '${t.due_date || ''}')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:11px; cursor:pointer;">✏️ Edit</button>
+            ${isAssignedToMe && t.status === 'pending' ? `<button onclick="updateStaffTask(${t.id}, 'in_progress')" style="padding:6px 10px; background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:6px; color:#3b82f6; font-size:11px; font-weight:600; cursor:pointer;">▶ Start</button>` : ''}
+            <button onclick="updateStaffTask(${t.id}, 'completed')" style="padding:6px 10px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.3); border-radius:6px; color:#22c55e; font-size:11px; font-weight:600; cursor:pointer;">✓ Complete</button>
+        </div>
+    </div>`;
 }
 
 function showCreateTaskModal() {
@@ -1855,6 +1875,88 @@ async function updateStaffTask(taskId, status) {
         showToast(status === 'completed' ? 'Task completed!' : 'Task updated', 'success');
         loadMyStaffTasks();
     } catch (e) { showToast('Failed to update task', 'error'); }
+}
+
+function showEditTaskModal(taskId, title, description, priority, assignedTo, dueDate) {
+    const STAFF = [
+        { email: 'admin@nowoptimal.com', name: 'Phil Schafer, NP' },
+        { email: 'drwhitten@tricitymenshealth.com', name: 'Dr. Aaron Whitten' },
+        { email: 'hannah@nowoptimal.com', name: 'Hannah Schafer, RN' },
+        { email: 'audrey@nowoptimal.com', name: 'Audrey Black' },
+        { email: 'joanne@nowoptimal.com', name: 'Joanne Finch' },
+        { email: 'michele@nowoptimal.com', name: 'Michele Meyer' },
+        { email: 'medopsllc@gmail.com', name: 'Megan Williams' },
+        { email: 'skwyard@gmail.com', name: 'Sarah Wyard' },
+    ];
+
+    document.getElementById('edit-task-modal')?.remove();
+    var modal = document.createElement('div');
+    modal.id = 'edit-task-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:10001; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML = `
+        <div style="background:var(--bg-primary, #1a1a2e); border-radius:16px; width:90%; max-width:500px; padding:24px; border:1px solid var(--border-light); max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div style="font-size:18px; font-weight:700; color:var(--text-primary);">✏️ Edit Task</div>
+                <button onclick="document.getElementById('edit-task-modal')?.remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+            </div>
+
+            <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Assign To</label>
+            <select id="editTaskAssignTo" style="width:100%; padding:12px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;">
+                ${STAFF.map(s => '<option value="' + s.email + '"' + (s.email === assignedTo ? ' selected' : '') + '>' + s.name + '</option>').join('')}
+            </select>
+
+            <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Task Title</label>
+            <input type="text" id="editTaskTitle" value="${sanitize(title)}" style="width:100%; padding:10px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;" />
+
+            <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Description</label>
+            <textarea id="editTaskDesc" rows="3" style="width:100%; padding:10px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; box-sizing:border-box;">${sanitize(description)}</textarea>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Priority</label>
+                    <select id="editTaskPriority" style="width:100%; padding:10px; margin:6px 0 0; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;">
+                        <option value="critical" ${priority === 'critical' ? 'selected' : ''}>🔴 Critical</option>
+                        <option value="high" ${priority === 'high' ? 'selected' : ''}>🟠 High</option>
+                        <option value="medium" ${priority === 'medium' ? 'selected' : ''}>🔵 Medium</option>
+                        <option value="low" ${priority === 'low' ? 'selected' : ''}>⚪ Low</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Due Date</label>
+                    <input type="date" id="editTaskDueDate" value="${dueDate || ''}" style="width:100%; padding:10px; margin:6px 0 0; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;" />
+                </div>
+            </div>
+
+            <div style="display:flex; gap:8px;">
+                <button onclick="saveEditedTask(${taskId})" style="flex:1; padding:14px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:10px; color:#0a0f1a; font-weight:700; font-size:15px; cursor:pointer;">Save Changes</button>
+                <button onclick="if(confirm('Cancel this task?')) { updateStaffTask(${taskId}, 'cancelled'); document.getElementById('edit-task-modal')?.remove(); }" style="padding:14px 18px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:10px; color:#ef4444; font-weight:700; font-size:14px; cursor:pointer;">Cancel Task</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function saveEditedTask(taskId) {
+    var assignToSelect = document.getElementById('editTaskAssignTo');
+    var body = {
+        task_id: taskId,
+        title: (document.getElementById('editTaskTitle')?.value || '').trim(),
+        description: (document.getElementById('editTaskDesc')?.value || '').trim(),
+        assigned_to: assignToSelect?.value,
+        assigned_to_name: assignToSelect?.options[assignToSelect.selectedIndex]?.text || assignToSelect?.value,
+        priority: document.getElementById('editTaskPriority')?.value,
+        due_date: document.getElementById('editTaskDueDate')?.value || null,
+    };
+    try {
+        await fetch('/ops/api/ipad/staff-tasks/', {
+            method: 'PATCH', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        document.getElementById('edit-task-modal')?.remove();
+        showToast('Task updated', 'success');
+        loadMyStaffTasks();
+    } catch(e) { showToast('Failed to update', 'error'); }
 }
 
 function showTaskNoteModal(taskId) {
@@ -7614,19 +7716,23 @@ function renderDocumentsTab(container, d) {
     container.innerHTML = `
         <!-- Documents -->
         <div class="chart-section${hDocs.length === 0 ? ' collapsed' : ''}">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <div class="chart-section-header" style="display:flex; align-items:center;" onclick="this.parentElement.classList.toggle('collapsed')">
                 <span>📁 Documents (${hDocs.length})</span>
+                ${hDocs.length > 0 ? `<button onclick="event.stopPropagation(); openFaxModal('${d.healthie_id || ''}', '${sanitize((d.demographics?.first_name || '') + ' ' + (d.demographics?.last_name || '')).replace(/'/g, '')}', '${sanitize(d.demographics?.dob || '').replace(/'/g, '')}')" style="margin-left:auto; margin-right:8px; padding:4px 10px; font-size:11px; font-weight:600; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); color:var(--cyan); border-radius:6px; cursor:pointer;">📠 Fax</button>` : ''}
                 <span class="chart-chevron">›</span>
             </div>
             <div class="chart-section-body">
                 ${hDocs.length > 0 ? hDocs.slice(0, 30).map(doc => {
                     const formatDate = (d) => { try { if (!d) return ''; const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE }); } catch { return ''; } };
-                    return `<div class="chart-lab-card" style="cursor:pointer;" onclick="window.open('/ops/api/ipad/document/${doc.id}', '_blank')">
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <span style="font-size:18px;">${(doc.file_content_type || '').includes('pdf') ? '📄' : (doc.file_content_type || '').includes('image') ? '🖼️' : '📎'}</span>
-                            <div style="flex:1;">
-                                <div class="chart-lab-name">${doc.display_name || 'Document'}</div>
-                                <div class="chart-lab-detail">${doc.friendly_type || 'Document'} · ${formatDate(doc.created_at)}</div>
+                    return `<div class="chart-lab-card" style="cursor:pointer; display:flex; align-items:center; gap:6px;">
+                        <input type="checkbox" class="fax-doc-checkbox" value="${doc.id}" data-name="${sanitize(doc.display_name || 'Document')}" onclick="event.stopPropagation()" style="width:16px; height:16px; accent-color:var(--cyan); flex-shrink:0;">
+                        <div style="flex:1;" onclick="window.open('/ops/api/ipad/document/${doc.id}', '_blank')">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="font-size:18px;">${(doc.file_content_type || '').includes('pdf') ? '📄' : (doc.file_content_type || '').includes('image') ? '🖼️' : '📎'}</span>
+                                <div style="flex:1;">
+                                    <div class="chart-lab-name">${doc.display_name || 'Document'}${doc.shared === false ? ' <span style="font-size:9px; padding:1px 5px; background:rgba(245,158,11,0.15); color:#f59e0b; border-radius:4px; vertical-align:middle;">Provider Only</span>' : ''}</div>
+                                    <div class="chart-lab-detail">${doc.friendly_type || 'Document'} · ${formatDate(doc.created_at)}</div>
+                                </div>
                             </div>
                         </div>
                     </div>`;
@@ -7654,6 +7760,287 @@ function renderDocumentsTab(container, d) {
         ${hDocs.length === 0 && labItems.length === 0 ? '<div class="chart-empty" style="padding:24px; text-align:center;">No documents or records on file</div>' : ''}
     `;
 }
+
+// ─── FAX MODAL ──────────────────────────────────
+// Send selected patient documents via Healthie's fax integration
+
+function openFaxModal(healthieId, patientName, patientDob) {
+    document.getElementById('faxModal')?.remove();
+
+    // Format DOB from YYYY-MM-DD to MM-DD-YYYY
+    var fmtDob = '';
+    if (patientDob && patientDob.includes('-') && patientDob.length >= 10) {
+        var parts = patientDob.split('-');
+        if (parts.length === 3 && parts[0].length === 4) fmtDob = parts[1] + '-' + parts[2] + '-' + parts[0];
+        else fmtDob = patientDob;
+    } else { fmtDob = patientDob || ''; }
+
+    // Gather checked documents
+    var checked = document.querySelectorAll('.fax-doc-checkbox:checked');
+    var selectedDocs = [];
+    checked.forEach(function(cb) { selectedDocs.push({ id: cb.value, name: cb.getAttribute('data-name') || 'Document' }); });
+
+    var fieldStyle = 'width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;';
+    var labelStyle = 'display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;';
+    var rowStyle = 'margin-bottom:12px;';
+
+    var modal = document.createElement('div');
+    modal.id = 'faxModal';
+    modal.className = 'modal-overlay visible';
+    modal.style.cssText = 'display:flex; z-index:10001;';
+    modal.innerHTML = `
+        <div class="modal" style="max-width:480px; padding:24px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h3 style="margin:0; font-size:18px; color:var(--text-primary);">📠 Send Fax</h3>
+                <button onclick="document.getElementById('faxModal').remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+            </div>
+
+            <div style="padding:8px 12px; background:rgba(0,212,255,0.08); border:1px solid rgba(0,212,255,0.2); border-radius:8px; margin-bottom:14px; font-size:13px; color:var(--text-secondary);">
+                Patient: <strong style="color:var(--text-primary);">${sanitize(patientName)}</strong>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Selected Documents (${selectedDocs.length})</label>
+                <div style="padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; font-size:12px; color:var(--text-secondary); max-height:100px; overflow-y:auto;">
+                    ${selectedDocs.length > 0
+                        ? selectedDocs.map(function(d) { return '<div style="padding:2px 0;">📄 ' + sanitize(d.name) + '</div>'; }).join('')
+                        : '<div style="color:var(--yellow);">⚠ No documents selected — use the checkboxes next to documents first, then click Fax</div>'}
+                </div>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Recipient (Address Book)</label>
+                <div style="position:relative;">
+                    <input id="faxContactSearch" type="text" placeholder="Search providers..." oninput="searchFaxContacts(this.value)" onfocus="searchFaxContacts(this.value)" style="${fieldStyle}">
+                    <div id="faxContactResults" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:200px; overflow-y:auto; background:var(--card); border:1px solid var(--border-light); border-radius:0 0 8px 8px; z-index:10; box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
+                </div>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Destination Fax Number *</label>
+                <input id="faxNumber" type="tel" placeholder="(XXX) XXX-XXXX" style="${fieldStyle}">
+            </div>
+
+            <div style="display:flex; gap:10px; ${rowStyle}">
+                <div style="flex:1;">
+                    <label style="${labelStyle}">Recipient Name</label>
+                    <input id="faxRecipientName" type="text" placeholder="Dr. Smith" style="${fieldStyle}">
+                </div>
+                <div style="flex:1;">
+                    <label style="${labelStyle}">Recipient Company</label>
+                    <input id="faxRecipientCompany" type="text" placeholder="Valley Medical" style="${fieldStyle}">
+                </div>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Subject</label>
+                <select id="faxSubject" style="${fieldStyle}" onchange="if(this.value==='custom'){document.getElementById('faxSubjectCustom').style.display='block';this.style.display='none';document.getElementById('faxSubjectCustom').focus();}">
+                    <option value="Patient Records — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Patient Records — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Patient Referral — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Patient Referral — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Records Request — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Records Request — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Lab Results — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Lab Results — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Prior Authorization — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Prior Authorization — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Prescription/Medication — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Prescription/Medication — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Discharge Summary — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Discharge Summary — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="custom">Custom Subject...</option>
+                </select>
+                <input id="faxSubjectCustom" type="text" placeholder="Type custom subject..." style="${fieldStyle} display:none; margin-top:6px;">
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Remarks</label>
+                <textarea id="faxRemarks" rows="2" placeholder="Optional notes for cover page..." style="${fieldStyle} resize:none;"></textarea>
+            </div>
+
+            <div style="display:flex; gap:16px; ${rowStyle}">
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-secondary); cursor:pointer;">
+                    <input type="checkbox" id="faxCoverPage" checked style="accent-color:var(--cyan);"> Include cover page
+                </label>
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-secondary); cursor:pointer;">
+                    <input type="checkbox" id="faxHipaa" checked style="accent-color:var(--cyan);"> HIPAA disclaimer
+                </label>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Sending Provider</label>
+                <select id="faxProvider" style="${fieldStyle}">
+                    <option value="whitten">Dr. Aaron Whitten, NMD</option>
+                    <option value="phil">Phil Schafer, FNP-C</option>
+                </select>
+            </div>
+
+            <div id="faxError" style="display:none; padding:10px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:8px; margin-bottom:12px; font-size:12px; color:#f87171;"></div>
+
+            <button id="faxSubmitBtn" onclick="submitFax('${sanitize(healthieId)}')" ${selectedDocs.length === 0 ? 'disabled' : ''} style="width:100%; padding:14px; background:${selectedDocs.length > 0 ? 'rgba(0,212,255,0.2)' : 'rgba(100,100,100,0.2)'}; border:1px solid ${selectedDocs.length > 0 ? 'rgba(0,212,255,0.4)' : 'rgba(100,100,100,0.3)'}; border-radius:10px; color:${selectedDocs.length > 0 ? 'var(--cyan)' : 'var(--text-tertiary)'}; font-size:15px; font-weight:700; cursor:pointer; font-family:inherit;">
+                📠 Send Fax
+            </button>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+var _faxContactDebounce;
+var _faxContactCache = []; // Store contacts so onclick can reference by index
+function searchFaxContacts(q) {
+    clearTimeout(_faxContactDebounce);
+    var resultsEl = document.getElementById('faxContactResults');
+    if (!q || q.length < 1) { if (resultsEl) resultsEl.style.display = 'none'; return; }
+    _faxContactDebounce = setTimeout(async function() {
+        try {
+            var data = await apiFetch('/ops/api/faxes/address-book?q=' + encodeURIComponent(q));
+            if (!data?.contacts || data.contacts.length === 0) {
+                resultsEl.innerHTML = '<div style="padding:10px; font-size:12px; color:var(--text-tertiary);">No contacts found</div>';
+                resultsEl.style.display = 'block';
+                return;
+            }
+            _faxContactCache = data.contacts;
+            resultsEl.innerHTML = data.contacts.map(function(c, i) {
+                return '<div onclick="selectFaxContact(' + i + ')" style="padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--border); font-size:13px;" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'none\'">'
+                    + '<div style="font-weight:600; color:var(--text-primary);">' + sanitize(c.name) + '</div>'
+                    + '<div style="font-size:11px; color:var(--text-tertiary);">'
+                    + (c.fax ? '📠 ' + sanitize(c.fax) : '<span style="color:var(--yellow);">No fax number</span>')
+                    + (c.specialty ? ' · ' + sanitize(c.specialty) : '')
+                    + (c.address ? ' · ' + sanitize(c.address) : '')
+                    + '</div></div>';
+            }).join('');
+            resultsEl.style.display = 'block';
+        } catch(e) { if (e.message === 'AUTH_EXPIRED') throw e; }
+    }, 250);
+}
+
+function selectFaxContact(index) {
+    var c = _faxContactCache[index];
+    if (!c) return;
+    document.getElementById('faxContactSearch').value = c.name || '';
+    document.getElementById('faxNumber').value = c.fax || '';
+    document.getElementById('faxRecipientName').value = c.name || '';
+    document.getElementById('faxRecipientCompany').value = c.specialty || '';
+    document.getElementById('faxContactResults').style.display = 'none';
+}
+
+async function submitFax(healthieId) {
+    var btn = document.getElementById('faxSubmitBtn');
+    var errEl = document.getElementById('faxError');
+    errEl.style.display = 'none';
+
+    // Gather selected document IDs from checkboxes
+    var checked = document.querySelectorAll('.fax-doc-checkbox:checked');
+    var docIds = [];
+    checked.forEach(function(cb) { docIds.push(cb.value); });
+
+    var number = (document.getElementById('faxNumber')?.value || '').trim();
+
+    if (docIds.length === 0) {
+        errEl.textContent = 'No documents selected. Close this modal, check the documents you want to fax, then click Fax again.';
+        errEl.style.display = 'block';
+        return;
+    }
+    if (!number) {
+        errEl.textContent = 'Fax number is required.';
+        errEl.style.display = 'block';
+        return;
+    }
+
+    btn.textContent = 'Sending...';
+    btn.disabled = true;
+
+    try {
+        var body = {
+            patient_id: healthieId,
+            document_ids: docIds,
+            destination_number: number,
+            recipient_name: (document.getElementById('faxRecipientName')?.value || '').trim() || undefined,
+            recipient_company: (document.getElementById('faxRecipientCompany')?.value || '').trim() || undefined,
+            subject: (document.getElementById('faxSubjectCustom')?.style.display !== 'none' ? document.getElementById('faxSubjectCustom')?.value : document.getElementById('faxSubject')?.value || '').trim() || 'Patient Records',
+            remarks: (document.getElementById('faxRemarks')?.value || '').trim() || undefined,
+            include_cover_page: document.getElementById('faxCoverPage')?.checked !== false,
+            include_hipaa_disclaimer: document.getElementById('faxHipaa')?.checked !== false,
+            provider: document.getElementById('faxProvider')?.value || 'whitten',
+        };
+
+        var result = await apiFetch('/ops/api/faxes/send', {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+
+        if (result?.success) {
+            document.getElementById('faxModal')?.remove();
+            // Uncheck all doc checkboxes
+            document.querySelectorAll('.fax-doc-checkbox:checked').forEach(function(cb) { cb.checked = false; });
+            showToast('📠 Fax ' + (result.fax?.status_display_string || 'sent') + ' to ' + number, 'success');
+        } else {
+            errEl.textContent = result?.error || 'Fax send failed';
+            errEl.style.display = 'block';
+            btn.textContent = '📠 Send Fax';
+            btn.disabled = false;
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        errEl.textContent = e.message || 'Failed to send fax';
+        errEl.style.display = 'block';
+        btn.textContent = '📠 Send Fax';
+        btn.disabled = false;
+    }
+}
+
+// ─── SENT FAXES TRACKER ──────────────────────────
+async function loadSentFaxes(patientId) {
+    var container = document.getElementById('sentFaxesList');
+    if (!container) return;
+    try {
+        var url = '/ops/api/faxes/sent';
+        if (patientId) url += '?patient_id=' + encodeURIComponent(patientId);
+        var data = await apiFetch(url);
+        if (!data?.faxes || data.faxes.length === 0) {
+            container.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-tertiary); font-size:13px;">No sent faxes</div>';
+            return;
+        }
+        container.innerHTML = data.faxes.map(function(f) {
+            var statusColor = f.status === 'delivered' ? '#22c55e' : f.status === 'failed' ? '#ef4444' : '#f59e0b';
+            var statusLabel = f.status_display || f.status || 'Unknown';
+            var sentDate = '';
+            try { var raw = (f.sent_at || '').replace(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([+-]\d{2})(\d{2})/, '$1T$2$3:$4'); sentDate = new Date(raw).toLocaleString('en-US', { timeZone: 'America/Phoenix', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); if (sentDate === 'Invalid Date') sentDate = f.sent_at || ''; } catch(e) { sentDate = f.sent_at || ''; }
+            return '<div style="padding:12px; background:var(--card); border-radius:10px; border:1px solid var(--border); margin-bottom:8px;">'
+                + '<div style="display:flex; justify-content:space-between; align-items:center;">'
+                + '<div>'
+                + '<div style="font-size:14px; font-weight:600; color:var(--text-primary);">' + sanitize(f.patient_name || 'Unknown Patient') + '</div>'
+                + '<div style="font-size:12px; color:var(--text-tertiary);">To: ' + sanitize(f.destination || '') + ' · ' + sentDate + '</div>'
+                + '<div style="font-size:11px; color:var(--text-tertiary);">Sent by: ' + sanitize(f.sender_name || '') + ' · Fax ID: ' + sanitize(f.id) + '</div>'
+                + '</div>'
+                + '<div style="display:flex; align-items:center; gap:8px;">'
+                + '<span style="padding:4px 10px; border-radius:12px; font-size:11px; font-weight:700; background:' + statusColor + '20; color:' + statusColor + '; text-transform:uppercase;">' + sanitize(statusLabel) + '</span>'
+                + (f.resendable ? '<button onclick="resendFax(\'' + f.id + '\')" style="padding:4px 8px; font-size:11px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); border-radius:6px; cursor:pointer;">↻ Resend</button>' : '')
+                + '</div>'
+                + '</div>'
+                + '</div>';
+        }).join('');
+    } catch(e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        container.innerHTML = '<div style="padding:12px; text-align:center; color:var(--red); font-size:13px;">Failed to load faxes</div>';
+    }
+}
+
+async function resendFax(faxId) {
+    if (!confirm('Resend this fax?')) return;
+    try {
+        var result = await apiFetch('/ops/api/faxes/resend', {
+            method: 'POST',
+            body: JSON.stringify({ fax_id: faxId })
+        });
+        if (result?.success) {
+            showToast('📠 Fax resent', 'success');
+            loadSentFaxes();
+        } else {
+            showToast(result?.error || 'Resend failed', 'error');
+        }
+    } catch(e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Resend failed', 'error');
+    }
+}
+
+// Auto-load sent faxes when Today view renders
+setTimeout(function() { if (currentTab === 'today') loadSentFaxes(); }, 2000);
 
 // HTML for the chart panel (Scribe local view) -> Now deprecated to prevent zombie cache panels.
 // We strictly use the dynamic globalChartPanel for everything to bypass iPad caching.
@@ -9366,36 +9753,76 @@ async function submitLabOrder(patientId) {
 }
 
 // ─── LAB PRINT MODAL (after successful order) ──────────────
+// Auto-prints: labels → Zebra, requisition → HP. No extra clicks needed.
 function showLabPrintModal(orderId, hasRequisition) {
+    // AUTO-PRINT immediately — no button clicks required
+    var labelsStatus = '🏷️ Sending 3 specimen labels → Zebra...';
+    var reqStatus = hasRequisition ? '🖨️ Sending requisition → HP...' : '';
+
     const modal = document.createElement('div');
     modal.className = 'modal-overlay visible';
     modal.id = 'labPrintModal';
+
+    function updateModal(labMsg, reqMsg) {
+        var statusEl = document.getElementById('labPrintStatus');
+        if (statusEl) statusEl.innerHTML = labMsg + (reqMsg ? '<br>' + reqMsg : '');
+    }
+
     modal.innerHTML = `
         <div class="modal" style="text-align:center; max-width:420px;">
             <div style="font-size:48px; margin-bottom:8px;">✅</div>
             <h3 style="margin-bottom:4px;">Lab Order Submitted</h3>
-            <p style="color:var(--text-secondary); font-size:14px; margin-bottom:24px;">Order #${orderId}</p>
+            <p style="color:var(--text-secondary); font-size:14px; margin-bottom:12px;">Order #${orderId}</p>
 
-            <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px;">
-                ${hasRequisition ? `
-                <button onclick="window.open('/ops/api/labs/orders/${orderId}/requisition/', '_blank')"
-                    style="padding:14px 20px; background:#2563EB; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
-                    🖨️ Print Requisition (Canon)
-                </button>` : ''}
+            <div id="labPrintStatus" style="font-size:14px; color:var(--cyan); margin-bottom:16px; min-height:40px;">
+                ${labelsStatus}${reqStatus ? '<br>' + reqStatus : ''}
+            </div>
 
-                <button onclick="window.open('/ops/api/labs/orders/${orderId}/labels/', '_blank')"
-                    style="padding:14px 20px; background:#10B981; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
-                    🏷️ Print 3 Specimen Labels (Dymo)
+            <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
+                <button onclick="printLabLabelsToClinic('${orderId}', '')" style="padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer; font-family:inherit;">
+                    🏷️ Reprint Labels → Zebra
                 </button>
+                ${hasRequisition ? `<button onclick="printRequisitionToClinic('${orderId}')" style="padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer; font-family:inherit;">
+                    🖨️ Reprint Requisition → HP
+                </button>` : ''}
             </div>
 
             <button onclick="document.getElementById('labPrintModal').remove(); loadLabsQueue().then(() => { if(currentTab==='labs') renderCurrentTab(); })"
-                style="padding:10px 24px; background:transparent; border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">
+                style="padding:10px 24px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:8px; color:#0a0f1a; font-size:14px; font-weight:700; cursor:pointer; font-family:inherit;">
                 Done
             </button>
         </div>
     `;
     document.body.appendChild(modal);
+
+    // Fire both print jobs in parallel — no waiting, no extra clicks
+    (async function() {
+        try {
+            var result = await apiFetch('/ops/api/labels/print/', {
+                method: 'POST',
+                body: JSON.stringify({ label_type: 'lab', printer: 'zebra', params: { orderId: orderId } })
+            });
+            updateModal('✅ 3 specimen labels sent to Zebra (Job #' + result.job_id + ')', document.getElementById('labPrintStatus')?.innerHTML.split('<br>')[1] || '');
+        } catch (e) {
+            updateModal('❌ Zebra labels failed: ' + (e.message || 'error'), document.getElementById('labPrintStatus')?.innerHTML.split('<br>')[1] || '');
+        }
+    })();
+
+    if (hasRequisition) {
+        (async function() {
+            try {
+                var result = await apiFetch('/ops/api/labels/print/', {
+                    method: 'POST',
+                    body: JSON.stringify({ label_type: 'requisition', printer: 'hp', params: { orderId: orderId } })
+                });
+                var parts = (document.getElementById('labPrintStatus')?.innerHTML || '').split('<br>');
+                updateModal(parts[0] || '', '✅ Requisition sent to HP (Job #' + result.job_id + ')');
+            } catch (e) {
+                var parts = (document.getElementById('labPrintStatus')?.innerHTML || '').split('<br>');
+                updateModal(parts[0] || '', '❌ HP requisition failed: ' + (e.message || 'error'));
+            }
+        })();
+    }
 }
 
 // ─── LAB ORDER FROM LABS TAB (patient picker) ───────────────
@@ -10076,8 +10503,8 @@ async function loadRecentReceipts() {
                     <div style="font-size:10px; color:${statusColor};">${receipt.status || 'pending'}</div>
                     ${receipt.receiptNumber ? `<div style="font-size:10px; color:var(--text-tertiary);">${receipt.receiptNumber}</div>` : ''}
                 </div>
-                ${receipt.healthieDocumentId && receipt.healthieClientId ? `
-                    <button onclick="window.open('https://secure.gethealthie.com/client_portal/clients/${receipt.healthieClientId}/documents/${receipt.healthieDocumentId}', '_blank')"
+                ${receipt.healthieDocumentId ? `
+                    <button onclick="window.open('/ops/api/ipad/document/' + '${receipt.healthieDocumentId}', '_blank')"
                         style="margin-left:8px; padding:6px 10px; background:rgba(0,212,255,0.15); color:var(--cyan); border:1px solid rgba(0,212,255,0.3); border-radius:6px; font-size:11px; cursor:pointer; flex-shrink:0;">
                         View
                     </button>
@@ -10175,6 +10602,7 @@ async function renderScheduleView(container) {
         '<div style="display:flex; gap:6px;">' +
         '<button onclick="showAddToScheduleModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ Book Appt</button>' +
         '<button onclick="showNewPatientModal()" style="padding:8px 14px; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.3); border-radius:8px; color:#22c55e; font-size:13px; font-weight:600; cursor:pointer;">+ New Patient</button>' +
+        '<button onclick="showBreakModal()" style="padding:8px 14px; background:rgba(234,179,8,0.15); border:1px solid rgba(234,179,8,0.35); border-radius:8px; color:#eab308; font-size:13px; font-weight:600; cursor:pointer;">⏸ Break</button>' +
         '<button onclick="loadScheduleForRange(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻</button>' +
         '</div></div>' +
         // View mode toggle + date nav
@@ -10755,6 +11183,177 @@ async function submitAddToSchedule() {
 }
 
 // ─── NEW PATIENT MODAL ──────────────────────────
+// ─── Break / Block Time ──────────────────────────────────────────────
+// Creates a Healthie blocker appointment (is_blocker=true). Honored by ALL
+// connected systems: abxtac.com booking, nowoptimal.com booking, Google
+// Calendar sync, Healthie patient portal. iPad is the SOT for availability.
+
+function showBreakModal() {
+    var existing = document.getElementById('breakModal');
+    if (existing) existing.remove();
+
+    // Default: today 12:00–13:00, logged-in provider if any
+    var now = new Date();
+    var tz = 'America/Phoenix';
+    var todayStr = now.toLocaleDateString('en-CA', { timeZone: tz });
+
+    var providers = [
+        { id: '12088269', name: 'Phil Schafer NP' },
+        { id: '12093125', name: 'Aaron Whitten NMD' },
+    ];
+    var defaultProv = (currentUser && currentUser.is_provider && currentUser.healthie_provider_id) || providers[0].id;
+
+    var providerOpts = providers.map(function(p) {
+        return '<option value="' + p.id + '"' + (p.id === defaultProv ? ' selected' : '') + '>' + p.name + '</option>';
+    }).join('');
+
+    var modal = document.createElement('div');
+    modal.id = 'breakModal';
+    modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML =
+        '<div style="background:var(--bg); border:1px solid var(--border-light); border-radius:14px; padding:24px; width:480px; max-width:92vw; color:var(--text-primary);">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">' +
+        '<h3 style="margin:0; font-size:18px;">⏸ Block time on schedule</h3>' +
+        '<button onclick="document.getElementById(\'breakModal\').remove()" style="background:none; border:none; color:var(--text-secondary); font-size:22px; cursor:pointer;">&times;</button>' +
+        '</div>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Provider</label>' +
+        '<select id="breakProvider" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); margin-bottom:12px;">' + providerOpts + '</select>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Date</label>' +
+        '<input type="date" id="breakDate" value="' + todayStr + '" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); margin-bottom:12px;">' +
+
+        '<div style="display:flex; gap:12px; margin-bottom:12px;">' +
+        '<div style="flex:1;"><label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Start</label>' +
+        '<input type="time" id="breakStart" value="12:00" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary);"></div>' +
+        '<div style="flex:1;"><label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">End</label>' +
+        '<input type="time" id="breakEnd" value="13:00" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary);"></div>' +
+        '</div>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Quick set</label>' +
+        '<div style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;">' +
+        '<button type="button" onclick="setBreakDuration(30)" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">30 min</button>' +
+        '<button type="button" onclick="setBreakDuration(60)" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">1 hour</button>' +
+        '<button type="button" onclick="setBreakDuration(120)" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">2 hours</button>' +
+        '<button type="button" onclick="setBreakPreset(\'lunch\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Lunch (12–1)</button>' +
+        '<button type="button" onclick="setBreakPreset(\'admin\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Admin AM</button>' +
+        '</div>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Repeat</label>' +
+        '<div style="display:flex; gap:8px; margin-bottom:12px;">' +
+        '<select id="breakRepeat" style="flex:1; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary);">' +
+        '<option value="">Does not repeat</option>' +
+        '<option value="Daily">Daily</option>' +
+        '<option value="Weekly">Weekly</option>' +
+        '<option value="Monthly">Monthly</option>' +
+        '</select>' +
+        '<input type="number" id="breakRepeatTimes" min="2" max="52" value="4" placeholder="times" style="width:100px; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary);">' +
+        '</div>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Reason (optional)</label>' +
+        '<input type="text" id="breakNotes" placeholder="Lunch, admin time, etc." maxlength="200" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); margin-bottom:16px;">' +
+
+        '<div style="display:flex; gap:8px; justify-content:flex-end;">' +
+        '<button onclick="document.getElementById(\'breakModal\').remove()" style="padding:10px 18px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>' +
+        '<button id="breakSubmitBtn" onclick="submitBreak()" style="padding:10px 18px; background:#eab308; border:none; border-radius:8px; color:#000; font-size:14px; font-weight:600; cursor:pointer;">Block time</button>' +
+        '</div>' +
+        '</div>';
+    document.body.appendChild(modal);
+}
+
+function setBreakDuration(mins) {
+    var s = document.getElementById('breakStart').value || '12:00';
+    var parts = s.split(':');
+    var start = new Date(2000, 0, 1, parseInt(parts[0], 10), parseInt(parts[1], 10));
+    var end = new Date(start.getTime() + mins * 60000);
+    var hh = String(end.getHours()).padStart(2, '0');
+    var mm = String(end.getMinutes()).padStart(2, '0');
+    document.getElementById('breakEnd').value = hh + ':' + mm;
+}
+
+function setBreakPreset(kind) {
+    if (kind === 'lunch') {
+        document.getElementById('breakStart').value = '12:00';
+        document.getElementById('breakEnd').value = '13:00';
+        document.getElementById('breakNotes').value = 'Lunch';
+    } else if (kind === 'admin') {
+        document.getElementById('breakStart').value = '08:00';
+        document.getElementById('breakEnd').value = '09:00';
+        document.getElementById('breakNotes').value = 'Admin time';
+    }
+}
+
+async function submitBreak() {
+    var btn = document.getElementById('breakSubmitBtn');
+    var providerId = document.getElementById('breakProvider').value;
+    var date = document.getElementById('breakDate').value;
+    var startTime = document.getElementById('breakStart').value;
+    var endTime = document.getElementById('breakEnd').value;
+    var notes = document.getElementById('breakNotes').value || 'Blocked time';
+    var repeat = document.getElementById('breakRepeat').value;
+    var repeatTimes = parseInt(document.getElementById('breakRepeatTimes').value, 10) || 4;
+
+    if (!providerId || !date || !startTime || !endTime) {
+        alert('Please fill in provider, date, start, and end.');
+        return;
+    }
+    if (endTime <= startTime) {
+        alert('End time must be after start time.');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Blocking…';
+
+    var body = {
+        provider_id: providerId,
+        start: date + 'T' + startTime,
+        end: date + 'T' + endTime,
+        notes: notes,
+    };
+    if (repeat) {
+        body.recurring = { interval: repeat, times: Math.max(2, Math.min(52, repeatTimes)) };
+    }
+
+    try {
+        var res = await fetch('/ops/api/ipad/schedule/block/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(body),
+        });
+        var data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error(data.error || 'Block failed');
+        }
+        document.getElementById('breakModal').remove();
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+        else if (typeof loadScheduleData === 'function') loadScheduleData();
+        console.log('[Break] Block created:', data.block?.id, body.recurring ? '(recurring)' : '');
+    } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Block time';
+        alert('Could not create block: ' + (err.message || err));
+    }
+}
+
+async function removeBreak(blockId) {
+    if (!blockId) return;
+    if (!confirm('Remove this blocked time?')) return;
+    try {
+        var res = await fetch('/ops/api/ipad/schedule/block/?id=' + encodeURIComponent(blockId), {
+            method: 'DELETE',
+            credentials: 'include',
+        });
+        var data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Delete failed');
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+        else if (typeof loadScheduleData === 'function') loadScheduleData();
+    } catch (err) {
+        alert('Could not remove block: ' + (err.message || err));
+    }
+}
+
 // FIX(2026-04-08): Allow creating brand new patients from iPad.
 // Creates in: GMH Dashboard DB → Healthie → GHL (same as dashboard Add Patient form)
 
@@ -14044,6 +14643,47 @@ async function printPeptideLabel(dispenseId) {
     document.body.appendChild(modal);
 }
 
+// Send lab specimen labels to clinic Zebra printer via print queue
+async function printLabLabelsToClinic(orderId, patientName) {
+    showToast('Sending specimen labels to Zebra...', 'info');
+    try {
+        var result = await apiFetch('/ops/api/labels/print/', {
+            method: 'POST',
+            body: JSON.stringify({
+                label_type: 'lab',
+                printer: 'zebra',
+                params: {
+                    orderId: orderId,
+                    patientName: patientName || '',
+                }
+            })
+        });
+        showToast('3 specimen labels sent to Zebra (Job #' + result.job_id + ')', 'success');
+    } catch (e) {
+        console.error('[Print] Zebra lab labels failed:', e);
+        showToast('Zebra print failed: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// Send requisition to clinic HP printer via print queue
+async function printRequisitionToClinic(orderId) {
+    showToast('Sending requisition to HP printer...', 'info');
+    try {
+        var result = await apiFetch('/ops/api/labels/print/', {
+            method: 'POST',
+            body: JSON.stringify({
+                label_type: 'requisition',
+                printer: 'hp',
+                params: { orderId: orderId }
+            })
+        });
+        showToast('Requisition sent to HP printer (Job #' + result.job_id + ')', 'success');
+    } catch (e) {
+        console.error('[Print] Requisition print failed:', e);
+        showToast('Print failed: ' + (e.message || 'Error'), 'error');
+    }
+}
+
 async function printPeptideLabelToClinic(dispenseId) {
     showToast('Sending to clinic Zebra printer...', 'info');
     try {
@@ -14127,16 +14767,29 @@ function showShipProductBrowser() {
         backdrop-filter: blur(4px);
     `;
 
-    // FIX(2026-04-08): Split into static shell + dynamic grid to prevent search input focus loss.
-    // Only the product grid re-renders on search — the input element persists in the DOM.
+    // FIX(2026-04-12): Staff tier selector — toggle pricing between tiers
+    window._shipTierRates = { retail: 0, heal: 0.10, optimize: 0.20, thrive: 0.30, at_cost: 0.50 };
+    window._shipDiscount = { ...discount };
+    window._shipSelectedTier = discount.rate > 0 ? 'heal' : 'retail';
+    if (discount.reason?.includes('optimize')) window._shipSelectedTier = 'optimize';
+    if (discount.reason?.includes('thrive')) window._shipSelectedTier = 'thrive';
+    if (discount.reason?.includes('cost')) window._shipSelectedTier = 'at_cost';
+
     modal.innerHTML = `
         <div style="display:flex; flex-direction:column; height:100%; max-width:900px; margin:0 auto; width:100%;">
             <div style="padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; align-items:center; justify-content:space-between;">
                 <div>
                     <div style="font-size:18px; font-weight:700; color:#fff;">Ship Peptides to ${patient.patientName}</div>
-                    <div style="font-size:12px; color:#aaa; margin-top:2px;">
-                        ${discount.rate > 0 ? '<span style="color:#10b981; font-weight:600;">' + discount.label + '</span> · ' : ''}
-                        $20 shipping · Free over $400
+                    <div style="font-size:12px; color:#aaa; margin-top:4px;">
+                        <select id="ship-tier-select" onchange="changeShipTier(this.value)"
+                            style="padding:5px 10px; background:#1a1a2e; border:1px solid rgba(124,58,237,0.5); border-radius:6px; color:#c084fc; font-size:12px; font-weight:600; cursor:pointer; -webkit-appearance:auto;">
+                            <option value="retail">Retail (0% off)</option>
+                            <option value="heal">Heal (10% off)</option>
+                            <option value="optimize">Optimize (20% off)</option>
+                            <option value="thrive">Thrive (30% off)</option>
+                            <option value="at_cost">At Cost (50% off)</option>
+                        </select>
+                        <span style="margin-left:6px;">· $20 shipping · Free over $400</span>
                     </div>
                 </div>
                 <div id="ship-cart-buttons" style="display:flex; gap:8px; align-items:center;">
@@ -14152,10 +14805,40 @@ function showShipProductBrowser() {
     `;
     document.body.appendChild(modal);
 
+    // Set dropdown to patient's default tier
+    setTimeout(() => {
+        const sel = document.getElementById('ship-tier-select');
+        if (sel) sel.value = window._shipSelectedTier;
+    }, 50);
+
     // Attach search handler AFTER element exists in DOM (no re-render of input)
     const searchInput = document.getElementById('ship-search');
     searchInput.addEventListener('input', (e) => renderProductGrid(e.target.value));
     setTimeout(() => searchInput?.focus(), 100);
+
+    // FIX(2026-04-12): Tier change handler — recalculates all prices and re-renders grid
+    window.changeShipTier = function(tierKey) {
+        window._shipSelectedTier = tierKey;
+        const rate = window._shipTierRates[tierKey] || 0;
+        // Recalculate prices on all products
+        window._shipProducts.forEach(p => {
+            p.price = Math.round(p.retail_price * (1 - rate) * 100) / 100;
+        });
+        // Update discount object for display
+        window._shipDiscount = {
+            rate: rate,
+            reason: tierKey + '_tier',
+            label: tierKey === 'retail' ? 'Retail' : tierKey.charAt(0).toUpperCase() + tierKey.slice(1) + ' (' + Math.round(rate * 100) + '% off)'
+        };
+        // Recalculate cart prices too
+        window._shipCart.forEach(ci => {
+            const product = window._shipProducts.find(p => p.sku === ci.sku);
+            if (product) ci.price = product.price;
+        });
+        // Re-render with current search query
+        const q = document.getElementById('ship-search')?.value || '';
+        renderProductGrid(q);
+    };
 
     function renderProductGrid(searchQuery) {
         const filtered = searchQuery
@@ -14203,12 +14886,12 @@ function showShipProductBrowser() {
                                 <strong style="color:#c084fc;">SKU:</strong> ${p.sku}<br/>
                                 ${p.stock_quantity != null ? `<strong style="color:#c084fc;">Stock:</strong> ${p.stock_quantity} units<br/>` : ''}
                                 <strong style="color:#c084fc;">Retail:</strong> $${p.retail_price.toFixed(2)}
-                                ${discount.rate > 0 ? ` · <strong style="color:#10b981;">Patient Price:</strong> $${p.price.toFixed(2)} (${Math.round(discount.rate * 100)}% off)` : ''}
+                                ${window._shipDiscount?.rate > 0 ? ` · <strong style="color:#10b981;">Patient Price:</strong> $${p.price.toFixed(2)} (${Math.round(window._shipDiscount.rate * 100)}% off)` : ''}
                             </div>
                         </div>
                         <div style="display:flex; align-items:center; justify-content:space-between;">
                             <div>
-                                ${discount.rate > 0 ? `
+                                ${window._shipDiscount?.rate > 0 ? `
                                     <span style="font-size:12px; color:#888; text-decoration:line-through;">$${p.retail_price.toFixed(2)}</span>
                                     <span style="font-size:15px; font-weight:700; color:#10b981; margin-left:4px;">$${p.price.toFixed(2)}</span>
                                 ` : `
@@ -14535,21 +15218,20 @@ async function executeShipOrder() {
 
         if (result.success) {
             document.getElementById('ship-modal')?.remove();
+            const orderedItems = [...cart]; // Save before clearing
             window._shipCart = [];
-            window._shipAddressConfirmed = false;
             window._shipOverrideAddress = null;
 
-            showChargeSuccess({
+            // Show comprehensive ship order confirmation
+            showShipOrderConfirmation({
                 patientName: patient.patientName,
-                amount: result.charge.amount,
-                description: cart.map(i => i.name + ' x' + i.quantity).join(', '),
-                chargeId: result.charge.id,
-                productId: null,
+                charge: result.charge,
+                wooOrder: result.woocommerce_order,
+                shipping: result.shipping,
                 dispenseIds: result.dispense_ids || [],
-                paymentMethod: result.charge.card
+                items: orderedItems,
+                consentSent: !!document.getElementById('ship-consent-btn')?.textContent?.includes('Sent'),
             });
-
-            showToast('Order shipped! ' + (result.woocommerce_order ? '#' + result.woocommerce_order.number : ''), 'success');
 
             if (typeof loadPatientPaymentData === 'function') {
                 loadPatientPaymentData(patient.healthieId || patient.patientId);
@@ -14565,47 +15247,498 @@ async function executeShipOrder() {
     }
 }
 
-// ─── HEALTHIE MESSAGES TAB ──────────────────────────────────
+// ─── SHIP ORDER CONFIRMATION (comprehensive) ──────────────────────────────────
+
+function showShipOrderConfirmation({ patientName, charge, wooOrder, shipping, dispenseIds, items, consentSent }) {
+    const modal = document.createElement('div');
+    modal.id = 'ship-confirm-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10001; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(4px);';
+
+    const itemsHtml = items.map(function(i) {
+        return '<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #1f2937;">' +
+            '<img src="' + (i.image_url || i.vial_image_url || '') + '" onerror="this.style.display=\'none\'" style="width:40px; height:40px; border-radius:6px; object-fit:cover; background:#1f2937;" />' +
+            '<div style="flex:1;"><div style="font-size:13px; color:#f0f4f8; font-weight:600;">' + sanitize(i.name) + '</div>' +
+            '<div style="font-size:11px; color:#6b7280;">' + (i.sku || '') + ' · Qty: ' + i.quantity + '</div></div>' +
+            '<div style="font-size:14px; font-weight:700; color:#10b981;">$' + (i.price * i.quantity).toFixed(2) + '</div>' +
+        '</div>';
+    }).join('');
+
+    modal.innerHTML = `
+        <div style="background:#0a0f1a; border:1px solid rgba(16,185,129,0.3); border-radius:16px; width:90%; max-width:500px; max-height:90vh; overflow-y:auto; padding:24px;">
+            <div style="text-align:center; margin-bottom:16px;">
+                <div style="font-size:48px; margin-bottom:8px;">✅</div>
+                <div style="font-size:22px; font-weight:800; color:#10b981;">Order Confirmed</div>
+                <div style="font-size:14px; color:#9ca3af; margin-top:4px;">${sanitize(patientName)}</div>
+            </div>
+
+            <!-- Payment -->
+            <div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:14px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <div style="font-size:11px; color:#6b7280; text-transform:uppercase;">Payment</div>
+                        <div style="font-size:24px; font-weight:800; color:#10b981;">$${charge.amount.toFixed(2)}</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:12px; color:#10b981; font-weight:600;">✓ ${charge.status}</div>
+                        <div style="font-size:11px; color:#9ca3af;">${charge.card?.brand || ''} ···· ${charge.card?.last4 || '****'}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- WooCommerce Order -->
+            ${wooOrder ? `
+            <div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:14px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <div style="font-size:11px; color:#6b7280; text-transform:uppercase;">WooCommerce Order</div>
+                        <div style="font-size:16px; font-weight:700; color:#22d3ee;">#${wooOrder.number}</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:11px; color:#10b981;">✓ Created → ShipStation</div>
+                    </div>
+                </div>
+            </div>` : '<div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; padding:10px; margin-bottom:12px; font-size:12px; color:#ef4444;">⚠️ WooCommerce order not created — check credentials</div>'}
+
+            <!-- Shipping -->
+            ${shipping ? `
+            <div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:14px; margin-bottom:12px;">
+                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; margin-bottom:4px;">📦 Ships Via USPS Priority Mail</div>
+                <div style="font-size:13px; color:#f0f4f8;">${sanitize(shipping.address)}</div>
+                <div style="font-size:12px; color:#9ca3af; margin-top:4px;">Shipping: ${shipping.free ? 'FREE' : '$' + shipping.cost.toFixed(2)}</div>
+            </div>` : ''}
+
+            <!-- Consent Status -->
+            <div style="background:${consentSent ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)'}; border:1px solid ${consentSent ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'}; border-radius:10px; padding:10px; margin-bottom:12px;">
+                <div style="font-size:12px; color:${consentSent ? '#10b981' : '#f59e0b'}; font-weight:600;">
+                    ${consentSent ? '✅ Consent form sent to patient' : '⚠️ Consent form was NOT sent — consider sending via patient app'}
+                </div>
+            </div>
+
+            <!-- Items Ordered -->
+            <div style="margin-bottom:12px;">
+                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; margin-bottom:6px;">Items Ordered (${items.length})</div>
+                ${itemsHtml}
+            </div>
+
+            <!-- Receipt + Dispense -->
+            <div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:10px; margin-bottom:12px; font-size:12px; color:#9ca3af;">
+                <div>📋 ${dispenseIds.length} dispense${dispenseIds.length !== 1 ? 's' : ''} logged to inventory</div>
+                <div>🧾 Itemized receipt uploaded to patient's Healthie chart</div>
+            </div>
+
+            ${dispenseIds.length > 0 ? `
+            <div style="margin-bottom:12px;">
+                ${dispenseIds.map(function(did) { return '<button onclick="printPeptideLabel(' + did + ')" style="width:100%; padding:10px; margin-bottom:4px; background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:8px; color:#3b82f6; font-size:12px; font-weight:600; cursor:pointer;">🏷️ Print Label #' + did + '</button>'; }).join('')}
+            </div>` : ''}
+
+            <button onclick="document.getElementById('ship-confirm-modal')?.remove()" style="width:100%; padding:14px; background:#111827; border:1px solid #374151; border-radius:10px; color:#f0f4f8; font-size:15px; font-weight:600; cursor:pointer;">Done</button>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+}
+
+// ─── MESSAGES TAB (Healthie Chat + GHL SMS) ──────────────────────────────────
 var messagesConversations = [];
 var messagesCurrentConvo = null;
 var messagesCurrentConvoName = null;
 var messagesCurrentMessages = [];
 var messagesLoading = false;
 
+// GHL SMS state
+var messagesChannel = 'healthie'; // 'healthie' | 'sms-mensHealth' | 'sms-primaryCare' | 'sms-abxtac'
+var ghlConversations = [];
+var ghlCurrentContact = null; // { contactId, contactName, phone }
+var ghlThreadMessages = [];
+
+var GHL_SMS_CHANNELS = [
+    { key: 'sms-mensHealth', label: "Men's Health", account: 'mensHealth', color: '#DC2626' },
+    { key: 'sms-primaryCare', label: 'Primary Care / Longevity', account: 'primaryCare', color: '#060F6A' },
+    { key: 'sms-abxtac', label: 'ABXTAC', account: 'abxtac', color: '#3A7D32' },
+];
+
+function getGhlAccountFromChannel() {
+    var ch = GHL_SMS_CHANNELS.find(function(c) { return c.key === messagesChannel; });
+    return ch ? ch.account : null;
+}
+
+function getGhlChannelColor() {
+    var ch = GHL_SMS_CHANNELS.find(function(c) { return c.key === messagesChannel; });
+    return ch ? ch.color : 'var(--cyan)';
+}
+
 async function renderMessagesView(container) {
+    // Channel switcher tabs
+    var channelTabs = '<button onclick="switchMessagesChannel(\'healthie\')" ' +
+        'style="padding:8px 16px; border:none; border-bottom:3px solid ' + (messagesChannel === 'healthie' ? 'var(--cyan)' : 'transparent') + '; ' +
+        'background:' + (messagesChannel === 'healthie' ? 'rgba(0,212,255,0.08)' : 'transparent') + '; ' +
+        'color:' + (messagesChannel === 'healthie' ? 'var(--cyan)' : 'var(--text-tertiary)') + '; ' +
+        'font-weight:' + (messagesChannel === 'healthie' ? '700' : '500') + '; font-size:13px; cursor:pointer; border-radius:6px 6px 0 0;">Healthie Chat</button>';
+
+    GHL_SMS_CHANNELS.forEach(function(ch) {
+        var isActive = messagesChannel === ch.key;
+        channelTabs += '<button onclick="switchMessagesChannel(\'' + ch.key + '\')" ' +
+            'style="padding:8px 16px; border:none; border-bottom:3px solid ' + (isActive ? ch.color : 'transparent') + '; ' +
+            'background:' + (isActive ? ch.color + '12' : 'transparent') + '; ' +
+            'color:' + (isActive ? ch.color : 'var(--text-tertiary)') + '; ' +
+            'font-weight:' + (isActive ? '700' : '500') + '; font-size:13px; cursor:pointer; border-radius:6px 6px 0 0;">SMS: ' + ch.label + '</button>';
+    });
+
+    var isHealthie = messagesChannel === 'healthie';
+    var refreshFn = isHealthie ? 'loadMessagesConversations(true)' : 'loadGhlConversations(true)';
+    var newBtnHtml = isHealthie
+        ? '<button onclick="showNewConversationModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ New</button>'
+        : '';
+
     container.innerHTML = '<div style="padding: 0 4px;">' +
-        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
-        '<div><h1 style="font-size:24px; margin:0; color:var(--text-primary);">Messages</h1>' +
-        '<p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;">Healthie Messaging</p></div>' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">' +
+        '<h1 style="font-size:24px; margin:0; color:var(--text-primary);">Messages</h1>' +
         '<div style="display:flex; gap:6px;">' +
-        '<button onclick="loadMessagesConversations(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>' +
-        '<button onclick="showNewConversationModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ New</button>' +
+        '<button onclick="' + refreshFn + '" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>' +
+        newBtnHtml +
         '</div></div>' +
+        '<div style="display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--border-light); overflow-x:auto; -webkit-overflow-scrolling:touch;">' + channelTabs + '</div>' +
         '<div id="messagesContainer"><div class="loading-spinner" style="margin:40px auto;"></div></div>' +
         '</div>';
 
     await new Promise(resolve => setTimeout(resolve, 50));
-    await loadMessagesConversations();
+
+    if (isHealthie) {
+        await loadMessagesConversations();
+    } else {
+        await loadGhlConversations();
+    }
 
     // Auto-refresh every 30 seconds — SKIP if user is actively typing
     if (window._messagesPollTimer) clearInterval(window._messagesPollTimer);
     window._messagesPollTimer = setInterval(async function() {
         if (currentTab !== 'messages') { clearInterval(window._messagesPollTimer); return; }
 
-        // FIX(2026-04-09): Never refresh while the compose input has focus or content
-        // This was destroying staff's messages mid-typing
-        var composeInput = document.getElementById('msgComposeInput');
-        if (composeInput && (document.activeElement === composeInput || composeInput.value.trim().length > 0)) {
-            return; // Skip this refresh cycle — user is composing
+        // Only skip refresh if user is actively typing (has focus AND content)
+        var composeInput = document.getElementById('msgComposeInput') || document.getElementById('ghlComposeInput');
+        if (composeInput && document.activeElement === composeInput && composeInput.value.trim().length > 0) {
+            return; // Skip — user is actively typing
         }
 
-        if (!messagesCurrentConvo) {
-            await loadMessagesConversations();
+        if (messagesChannel === 'healthie') {
+            if (!messagesCurrentConvo) {
+                await loadMessagesConversations();
+            } else {
+                await loadConversationMessages(messagesCurrentConvo, true);
+            }
         } else {
-            await loadConversationMessages(messagesCurrentConvo, true);
+            if (!ghlCurrentContact) {
+                await loadGhlConversations();
+            } else {
+                await loadGhlThread(ghlCurrentContact.contactId, true);
+            }
         }
-    }, 30000);
+    }, 15000); // Poll every 15 seconds for faster message receipt
 }
+
+function switchMessagesChannel(channel) {
+    messagesChannel = channel;
+    // Reset ALL state so stale data from previous tab doesn't bleed through
+    messagesCurrentConvo = null;
+    ghlCurrentContact = null;
+    ghlThreadMessages = [];
+    ghlConversations = [];
+    var view = document.getElementById('mainContent');
+    if (view) renderMessagesView(view);
+}
+
+// ─── GHL SMS Functions ──────────────────────────────────
+
+async function loadGhlConversations(force) {
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    var account = getGhlAccountFromChannel();
+    if (!account) return;
+
+    if (!force && ghlConversations.length > 0) {
+        renderGhlConversationList(containerEl);
+        return;
+    }
+
+    containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+    try {
+        var data = await apiFetch('/ops/api/admin/ghl/conversations?account=' + account + '&limit=20');
+        ghlConversations = data.conversations || [];
+        renderGhlConversationList(containerEl);
+    } catch (e) {
+        console.error('[GHL SMS] Load error:', e);
+        containerEl.innerHTML = '<div class="empty-state-card"><h3>Could not load SMS conversations</h3><p>' + (e.message || 'Network error') + '</p><button onclick="loadGhlConversations(true)" class="btn-primary" style="margin-top:8px;">Try Again</button></div>';
+    }
+}
+
+function renderGhlConversationList(containerEl) {
+    if (ghlConversations.length === 0) {
+        containerEl.innerHTML = '<div class="empty-state-card"><div class="empty-state-icon">📱</div><h3>No SMS Conversations</h3><p>No recent text messages found for this account.</p></div>';
+        return;
+    }
+    var color = getGhlChannelColor();
+    var html = '';
+    ghlConversations.forEach(function(c) {
+        var ts = c.lastMessageDate ? new Date(c.lastMessageDate) : null;
+        var timeStr = ts ? formatRelativeTime(ts.toISOString()) : '';
+        var isInbound = c.lastMessageDirection === 'inbound';
+        var dirArrow = isInbound ? '←' : '→';
+        var dirColor = isInbound ? '#3b82f6' : '#22c55e';
+        var msgType = (c.lastMessageType || '').replace('TYPE_', '').toLowerCase();
+        var typeBadge = '';
+        if (msgType === 'call') {
+            typeBadge = '<span style="font-size:10px; padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.15); color:#d97706; font-weight:600; text-transform:uppercase;">CALL</span>';
+        } else if (msgType === 'sms') {
+            typeBadge = '<span style="font-size:10px; padding:1px 5px; border-radius:3px; background:rgba(59,130,246,0.15); color:#2563eb; font-weight:600; text-transform:uppercase;">SMS</span>';
+        }
+        var preview = c.lastMessageBody ? sanitize(c.lastMessageBody).substring(0, 80) : '(no message body)';
+        if (c.lastMessageBody && c.lastMessageBody.length > 80) preview += '...';
+        var unreadDot = c.unreadCount > 0 ? '<div style="width:8px; height:8px; border-radius:50%; background:' + color + '; flex-shrink:0;"></div>' : '';
+        var storedBadge = c.storedMessageCount > 0
+            ? '<span style="font-size:10px; padding:1px 5px; border-radius:3px; background:rgba(14,165,233,0.1); color:#0ea5e9; font-weight:600;">' + c.storedMessageCount + ' stored</span>'
+            : '';
+
+        html += '<div onclick="openGhlConversation(\'' + sanitize(c.contactId) + '\', \'' + sanitize(c.contactName).replace(/'/g, "\\'") + '\', \'' + sanitize(c.phone || '').replace(/'/g, "\\'") + '\')" style="background:var(--card); border:1px solid ' + (c.unreadCount > 0 ? color + '40' : 'var(--border-light)') + '; border-radius:12px; padding:14px 16px; margin-bottom:8px; cursor:pointer; transition:background 0.15s;" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'var(--card)\'">';
+        html += '<div style="display:flex; align-items:center; justify-content:space-between;">';
+        html += '<div style="display:flex; align-items:center; gap:10px; flex:1; min-width:0;">';
+        html += unreadDot;
+        html += '<div style="width:32px; height:32px; border-radius:8px; background:' + dirColor + '20; display:flex; align-items:center; justify-content:center; font-size:16px; color:' + dirColor + '; flex-shrink:0; font-weight:700;">' + dirArrow + '</div>';
+        html += '<div style="min-width:0; flex:1;">';
+        html += '<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">';
+        html += '<span style="font-size:14px; font-weight:' + (c.unreadCount > 0 ? '700' : '500') + '; color:var(--text-primary);">' + sanitize(c.contactName) + '</span>';
+        if (c.phone) html += '<span style="font-size:11px; color:var(--text-tertiary);">' + sanitize(c.phone) + '</span>';
+        html += typeBadge + storedBadge;
+        html += '</div>';
+        html += '<div style="font-size:12px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px;">' + preview + '</div>';
+        html += '</div></div>';
+        html += '<div style="text-align:right; flex-shrink:0; margin-left:8px;">';
+        html += '<div style="font-size:11px; color:var(--text-tertiary);">' + timeStr + '</div>';
+        if (c.unreadCount > 0) {
+            html += '<div style="margin-top:4px; display:inline-block; background:' + color + '; color:#fff; border-radius:10px; padding:1px 7px; font-size:10px; font-weight:700;">' + c.unreadCount + '</div>';
+        }
+        html += '</div></div></div>';
+    });
+    containerEl.innerHTML = html;
+}
+
+async function openGhlConversation(contactId, contactName, phone) {
+    ghlCurrentContact = { contactId: contactId, contactName: contactName, phone: phone };
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+    await loadGhlThread(contactId);
+}
+
+async function loadGhlThread(contactId, silent) {
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    var account = getGhlAccountFromChannel();
+
+    // Preserve draft during silent refresh
+    var savedDraft = '';
+    if (silent) {
+        var composeInput = document.getElementById('ghlComposeInput');
+        if (composeInput) savedDraft = composeInput.value || '';
+    }
+
+    if (!silent) containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+
+    try {
+        var data = await apiFetch('/ops/api/admin/ghl/conversations?account=' + account + '&contactId=' + contactId + '&limit=50');
+        ghlThreadMessages = data.messages || [];
+
+        if (silent) {
+            var threadEl = document.getElementById('ghlThread');
+            if (threadEl) {
+                threadEl.innerHTML = renderGhlBubbles(ghlThreadMessages);
+                threadEl.scrollTop = threadEl.scrollHeight;
+                return;
+            }
+        }
+
+        renderGhlThread(containerEl);
+
+        if (savedDraft) {
+            var composeInput = document.getElementById('ghlComposeInput');
+            if (composeInput) { composeInput.value = savedDraft; composeInput.focus(); }
+        }
+    } catch (e) {
+        console.error('[GHL SMS] Thread load error:', e);
+        if (!silent) containerEl.innerHTML = '<div class="empty-state-card"><h3>Could not load conversation</h3><p>' + (e.message || 'Error') + '</p></div>';
+    }
+}
+
+function renderGhlBubbles(messages) {
+    console.log('[GHL Bubbles] Rendering', messages ? messages.length : 0, 'messages');
+    if (messages && messages.length > 0) {
+        messages.forEach(function(m, i) {
+            console.log('[GHL Bubbles] msg', i, ':', m.direction, '| body:', (m.body||'').substring(0,30), '| attachments:', JSON.stringify(m.attachments));
+        });
+    }
+    if (!messages || messages.length === 0) {
+        return '<div style="text-align:center; color:var(--text-tertiary); padding:40px 0; font-size:14px;">No stored messages yet. Messages will appear as they come in via webhook capture.</div>';
+    }
+    var color = getGhlChannelColor();
+    var html = '';
+    // Show oldest first (messages come newest-first from API)
+    var sorted = messages.slice().reverse();
+    sorted.forEach(function(msg) {
+        var ts = msg.timestamp ? new Date(msg.timestamp) : null;
+        var timeStr = ts ? ts.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: CLINIC_TIMEZONE }) : '';
+        var isOut = msg.direction === 'outbound';
+        var align = isOut ? 'flex-end' : 'flex-start';
+        var bubbleBg = isOut ? color + '25' : 'var(--surface)';
+        var bubbleBorder = isOut ? color + '40' : 'var(--border-light)';
+        var label = isOut ? 'Staff' : (ghlCurrentContact ? ghlCurrentContact.contactName : 'Patient');
+        html += '<div style="display:flex; flex-direction:column; align-items:' + align + '; margin-bottom:10px;">';
+        html += '<div style="font-size:10px; color:var(--text-tertiary); margin-bottom:2px;">' + sanitize(label) + ' · ' + timeStr;
+        if (msg.messageType && msg.messageType !== 'SMS') html += ' (' + msg.messageType.toLowerCase() + ')';
+        html += '</div>';
+        html += '<div style="max-width:80%; padding:10px 14px; border-radius:12px; background:' + bubbleBg + '; border:1px solid ' + bubbleBorder + '; font-size:14px; color:var(--text-primary); line-height:1.5; word-wrap:break-word;">';
+        html += msg.body ? sanitize(msg.body) : '<em style="color:var(--text-tertiary);">(no message body)</em>';
+        // Show attachments if present
+        if (msg.attachments && msg.attachments.length > 0) {
+            msg.attachments.forEach(function(url) {
+                html += '<div style="margin-top:6px;"><img src="' + sanitize(url) + '" style="max-width:240px; max-height:200px; border-radius:8px; cursor:pointer;" onclick="window.open(\'' + sanitize(url) + '\', \'_blank\')" alt="MMS Image"></div>';
+            });
+        }
+        html += '</div></div>';
+    });
+    return html;
+}
+
+function renderGhlThread(containerEl) {
+    var color = getGhlChannelColor();
+    var name = ghlCurrentContact ? sanitize(ghlCurrentContact.contactName) : 'Conversation';
+    var phone = ghlCurrentContact && ghlCurrentContact.phone ? ' · ' + sanitize(ghlCurrentContact.phone) : '';
+    var html = '';
+
+    // Header with back button
+    html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--border-light);">';
+    html += '<button onclick="ghlCurrentContact=null; loadGhlConversations(true);" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">← Back</button>';
+    html += '<div style="flex:1;"><span style="font-size:16px; font-weight:600; color:var(--text-primary);">' + name + '</span>';
+    html += '<span style="font-size:12px; color:var(--text-tertiary);">' + phone + '</span></div>';
+    html += '<button onclick="loadGhlThread(\'' + ghlCurrentContact.contactId + '\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:12px; cursor:pointer;">↻</button>';
+    html += '</div>';
+
+    // Messages thread
+    html += '<div id="ghlThread" style="flex:1; overflow-y:auto; max-height:calc(100vh - 280px); padding:4px 0;">';
+    html += renderGhlBubbles(ghlThreadMessages);
+    html += '</div>';
+
+    // Image preview area
+    html += '<div id="ghlImagePreview" style="margin-top:8px;"></div>';
+
+    // Compose bar
+    html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border-light); display:flex; gap:8px; align-items:flex-end;">';
+    html += '<button id="ghlMicBtn" onclick="toggleGhlSpeechToText()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Speech to text">🎙️</button>';
+    html += '<button onclick="pickGhlImage()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Attach photo">📷</button>';
+    html += '<button onclick="pickGhlFile()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Attach file">📎</button>';
+    html += '<textarea id="ghlComposeInput" rows="2" placeholder="Type or tap 🎙️ to dictate..." style="flex:1; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; outline:none;" onkeydown="if(event.key===\'Enter\' && !event.shiftKey){event.preventDefault(); sendGhlSms();}"></textarea>';
+    html += '<button onclick="sendGhlSms()" style="padding:10px 18px; background:' + color + '; border:none; border-radius:10px; color:#fff; font-weight:700; font-size:14px; cursor:pointer; white-space:nowrap;">Send SMS</button>';
+    html += '</div>';
+
+    containerEl.innerHTML = html;
+
+    // Scroll to bottom
+    var thread = document.getElementById('ghlThread');
+    if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+async function sendGhlSms() {
+    var input = document.getElementById('ghlComposeInput');
+    if (!input) return;
+    var content = input.value.trim();
+    if (!content && !_ghlImageData) return;
+    if (!ghlCurrentContact) return;
+    var account = getGhlAccountFromChannel();
+    if (!account) return;
+
+    input.disabled = true;
+    input.value = 'Sending...';
+
+    try {
+        var payload = {
+            account: account,
+            contactId: ghlCurrentContact.contactId,
+            message: content,
+            contactName: ghlCurrentContact.contactName,
+            contactPhone: ghlCurrentContact.phone
+        };
+        if (_ghlImageData) {
+            payload.attachments = [_ghlImageData.url];
+            console.log('[GHL SMS] Sending MMS with attachment:', _ghlImageData.url);
+        }
+        console.log('[GHL SMS] Payload:', JSON.stringify(payload));
+        await apiFetch('/ops/api/admin/ghl/conversations', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+        input.value = '';
+        input.disabled = false;
+        var hadImage = !!_ghlImageData;
+        clearGhlImage();
+        showToast((hadImage ? 'MMS' : 'SMS') + ' sent to ' + ghlCurrentContact.contactName, 'success');
+        await loadGhlThread(ghlCurrentContact.contactId);
+    } catch (e) {
+        console.error('[GHL SMS] Send error:', e);
+        input.value = content;
+        input.disabled = false;
+        showToast('Failed to send SMS: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// ─── SHARED: Image Upload Helper ──────────────────────────────────
+
+var _pendingImageUpload = null; // { url, base64, filename, mimeType }
+
+function triggerImagePicker(inputId) {
+    var existing = document.getElementById(inputId);
+    if (existing) existing.remove();
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.id = inputId;
+    input.accept = 'image/*';
+    // No capture attribute — lets iOS show full picker: Photo Library, Take Photo, Browse Files
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.click();
+    return input;
+}
+
+async function uploadImageFile(file) {
+    console.log('[Upload] Starting upload:', file.name, file.type, file.size, 'bytes');
+    var formData = new FormData();
+    formData.append('file', file);
+    var resp = await fetch('/ops/api/ipad/upload/', {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+    });
+    var text = await resp.text();
+    console.log('[Upload] Response status:', resp.status, 'body:', text.substring(0, 200));
+    if (!resp.ok) {
+        var err;
+        try { err = JSON.parse(text); } catch(e) { err = { error: text || 'Upload failed' }; }
+        throw new Error(err.error || 'Upload failed (HTTP ' + resp.status + ')');
+    }
+    var data = JSON.parse(text);
+    console.log('[Upload] Success:', data.url);
+    return data;
+}
+
+function showImagePreview(containerId, uploadData, onRemove) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '<div style="display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px;">' +
+        '<img src="' + uploadData.base64.substring(0, 100000) + '" style="width:48px; height:48px; border-radius:6px; object-fit:cover;">' +
+        '<div style="flex:1; min-width:0;"><div style="font-size:12px; color:var(--text-primary); font-weight:500;">' + sanitize(uploadData.filename) + '</div>' +
+        '<div style="font-size:11px; color:var(--text-tertiary);">' + (uploadData.size / 1024).toFixed(0) + ' KB</div></div>' +
+        '<button onclick="' + onRemove + '" style="background:none; border:none; color:var(--text-tertiary); font-size:18px; cursor:pointer; padding:4px;">✕</button>' +
+        '</div>';
+}
+
+// ─── HEALTHIE MESSAGES FUNCTIONS ──────────────────────────────────
 
 async function loadMessagesConversations(force) {
     var containerEl = document.getElementById('messagesContainer');
@@ -14772,7 +15905,11 @@ function renderMessageBubbles(messages) {
         html += '</div>';
         html += '<div style="max-width:80%; padding:10px 14px; border-radius:12px; background:' + bubbleBg + '; border:1px solid ' + bubbleBorder + '; font-size:14px; color:var(--text-primary); line-height:1.5; word-wrap:break-word;">';
         html += renderHealthieMessage(msg.content);
-        if (msg.has_attachment) html += '<div style="margin-top:6px; font-size:11px; color:var(--cyan);">📎 Attachment</div>';
+        if (msg.has_attachment && msg.attachment_url) {
+            html += '<div style="margin-top:6px;"><img src="' + sanitize(msg.attachment_url) + '" style="max-width:240px; max-height:200px; border-radius:8px; cursor:pointer;" onclick="window.open(\'' + sanitize(msg.attachment_url) + '\', \'_blank\')" alt="Attachment"></div>';
+        } else if (msg.has_attachment) {
+            html += '<div style="margin-top:6px; font-size:11px; color:var(--cyan);">📎 Attachment</div>';
+        }
         html += '</div></div>';
     });
     return html;
@@ -14795,9 +15932,13 @@ function renderConversationThread(containerEl, convo, messages) {
     html += renderMessageBubbles(messages);
     html += '</div>';
 
+    // Image preview area
+    html += '<div id="healthieImagePreview" style="margin-top:8px;"></div>';
+
     // Compose bar
     html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border-light); display:flex; gap:8px; align-items:flex-end;">';
     html += '<button id="msgMicBtn" onclick="toggleSpeechToText()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Speech to text">🎙️</button>';
+    html += '<button onclick="pickHealthieImage()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Attach image">📷</button>';
     html += '<textarea id="msgComposeInput" rows="2" placeholder="Type or tap 🎙️ to dictate..." style="flex:1; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; outline:none;" onkeydown="if(event.key===\'Enter\' && !event.shiftKey){event.preventDefault(); sendMessageInConvo();}"></textarea>';
     html += '<button onclick="sendMessageInConvo()" style="padding:10px 18px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:10px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer; white-space:nowrap;">Send</button>';
     html += '</div>';
@@ -14809,22 +15950,53 @@ function renderConversationThread(containerEl, convo, messages) {
     if (thread) thread.scrollTop = thread.scrollHeight;
 }
 
+// Healthie image picker
+var _healthieImageData = null;
+
+function pickHealthieImage() {
+    var input = triggerImagePicker('healthieImageInput');
+    input.onchange = async function() {
+        if (!input.files || !input.files[0]) return;
+        showToast('Uploading image...', 'info');
+        try {
+            var data = await uploadImageFile(input.files[0]);
+            _healthieImageData = data;
+            showImagePreview('healthieImagePreview', data, 'clearHealthieImage()');
+            showToast('Image attached', 'success');
+        } catch (e) {
+            showToast('Upload failed: ' + (e.message || 'Error'), 'error');
+        }
+    };
+}
+
+function clearHealthieImage() {
+    _healthieImageData = null;
+    var el = document.getElementById('healthieImagePreview');
+    if (el) el.innerHTML = '';
+}
+
 async function sendMessageInConvo() {
     var input = document.getElementById('msgComposeInput');
     if (!input) return;
     var content = input.value.trim();
-    if (!content || !messagesCurrentConvo) return;
+    if (!content && !_healthieImageData) return;
+    if (!messagesCurrentConvo) return;
 
     input.disabled = true;
     input.value = 'Sending...';
 
     try {
+        var payload = { action: 'send', conversation_id: messagesCurrentConvo, content: content };
+        if (_healthieImageData) {
+            payload.attached_image_string = _healthieImageData.base64;
+        }
         await apiFetch('/ops/api/ipad/messages/', {
             method: 'POST',
-            body: JSON.stringify({ action: 'send', conversation_id: messagesCurrentConvo, content: content })
+            body: JSON.stringify(payload)
         });
         input.value = '';
         input.disabled = false;
+        clearHealthieImage();
         await loadConversationMessages(messagesCurrentConvo);
         showToast('Message sent', 'success');
     } catch (e) {
@@ -14832,6 +16004,105 @@ async function sendMessageInConvo() {
         input.value = content;
         input.disabled = false;
         showToast('Failed to send: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// GHL SMS image picker
+var _ghlImageData = null;
+
+function pickGhlImage() {
+    var input = triggerImagePicker('ghlImageInput');
+    input.onchange = async function() {
+        if (!input.files || !input.files[0]) return;
+        showToast('Uploading image...', 'info');
+        try {
+            var data = await uploadImageFile(input.files[0]);
+            _ghlImageData = data;
+            showImagePreview('ghlImagePreview', data, 'clearGhlImage()');
+            showToast('Image attached — will send as MMS', 'success');
+        } catch (e) {
+            showToast('Upload failed: ' + (e.message || 'Error'), 'error');
+        }
+    };
+}
+
+function clearGhlImage() {
+    _ghlImageData = null;
+    var el = document.getElementById('ghlImagePreview');
+    if (el) el.innerHTML = '';
+}
+
+// GHL file picker (PDFs, documents, etc.)
+function pickGhlFile() {
+    var existing = document.getElementById('ghlFileInput');
+    if (existing) existing.remove();
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.id = 'ghlFileInput';
+    input.accept = 'image/*,.pdf,.doc,.docx';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.click();
+    input.onchange = async function() {
+        if (!input.files || !input.files[0]) return;
+        var file = input.files[0];
+        // Images go through normal upload
+        if (file.type.startsWith('image/')) {
+            showToast('Uploading image...', 'info');
+            try {
+                var data = await uploadImageFile(file);
+                _ghlImageData = data;
+                showImagePreview('ghlImagePreview', data, 'clearGhlImage()');
+                showToast('Image attached — will send as MMS', 'success');
+            } catch (e) {
+                showToast('Upload failed: ' + (e.message || 'Error'), 'error');
+            }
+        } else {
+            // Non-image files: upload and attach URL
+            showToast('Uploading file...', 'info');
+            try {
+                var formData = new FormData();
+                formData.append('file', file);
+                var resp = await fetch('/ops/api/ipad/upload/', { method: 'POST', credentials: 'include', body: formData });
+                if (!resp.ok) {
+                    var err = await resp.json().catch(function() { return { error: 'Upload failed' }; });
+                    throw new Error(err.error || 'Upload failed');
+                }
+                var data = await resp.json();
+                _ghlImageData = data;
+                // Show file preview (non-image)
+                var container = document.getElementById('ghlImagePreview');
+                if (container) {
+                    container.innerHTML = '<div style="display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px;">' +
+                        '<div style="font-size:24px;">📄</div>' +
+                        '<div style="flex:1; min-width:0;"><div style="font-size:12px; color:var(--text-primary); font-weight:500;">' + sanitize(data.filename) + '</div>' +
+                        '<div style="font-size:11px; color:var(--text-tertiary);">' + (data.size / 1024).toFixed(0) + ' KB</div></div>' +
+                        '<button onclick="clearGhlImage()" style="background:none; border:none; color:var(--text-tertiary); font-size:18px; cursor:pointer; padding:4px;">✕</button>' +
+                        '</div>';
+                }
+                showToast('File attached', 'success');
+            } catch (e) {
+                showToast('Upload failed: ' + (e.message || 'Error'), 'error');
+            }
+        }
+    };
+}
+
+// GHL speech-to-text
+var _ghlRec = null;
+function toggleGhlSpeechToText() {
+    if (_ghlRec && _ghlRec._active) {
+        _stopDictation(_ghlRec, 'ghlComposeInput', 'ghlMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' });
+        _ghlRec = null;
+        return;
+    }
+    _ghlRec = _startDictation('ghlComposeInput', 'ghlMicBtn', function() {
+        _stopDictation(_ghlRec, 'ghlComposeInput', 'ghlMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' });
+        _ghlRec = null;
+    });
+    if (!_ghlRec) {
+        _stopDictation(_ghlRec, 'ghlComposeInput', 'ghlMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' });
+        _ghlRec = null;
     }
 }
 
@@ -15926,3 +17197,6 @@ function exitKioskMode() {
         loadChartData(chartPanelPatientId);
     }
 }// build 1775724203
+// 1775768467
+// 1775781086
+// 1775790331
