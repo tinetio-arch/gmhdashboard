@@ -17349,19 +17349,41 @@ function renderKioskField(field) {
 
     let inputHtml = '';
 
-    switch (field.type) {
+    // Normalize Healthie mod_type strings (they come in many forms; map each
+    // to one of our widget branches below).
+    const rawType = (field.type || 'text');
+    const t = rawType.toLowerCase();
+
+    // Aliases → handler branch
+    const alias = (
+        /^(text|string|name|location|client_source|email|matrix)$/.test(t) ? 'text' :
+        /^(textarea|long_text)$/.test(t) ? 'textarea' :
+        /^(number|smart_.*(?:weight|height|bmi|bp|pulse|temp))$/.test(t) ? 'number' :
+        /weight|height|bmi|blood_?pressure|pulse|temperature|waist/i.test(rawType) ? 'number' :
+        /^(phone|smart_phone)$/.test(t) ? 'phone' :
+        /^(date|dob|date_of_birth)$/.test(t) ? 'date' :
+        /^time$/.test(t) ? 'time' :
+        /^(radio|dropdown|select)$/.test(t) ? 'radio' :
+        /^(checkbox|multiple_select|multiple_checkbox)$/.test(t) ? 'checkbox' :
+        /^(signature)$/.test(t) ? 'signature' :
+        /^(file|image|upload|drop_in|camera)$/.test(t) ? 'file' :
+        /^(read_only|label|header|hr|divider|horizontal_line)$/.test(t) ? 'read_only' :
+        /^(synced_allergy|medications|allergies|intolerance|sensitivity|synced_.*)$/.test(t) ? 'synced_display' :
+        /^(agree_to_above|consent)$/.test(t) ? 'checkbox' :
+        'text'  // safe fallback so unknown types still get a usable input
+    );
+
+    switch (alias) {
         case 'text':
-        case 'string':
             inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
             break;
 
         case 'textarea':
-        case 'long_text':
             inputHtml = `<textarea id="${id}" class="kiosk-input" rows="4" placeholder="Enter your answer" data-field-id="${field.id}" ${req}></textarea>`;
             break;
 
         case 'number':
-            inputHtml = `<input type="number" id="${id}" class="kiosk-input" placeholder="Enter a number" data-field-id="${field.id}" ${req}>`;
+            inputHtml = `<input type="number" id="${id}" class="kiosk-input" placeholder="Enter a number" data-field-id="${field.id}" inputmode="decimal" ${req}>`;
             break;
 
         case 'phone':
@@ -17372,14 +17394,29 @@ function renderKioskField(field) {
             inputHtml = `<input type="date" id="${id}" class="kiosk-input" data-field-id="${field.id}" ${req}>`;
             break;
 
-        case 'radio':
-        case 'dropdown': {
+        case 'time':
+            inputHtml = `<input type="time" id="${id}" class="kiosk-input" data-field-id="${field.id}" ${req}>`;
+            break;
+
+        case 'synced_display':
+            // Auto-populated from patient profile (allergies, meds, etc.) — show
+            // a read-only note so the patient isn't confused by an empty field.
+            inputHtml = `<div class="kiosk-input" style="background:#f8fafc; color:#64748b; font-style:italic; padding:12px;">This information is pulled from your chart. Please let the staff know if anything needs to be updated.</div><input type="hidden" id="${id}" data-field-id="${field.id}" value="(synced from chart)">`;
+            break;
+
+        case 'radio': {
             const options = field.options || [];
-            inputHtml = `<div class="kiosk-radio-group" id="${id}" data-field-id="${field.id}">
-                ${options.map(opt => `
-                    <div class="kiosk-radio-option" onclick="selectKioskRadio(this)" data-value="${sanitize(opt)}">${sanitize(opt)}</div>
-                `).join('')}
-            </div>`;
+            if (options.length === 0) {
+                // No options on a radio/dropdown → degrade to text so the patient
+                // isn't stuck on an empty field.
+                inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
+            } else {
+                inputHtml = `<div class="kiosk-radio-group" id="${id}" data-field-id="${field.id}">
+                    ${options.map(opt => `
+                        <div class="kiosk-radio-option" onclick="selectKioskRadio(this)" data-value="${sanitize(opt)}">${sanitize(opt)}</div>
+                    `).join('')}
+                </div>`;
+            }
             break;
         }
 

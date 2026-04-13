@@ -288,20 +288,22 @@ export async function GET(request: NextRequest) {
                 }
             `, { userId: healthieId }),
 
-            // Documents — viewable_user_id is String, returns file_content_type/friendly_type
-            // Reduced page_size from 30 to 20 to speed up query
+            // Documents — consolidated_user_id returns ALL docs (visible + hidden/provider-only)
+            // FIX(2026-04-09): Was using viewable_user_id which missed hidden SOAP notes.
+            // "shared" field indicates if document is visible to patient (true) or provider-only (false).
             safeHealthieQuery<any>('documents', `
-                query GetDocuments($viewableUserId: String) {
-                    documents(viewable_user_id: $viewableUserId, offset: 0, page_size: 20, should_paginate: false) {
+                query GetDocuments($consolidatedUserId: String) {
+                    documents(consolidated_user_id: $consolidatedUserId, offset: 0, page_size: 30, should_paginate: false) {
                         id
                         display_name
                         file_content_type
                         friendly_type
                         created_at
-                        rel_user_id
+                        shared
+                        include_in_charting
                     }
                 }
-            `, { viewableUserId: healthieId }),
+            `, { consolidatedUserId: healthieId }),
 
             // User profile (full demographics)
             safeHealthieQuery<any>('userProfile', `
@@ -696,11 +698,22 @@ export async function GET(request: NextRequest) {
             demographics.tags = hp.active_tags || [];
             demographics.user_group = hp.user_group?.name || '';
 
-            // Save avatar_url to local DB so patient list can show photos
-            if (hp.avatar_url && patient?.patient_id) {
-                query('UPDATE patients SET avatar_url = $1 WHERE patient_id = $2 AND (avatar_url IS NULL OR avatar_url != $1)',
-                    [hp.avatar_url, patient.patient_id]
-                ).catch(() => {}); // fire-and-forget
+            // Sync key Healthie demographics back to local DB (fire-and-forget)
+            // FIX(2026-04-09): Healthie is SOT — keep local DB in sync so DOB, phone, email aren't stale
+            if (patient?.patient_id) {
+                const updates: string[] = [];
+                const vals: any[] = [];
+                let idx = 1;
+                if (hp.avatar_url) { updates.push(`avatar_url = $${idx++}`); vals.push(hp.avatar_url); }
+                if (hp.dob) { updates.push(`dob = $${idx++}`); vals.push(hp.dob); }
+                if (hp.phone_number) { updates.push(`phone_primary = $${idx++}`); vals.push(hp.phone_number); }
+                if (hp.email) { updates.push(`email = $${idx++}`); vals.push(hp.email); }
+                if (hp.gender) { updates.push(`gender = $${idx++}`); vals.push(hp.gender); }
+                if (hp.location?.line1) { updates.push(`address_line1 = $${idx++}`); vals.push(hp.location.line1); }
+                if (updates.length > 0) {
+                    vals.push(patient.patient_id);
+                    query(`UPDATE patients SET ${updates.join(', ')} WHERE patient_id = $${idx}`, vals).catch(() => {});
+                }
             }
         }
 
@@ -712,7 +725,14 @@ export async function GET(request: NextRequest) {
                 healthie_profile: hp || null,
                 chart_notes: chartNotes?.formAnswerGroups || [],
                 pending_forms: (pendingForms?.requestedFormCompletions || []).map((f: any) => ({
-                    id: f.id,
+                    // `id` is the customModuleForm id (form schema) — used by
+                    // the kiosk form-structure query and createFormAnswerGroup.
+                    // Earlier versions of this mapping returned
+                    // requestedFormCompletion.id here, which broke the
+                    // "Hand iPad to Patient" flow — Healthie couldn't find the
+                    // form because it was being looked up by the wrong id.
+                    id: f.custom_module_form?.id || f.id,
+                    request_id: f.id,
                     name: f.custom_module_form?.name || 'Unknown Form',
                     status: f.form_answer_group?.finished ? 'completed' : (f.form_answer_group ? 'in_progress' : 'not_started'),
                     date: f.date_to_show || null,
