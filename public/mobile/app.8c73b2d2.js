@@ -11464,6 +11464,49 @@ async function submitBreak() {
         return;
     }
 
+    // ─── Warn if appointments already exist during the proposed block ───
+    // Scan currently-loaded schedule data. If the target date isn't loaded,
+    // we skip the check (blocks are non-destructive — existing appointments
+    // are preserved either way, so this is just a warning convenience).
+    var conflicts = [];
+    if (Array.isArray(scheduleAllData) && scheduleAllData.length > 0) {
+        var sh = parseInt(startTime.split(':')[0], 10);
+        var sm = parseInt(startTime.split(':')[1], 10);
+        var eh = parseInt(endTime.split(':')[0], 10);
+        var em = parseInt(endTime.split(':')[1], 10);
+        var blockStart = sh * 60 + sm;
+        var blockEnd = eh * 60 + em;
+
+        scheduleAllData.forEach(function(a) {
+            if (!a.date) return;
+            if (a.provider_id && a.provider_id !== providerId) return;
+            var dm = a.date.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}/);
+            if (!dm || dm[1] !== date) return;
+            var apptMin = parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
+            var apptEnd = apptMin + (a.length || 30);
+            if (apptMin < blockEnd && apptEnd > blockStart) {
+                conflicts.push(a);
+            }
+        });
+    }
+
+    if (conflicts.length > 0) {
+        conflicts.sort(function(a, b) { return (a.date || '').localeCompare(b.date || ''); });
+        var list = conflicts.map(function(a) {
+            var nm = a.full_name || 'Unknown';
+            var tm = a.time || '';
+            var tp = a.appointment_type ? ' — ' + a.appointment_type : '';
+            return '  • ' + tm + '  ' + nm + tp;
+        }).join('\n');
+        var msg = 'Heads up — ' + conflicts.length + ' appointment'
+                + (conflicts.length === 1 ? '' : 's')
+                + ' already booked during this time:\n\n' + list
+                + '\n\nBlocking this time WILL NOT cancel or move these appointments. '
+                + 'They stay on the schedule; only NEW bookings will be blocked.\n\n'
+                + 'Block anyway?';
+        if (!confirm(msg)) return;
+    }
+
     btn.disabled = true;
     btn.textContent = 'Blocking…';
 
