@@ -12319,7 +12319,7 @@ function renderScheduleDayGrid(contentEl) {
             return { prov: prov, appts: appts, slotMap: buildSlotMap(appts) };
         });
 
-        html += '<div style="display:flex; gap:0; border:1px solid var(--border-light); border-radius:10px; overflow:hidden;">';
+        html += '<div style="display:flex; gap:0; border:1px solid var(--border-light); border-radius:10px;">';
         // Time column
         html += '<div style="flex-shrink:0; width:55px;">';
         html += '<div style="height:36px; border-bottom:1px solid var(--border-light); border-right:1px solid var(--border-light);"></div>';
@@ -12413,9 +12413,15 @@ function renderScheduleDayGrid(contentEl) {
                         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:9px; cursor:pointer;">📋</button>';
                         if (isTele && !isFinal && apptId) html += '<button onclick="event.stopPropagation(); startProviderVideoCall(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + pid + '\x27)" style="padding:2px 6px; border-radius:4px; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.35); color:#60a5fa; font-size:9px; font-weight:600; cursor:pointer;" title="Start video call">📹 Video</button>';
                         if (!isFinal && apptId) {
+                            // Near the bottom of the grid, open the dropdown upward so it
+                            // doesn't get cut off (e.g. 5:30 PM row with END_HOUR = 18).
+                            var openUp = (slot.hour >= (END_HOUR - 2));
+                            var menuPos = openUp
+                                ? 'bottom:100%; margin-bottom:4px;'
+                                : 'top:100%; margin-top:4px;';
                             html += '<div style="position:relative; display:inline-block;">';
                             html += '<span onclick="event.stopPropagation(); toggleStatusMenu(\x27sm_' + apptId + '\x27)" style="font-size:9px; padding:2px 6px; border-radius:4px; background:' + sty.bg + '; color:' + sty.color + '; font-weight:600; cursor:pointer;">' + abbreviateStatus(st) + ' ▾</span>';
-                            html += '<div id="sm_' + apptId + '" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:var(--card); border:1px solid var(--border-light); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.3); z-index:100; min-width:120px;">';
+                            html += '<div id="sm_' + apptId + '" style="display:none; position:absolute; right:0; ' + menuPos + ' background:var(--card); border:1px solid var(--border-light); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.3); z-index:100; min-width:140px; overflow:hidden;">';
                             [{ l:'✅ Check In',v:'Checked In',s:st==='Scheduled'||st==='Confirmed'},
                              { l:'🟣 In Progress',v:'In Progress',s:st==='Checked In'},
                              { l:'✅ Done',v:'Completed',s:st==='In Progress'||st==='Checked In'},
@@ -12448,7 +12454,7 @@ function renderScheduleDayGrid(contentEl) {
     } else {
         // ─── SINGLE PROVIDER VIEW ───
         var slotMap = buildSlotMap(allFiltered);
-        html += '<div style="border:1px solid var(--border-light); border-radius:10px; overflow:hidden;">';
+        html += '<div style="border:1px solid var(--border-light); border-radius:10px;">';
         slots.forEach(function(slot) {
             var key = padTwo(slot.hour) + ':' + padTwo(slot.min);
             var appts = slotMap[key] || [];
