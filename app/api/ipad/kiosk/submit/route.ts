@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
             body: JSON.stringify({
                 query: `
                     mutation CreateFormAnswerGroup(
-                        $formId: ID!,
+                        $formId: String!,
                         $userId: String!,
                         $formAnswers: [FormAnswerInput!]!,
                         $finished: Boolean
