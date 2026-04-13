@@ -12359,7 +12359,11 @@ function renderScheduleDayGrid(contentEl) {
                     var bStartM = bm ? parseInt(bm[2], 10) : -1;
                     blockIsFirst = (slot.hour === bStartH && slot.min === (bStartM < 30 ? 0 : 30));
                 }
-                var blockBg = blockCell ? ' background:rgba(234,179,8,0.18);' : '';
+                // When an appointment occupies a blocked slot, suppress the
+                // yellow bg so the appointment tile stands out. Keep the left
+                // edge marker so you can still tell the time is blocked.
+                var hasAppt = appts.length > 0;
+                var blockBg = blockCell && !hasAppt ? ' background:rgba(234,179,8,0.18);' : '';
                 var blockBorder = blockCell ? ' border-left:3px solid #eab308;' : '';
 
                 html += '<div style="min-height:56px; padding:3px 5px; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + '; display:flex; flex-direction:column; justify-content:center; gap:2px;' + (isCur ? ' background:rgba(0,212,255,0.04);' : blockBg) + blockBorder + (isPast ? ' opacity:0.45;' : '') + '">';
@@ -12470,8 +12474,11 @@ function renderScheduleDayGrid(contentEl) {
                 var bStartM2 = bm2 ? parseInt(bm2[2], 10) : -1;
                 blockIsFirst = (slot.hour === bStartH2 && slot.min === (bStartM2 < 30 ? 0 : 30));
             }
+            // Suppress yellow bg when an appointment is present so the tile's
+            // buttons stay prominent. Keep the left edge marker.
+            var hasApptsInSlot = (slotMap[key] || []).length > 0;
             var rowBg = isCur ? ' background:rgba(0,212,255,0.06);'
-                      : blockCell ? ' background:rgba(234,179,8,0.15);'
+                      : (blockCell && !hasApptsInSlot) ? ' background:rgba(234,179,8,0.15);'
                       : '';
 
             html += '<div style="display:flex; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + ';' + rowBg + (blockCell ? ' border-left:3px solid #eab308;' : '') + (isPast ? ' opacity:0.5;' : '') + '">';
