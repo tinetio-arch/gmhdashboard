@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
                     (patient_id, healthie_patient_id, form_id, form_name, initiated_by, ip_address, user_agent, device_info)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING session_id`,
-                [localPatientId, healthie_patient_id, form_id, form_name, user.userId, ip, userAgent, JSON.stringify(device_info || {})]
+                [localPatientId, healthie_patient_id, form_id, form_name, user.user_id, ip, userAgent, JSON.stringify(device_info || {})]
             );
             sessionId = rows[0].session_id;
         }
