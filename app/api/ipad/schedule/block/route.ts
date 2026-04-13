@@ -261,29 +261,11 @@ export async function PATCH(request: NextRequest) {
             return NextResponse.json({ error: 'id is required' }, { status: 400 });
         }
 
-        const input: Record<string, unknown> = { id: body.id };
-
-        if (body.provider_id) {
-            input.other_party_id = body.provider_id;
-        }
-        if (body.start) {
-            input.datetime = toPhoenixISO(body.start);
-        }
-        if (body.end) {
-            const endLocal = body.end.replace(' ', 'T').trim();
-            const endMatch = endLocal.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
-            if (!endMatch) {
-                return NextResponse.json({ error: 'end must be YYYY-MM-DDTHH:MM' }, { status: 400 });
-            }
-            input.end_date = endMatch[1];
-            input.end_time = endMatch[2];
-        }
-        if (typeof body.notes === 'string') {
-            input.notes = body.notes.slice(0, 500);
-        }
-        input.timezone = TIMEZONE;
-        input.is_blocker = true; // keep it a blocker
-
+        // Healthie's updateAppointment returns a 500 when you change the
+        // provider (other_party_id) AND the time in the same call. Workaround
+        // verified 2026-04-12 via live testing: split into two sequential
+        // mutations. The minimal-payload provider update always succeeds; the
+        // time/notes update on a now-reassigned appointment also succeeds.
         const mutation = `
             mutation UpdateBlock($input: updateAppointmentInput!) {
                 updateAppointment(input: $input) {
@@ -293,27 +275,78 @@ export async function PATCH(request: NextRequest) {
             }
         `;
 
-        const result = await healthieGraphQL<{
-            updateAppointment: {
-                appointment: any;
-                messages: Array<{ field: string; message: string }>;
-            };
-        }>(mutation, { input });
+        // ─── Call 1: provider change (only if requested) ───
+        if (body.provider_id) {
+            const provResult = await healthieGraphQL<{
+                updateAppointment: { appointment: any; messages: Array<{ field: string; message: string }> };
+            }>(mutation, { input: { id: body.id, other_party_id: body.provider_id } });
 
-        const msgs = result.updateAppointment?.messages || [];
-        if (msgs.length > 0 || !result.updateAppointment?.appointment) {
-            console.error('[schedule-block] Healthie rejected update:', msgs);
-            return NextResponse.json(
-                { error: 'Healthie rejected the update', details: msgs },
-                { status: 400 }
-            );
+            const provMsgs = provResult.updateAppointment?.messages || [];
+            if (provMsgs.length > 0 || !provResult.updateAppointment?.appointment) {
+                console.error('[schedule-block] Healthie rejected provider change:', provMsgs);
+                return NextResponse.json(
+                    { error: 'Healthie rejected the provider change', details: provMsgs },
+                    { status: 400 }
+                );
+            }
+        }
+
+        // ─── Call 2: time / notes / is_blocker (only if any field was given) ───
+        // NOTE: on updateAppointment, using `datetime` + `end_date` + `end_time`
+        // triggers a Healthie 500 (verified 2026-04-12). Working pattern is the
+        // 4-separate-fields form: date + time + end_date + end_time.
+        const input: Record<string, unknown> = { id: body.id };
+        let hasTimeOrNotes = false;
+
+        if (body.start) {
+            const startLocal = body.start.replace(' ', 'T').trim();
+            const startMatch = startLocal.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+            if (!startMatch) {
+                return NextResponse.json({ error: 'start must be YYYY-MM-DDTHH:MM' }, { status: 400 });
+            }
+            input.date = startMatch[1];
+            input.time = startMatch[2];
+            hasTimeOrNotes = true;
+        }
+        if (body.end) {
+            const endLocal = body.end.replace(' ', 'T').trim();
+            const endMatch = endLocal.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+            if (!endMatch) {
+                return NextResponse.json({ error: 'end must be YYYY-MM-DDTHH:MM' }, { status: 400 });
+            }
+            input.end_date = endMatch[1];
+            input.end_time = endMatch[2];
+            hasTimeOrNotes = true;
+        }
+        if (typeof body.notes === 'string') {
+            input.notes = body.notes.slice(0, 500);
+            hasTimeOrNotes = true;
+        }
+
+        let finalAppt: any = null;
+        if (hasTimeOrNotes) {
+            input.timezone = TIMEZONE;
+            input.is_blocker = true;
+            const result = await healthieGraphQL<{
+                updateAppointment: { appointment: any; messages: Array<{ field: string; message: string }> };
+            }>(mutation, { input });
+
+            const msgs = result.updateAppointment?.messages || [];
+            if (msgs.length > 0 || !result.updateAppointment?.appointment) {
+                console.error('[schedule-block] Healthie rejected time/notes update:', msgs);
+                return NextResponse.json(
+                    { error: 'Healthie rejected the update', details: msgs },
+                    { status: 400 }
+                );
+            }
+            finalAppt = result.updateAppointment.appointment;
         }
 
         console.log(
-            `[schedule-block] Edited block #${body.id} by ${(user as any).email || 'admin'}`
+            `[schedule-block] Edited block #${body.id} by ${(user as any).email || 'admin'}${body.provider_id ? ' (provider→' + body.provider_id + ')' : ''}${hasTimeOrNotes ? ' (time/notes updated)' : ''}`
         );
 
-        return NextResponse.json({ success: true, block: result.updateAppointment.appointment });
+        return NextResponse.json({ success: true, block: finalAppt });
     } catch (error: any) {
         if (error instanceof UnauthorizedError || error?.status === 401) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
