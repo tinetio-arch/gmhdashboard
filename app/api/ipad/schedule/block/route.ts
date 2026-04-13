@@ -21,6 +21,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
+import { query } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
 
 export const dynamic = 'force-dynamic';
@@ -89,6 +90,39 @@ export async function POST(request: NextRequest) {
         }
 
         const notes = (body.notes || 'Blocked time').slice(0, 500);
+        const actorEmail = (user as any).email || 'staff';
+        const actorRole = (user as any).role || 'write';
+
+        // ─── Non-admin path: store as pending block_request, don't create Healthie blocker ───
+        if (actorRole !== 'admin') {
+            const [reqRow] = await query<any>(
+                `INSERT INTO block_requests
+                   (provider_id, provider_name, start_datetime, end_date, end_time, notes,
+                    repeat_interval, repeat_times, requested_by)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                 RETURNING *`,
+                [
+                    body.provider_id,
+                    null, // provider_name optional (resolved server-side if needed)
+                    datetime,
+                    end_date,
+                    end_time,
+                    notes,
+                    body.recurring?.interval || null,
+                    body.recurring && body.recurring.times > 1 ? Math.min(body.recurring.times, 52) : null,
+                    actorEmail,
+                ]
+            );
+            console.log(
+                `[schedule-block] REQUEST submitted (pending admin approval) by ${actorEmail} — provider=${body.provider_id} ${datetime} → ${end_date} ${end_time}`
+            );
+            return NextResponse.json({
+                success: true,
+                pending_approval: true,
+                request: reqRow,
+                message: 'Break request submitted — awaiting admin approval.',
+            });
+        }
 
         const input: Record<string, unknown> = {
             is_blocker: true,
@@ -141,7 +175,7 @@ export async function POST(request: NextRequest) {
         }
 
         console.log(
-            `[schedule-block] Created block #${result.createAppointment.appointment.id} for provider ${body.provider_id} by ${(user as any).email || 'staff'} (${datetime} → ${end_date} ${end_time})${body.recurring ? ` repeat ${body.recurring.interval}x${body.recurring.times}` : ''}`
+            `[schedule-block] Created block #${result.createAppointment.appointment.id} for provider ${body.provider_id} by ${actorEmail} (admin, direct) (${datetime} → ${end_date} ${end_time})${body.recurring ? ` repeat ${body.recurring.interval}x${body.recurring.times}` : ''}`
         );
 
         return NextResponse.json({

@@ -1442,6 +1442,8 @@ function renderTodayView(container) {
 
         <!-- Pending Appointment Approvals (below Tasks) -->
         <div id="pendingApptRequestsHost"></div>
+        <!-- Pending Break Requests — admin only -->
+        <div id="pendingBlockRequestsHost"></div>
 
         ${actions.length > 0 ? `
             <div class="section-header">
@@ -1501,6 +1503,12 @@ function renderTodayView(container) {
     loadPendingApptRequests().then(function() {
         var host = document.getElementById('pendingApptRequestsHost');
         if (host) host.innerHTML = renderPendingRequestsCard();
+    });
+
+    // Load pending break requests — admin only
+    loadPendingBlockRequests().then(function() {
+        var host = document.getElementById('pendingBlockRequestsHost');
+        if (host) host.innerHTML = renderPendingBlockRequestsCard();
     });
 }
 
@@ -11532,13 +11540,90 @@ async function submitBreak() {
             throw new Error(data.error || 'Block failed');
         }
         document.getElementById('breakModal').remove();
-        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
-        else if (typeof loadScheduleData === 'function') loadScheduleData();
-        console.log('[Break] Block created:', data.block?.id, body.recurring ? '(recurring)' : '');
+        if (data.pending_approval) {
+            showToast('Break request submitted — awaiting admin approval', 'success');
+            // Refresh pending list for the admin's Today view (no-op for non-admin)
+            if (typeof loadPendingBlockRequests === 'function') loadPendingBlockRequests();
+        } else {
+            if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+            else if (typeof loadScheduleData === 'function') loadScheduleData();
+            console.log('[Break] Block created:', data.block?.id, body.recurring ? '(recurring)' : '');
+        }
     } catch (err) {
         btn.disabled = false;
         btn.textContent = 'Block time';
         alert('Could not create block: ' + (err.message || err));
+    }
+}
+
+// ─── Pending Block Requests (admin approval workflow) ──────────────
+window._pendingBlockRequests = [];
+
+async function loadPendingBlockRequests() {
+    if (!currentUser || currentUser.role !== 'admin') {
+        window._pendingBlockRequests = [];
+        return [];
+    }
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/block/request/?status=pending', { credentials: 'include' });
+        if (!resp.ok) return [];
+        var data = await resp.json();
+        window._pendingBlockRequests = data.requests || [];
+        return window._pendingBlockRequests;
+    } catch (e) {
+        console.warn('[block-request] Load failed:', e);
+        return [];
+    }
+}
+
+function renderPendingBlockRequestsCard() {
+    if (!currentUser || currentUser.role !== 'admin') return '';
+    var list = window._pendingBlockRequests || [];
+    if (list.length === 0) return '';
+    var html = '<div style="margin-top:18px;">';
+    html += '<div class="section-header"><h2>⏸ Pending Break Requests <span style="font-size:12px; padding:3px 8px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.4); border-radius:6px; color:#eab308; font-weight:700; margin-left:8px;">' + list.length + '</span></h2></div>';
+    list.forEach(function(r) {
+        var start = new Date(r.start_datetime);
+        var startStr = start.toLocaleString('en-US', { timeZone: 'America/Phoenix', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        var endStr = r.end_time;
+        var provName = r.provider_name || ('Provider ' + r.provider_id);
+        var recur = r.repeat_interval && r.repeat_times ? ' &middot; repeats ' + r.repeat_interval.toLowerCase() + ' ×' + r.repeat_times : '';
+        html += '<div style="background:var(--card); border:1px solid rgba(234,179,8,0.35); border-left:4px solid #eab308; border-radius:10px; padding:14px; margin-bottom:10px;">';
+        html += '<div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">';
+        html += '<div style="flex:1; min-width:0;">';
+        html += '<div style="font-size:15px; font-weight:600; color:var(--text-primary); margin-bottom:4px;">' + provName + ' — "' + (r.notes || 'Blocked time') + '"</div>';
+        html += '<div style="font-size:13px; color:var(--text-secondary); margin-bottom:3px;">' + startStr + ' – ' + endStr + recur + '</div>';
+        html += '<div style="font-size:12px; color:var(--text-tertiary);">Requested by ' + (r.requested_by || 'staff') + '</div>';
+        html += '</div>';
+        html += '<div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">';
+        html += '<button onclick="decideBlockRequest(\x27' + r.request_id + '\x27, \x27approve\x27)" style="padding:8px 16px; background:rgba(34,197,94,0.18); border:1px solid rgba(34,197,94,0.4); border-radius:6px; color:#22c55e; font-size:13px; font-weight:700; cursor:pointer;">✓ Approve</button>';
+        html += '<button onclick="decideBlockRequest(\x27' + r.request_id + '\x27, \x27deny\x27)" style="padding:8px 16px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.4); border-radius:6px; color:#ef4444; font-size:13px; font-weight:700; cursor:pointer;">✗ Deny</button>';
+        html += '</div></div></div>';
+    });
+    html += '</div>';
+    return html;
+}
+
+async function decideBlockRequest(requestId, decision) {
+    if (!requestId || !decision) return;
+    if (!confirm('Are you sure you want to ' + decision + ' this break request?')) return;
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/block/request/decide/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ request_id: requestId, decision: decision }),
+        });
+        var data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'Decision failed');
+        showToast('Break request ' + data.decision + (decision === 'approve' ? ' — blocker active in Healthie' : ''), 'success');
+        await loadPendingBlockRequests();
+        var host = document.getElementById('pendingBlockRequestsHost');
+        if (host) host.innerHTML = renderPendingBlockRequestsCard();
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+    } catch (e) {
+        console.error('[block-request] Decide error:', e);
+        showToast('Failed: ' + (e.message || 'Error'), 'error');
     }
 }
 
