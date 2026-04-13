@@ -10541,7 +10541,23 @@ var scheduleProviderFilter = 'all';
 var scheduleShowCancelled = false; // Hide cancelled by default
 // scheduleAllData declared at top with other state variables
 var scheduleViewMode = 'day';
-var scheduleSelectedDate = new Date();
+// Persist across page reloads so hitting browser refresh doesn't snap you
+// back to today. sessionStorage auto-clears on tab close, which is the right
+// default — long-term "stuck" dates would be more confusing than helpful.
+var scheduleSelectedDate = (function() {
+    try {
+        var saved = sessionStorage.getItem('scheduleSelectedDate');
+        if (saved) {
+            var d = new Date(saved);
+            if (!isNaN(d.getTime())) return d;
+        }
+    } catch (e) {}
+    return new Date();
+})();
+
+function saveScheduleSelectedDate() {
+    try { sessionStorage.setItem('scheduleSelectedDate', scheduleSelectedDate.toISOString()); } catch (e) {}
+}
 var scheduleAppointmentTypes = [];
 var _moveAppt = null; // appointment being moved: { id, name, time, date, provider_id }
 
@@ -10704,6 +10720,7 @@ function scheduleNavPrev() {
     if (scheduleViewMode === 'day') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() - 1);
     else if (scheduleViewMode === 'week') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() - 7);
     else scheduleSelectedDate.setMonth(scheduleSelectedDate.getMonth() - 1);
+    saveScheduleSelectedDate();
     updateScheduleDateLabel();
     loadScheduleForRange(true);
 }
@@ -10712,12 +10729,14 @@ function scheduleNavNext() {
     if (scheduleViewMode === 'day') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() + 1);
     else if (scheduleViewMode === 'week') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() + 7);
     else scheduleSelectedDate.setMonth(scheduleSelectedDate.getMonth() + 1);
+    saveScheduleSelectedDate();
     updateScheduleDateLabel();
     loadScheduleForRange(true);
 }
 
 function scheduleNavToday() {
     scheduleSelectedDate = new Date();
+    saveScheduleSelectedDate();
     updateScheduleDateLabel();
     loadScheduleForRange(true);
 }
@@ -11798,6 +11817,96 @@ async function submitEditBreak() {
     }
 }
 
+// ─── Message Patient (SMS via GHL) ─────────────────────────────────
+async function showMessagePatientModal(patientId, patientName) {
+    if (!patientId) return;
+    var existing = document.getElementById('msgPatientModal');
+    if (existing) existing.remove();
+
+    var modal = document.createElement('div');
+    modal.id = 'msgPatientModal';
+    modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML =
+        '<div style="background:var(--bg); border:1px solid var(--border-light); border-radius:14px; padding:24px; width:480px; max-width:92vw; color:var(--text-primary);">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">' +
+        '<h3 style="margin:0; font-size:18px;">💬 Message ' + (patientName || 'patient') + '</h3>' +
+        '<button onclick="document.getElementById(\'msgPatientModal\').remove()" style="background:none; border:none; color:var(--text-secondary); font-size:22px; cursor:pointer;">&times;</button>' +
+        '</div>' +
+        '<div id="msgPatientChannel" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; font-size:13px; color:var(--text-secondary); margin-bottom:12px;">Checking channel…</div>' +
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Message</label>' +
+        '<textarea id="msgPatientBody" rows="5" maxlength="1600" placeholder="Type your message…" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-family:inherit; resize:vertical; margin-bottom:6px;"></textarea>' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">' +
+        '<div id="msgPatientCount" style="font-size:11px; color:var(--text-tertiary);">0 / 1600</div>' +
+        '</div>' +
+        '<div style="display:flex; gap:8px; justify-content:flex-end;">' +
+        '<button onclick="document.getElementById(\'msgPatientModal\').remove()" style="padding:10px 18px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>' +
+        '<button id="msgPatientSendBtn" disabled data-patient-id="' + patientId + '" onclick="sendPatientMessage()" style="padding:10px 18px; background:#c084fc; border:none; border-radius:8px; color:#000; font-size:14px; font-weight:600; cursor:pointer; opacity:0.5;">Send</button>' +
+        '</div>' +
+        '</div>';
+    document.body.appendChild(modal);
+
+    // Live char count
+    var ta = document.getElementById('msgPatientBody');
+    var countEl = document.getElementById('msgPatientCount');
+    var sendBtn = document.getElementById('msgPatientSendBtn');
+    ta.addEventListener('input', function() {
+        var len = ta.value.length;
+        countEl.textContent = len + ' / 1600';
+        var canSend = len > 0 && !sendBtn.getAttribute('data-no-channel');
+        sendBtn.disabled = !canSend;
+        sendBtn.style.opacity = canSend ? '1' : '0.5';
+    });
+
+    // Fetch channel
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/message/?patient_id=' + encodeURIComponent(patientId), { credentials: 'include' });
+        var data = await resp.json();
+        var chEl = document.getElementById('msgPatientChannel');
+        if (!chEl) return;
+        if (!resp.ok || !data.success || data.channel.channel === 'unavailable') {
+            chEl.style.background = 'rgba(239,68,68,0.08)';
+            chEl.style.borderColor = 'rgba(239,68,68,0.3)';
+            chEl.style.color = '#ef4444';
+            chEl.innerHTML = '❌ Cannot message this patient — ' + (data.channel?.reason || data.error || 'unknown reason');
+            sendBtn.setAttribute('data-no-channel', '1');
+            sendBtn.disabled = true;
+            sendBtn.style.opacity = '0.5';
+        } else {
+            chEl.innerHTML = 'Channel: <strong style="color:var(--text-primary);">' + data.channel.label + '</strong>' + (data.channel.phone ? ' &middot; ' + data.channel.phone : '');
+        }
+    } catch (err) {
+        var chEl2 = document.getElementById('msgPatientChannel');
+        if (chEl2) { chEl2.textContent = 'Could not check channel: ' + (err.message || err); }
+    }
+}
+
+async function sendPatientMessage() {
+    var btn = document.getElementById('msgPatientSendBtn');
+    var ta = document.getElementById('msgPatientBody');
+    if (!btn || !ta) return;
+    var patientId = btn.getAttribute('data-patient-id');
+    var body = (ta.value || '').trim();
+    if (!patientId || !body) return;
+    if (!confirm('Send this message now?')) return;
+
+    btn.disabled = true; btn.textContent = 'Sending…'; btn.style.opacity = '0.7';
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/message/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ patient_id: patientId, body: body }),
+        });
+        var data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'Send failed');
+        document.getElementById('msgPatientModal').remove();
+        showToast('Message sent to ' + (data.sent_to || 'patient') + ' via ' + (data.channel?.label || 'SMS'), 'success');
+    } catch (err) {
+        btn.disabled = false; btn.textContent = 'Send'; btn.style.opacity = '1';
+        alert('Could not send: ' + (err.message || err));
+    }
+}
+
 async function removeBreak(blockId) {
     if (!blockId) return;
     if (!confirm('Remove this blocked time?')) return;
@@ -12414,6 +12523,7 @@ function renderScheduleDayGrid(contentEl) {
                         // Action buttons
                         html += '<div style="display:flex; gap:3px; flex-shrink:0;">';
                         if (!isFinal && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + dateStr + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:9px; cursor:pointer;" title="Move/reschedule">↔</button>';
+                        if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:9px; cursor:pointer;" title="Message patient">💬</button>';
                         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:9px; cursor:pointer;">📋</button>';
                         if (isTele && !isFinal && apptId) html += '<button onclick="event.stopPropagation(); startProviderVideoCall(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + pid + '\x27)" style="padding:2px 6px; border-radius:4px; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.35); color:#60a5fa; font-size:9px; font-weight:600; cursor:pointer;" title="Start video call">📹 Video</button>';
                         if (!isFinal && apptId) {
@@ -12515,6 +12625,7 @@ function renderScheduleDayGrid(contentEl) {
                     html += '<div style="font-size:10px; color:var(--text-tertiary);">' + (p.time || '') + ' · ' + (p.appointment_type || '') + '</div>';
                     html += '</div>';
                     html += '<div style="display:flex; gap:4px; flex-shrink:0;">';
+                    if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:10px; cursor:pointer;" title="Message patient">💬</button>';
                     if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:10px; cursor:pointer;">📋</button>';
                     html += '<span style="font-size:10px; padding:3px 8px; border-radius:5px; background:' + sty.bg + '; color:' + sty.color + '; font-weight:600;">' + st + '</span>';
                     html += '</div></div>';
@@ -12666,6 +12777,7 @@ function renderScheduleList(contentEl) {
         html += '</div></div></div>';
         html += '<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">';
         if (!isFinalStatus && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + getPhoenixDateStr(scheduleSelectedDate) + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:11px; font-weight:600; cursor:pointer;" title="Move/reschedule">↔ Move</button>';
+        if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:11px; font-weight:600; cursor:pointer;" title="Message patient">💬 Msg</button>';
         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Open chart">📋 Chart</button>';
         // Status badge + dropdown for status changes
         var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
