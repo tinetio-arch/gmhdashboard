@@ -69,10 +69,22 @@ export async function POST(request: NextRequest) {
             );
         }
 
+        // Healthie wants start as `datetime` (ISO with TZ), end split into
+        // `end_date` (YYYY-MM-DD) + `end_time` (HH:MM). Response type uses
+        // `date` + `length` (minutes) — verified via schema introspection
+        // 2026-04-12.
         const datetime = toPhoenixISO(body.start);
-        const end_datetime = toPhoenixISO(body.end);
+        const startDate = new Date(datetime);
+        const endLocal = body.end.replace(' ', 'T').trim();
+        const endMatch = endLocal.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+        if (!endMatch) {
+            return NextResponse.json({ error: 'end must be YYYY-MM-DDTHH:MM' }, { status: 400 });
+        }
+        const end_date = endMatch[1];
+        const end_time = endMatch[2];
+        const endDateObj = new Date(`${end_date}T${end_time}:00-07:00`);
 
-        if (new Date(end_datetime) <= new Date(datetime)) {
+        if (endDateObj <= startDate) {
             return NextResponse.json({ error: 'end must be after start' }, { status: 400 });
         }
 
@@ -81,17 +93,19 @@ export async function POST(request: NextRequest) {
         const input: Record<string, unknown> = {
             is_blocker: true,
             datetime,
-            end_datetime,
+            end_date,
+            end_time,
             timezone: TIMEZONE,
-            provider_id: body.provider_id,
+            other_party_id: body.provider_id, // Healthie input uses other_party_id, not provider_id
             notes,
             contact_type: 'In Person',
         };
 
         if (body.recurring && body.recurring.times > 1) {
-            input.is_repeating = true;
-            input.repeat_interval = body.recurring.interval;
-            input.repeat_times = Math.min(body.recurring.times, 52); // safety cap
+            input.recurring_appointment = {
+                repeat_interval: body.recurring.interval,
+                repeat_times: String(Math.min(body.recurring.times, 52)),
+            };
         }
 
         const mutation = `
@@ -99,8 +113,8 @@ export async function POST(request: NextRequest) {
                 createAppointment(input: $input) {
                     appointment {
                         id
-                        datetime
-                        end_datetime
+                        date
+                        length
                         is_blocker
                         notes
                         provider { id full_name }
@@ -112,7 +126,7 @@ export async function POST(request: NextRequest) {
 
         const result = await healthieGraphQL<{
             createAppointment: {
-                appointment: { id: string; datetime: string; end_datetime: string; is_blocker: boolean; notes: string; provider: { id: string; full_name: string } } | null;
+                appointment: { id: string; date: string; length: number; is_blocker: boolean; notes: string; provider: { id: string; full_name: string } } | null;
                 messages: Array<{ field: string; message: string }>;
             };
         }>(mutation, { input });
@@ -127,7 +141,7 @@ export async function POST(request: NextRequest) {
         }
 
         console.log(
-            `[schedule-block] Created block #${result.createAppointment.appointment.id} for provider ${body.provider_id} by ${(user as any).email || 'staff'} (${datetime} → ${end_datetime})${body.recurring ? ` repeat ${body.recurring.interval}x${body.recurring.times}` : ''}`
+            `[schedule-block] Created block #${result.createAppointment.appointment.id} for provider ${body.provider_id} by ${(user as any).email || 'staff'} (${datetime} → ${end_date} ${end_time})${body.recurring ? ` repeat ${body.recurring.interval}x${body.recurring.times}` : ''}`
         );
 
         return NextResponse.json({
@@ -171,7 +185,7 @@ export async function GET(request: NextRequest) {
                     endDate: $end,
                     should_paginate: false
                 ) {
-                    id datetime end_datetime is_blocker notes
+                    id date length is_blocker notes
                     provider { id full_name }
                 }
             }
