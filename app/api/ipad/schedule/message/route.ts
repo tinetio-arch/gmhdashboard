@@ -48,7 +48,7 @@ async function resolveChannel(patientId: string): Promise<{
     // Look up patient
     const [patient] = await query<any>(
         `SELECT p.patient_id, p.full_name, p.email, p.phone_primary,
-                p.client_type_key, p.clinic_key
+                p.client_type_key, p.clinic
          FROM patients p WHERE p.patient_id = $1`,
         [patientId]
     );
@@ -67,7 +67,7 @@ async function resolveChannel(patientId: string): Promise<{
         };
     }
 
-    const ghl = getGHLClientForPatient(patient.clinic_key, patient.client_type_key);
+    const ghl = getGHLClientForPatient(patient.clinic, patient.client_type_key);
     if (!ghl) {
         return {
             info: { channel: 'unavailable', label: 'No GHL routing', brand: '', reason: 'Could not determine GHL sub-account' },
@@ -102,7 +102,7 @@ async function resolveChannel(patientId: string): Promise<{
         clientType === 'nowprimarycare' ||
         clientType === 'nowlongevity' ||
         clientType === 'nowmentalhealth' ||
-        (patient.clinic_key || '').toLowerCase().includes('primarycare')
+        (patient.clinic || '').toLowerCase().includes('primarycare')
     ) {
         channel = 'sms_primary_care';
         brand = 'Primary Care';
@@ -189,7 +189,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Send
-        const ghl = getGHLClientForPatient(patient.clinic_key, patient.client_type_key);
+        const ghl = getGHLClientForPatient(patient.clinic, patient.client_type_key);
         if (!ghl) {
             return NextResponse.json({ error: 'GHL client unavailable' }, { status: 500 });
         }
