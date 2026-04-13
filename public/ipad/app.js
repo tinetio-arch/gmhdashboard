@@ -11194,10 +11194,12 @@ function showBreakModal() {
     var existing = document.getElementById('breakModal');
     if (existing) existing.remove();
 
-    // Default: today 12:00–13:00, logged-in provider if any
-    var now = new Date();
+    // Default: whichever day the schedule is currently viewing (falls back to today)
     var tz = 'America/Phoenix';
-    var todayStr = now.toLocaleDateString('en-CA', { timeZone: tz });
+    var defaultDate = (typeof scheduleSelectedDate !== 'undefined' && scheduleSelectedDate)
+        ? (typeof getPhoenixDateStr === 'function' ? getPhoenixDateStr(scheduleSelectedDate) : new Date(scheduleSelectedDate).toLocaleDateString('en-CA', { timeZone: tz }))
+        : new Date().toLocaleDateString('en-CA', { timeZone: tz });
+    var todayStr = defaultDate;
 
     var providers = [
         { id: '12088269', name: 'Phil Schafer NP' },
