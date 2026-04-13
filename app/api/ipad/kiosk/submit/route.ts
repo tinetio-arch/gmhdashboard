@@ -44,6 +44,23 @@ export async function POST(request: NextRequest) {
         const userAgent = request.headers.get('user-agent') || 'unknown';
 
         // 1. Create audit record if no session ID provided
+        // Only use patient_id if it's a real UUID — the iPad sometimes passes
+        // the Healthie numeric ID here, which breaks the uuid-typed column.
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        let localPatientId: string | null = (patient_id && UUID_RE.test(String(patient_id))) ? String(patient_id) : null;
+        // Fall back: try to look up the local patient via healthie_clients
+        if (!localPatientId && healthie_patient_id) {
+            try {
+                const hc = await query<{ patient_id: string }>(
+                    'SELECT patient_id FROM healthie_clients WHERE healthie_client_id = $1 AND is_active = true LIMIT 1',
+                    [String(healthie_patient_id)]
+                );
+                if (hc[0]?.patient_id) localPatientId = hc[0].patient_id;
+            } catch (e) {
+                // Non-fatal — healthie_patient_id is still recorded below
+            }
+        }
+
         let sessionId = kiosk_session_id;
         if (!sessionId) {
             const rows = await query<{ session_id: string }>(
@@ -51,7 +68,7 @@ export async function POST(request: NextRequest) {
                     (patient_id, healthie_patient_id, form_id, form_name, initiated_by, ip_address, user_agent, device_info)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING session_id`,
-                [patient_id || null, healthie_patient_id, form_id, form_name, user.userId, ip, userAgent, JSON.stringify(device_info || {})]
+                [localPatientId, healthie_patient_id, form_id, form_name, user.userId, ip, userAgent, JSON.stringify(device_info || {})]
             );
             sessionId = rows[0].session_id;
         }
