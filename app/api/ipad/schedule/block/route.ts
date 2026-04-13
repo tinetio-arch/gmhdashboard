@@ -243,6 +243,89 @@ export async function GET(request: NextRequest) {
     }
 }
 
+// PATCH /api/ipad/schedule/block/  body: { id, start?, end?, notes? }
+// Edit an existing blocker. Admin-only — non-admins should request a new
+// block instead (same workflow as creating one).
+export async function PATCH(request: NextRequest) {
+    try {
+        const user = await requireApiUser(request, 'admin');
+        const body = (await request.json()) as {
+            id: string;
+            start?: string;        // YYYY-MM-DDTHH:MM
+            end?: string;          // YYYY-MM-DDTHH:MM
+            notes?: string;
+            provider_id?: string;  // re-assign to a different provider
+        };
+
+        if (!body.id) {
+            return NextResponse.json({ error: 'id is required' }, { status: 400 });
+        }
+
+        const input: Record<string, unknown> = { id: body.id };
+
+        if (body.provider_id) {
+            input.other_party_id = body.provider_id;
+        }
+        if (body.start) {
+            input.datetime = toPhoenixISO(body.start);
+        }
+        if (body.end) {
+            const endLocal = body.end.replace(' ', 'T').trim();
+            const endMatch = endLocal.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+            if (!endMatch) {
+                return NextResponse.json({ error: 'end must be YYYY-MM-DDTHH:MM' }, { status: 400 });
+            }
+            input.end_date = endMatch[1];
+            input.end_time = endMatch[2];
+        }
+        if (typeof body.notes === 'string') {
+            input.notes = body.notes.slice(0, 500);
+        }
+        input.timezone = TIMEZONE;
+        input.is_blocker = true; // keep it a blocker
+
+        const mutation = `
+            mutation UpdateBlock($input: updateAppointmentInput!) {
+                updateAppointment(input: $input) {
+                    appointment { id date length is_blocker notes provider { id full_name } }
+                    messages { field message }
+                }
+            }
+        `;
+
+        const result = await healthieGraphQL<{
+            updateAppointment: {
+                appointment: any;
+                messages: Array<{ field: string; message: string }>;
+            };
+        }>(mutation, { input });
+
+        const msgs = result.updateAppointment?.messages || [];
+        if (msgs.length > 0 || !result.updateAppointment?.appointment) {
+            console.error('[schedule-block] Healthie rejected update:', msgs);
+            return NextResponse.json(
+                { error: 'Healthie rejected the update', details: msgs },
+                { status: 400 }
+            );
+        }
+
+        console.log(
+            `[schedule-block] Edited block #${body.id} by ${(user as any).email || 'admin'}`
+        );
+
+        return NextResponse.json({ success: true, block: result.updateAppointment.appointment });
+    } catch (error: any) {
+        if (error instanceof UnauthorizedError || error?.status === 401) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+        if (error?.status === 403) {
+            return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
+        }
+        console.error('[schedule-block] PATCH error:', error);
+        return NextResponse.json({ error: error?.message || 'Failed to update block' }, { status: 500 });
+    }
+}
+
 export async function DELETE(request: NextRequest) {
     try {
         const user = await requireApiUser(request, 'write');

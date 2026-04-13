@@ -11712,10 +11712,90 @@ function renderBlockBanner(forDate, opts) {
         out += '<div style="font-size:12px; color:var(--text-secondary);">' + startTime + ' – ' + endTime + ' &middot; ' + (b.length || 0) + ' min';
         if (scheduleProviderFilter === 'all' && b.provider_name) out += ' &middot; ' + b.provider_name;
         out += '</div></div></div>';
+        out += '<div style="display:flex; gap:4px;">';
+        out += '<button onclick="editBreak(\x27' + b.id + '\x27)" style="padding:6px 12px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.3); color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">Edit</button>';
         out += '<button onclick="removeBreak(\x27' + b.id + '\x27)" style="padding:6px 12px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:12px; font-weight:600; cursor:pointer;">Remove</button>';
-        out += '</div>';
+        out += '</div></div>';
     });
     return out;
+}
+
+// Open the Break modal in edit mode for an existing block
+function editBreak(blockId) {
+    if (!blockId) return;
+    var block = (scheduleAllBlocks || []).find(function(b) { return b.id === blockId; });
+    if (!block) { alert('Block not found — refresh and try again.'); return; }
+    // Parse date "YYYY-MM-DD HH:MM:SS -0700"
+    var m = (block.date || '').match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}/);
+    if (!m) return;
+    var dateStr = m[1];
+    var startH = m[2], startM = m[3];
+    var totalEnd = parseInt(startH, 10) * 60 + parseInt(startM, 10) + (block.length || 30);
+    var endH = String(Math.floor(totalEnd / 60) % 24).padStart(2, '0');
+    var endM = String(totalEnd % 60).padStart(2, '0');
+
+    // Open the modal, then override fields + submit handler
+    showBreakModal();
+    setTimeout(function() {
+        var providerSel = document.getElementById('breakProvider');
+        if (providerSel && block.provider_id) providerSel.value = block.provider_id;
+        document.getElementById('breakDate').value = dateStr;
+        document.getElementById('breakStart').value = startH + ':' + startM;
+        document.getElementById('breakEnd').value = endH + ':' + endM;
+        document.getElementById('breakNotes').value = (block.notes && block.notes !== 'Blocked time') ? block.notes : '';
+        // Hide repeat row — can't easily change recurrence on an existing series
+        var repeatSel = document.getElementById('breakRepeat');
+        if (repeatSel) {
+            var repeatRow = repeatSel.closest('div');
+            var label = repeatRow && repeatRow.previousElementSibling;
+            if (repeatRow) repeatRow.style.display = 'none';
+            if (label && label.textContent && label.textContent.trim() === 'Repeat') label.style.display = 'none';
+        }
+        var heading = document.querySelector('#breakModal h3');
+        if (heading) heading.textContent = '✎ Edit blocked time';
+        var submitBtn = document.getElementById('breakSubmitBtn');
+        if (submitBtn) {
+            submitBtn.textContent = 'Save changes';
+            submitBtn.setAttribute('data-edit-id', blockId);
+            submitBtn.setAttribute('onclick', 'submitEditBreak()');
+        }
+    }, 0);
+}
+
+async function submitEditBreak() {
+    var btn = document.getElementById('breakSubmitBtn');
+    var id = btn && btn.getAttribute('data-edit-id');
+    if (!id) return;
+    var providerId = document.getElementById('breakProvider').value;
+    var date = document.getElementById('breakDate').value;
+    var startTime = document.getElementById('breakStart').value;
+    var endTime = document.getElementById('breakEnd').value;
+    var notes = document.getElementById('breakNotes').value || 'Blocked time';
+    if (!providerId || !date || !startTime || !endTime) { alert('Fill in provider, date, start, and end.'); return; }
+    if (endTime <= startTime) { alert('End time must be after start time.'); return; }
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+        var res = await fetch('/ops/api/ipad/schedule/block/', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                id: id,
+                provider_id: providerId,
+                start: date + 'T' + startTime,
+                end: date + 'T' + endTime,
+                notes: notes,
+            }),
+        });
+        var data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Update failed');
+        document.getElementById('breakModal').remove();
+        showToast('Block updated', 'success');
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+    } catch (err) {
+        btn.disabled = false; btn.textContent = 'Save changes';
+        alert('Could not update block: ' + (err.message || err));
+    }
 }
 
 async function removeBreak(blockId) {
@@ -12289,6 +12369,7 @@ function renderScheduleDayGrid(contentEl) {
                     html += '<div style="display:flex; align-items:center; gap:5px; padding:3px 6px; border-radius:5px; background:rgba(234,179,8,0.15); border:1px solid rgba(234,179,8,0.4);">';
                     html += '<span style="font-size:11px;">⏸</span>';
                     html += '<span style="font-size:10px; font-weight:700; color:#eab308; flex:1;">' + lbl + '</span>';
+                    html += '<button onclick="event.stopPropagation(); editBreak(\x27' + blockCell.id + '\x27)" style="padding:1px 5px; border-radius:3px; background:transparent; border:1px solid rgba(0,212,255,0.4); color:var(--cyan); font-size:9px; cursor:pointer;">Edit</button>';
                     html += '<button onclick="event.stopPropagation(); removeBreak(\x27' + blockCell.id + '\x27)" style="padding:1px 5px; border-radius:3px; background:transparent; border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:9px; cursor:pointer;">Remove</button>';
                     html += '</div>';
                 }
@@ -12395,6 +12476,7 @@ function renderScheduleDayGrid(contentEl) {
                 html += '<div style="display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:6px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.45);">';
                 html += '<span style="font-size:14px;">⏸</span>';
                 html += '<span style="font-size:12px; font-weight:700; color:#eab308; flex:1;">' + sLbl + ' — ' + (blockCell.length || 0) + ' min</span>';
+                html += '<button onclick="event.stopPropagation(); editBreak(\x27' + blockCell.id + '\x27)" style="padding:2px 8px; border-radius:4px; background:transparent; border:1px solid rgba(0,212,255,0.4); color:var(--cyan); font-size:10px; cursor:pointer;">Edit</button>';
                 html += '<button onclick="event.stopPropagation(); removeBreak(\x27' + blockCell.id + '\x27)" style="padding:2px 8px; border-radius:4px; background:transparent; border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:10px; cursor:pointer;">Remove</button>';
                 html += '</div>';
             }
