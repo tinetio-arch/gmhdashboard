@@ -24,7 +24,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
-import { getGHLClientForPatient } from '@/lib/ghl';
+import {
+    getGHLClientForPatient,
+    createGHLClientForMensHealth,
+    createGHLClientForPrimaryCare,
+    createGHLClientForABXTAC,
+    createGHLClientForLongevity,
+} from '@/lib/ghl';
 import { resolvePatientId } from '@/lib/ipad-patient-resolver';
 
 export const dynamic = 'force-dynamic';
@@ -32,20 +38,91 @@ export const maxDuration = 20;
 
 const SMS_MAX_LEN = 1600;
 
+type SubAccount = 'mens_health' | 'primary_care' | 'abxtac' | 'longevity';
+
 interface ChannelInfo {
-    channel: 'sms_mens_health' | 'sms_primary_care' | 'sms_abxtac' | 'unavailable';
+    channel: SubAccount | 'unavailable';
     label: string;
     brand: string;
     phone?: string | null;
-    reason?: string;   // when unavailable
+    reason?: string;
+    tried?: string[];           // which sub-accounts we probed (for transparency)
 }
 
-async function resolveChannel(patientId: string): Promise<{
+const SUB_ACCOUNT_LABEL: Record<SubAccount, string> = {
+    mens_health: "Men's Health",
+    primary_care: 'Primary Care',
+    longevity: 'Longevity',
+    abxtac: 'ABXTAC',
+};
+
+function factoryFor(sub: SubAccount) {
+    switch (sub) {
+        case 'mens_health': return createGHLClientForMensHealth;
+        case 'primary_care': return createGHLClientForPrimaryCare;
+        case 'longevity': return createGHLClientForLongevity;
+        case 'abxtac': return createGHLClientForABXTAC;
+    }
+}
+
+/**
+ * Rank sub-accounts by likelihood, using (in priority order):
+ *   1. Appointment type hints ("Men's", "HRT", "TRT", "MHM" → mens_health;
+ *      "Primary Care" → primary_care; "Longevity" → longevity;
+ *      "Mental" → primary_care; "EvexiPel" → primary_care)
+ *   2. Patient's client_type_key (strongest single signal)
+ *   3. Patient's clinic field
+ * Returns an ordered list of all 4 sub-accounts so we probe every one
+ * if needed — guarantees we find the patient if they exist anywhere.
+ */
+function rankSubAccounts(
+    appointmentType: string | null | undefined,
+    clientType: string | null | undefined,
+    clinic: string | null | undefined,
+): SubAccount[] {
+    const atype = (appointmentType || '').toLowerCase();
+    const ctype = (clientType || '').toLowerCase();
+    const clin = (clinic || '').toLowerCase();
+    const order: SubAccount[] = [];
+    const push = (s: SubAccount) => { if (!order.includes(s)) order.push(s); };
+
+    // ─── Appointment type hints (strongest — reflects current intent) ───
+    if (/\b(hrt|trt|mhm|men['’]?s|male hrt|testosterone|evexipel.*male)\b/i.test(atype)) push('mens_health');
+    if (/\b(primary\s*care|primary_care|evexipel|female)\b/i.test(atype)) push('primary_care');
+    if (/\b(longevity|peptide|iv\s*therapy)\b/i.test(atype)) push('longevity');
+    if (/\b(abxtac|research peptide)\b/i.test(atype)) push('abxtac');
+    if (/\b(mental|psych|therapy|counsel)\b/i.test(atype)) push('primary_care');
+
+    // ─── Patient group (client_type_key) ───
+    if (ctype === 'nowmenshealth') push('mens_health');
+    if (ctype === 'nowprimarycare') push('primary_care');
+    if (ctype === 'nowlongevity') push('longevity');
+    if (ctype === 'nowmentalhealth') push('primary_care');
+    if (ctype === 'abxtac') push('abxtac');
+
+    // ─── Clinic field ───
+    if (clin.includes('menshealth')) push('mens_health');
+    if (clin.includes('primarycare') || clin.includes('primary_care')) push('primary_care');
+    if (clin.includes('longevity')) push('longevity');
+
+    // ─── Default tail — probe all remaining so we never miss a contact ───
+    push('mens_health');
+    push('primary_care');
+    push('longevity');
+    push('abxtac');
+
+    return order;
+}
+
+async function resolveChannel(
+    patientId: string,
+    appointmentTypeHint?: string | null,
+): Promise<{
     info: ChannelInfo;
     patient: any;
     ghlContactId?: string;
+    sub?: SubAccount;
 }> {
-    // Look up patient
     const [patient] = await query<any>(
         `SELECT p.patient_id, p.full_name, p.email, p.phone_primary,
                 p.client_type_key, p.clinic
@@ -54,72 +131,51 @@ async function resolveChannel(patientId: string): Promise<{
     );
 
     if (!patient) {
-        return {
-            info: { channel: 'unavailable', label: 'No patient record', brand: '', reason: 'Patient not found in local DB' },
-            patient: null,
-        };
+        return { info: { channel: 'unavailable', label: 'No patient record', brand: '', reason: 'Patient not found in local DB' }, patient: null };
     }
 
     if (!patient.email) {
-        return {
-            info: { channel: 'unavailable', label: 'No contact email', brand: '', reason: 'Patient has no email on file — cannot look up GHL contact' },
-            patient,
-        };
+        return { info: { channel: 'unavailable', label: 'No contact email', brand: '', reason: 'Patient has no email on file — cannot look up GHL contact' }, patient };
     }
 
-    const ghl = getGHLClientForPatient(patient.clinic, patient.client_type_key);
-    if (!ghl) {
-        return {
-            info: { channel: 'unavailable', label: 'No GHL routing', brand: '', reason: 'Could not determine GHL sub-account' },
-            patient,
-        };
-    }
+    const ordered = rankSubAccounts(appointmentTypeHint, patient.client_type_key, patient.clinic);
+    const tried: string[] = [];
 
-    // Find GHL contact by email
-    let contactId: string | undefined;
-    try {
-        const contact = await ghl.findContactByEmail(patient.email);
-        if (contact?.id) contactId = contact.id;
-    } catch (err: any) {
-        console.warn('[ipad-message] GHL contact lookup failed:', err.message);
-    }
-
-    if (!contactId) {
-        return {
-            info: { channel: 'unavailable', label: 'No GHL contact', brand: '', reason: 'Patient has no GHL contact in the routed sub-account' },
-            patient,
-        };
-    }
-
-    // Determine brand label
-    const clientType = (patient.client_type_key || '').toLowerCase();
-    let channel: ChannelInfo['channel'];
-    let brand: string;
-    if (clientType === 'abxtac') {
-        channel = 'sms_abxtac';
-        brand = 'ABXTAC';
-    } else if (
-        clientType === 'nowprimarycare' ||
-        clientType === 'nowlongevity' ||
-        clientType === 'nowmentalhealth' ||
-        (patient.clinic || '').toLowerCase().includes('primarycare')
-    ) {
-        channel = 'sms_primary_care';
-        brand = 'Primary Care';
-    } else {
-        channel = 'sms_mens_health';
-        brand = "Men's Health";
+    for (const sub of ordered) {
+        const factory = factoryFor(sub);
+        const ghl = factory();
+        if (!ghl) continue;    // sub-account not configured (no token in env)
+        tried.push(sub);
+        try {
+            const contact = await ghl.findContactByEmail(patient.email);
+            if (contact?.id) {
+                return {
+                    info: {
+                        channel: sub,
+                        label: `SMS via ${SUB_ACCOUNT_LABEL[sub]}`,
+                        brand: SUB_ACCOUNT_LABEL[sub],
+                        phone: patient.phone_primary || null,
+                        tried,
+                    },
+                    patient,
+                    ghlContactId: contact.id,
+                    sub,
+                };
+            }
+        } catch (err: any) {
+            console.warn(`[ipad-message] Contact lookup in ${sub} failed:`, err.message);
+        }
     }
 
     return {
         info: {
-            channel,
-            label: `SMS via ${brand}`,
-            brand,
-            phone: patient.phone_primary || null,
+            channel: 'unavailable',
+            label: 'No GHL contact',
+            brand: '',
+            reason: `Patient email ${patient.email} not found in any configured GHL sub-account (tried: ${tried.join(', ') || 'none'})`,
+            tried,
         },
         patient,
-        ghlContactId: contactId,
     };
 }
 
@@ -128,12 +184,13 @@ export async function GET(request: NextRequest) {
         await requireApiUser(request, 'read');
         const { searchParams } = new URL(request.url);
         const raw = searchParams.get('patient_id');
+        const apptType = searchParams.get('appointment_type');
         if (!raw) return NextResponse.json({ error: 'patient_id required' }, { status: 400 });
 
         const resolved = await resolvePatientId(raw);
         if (!resolved) return NextResponse.json({ error: 'Patient not found' }, { status: 404 });
 
-        const { info, patient } = await resolveChannel(resolved);
+        const { info, patient } = await resolveChannel(resolved, apptType);
         return NextResponse.json({
             success: true,
             patient: patient ? { full_name: patient.full_name, email: patient.email } : null,
@@ -154,6 +211,7 @@ export async function POST(request: NextRequest) {
         const body = (await request.json()) as {
             patient_id: string;
             body: string;
+            appointment_type?: string;
             dry_run?: boolean;
         };
 
@@ -166,9 +224,9 @@ export async function POST(request: NextRequest) {
         const resolved = await resolvePatientId(body.patient_id);
         if (!resolved) return NextResponse.json({ error: 'Patient not found' }, { status: 404 });
 
-        const { info, patient, ghlContactId } = await resolveChannel(resolved);
+        const { info, patient, ghlContactId, sub } = await resolveChannel(resolved, body.appointment_type);
 
-        if (info.channel === 'unavailable' || !ghlContactId) {
+        if (info.channel === 'unavailable' || !ghlContactId || !sub) {
             return NextResponse.json({
                 success: false,
                 channel: info,
@@ -188,16 +246,16 @@ export async function POST(request: NextRequest) {
             });
         }
 
-        // Send
-        const ghl = getGHLClientForPatient(patient.clinic, patient.client_type_key);
+        // Use the sub-account we actually located the contact in.
+        const ghl = factoryFor(sub)();
         if (!ghl) {
-            return NextResponse.json({ error: 'GHL client unavailable' }, { status: 500 });
+            return NextResponse.json({ error: 'GHL client for ' + sub + ' unavailable' }, { status: 500 });
         }
 
         const result = await ghl.sendSms(ghlContactId, messageBody);
 
         console.log(
-            `[ipad-message] SMS sent by ${actor} → ${patient.full_name} (${info.brand}, contact=${ghlContactId}) msg_id=${result.id} body="${messageBody.slice(0, 80)}${messageBody.length > 80 ? '...' : ''}"`
+            `[ipad-message] SMS sent by ${actor} → ${patient.full_name} via ${info.brand} (contact=${ghlContactId}) msg_id=${result.id} body="${messageBody.slice(0, 80)}${messageBody.length > 80 ? '...' : ''}"`
         );
 
         return NextResponse.json({

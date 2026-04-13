@@ -11818,7 +11818,7 @@ async function submitEditBreak() {
 }
 
 // ─── Message Patient (SMS via GHL) ─────────────────────────────────
-async function showMessagePatientModal(patientId, patientName) {
+async function showMessagePatientModal(patientId, patientName, appointmentType) {
     if (!patientId) return;
     var existing = document.getElementById('msgPatientModal');
     if (existing) existing.remove();
@@ -11840,7 +11840,7 @@ async function showMessagePatientModal(patientId, patientName) {
         '</div>' +
         '<div style="display:flex; gap:8px; justify-content:flex-end;">' +
         '<button onclick="document.getElementById(\'msgPatientModal\').remove()" style="padding:10px 18px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>' +
-        '<button id="msgPatientSendBtn" disabled data-patient-id="' + patientId + '" onclick="sendPatientMessage()" style="padding:10px 18px; background:#c084fc; border:none; border-radius:8px; color:#000; font-size:14px; font-weight:600; cursor:pointer; opacity:0.5;">Send</button>' +
+        '<button id="msgPatientSendBtn" disabled data-patient-id="' + patientId + '" data-appt-type="' + (appointmentType || '').replace(/"/g, '&quot;') + '" onclick="sendPatientMessage()" style="padding:10px 18px; background:#c084fc; border:none; border-radius:8px; color:#000; font-size:14px; font-weight:600; cursor:pointer; opacity:0.5;">Send</button>' +
         '</div>' +
         '</div>';
     document.body.appendChild(modal);
@@ -11857,9 +11857,11 @@ async function showMessagePatientModal(patientId, patientName) {
         sendBtn.style.opacity = canSend ? '1' : '0.5';
     });
 
-    // Fetch channel
+    // Fetch channel — pass appointment type so server can rank sub-accounts
     try {
-        var resp = await fetch('/ops/api/ipad/schedule/message/?patient_id=' + encodeURIComponent(patientId), { credentials: 'include' });
+        var qs = 'patient_id=' + encodeURIComponent(patientId)
+               + (appointmentType ? '&appointment_type=' + encodeURIComponent(appointmentType) : '');
+        var resp = await fetch('/ops/api/ipad/schedule/message/?' + qs, { credentials: 'include' });
         var data = await resp.json();
         var chEl = document.getElementById('msgPatientChannel');
         if (!chEl) return;
@@ -11885,6 +11887,7 @@ async function sendPatientMessage() {
     var ta = document.getElementById('msgPatientBody');
     if (!btn || !ta) return;
     var patientId = btn.getAttribute('data-patient-id');
+    var apptType = btn.getAttribute('data-appt-type') || '';
     var body = (ta.value || '').trim();
     if (!patientId || !body) return;
     if (!confirm('Send this message now?')) return;
@@ -11895,7 +11898,7 @@ async function sendPatientMessage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ patient_id: patientId, body: body }),
+            body: JSON.stringify({ patient_id: patientId, body: body, appointment_type: apptType }),
         });
         var data = await resp.json();
         if (!resp.ok || !data.success) throw new Error(data.error || 'Send failed');
@@ -12523,7 +12526,7 @@ function renderScheduleDayGrid(contentEl) {
                         // Action buttons
                         html += '<div style="display:flex; gap:3px; flex-shrink:0;">';
                         if (!isFinal && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + dateStr + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:9px; cursor:pointer;" title="Move/reschedule">↔</button>';
-                        if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:9px; cursor:pointer;" title="Message patient">💬</button>';
+                        if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:9px; cursor:pointer;" title="Message patient">💬</button>';
                         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:9px; cursor:pointer;">📋</button>';
                         if (isTele && !isFinal && apptId) html += '<button onclick="event.stopPropagation(); startProviderVideoCall(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + pid + '\x27)" style="padding:2px 6px; border-radius:4px; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.35); color:#60a5fa; font-size:9px; font-weight:600; cursor:pointer;" title="Start video call">📹 Video</button>';
                         if (!isFinal && apptId) {
@@ -12625,7 +12628,7 @@ function renderScheduleDayGrid(contentEl) {
                     html += '<div style="font-size:10px; color:var(--text-tertiary);">' + (p.time || '') + ' · ' + (p.appointment_type || '') + '</div>';
                     html += '</div>';
                     html += '<div style="display:flex; gap:4px; flex-shrink:0;">';
-                    if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:10px; cursor:pointer;" title="Message patient">💬</button>';
+                    if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:10px; cursor:pointer;" title="Message patient">💬</button>';
                     if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:10px; cursor:pointer;">📋</button>';
                     html += '<span style="font-size:10px; padding:3px 8px; border-radius:5px; background:' + sty.bg + '; color:' + sty.color + '; font-weight:600;">' + st + '</span>';
                     html += '</div></div>';
@@ -12777,7 +12780,7 @@ function renderScheduleList(contentEl) {
         html += '</div></div></div>';
         html += '<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">';
         if (!isFinalStatus && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + getPhoenixDateStr(scheduleSelectedDate) + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:11px; font-weight:600; cursor:pointer;" title="Move/reschedule">↔ Move</button>';
-        if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:11px; font-weight:600; cursor:pointer;" title="Message patient">💬 Msg</button>';
+        if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:11px; font-weight:600; cursor:pointer;" title="Message patient">💬 Msg</button>';
         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Open chart">📋 Chart</button>';
         // Status badge + dropdown for status changes
         var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
