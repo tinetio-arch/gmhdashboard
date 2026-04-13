@@ -11239,6 +11239,7 @@ function showBreakModal() {
         '<button type="button" onclick="setBreakDuration(120)" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">2 hours</button>' +
         '<button type="button" onclick="setBreakPreset(\'lunch\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Lunch (12–1)</button>' +
         '<button type="button" onclick="setBreakPreset(\'admin\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Admin AM</button>' +
+        '<button type="button" onclick="setBreakPreset(\'fullday\')" style="padding:6px 10px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.45); border-radius:6px; color:#eab308; font-size:12px; font-weight:600; cursor:pointer;">⏸ Full Day</button>' +
         '</div>' +
 
         '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Repeat</label>' +
@@ -11282,6 +11283,12 @@ function setBreakPreset(kind) {
         document.getElementById('breakStart').value = '08:00';
         document.getElementById('breakEnd').value = '09:00';
         document.getElementById('breakNotes').value = 'Admin time';
+    } else if (kind === 'fullday') {
+        document.getElementById('breakStart').value = '07:00';
+        document.getElementById('breakEnd').value = '19:00';
+        if (!document.getElementById('breakNotes').value) {
+            document.getElementById('breakNotes').value = 'Out of office';
+        }
     }
 }
 
