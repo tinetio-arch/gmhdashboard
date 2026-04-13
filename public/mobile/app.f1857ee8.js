@@ -55,6 +55,7 @@ let autoPausedBySystem = false;  // true when auto-paused by visibilitychange (p
 let scribeView = 'list';        // 'list' | 'new' | 'recording' | 'transcript' | 'note' | 'review'
 let supplyItems = null;          // from /ops/api/inventory/supplies
 let scheduleAllData = [];        // from /ops/api/ipad/schedule (all appointments)
+let scheduleAllBlocks = [];      // blockers (breaks / blocked time) from same endpoint
 
 // ─── CONSTANTS ──────────────────────────────────────────────
 const CLINIC_TIMEZONE = 'America/Phoenix';
@@ -10729,6 +10730,7 @@ async function loadScheduleForRange(forceRefresh) {
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         var data = await resp.json();
         scheduleAllData = data.patients || [];
+        scheduleAllBlocks = data.blocks || [];
         // Also update global for Today tab if viewing today
         var todayStr = getPhoenixDateStr(new Date());
         if (startDate === todayStr && endDate === todayStr && scheduleAllData.length > 0) {
@@ -12112,6 +12114,43 @@ function renderScheduleList(contentEl) {
     if (readyCount > 0) html += '<span style="font-size:11px; padding:3px 10px; border-radius:6px; background:rgba(34,197,94,0.1); color:#22c55e;">✅ ' + readyCount + ' ready for provider</span>';
     if (cancelledCount > 0) html += '<button onclick="scheduleShowCancelled=!scheduleShowCancelled; renderScheduleContent()" style="font-size:11px; padding:3px 10px; border-radius:6px; background:' + (scheduleShowCancelled ? 'rgba(239,68,68,0.15)' : 'rgba(239,68,68,0.06)') + '; color:#ef4444; border:1px solid rgba(239,68,68,0.2); cursor:pointer;">' + (scheduleShowCancelled ? 'Hide' : 'Show') + ' Cancelled (' + cancelledCount + ')</button>';
     html += '</div>';
+
+    // Blocked time for the visible day + provider filter
+    var visibleDayStr = getPhoenixDateStr(scheduleSelectedDate);
+    var dayBlocks = (scheduleAllBlocks || []).filter(function(b) {
+        if (!b.date) return false;
+        var m = b.date.match(/^(\d{4}-\d{2}-\d{2})/);
+        if (!m || m[1] !== visibleDayStr) return false;
+        if (scheduleProviderFilter !== 'all' && b.provider_name !== scheduleProviderFilter) return false;
+        return true;
+    });
+    if (dayBlocks.length > 0) {
+        dayBlocks.sort(function(a, b) { return (a.date || '').localeCompare(b.date || ''); });
+        var fmt12 = function(h, mi) {
+            var suf = h >= 12 ? 'PM' : 'AM';
+            var h12 = ((h + 11) % 12) + 1;
+            return h12 + ':' + String(mi).padStart(2, '0') + ' ' + suf;
+        };
+        dayBlocks.forEach(function(b) {
+            var m = (b.date || '').match(/(\d{2}):(\d{2}):\d{2}/);
+            var startH = m ? parseInt(m[1], 10) : 0;
+            var startM = m ? parseInt(m[2], 10) : 0;
+            var startTime = fmt12(startH, startM);
+            var totalEnd = startH * 60 + startM + (b.length || 0);
+            var endTime = fmt12(Math.floor(totalEnd / 60) % 24, totalEnd % 60);
+            var lbl = (b.notes && b.notes !== 'Blocked time') ? b.notes : 'Blocked';
+            html += '<div style="background:rgba(234,179,8,0.12); border:1px solid rgba(234,179,8,0.35); border-left:4px solid #eab308; border-radius:10px; padding:12px 14px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:10px;">';
+            html += '<div style="display:flex; align-items:center; gap:12px;">';
+            html += '<div style="font-size:22px;">⏸</div>';
+            html += '<div>';
+            html += '<div style="font-size:14px; font-weight:600; color:#eab308;">' + lbl + '</div>';
+            html += '<div style="font-size:12px; color:var(--text-secondary);">' + startTime + ' – ' + endTime + ' &middot; ' + (b.length || 0) + ' min';
+            if (scheduleProviderFilter === 'all' && b.provider_name) html += ' &middot; ' + b.provider_name;
+            html += '</div></div></div>';
+            html += '<button onclick="removeBreak(\x27' + b.id + '\x27)" style="padding:6px 12px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:12px; font-weight:600; cursor:pointer;">Remove</button>';
+            html += '</div>';
+        });
+    }
 
     filtered.forEach(function(p) {
         var st = p.appointment_status || 'Pending';

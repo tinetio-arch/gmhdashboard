@@ -77,6 +77,7 @@ export async function GET(request: NextRequest) {
                     should_paginate: false
                 ) {
                     id date length pm_status location other_party_id
+                    is_blocker notes
                     appointment_type { name }
                     provider { id full_name }
                     attendees { id first_name last_name }
@@ -141,13 +142,24 @@ export async function GET(request: NextRequest) {
             return NextResponse.json({ success: true, patients: [], error: 'Could not reach Healthie — try again' });
         }
 
-        // Blocks are fetched via the separate /api/ipad/schedule/block/ endpoint
-        // to avoid coupling blocker fields to this heavily-depended-on query.
-        const blocks: any[] = [];
+        // Split into patient appointments vs. blockers (staff-created breaks).
+        // Blockers are returned in a separate `blocks` array so the iPad can
+        // render them as grey bars and offer tap-to-remove. Availability is
+        // enforced natively by Healthie — all booking surfaces honor is_blocker.
+        const blocks = appointments
+            .filter((a: any) => a.is_blocker === true)
+            .map((a: any) => ({
+                id: a.id,
+                provider_id: a.provider?.id || '',
+                provider_name: a.provider?.full_name || '',
+                date: a.date || null,          // "YYYY-MM-DD HH:MM:SS -0700"
+                length: a.length || 0,          // minutes
+                notes: a.notes || 'Blocked time',
+            }));
 
-        // Filter out entries with no patient (Breaks, holds, blocked time, etc.)
         appointments = appointments.filter((a: any) => {
-            // ONLY include appointments with actual attendees or user (NOT other_party_id alone, as that's often the provider)
+            if (a.is_blocker) return false;
+            // ONLY include appointments with actual attendees or user
             if (a.attendees?.length > 0 || a.user) return true;
             return false;
         });
