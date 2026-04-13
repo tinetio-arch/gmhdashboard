@@ -20,8 +20,21 @@ const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
  *   - end_date (optional): Range end (YYYY-MM-DD) — required with start_date
  */
 export async function GET(request: NextRequest) {
+    let viewerProviderId: string | null = null;
+    let viewerIsAdmin = false;
     try {
-        await requireApiUser(request, 'read');
+        const viewer = await requireApiUser(request, 'read');
+        viewerIsAdmin = (viewer as any).role === 'admin';
+        // Look up viewer's healthie_provider_id to determine block-note visibility
+        try {
+            const [row] = await query<{ healthie_provider_id: string | null }>(
+                `SELECT healthie_provider_id FROM users WHERE user_id = $1`,
+                [(viewer as any).user_id]
+            );
+            viewerProviderId = row?.healthie_provider_id || null;
+        } catch (e) {
+            // Non-fatal — just fall through to "other staff" view
+        }
     } catch (error) {
         if (error instanceof UnauthorizedError)
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -148,14 +161,24 @@ export async function GET(request: NextRequest) {
         // enforced natively by Healthie — all booking surfaces honor is_blocker.
         const blocks = appointments
             .filter((a: any) => a.is_blocker === true)
-            .map((a: any) => ({
-                id: a.id,
-                provider_id: a.provider?.id || '',
-                provider_name: a.provider?.full_name || '',
-                date: a.date || null,          // "YYYY-MM-DD HH:MM:SS -0700"
-                length: a.length || 0,          // minutes
-                notes: a.notes || 'Blocked time',
-            }));
+            .map((a: any) => {
+                const blockProviderId = a.provider?.id || '';
+                // Privacy rule: only the block's own provider and admins see
+                // the real notes. All other staff see "Personal".
+                const canSeeNotes = viewerIsAdmin
+                    || (viewerProviderId && viewerProviderId === blockProviderId);
+                const rawNotes = a.notes || 'Blocked time';
+                const visibleNotes = canSeeNotes ? rawNotes : 'Personal';
+                return {
+                    id: a.id,
+                    provider_id: blockProviderId,
+                    provider_name: a.provider?.full_name || '',
+                    date: a.date || null,
+                    length: a.length || 0,
+                    notes: visibleNotes,
+                    private: !canSeeNotes,   // flag so UI can style differently if desired
+                };
+            });
 
         appointments = appointments.filter((a: any) => {
             if (a.is_blocker) return false;
