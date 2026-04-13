@@ -1440,6 +1440,9 @@ function renderTodayView(container) {
             <div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">Loading tasks...</div>
         </div>
 
+        <!-- Pending Appointment Approvals (below Tasks) -->
+        <div id="pendingApptRequestsHost"></div>
+
         ${actions.length > 0 ? `
             <div class="section-header">
                 <h2>Action Queue</h2>
@@ -1493,6 +1496,12 @@ function renderTodayView(container) {
         if (c) renderStaffTasksUI(c, window._cachedStaffTasks, currentUser?.email === 'admin@nowoptimal.com');
     }
     setTimeout(() => loadMyStaffTasks(), 1000);
+
+    // Load pending appointment requests — shows below Tasks, provider approve/deny
+    loadPendingApptRequests().then(function() {
+        var host = document.getElementById('pendingApptRequestsHost');
+        if (host) host.innerHTML = renderPendingRequestsCard();
+    });
 }
 
 // ─── CRITICAL LAB ALERTS (rendered from dashboard data, no separate API call) ──────
@@ -10731,6 +10740,8 @@ async function loadScheduleForRange(forceRefresh) {
         var data = await resp.json();
         scheduleAllData = data.patients || [];
         scheduleAllBlocks = data.blocks || [];
+        // Pull pending appointment requests (lightweight, separate endpoint)
+        try { await loadPendingApptRequests(); } catch (e) { /* non-fatal */ }
         // Also update global for Today tab if viewing today
         var todayStr = getPhoenixDateStr(new Date());
         if (startDate === todayStr && endDate === todayStr && scheduleAllData.length > 0) {
@@ -11159,6 +11170,73 @@ async function submitAddToSchedule() {
     // Construct datetime in Phoenix timezone (MST = UTC-7)
     var datetime = dateVal + 'T' + timeVal + ':00-07:00';
 
+    // Check for a provider block conflict — if so, route to approval-request flow
+    var slotH = parseInt(timeVal.split(':')[0], 10);
+    var slotM = parseInt(timeVal.split(':')[1], 10);
+    var conflictBlock = null;
+    try {
+        conflictBlock = getSlotBlock(slotH, slotM, providerId);
+    } catch (e) { conflictBlock = null; }
+    // getSlotBlock only looks at the currently-loaded schedule date. If the
+    // requested date differs from what's loaded, we can still check it by
+    // scanning scheduleAllBlocks directly.
+    if (!conflictBlock && typeof scheduleAllBlocks !== 'undefined' && scheduleAllBlocks) {
+        var slotStart = slotH * 60 + slotM;
+        var slotEnd = slotStart + 30;
+        for (var i = 0; i < scheduleAllBlocks.length; i++) {
+            var b = scheduleAllBlocks[i];
+            if (!b.date || b.provider_id !== providerId) continue;
+            var mm = b.date.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}/);
+            if (!mm || mm[1] !== dateVal) continue;
+            var bStart = parseInt(mm[2], 10) * 60 + parseInt(mm[3], 10);
+            var bEnd = bStart + (b.length || 0);
+            if (slotStart < bEnd && slotEnd > bStart) { conflictBlock = b; break; }
+        }
+    }
+
+    if (conflictBlock) {
+        var reason = (conflictBlock.notes && conflictBlock.notes !== 'Blocked time') ? conflictBlock.notes : 'Blocked';
+        var provName = conflictBlock.provider_name || 'the provider';
+        var confirmMsg = 'This time is blocked by ' + provName + ': "' + reason + '".\n\n'
+                      + 'The appointment will NOT be booked immediately. A request will be sent to '
+                      + provName + ' for approval. Continue?';
+        if (!confirm(confirmMsg)) return;
+
+        var btn = document.getElementById('addSchedBtn');
+        btn.textContent = 'Sending request...'; btn.disabled = true;
+
+        // Collect display names for the request record
+        var patientNameEl = document.getElementById('addSchedPatientLabel');
+        var typeEl = document.getElementById('addSchedType');
+        try {
+            await apiFetch('/ops/api/ipad/schedule/request/', {
+                method: 'POST',
+                body: JSON.stringify({
+                    patient_healthie_id: patientId,
+                    patient_name: patientNameEl ? patientNameEl.textContent.trim() : '',
+                    provider_id: providerId,
+                    provider_name: provName,
+                    appointment_type_id: typeId,
+                    appointment_type_name: typeEl && typeEl.selectedOptions[0] ? typeEl.selectedOptions[0].textContent.trim() : '',
+                    datetime: datetime,
+                    length_minutes: 30,
+                    contact_type: contactType,
+                    location: location,
+                    block_id: conflictBlock.id,
+                    block_reason: reason,
+                })
+            });
+            document.getElementById('addScheduleModal')?.remove();
+            showToast('Request sent to ' + provName + ' for approval.', 'success');
+            await loadScheduleForRange(true);
+        } catch (e) {
+            console.error('[Schedule] Request error:', e);
+            showToast('Request failed: ' + (e.message || 'Error'), 'error');
+            btn.textContent = 'Add to Schedule'; btn.disabled = false;
+        }
+        return;
+    }
+
     var btn = document.getElementById('addSchedBtn');
     btn.textContent = 'Scheduling...'; btn.disabled = true;
 
@@ -11183,6 +11261,77 @@ async function submitAddToSchedule() {
         console.error('[Schedule] Create error:', e);
         showToast('Failed: ' + (e.message || 'Error'), 'error');
         btn.textContent = 'Add to Schedule'; btn.disabled = false;
+    }
+}
+
+// ─── Pending Appointment Requests (approval workflow) ────────────────
+window._pendingApptRequests = [];
+
+async function loadPendingApptRequests() {
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/request/?status=pending', { credentials: 'include' });
+        if (!resp.ok) return [];
+        var data = await resp.json();
+        window._pendingApptRequests = data.requests || [];
+        return window._pendingApptRequests;
+    } catch (e) {
+        console.warn('[appt-request] Load failed:', e);
+        return [];
+    }
+}
+
+function renderPendingRequestsCard() {
+    var list = window._pendingApptRequests || [];
+    // Filter to the logged-in provider's requests if they're a provider; otherwise show all
+    var mine = list;
+    if (currentUser && currentUser.is_provider && currentUser.healthie_provider_id) {
+        mine = list.filter(function(r) { return r.provider_id === currentUser.healthie_provider_id; });
+    }
+    if (mine.length === 0) return '';
+    var html = '<div style="margin-top:18px;">';
+    html += '<div class="section-header"><h2>⏸ Pending Appointment Approvals <span style="font-size:12px; padding:3px 8px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.4); border-radius:6px; color:#eab308; font-weight:700; margin-left:8px;">' + mine.length + '</span></h2></div>';
+    mine.forEach(function(r) {
+        var when = new Date(r.datetime);
+        var whenStr = when.toLocaleString('en-US', { timeZone: 'America/Phoenix', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        html += '<div style="background:var(--card); border:1px solid rgba(234,179,8,0.35); border-left:4px solid #eab308; border-radius:10px; padding:14px; margin-bottom:10px;">';
+        html += '<div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">';
+        html += '<div style="flex:1; min-width:0;">';
+        html += '<div style="font-size:15px; font-weight:600; color:var(--text-primary); margin-bottom:4px;">' + (r.patient_name || r.patient_healthie_id) + '</div>';
+        html += '<div style="font-size:13px; color:var(--text-secondary); margin-bottom:3px;">' + whenStr + ' &middot; ' + (r.appointment_type_name || 'Appt') + '</div>';
+        html += '<div style="font-size:12px; color:var(--text-tertiary);">Blocked: "' + (r.block_reason || 'Blocked time') + '" &middot; Requested by ' + (r.requested_by || 'staff') + '</div>';
+        html += '</div>';
+        html += '<div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">';
+        html += '<button onclick="decideApptRequest(\x27' + r.request_id + '\x27, \x27approve\x27)" style="padding:8px 16px; background:rgba(34,197,94,0.18); border:1px solid rgba(34,197,94,0.4); border-radius:6px; color:#22c55e; font-size:13px; font-weight:700; cursor:pointer;">✓ Approve</button>';
+        html += '<button onclick="decideApptRequest(\x27' + r.request_id + '\x27, \x27deny\x27)" style="padding:8px 16px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.4); border-radius:6px; color:#ef4444; font-size:13px; font-weight:700; cursor:pointer;">✗ Deny</button>';
+        html += '</div></div></div>';
+    });
+    html += '</div>';
+    return html;
+}
+
+async function decideApptRequest(requestId, decision) {
+    if (!requestId || !decision) return;
+    var verb = decision === 'approve' ? 'approve' : 'deny';
+    if (!confirm('Are you sure you want to ' + verb + ' this request?')) return;
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/request/decide/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ request_id: requestId, decision: decision }),
+        });
+        var data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'Decision failed');
+        showToast('Request ' + data.decision + (decision === 'approve' ? ' — appointment booked' : ''), 'success');
+        await loadPendingApptRequests();
+        // Re-render the pending section on Today view if visible
+        var todayHost = document.getElementById('pendingApptRequestsHost');
+        if (todayHost) todayHost.innerHTML = renderPendingRequestsCard();
+        // Refresh schedule if on that tab
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+    } catch (e) {
+        console.error('[appt-request] Decide error:', e);
+        showToast('Failed: ' + (e.message || 'Error'), 'error');
     }
 }
 
@@ -11369,6 +11518,32 @@ function getSlotBlock(slotHour, slotMin, providerMatch) {
         if (slotStart < bEnd && slotEnd > bStart) return b;
     }
     return null;
+}
+
+// Return pending appointment-requests that fall inside the given 30-min slot
+// for the given provider on the currently-viewed schedule date.
+function getPendingRequestsForSlot(slotHour, slotMin, providerId) {
+    var list = window._pendingApptRequests || [];
+    if (!list.length) return [];
+    var dayStr = getPhoenixDateStr(scheduleSelectedDate);
+    var slotStart = slotHour * 60 + slotMin;
+    var slotEnd = slotStart + 30;
+    return list.filter(function(r) {
+        if (r.provider_id !== providerId) return false;
+        if (r.status !== 'pending') return false;
+        var d = r.datetime ? new Date(r.datetime) : null;
+        if (!d || isNaN(d.getTime())) return false;
+        // Convert to Phoenix
+        var local = new Date(d.getTime() - (d.getTimezoneOffset() + 420) * 60000);
+        var dateStr = local.toISOString().slice(0, 10);
+        if (dateStr !== dayStr) return false;
+        var m = r.datetime.match(/T(\d{2}):(\d{2})/);
+        if (!m) return false;
+        var h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+        var start = h * 60 + mi;
+        var end = start + (r.length_minutes || 30);
+        return start < slotEnd && end > slotStart;
+    });
 }
 
 // Render the yellow block banner(s) for a given date, respecting provider filter.
@@ -11988,6 +12163,18 @@ function renderScheduleDayGrid(contentEl) {
                     html += '<span style="font-size:10px; font-weight:700; color:#eab308; flex:1;">' + lbl + '</span>';
                     html += '<button onclick="event.stopPropagation(); removeBreak(\x27' + blockCell.id + '\x27)" style="padding:1px 5px; border-radius:3px; background:transparent; border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:9px; cursor:pointer;">Remove</button>';
                     html += '</div>';
+                }
+                // Show any pending approval requests inside this slot
+                var reqs = getPendingRequestsForSlot(slot.hour, slot.min, pd.prov.id);
+                if (reqs.length > 0) {
+                    reqs.forEach(function(r) {
+                        html += '<div style="display:flex; align-items:center; gap:5px; padding:3px 6px; border-radius:5px; background:rgba(251,146,60,0.18); border:1px solid rgba(251,146,60,0.5);">';
+                        html += '<span style="font-size:11px;">?</span>';
+                        html += '<span style="font-size:10px; font-weight:700; color:#fb923c; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (r.patient_name || 'Request') + '</span>';
+                        html += '<button onclick="event.stopPropagation(); decideApptRequest(\x27' + r.request_id + '\x27, \x27approve\x27)" style="padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.4); color:#22c55e; font-size:9px; cursor:pointer;">✓</button>';
+                        html += '<button onclick="event.stopPropagation(); decideApptRequest(\x27' + r.request_id + '\x27, \x27deny\x27)" style="padding:1px 5px; border-radius:3px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:9px; cursor:pointer;">✗</button>';
+                        html += '</div>';
+                    });
                 }
 
                 if (appts.length > 0) {
