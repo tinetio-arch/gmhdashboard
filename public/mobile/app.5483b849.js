@@ -11350,6 +11350,27 @@ async function submitBreak() {
     }
 }
 
+// Return the block covering (slotHour:slotMin) for the given provider on
+// scheduleSelectedDate, or null if the 30-min slot is not blocked.
+// providerMatch can be provider_id OR provider_name OR null for any-provider.
+function getSlotBlock(slotHour, slotMin, providerMatch) {
+    if (typeof scheduleAllBlocks === 'undefined' || !scheduleAllBlocks || !scheduleAllBlocks.length) return null;
+    var dayStr = getPhoenixDateStr(scheduleSelectedDate);
+    var slotStart = slotHour * 60 + slotMin;
+    var slotEnd = slotStart + 30;
+    for (var i = 0; i < scheduleAllBlocks.length; i++) {
+        var b = scheduleAllBlocks[i];
+        if (!b.date) continue;
+        var m = b.date.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}/);
+        if (!m || m[1] !== dayStr) continue;
+        if (providerMatch && b.provider_id !== providerMatch && b.provider_name !== providerMatch) continue;
+        var bStart = parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+        var bEnd = bStart + (b.length || 0);
+        if (slotStart < bEnd && slotEnd > bStart) return b;
+    }
+    return null;
+}
+
 // Render the yellow block banner(s) for a given date, respecting provider filter.
 // Used by day list, day grid, and week views so blocks are visible everywhere.
 function renderBlockBanner(forDate, opts) {
@@ -11946,8 +11967,28 @@ function renderScheduleDayGrid(contentEl) {
                 var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
                 var isPast = isToday && (slot.hour < nowHr || (slot.hour === nowHr && slot.min + 30 <= nowMn));
                 var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
+                var blockCell = getSlotBlock(slot.hour, slot.min, pd.prov.id);
+                // Detect the first slot of the block (show label only once)
+                var blockIsFirst = false;
+                if (blockCell) {
+                    var bm = (blockCell.date || '').match(/(\d{2}):(\d{2}):\d{2}/);
+                    var bStartH = bm ? parseInt(bm[1], 10) : -1;
+                    var bStartM = bm ? parseInt(bm[2], 10) : -1;
+                    blockIsFirst = (slot.hour === bStartH && slot.min === (bStartM < 30 ? 0 : 30));
+                }
+                var blockBg = blockCell ? ' background:rgba(234,179,8,0.18);' : '';
+                var blockBorder = blockCell ? ' border-left:3px solid #eab308;' : '';
 
-                html += '<div style="min-height:56px; padding:3px 5px; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + '; display:flex; flex-direction:column; justify-content:center; gap:2px;' + (isCur ? ' background:rgba(0,212,255,0.04);' : '') + (isPast ? ' opacity:0.45;' : '') + '">';
+                html += '<div style="min-height:56px; padding:3px 5px; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + '; display:flex; flex-direction:column; justify-content:center; gap:2px;' + (isCur ? ' background:rgba(0,212,255,0.04);' : blockBg) + blockBorder + (isPast ? ' opacity:0.45;' : '') + '">';
+
+                if (blockCell && blockIsFirst) {
+                    var lbl = (blockCell.notes && blockCell.notes !== 'Blocked time') ? blockCell.notes : 'Blocked';
+                    html += '<div style="display:flex; align-items:center; gap:5px; padding:3px 6px; border-radius:5px; background:rgba(234,179,8,0.15); border:1px solid rgba(234,179,8,0.4);">';
+                    html += '<span style="font-size:11px;">⏸</span>';
+                    html += '<span style="font-size:10px; font-weight:700; color:#eab308; flex:1;">' + lbl + '</span>';
+                    html += '<button onclick="event.stopPropagation(); removeBreak(\x27' + blockCell.id + '\x27)" style="padding:1px 5px; border-radius:3px; background:transparent; border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:9px; cursor:pointer;">Remove</button>';
+                    html += '</div>';
+                }
 
                 if (appts.length > 0) {
                     appts.forEach(function(p) {
@@ -12019,10 +12060,29 @@ function renderScheduleDayGrid(contentEl) {
             var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
             var isPast = isToday && (slot.hour < nowHr || (slot.hour === nowHr && slot.min + 30 <= nowMn));
             var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
+            var blockCell = getSlotBlock(slot.hour, slot.min, scheduleProviderFilter);
+            var blockIsFirst = false;
+            if (blockCell) {
+                var bm2 = (blockCell.date || '').match(/(\d{2}):(\d{2}):\d{2}/);
+                var bStartH2 = bm2 ? parseInt(bm2[1], 10) : -1;
+                var bStartM2 = bm2 ? parseInt(bm2[2], 10) : -1;
+                blockIsFirst = (slot.hour === bStartH2 && slot.min === (bStartM2 < 30 ? 0 : 30));
+            }
+            var rowBg = isCur ? ' background:rgba(0,212,255,0.06);'
+                      : blockCell ? ' background:rgba(234,179,8,0.15);'
+                      : '';
 
-            html += '<div style="display:flex; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + ';' + (isCur ? ' background:rgba(0,212,255,0.06);' : '') + (isPast ? ' opacity:0.5;' : '') + '">';
+            html += '<div style="display:flex; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + ';' + rowBg + (blockCell ? ' border-left:3px solid #eab308;' : '') + (isPast ? ' opacity:0.5;' : '') + '">';
             html += '<div style="width:60px; padding:6px 8px; font-size:11px; font-weight:' + (isHalf ? '400' : '600') + '; color:' + (isCur ? 'var(--cyan)' : 'var(--text-tertiary)') + '; border-right:1px solid var(--border-light); display:flex; align-items:center;">' + (isHalf ? '' : slot.label) + '</div>';
             html += '<div style="flex:1; min-height:44px; padding:3px 6px; display:flex; flex-direction:column; gap:2px; justify-content:center;">';
+            if (blockCell && blockIsFirst) {
+                var sLbl = (blockCell.notes && blockCell.notes !== 'Blocked time') ? blockCell.notes : 'Blocked';
+                html += '<div style="display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:6px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.45);">';
+                html += '<span style="font-size:14px;">⏸</span>';
+                html += '<span style="font-size:12px; font-weight:700; color:#eab308; flex:1;">' + sLbl + ' — ' + (blockCell.length || 0) + ' min</span>';
+                html += '<button onclick="event.stopPropagation(); removeBreak(\x27' + blockCell.id + '\x27)" style="padding:2px 8px; border-radius:4px; background:transparent; border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:10px; cursor:pointer;">Remove</button>';
+                html += '</div>';
+            }
             if (appts.length > 0) {
                 appts.forEach(function(p) {
                     var st = p.appointment_status || 'Scheduled';
