@@ -5618,13 +5618,16 @@ function renderChartPanel(content) {
         <!-- Controlled Substance Alert (if any) -->
         ${renderControlledSubstanceAlert(d)}
 
-        <!-- Kiosk Mode: Hand iPad to Patient (chart header) -->
-        ${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? `
-        <div style="padding:6px 12px;">
-            <button class="kiosk-launch-btn" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify((d.pending_forms || []).filter(f => f.status !== 'completed')).replace(/"/g, '&quot;')}, '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="width:100%; justify-content:center; padding:10px 16px; font-size:13px;">
+        <!-- Kiosk Mode: Hand iPad to Patient + Send Forms (chart header) -->
+        <div style="padding:6px 12px; display:flex; gap:6px;">
+            ${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? `
+            <button class="kiosk-launch-btn" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify((d.pending_forms || []).filter(f => f.status !== 'completed')).replace(/"/g, '&quot;')}, '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="flex:1; justify-content:center; padding:10px 16px; font-size:13px;">
                 📋 Hand iPad to Patient <span class="kiosk-badge">${(d.pending_forms || []).filter(f => f.status !== 'completed').length}</span>
+            </button>` : ''}
+            <button onclick="showSendFormsModal('${d.healthie_id || ''}', '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? '' : 'flex:1;'} padding:10px 16px; font-size:13px; background:rgba(0,212,255,0.12); border:1px solid rgba(0,212,255,0.35); border-radius:8px; color:var(--cyan); font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px;">
+                📨 Send Forms
             </button>
-        </div>` : ''}
+        </div>
 
         <!-- Consolidated Tabs -->
         <div class="chart-tab-nav" style="gap:0; padding:4px 8px;">
@@ -17139,6 +17142,139 @@ let kioskOriginalOverscroll = '';
  * @param {Array} pendingForms - [{id, name, status}]
  * @param {string} patientName - Display name
  */
+// ─── Send Healthie forms to patient ──────────────────────────────────
+async function showSendFormsModal(healthieId, patientName) {
+    if (!healthieId) {
+        alert('This patient has no Healthie ID on file — cannot send forms.');
+        return;
+    }
+    var existing = document.getElementById('sendFormsModal');
+    if (existing) existing.remove();
+
+    var modal = document.createElement('div');
+    modal.id = 'sendFormsModal';
+    modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML =
+        '<div style="background:var(--bg); border:1px solid var(--border-light); border-radius:14px; padding:20px; width:640px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column; color:var(--text-primary);">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">' +
+        '<h3 style="margin:0; font-size:18px;">📨 Send forms to ' + (patientName || 'patient') + '</h3>' +
+        '<button onclick="document.getElementById(\'sendFormsModal\').remove()" style="background:none; border:none; color:var(--text-secondary); font-size:22px; cursor:pointer;">&times;</button>' +
+        '</div>' +
+        '<input id="sendFormsSearch" type="search" placeholder="Search forms…" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); margin-bottom:10px;">' +
+        '<div id="sendFormsList" style="flex:1; overflow-y:auto; border:1px solid var(--border-light); border-radius:8px; padding:6px; margin-bottom:12px; min-height:260px;">' +
+        '<div style="padding:20px; text-align:center; color:var(--text-tertiary);">Loading available forms…</div>' +
+        '</div>' +
+        '<label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); margin-bottom:10px;">' +
+        '<input type="checkbox" id="sendFormsSkipEmail"> Skip Healthie email notification (only queue for in-office)' +
+        '</label>' +
+        '<div style="display:flex; gap:8px; justify-content:space-between; align-items:center;">' +
+        '<div id="sendFormsSelectedCount" style="font-size:12px; color:var(--text-tertiary);">0 selected</div>' +
+        '<div style="display:flex; gap:8px;">' +
+        '<button onclick="document.getElementById(\'sendFormsModal\').remove()" style="padding:10px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>' +
+        '<button id="sendFormsSubmitBtn" disabled data-healthie-id="' + healthieId + '" onclick="submitSendForms()" style="padding:10px 18px; background:#22c55e; border:none; border-radius:8px; color:#000; font-size:14px; font-weight:600; cursor:pointer; opacity:0.5;">Send</button>' +
+        '</div>' +
+        '</div>' +
+        '</div>';
+    document.body.appendChild(modal);
+
+    window._sendFormsSelection = new Set();
+    window._sendFormsAll = [];
+    await loadSendFormsList('');
+
+    // Wire search
+    var searchEl = document.getElementById('sendFormsSearch');
+    searchEl.addEventListener('input', function() {
+        renderSendFormsList(searchEl.value.trim().toLowerCase());
+    });
+}
+
+async function loadSendFormsList(q) {
+    var listEl = document.getElementById('sendFormsList');
+    if (!listEl) return;
+    try {
+        var resp = await fetch('/ops/api/ipad/patient-chart/send-forms/?limit=300' + (q ? '&q=' + encodeURIComponent(q) : ''), { credentials: 'include' });
+        var data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'Failed to load forms');
+        window._sendFormsAll = data.forms || [];
+        renderSendFormsList('');
+    } catch (err) {
+        listEl.innerHTML = '<div style="padding:20px; text-align:center; color:#ef4444;">' + (err.message || 'Error loading forms') + '</div>';
+    }
+}
+
+function renderSendFormsList(filter) {
+    var listEl = document.getElementById('sendFormsList');
+    if (!listEl) return;
+    var forms = window._sendFormsAll || [];
+    if (filter) forms = forms.filter(function(f) { return (f.name || '').toLowerCase().includes(filter); });
+    if (forms.length === 0) {
+        listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-tertiary);">No forms match.</div>';
+        return;
+    }
+    var html = '';
+    forms.forEach(function(f) {
+        var selected = window._sendFormsSelection.has(f.id);
+        html += '<div onclick="toggleSendFormSelection(\x27' + f.id + '\x27)" style="display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:6px; cursor:pointer;' + (selected ? ' background:rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.35);' : ' border:1px solid transparent;') + '" onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'' + (selected ? 'rgba(34,197,94,0.12)' : 'transparent') + '\'">';
+        html += '<div style="width:18px; height:18px; border-radius:4px; border:2px solid ' + (selected ? '#22c55e' : 'var(--border-light)') + '; background:' + (selected ? '#22c55e' : 'transparent') + '; display:flex; align-items:center; justify-content:center; font-size:12px; color:#000; flex-shrink:0;">' + (selected ? '✓' : '') + '</div>';
+        html += '<div style="font-size:14px; color:var(--text-primary); flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (f.name || 'Unnamed form') + '</div>';
+        html += '<div style="font-size:10px; color:var(--text-tertiary); flex-shrink:0;">' + f.id + '</div>';
+        html += '</div>';
+    });
+    listEl.innerHTML = html;
+}
+
+function toggleSendFormSelection(formId) {
+    if (!window._sendFormsSelection) window._sendFormsSelection = new Set();
+    if (window._sendFormsSelection.has(formId)) window._sendFormsSelection.delete(formId);
+    else window._sendFormsSelection.add(formId);
+    var count = window._sendFormsSelection.size;
+    var countEl = document.getElementById('sendFormsSelectedCount');
+    if (countEl) countEl.textContent = count + ' selected';
+    var btn = document.getElementById('sendFormsSubmitBtn');
+    if (btn) {
+        btn.disabled = count === 0;
+        btn.style.opacity = count === 0 ? '0.5' : '1';
+    }
+    var searchEl = document.getElementById('sendFormsSearch');
+    renderSendFormsList(searchEl ? searchEl.value.trim().toLowerCase() : '');
+}
+
+async function submitSendForms() {
+    var btn = document.getElementById('sendFormsSubmitBtn');
+    if (!btn) return;
+    var healthieId = btn.getAttribute('data-healthie-id');
+    var skipEmail = document.getElementById('sendFormsSkipEmail')?.checked;
+    var ids = Array.from(window._sendFormsSelection || []);
+    if (!healthieId || ids.length === 0) return;
+    if (!confirm('Send ' + ids.length + ' form' + (ids.length === 1 ? '' : 's') + ' to this patient?' + (skipEmail ? '\n(No email — queued for in-office only.)' : '\nHealthie will email the patient a link.'))) return;
+    btn.disabled = true; btn.textContent = 'Sending…'; btn.style.opacity = '0.7';
+    try {
+        var resp = await fetch('/ops/api/ipad/patient-chart/send-forms/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ healthie_patient_id: healthieId, form_ids: ids, skip_notification_email: !!skipEmail }),
+        });
+        var data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Send failed');
+        document.getElementById('sendFormsModal').remove();
+        var msg = data.message || ('Sent ' + (data.sent?.length || 0) + ' forms');
+        showToast(msg, data.errors && data.errors.length > 0 ? 'info' : 'success');
+        if (data.errors && data.errors.length > 0) {
+            console.warn('[send-forms] partial failure:', data.errors);
+        }
+        // Refresh chart so pending_forms list reflects the new requests
+        if (typeof reloadPatientChart === 'function') {
+            reloadPatientChart();
+        } else if (typeof openChartForPatient === 'function' && typeof chartPanelPatientId !== 'undefined' && chartPanelPatientId) {
+            openChartForPatient(chartPanelPatientId);
+        }
+    } catch (err) {
+        btn.disabled = false; btn.textContent = 'Send'; btn.style.opacity = '1';
+        alert('Could not send: ' + (err.message || err));
+    }
+}
+
 function launchKioskMode(patientId, healthieId, pendingForms, patientName) {
     // Parse forms if passed as string (from inline HTML attribute)
     if (typeof pendingForms === 'string') {
