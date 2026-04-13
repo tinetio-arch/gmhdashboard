@@ -698,6 +698,15 @@ export async function GET(request: NextRequest) {
             demographics.tags = hp.active_tags || [];
             demographics.user_group = hp.user_group?.name || '';
 
+            // Normalize Healthie avatar_url — Healthie returns the literal
+            // string "original/missing.png" (or other relative placeholders)
+            // when the patient has no uploaded avatar, which renders as a
+            // broken <img>. Treat anything that isn't an absolute http(s) URL
+            // as "no avatar". 2026-04-13.
+            const isRealAvatar = (u: any) => typeof u === 'string' && /^https?:\/\//i.test(u) && !/missing\.png$/i.test(u);
+            const cleanAvatar = isRealAvatar(hp.avatar_url) ? hp.avatar_url : null;
+            hp.avatar_url = cleanAvatar;
+
             // Sync key Healthie demographics back to local DB (fire-and-forget)
             // FIX(2026-04-09): Healthie is SOT — keep local DB in sync so DOB, phone, email aren't stale
             if (patient?.patient_id) {
