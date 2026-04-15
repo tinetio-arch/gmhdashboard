@@ -1,203 +1,122 @@
-## 🌐 NOW Optimal Websites & Brand System
-
-**Monorepo**: `/var/www/nowoptimal-websites/` (Git-managed)  
-**Standalone NowPrimary**: `/home/ec2-user/nowprimarycare-website/`  
-**Brand Data**: `/home/ec2-user/.tmp/brand-reports/` (JSON palette extractions)  
-**All sites**: Next.js + Tailwind CSS, served via Nginx reverse proxy
-
-### Website Portfolio
-
-| Site | Domain | Port | PM2 Name | Stack |
-|------|--------|------|----------|-------|
-| NOW Optimal (Hub) | nowoptimal.com | 3000 | `nowoptimal` | Next.js |
-| NOW Primary Care | nowprimary.care | 3001 | `nowprimary` | Next.js |
-| NOW Men's Health | nowmenshealth.care | 3002 | `nowmenshealth` | Next.js |
-| NOW Mental Health | nowmentalhealth.care | 3003 | `nowmentalhealth` | Next.js |
-| ABX TAC | abxtac.com | 3009 | `abxtac-website` | Next.js (headless WooCommerce) |
-
-**Ecosystem Config**: `/var/www/nowoptimal-websites/ecosystem.config.js`  
-**Deploy Script**: `/var/www/nowoptimal-websites/deploy.sh`
-
-> [!WARNING]
-> There is a **standalone NowPrimary.Care** at `/home/ec2-user/nowprimarycare-website/` — this is the version with Healthie booking integration (8 appointment types, BookingWidget). The one in `/var/www/nowoptimal-websites/nowprimary-website/` is the older static version. Be careful which one you're editing.
-
-### Brand Color System (Extracted from Live Sites)
-
-#### NOW Optimal Network (Hub)
-| Role | Hex | CSS Variable | Description |
-|------|-----|-------------|-------------|
-| Primary | `#0C141D` | — | Dark navy background |
-| Secondary | `#00D4FF` | `--brand-cyan` | Cyan accent |
-| Surface | `#111827` | `--brand-surface` | Card/surface background |
-| Card | `#1F2937` | `--brand-card` | Elevated card background |
-| Purple | `#7C3AED` | `--brand-purple` | Feature accent |
-| Navy | `#0A0E1A` | `--brand-navy` | Deep dark background |
-
-#### NOW Men's Health
-| Role | Hex | CSS Variable | Description |
-|------|-----|-------------|-------------|
-| Primary | `#0A1118` | — | Dark background |
-| Brand Red | `#DC2626` | `--brand-red` | Primary action/accent |
-| Red Dark | `#B91C1C` | `--brand-red-dark` | Hover states |
-| Red Light | `#EF4444` | `--brand-red-light` | Highlights |
-| Gray | `#1A1A1A` | `--brand-gray` | Surface |
-| Black | `#000000` | `--brand-black` | Deep background |
-| White | `#FFFFFF` | `--brand-white` | Text/contrast |
-
-#### NOW Primary Care
-| Role | Hex | CSS Variable | Description |
-|------|-----|-------------|-------------|
-| Primary | `#060F6A` | — | Deep navy blue (logo) |
-| Green | `#00A550` | `--tw-gradient-from` | CTA gradient start |
-| Light Blue | `#E8F0F5` | — | Background / light surface |
-| Cyan | `#25C6CA` | — | Accent (from NOWOptimal logo) |
-
-#### ABX TAC (Peptide E-Commerce)
-| Role | Hex | CSS Variable | Description |
-|------|-----|-------------|-------------|
-| Primary BG | `#050505` | `--bg-primary` | Deep black background |
-| Secondary BG | `#0A0A0A` | `--bg-secondary` | Card/section background |
-| Green | `#3A7D32` | `--green-primary` | Primary accent, tactical green |
-| Green Dark | `#2D5A27` | `--green-dark` | Dosage bands, buttons |
-| Green Light | `#4CAF50` | `--green-light` | Highlights, badges |
-| Card BG | `#111111` | `--bg-card` | Elevated card surfaces |
-| Text White | `#FFFFFF` | — | Primary text |
-| Text Gray | `#D0D0D0` | — | Body text, descriptions |
-| Text Muted | `#999999` | — | Secondary text |
-| Fonts | Rajdhani (tactical) · Share Tech Mono (mono) · Inter (body) |
-
-#### Mobile App Chameleon Themes (from `themes.ts`)
-
-| Group ID | Brand | Primary | Background |
-|----------|-------|---------|------------|
-| `75522` | Men's Health | Red `#DC2626` | Black `#0A1118` |
-| `75523` | Primary Care | Navy `#1E3A5F` | Light `#F8FAFC` |
-
-### Website Directory Structure
-
-```
-/var/www/nowoptimal-websites/
-├── nowoptimal-website/     → Hub site (nowoptimal.com)
-│   └── app/                → page.tsx, layout.tsx, privacy/, terms/
-├── nowprimary-website/     → Static version (in monorepo)
-│   └── app/                → page.tsx + services/ + api/
-├── nowmenshealth-website/  → Men's Health site
-│   └── app/                → page.tsx, layout.tsx, privacy/, terms/
-├── nowmentalhealth-website/ → Mental Health site
-│   └── app/                → page.tsx, layout.tsx, privacy/, terms/
-├── ecosystem.config.js     → PM2 config (ports 3000-3003)
-├── deploy.sh               → Build + restart all sites
-└── scripts/                → Shared utilities
-
-/home/ec2-user/nowprimarycare-website/  → LIVE booking version
-├── app/
-│   ├── api/healthie/       → Booking API (slots + book)
-│   ├── book/               → Booking page
-│   ├── about/, contact/, services/
-│   └── page.tsx            → Homepage
-├── components/
-│   ├── BookingWidget.tsx    → Healthie slot picker + booking
-│   ├── HeroSection.tsx, FeaturesSection.tsx
-│   ├── ProviderSection.tsx, LocationSection.tsx
-│   ├── Header.tsx, Footer.tsx, CTASection.tsx
-│   └── booking/            → Additional booking components
-├── lib/
-│   └── healthie-booking.ts → Healthie GraphQL client
-└── .env.local              → API keys (HEALTHIE_API_KEY, etc.)
-
-/home/ec2-user/abxtac-website/         → ABX TAC peptide store [NEW Mar 2026]
-├── app/                               → Headless Next.js 14 (TypeScript + Tailwind)
-│   ├── page.tsx                       → Homepage (hero, peptide explainer, stacks)
-│   ├── shop/                          → 10 curated peptide stacks + à la carte
-│   ├── peptides/                      → Peptide therapy info, FAQ
-│   ├── about/                         → About, NOW Network links
-│   └── globals.css                    → Dark tactical theme
-├── components/                        → Header (wellness banner), Footer
-├── lib/woocommerce.ts                 → WooCommerce REST API client
-├── public/abxtac-logo-white.png       → Brand logo
-├── .env.local                         → WooCommerce API keys (TBD)
-└── Port: 3009                         → Nginx split: /* → Next.js, /wp-* → WordPress
-```
-
-### NowPrimary.Care Healthie Booking Integration
-
-**Provider**: Phil Schafer, NP (`12088269`)  
-**Location ID**: `27565` (404 S. Montezuma, Prescott, AZ 86303)  
-**Phone**: (928) 756-0070
-
-| Appointment Type | Healthie ID | Duration | Price |
-|-----------------|-------------|----------|-------|
-| Sick Visit In-Person | `504715` | 30m | Custom |
-| Sick Visit Telehealth | `505646` | 30m | Custom |
-| Sports Physical | `504718` | 30m | $50 |
-| TB Test | `504741` | 15m | $35 |
-| Wound Care | `504716` | 30m | Custom |
-| Weight Loss Consult | `504717` | 45m | Custom |
-| Allergy Injection | `505648` | 15m | $25 |
-| IV Therapy GFE | `505647` | 60m | Custom |
-
-**Booking API Flow**:
-```
-BookingWidget → /api/healthie/slots (GET) → lib/healthie-booking.ts
-  → Healthie GraphQL: availableSlotsForRange(provider_id, appt_type_id)
-BookingWidget → /api/healthie/book (POST) → createClient + createAppointment
+# Website health check (every 5 min)
+*/5 * * * * /home/ec2-user/scripts/website-monitor.sh >> /home/ec2-user/logs/website-monitor.log 2>&1
 ```
 
 > [!IMPORTANT]
-> Do NOT pass `appointment_location_id` to `availableSlotsForRange` — it causes a field error. Only pass `provider_id` and `appointment_type_id`.
+> **Cron uses MST** on this server (`/etc/localtime` → `America/Phoenix`). Use MST hours directly — do NOT convert from UTC.
 
-> [!WARNING]
-> **Appointment Type Pricing CLEARED (March 31, 2026)**
-> All 22 appointment types that had pricing values ($50–$450) were cleared to prevent Healthie from auto-generating invoices when patients are booked. This was discovered after patient Jacob McKenney was auto-charged $180 on top of his $140/month subscription when booked into "Male HRT Follow-Up - Telehealth".
->
-> **Root cause**: Healthie's `pricing` field on appointment types triggers automatic `requested_payment` creation (invoice_type: "appointment") when a patient is booked. This is native Healthie behavior — not controlled by our code.
->
-> **Rule**: Do NOT set pricing on appointment types unless you intentionally want Healthie to auto-invoice patients at booking. Subscription billing should be handled through offerings/packages, not appointment type pricing.
+**Monitored Services**:
+- `gmh-dashboard` - Main Next.js app
+- `telegram-ai-bot-v2` - Jarvis data query bot
+- `upload-receiver` - Scribe audio receiver
+- `email-triage` - AI email routing
+- `ghl-webhooks` - GHL integration
+- `jessica-mcp` - GHL MCP server
 
-### Website Redesign — March 26, 2026 (Editorial Style)
+**Alerts Sent**:
+- 🔴 **Service Down**: When any service status ≠ "online"
+- ✅ **Service Recovered**: When previously-down service comes back
+- 🔄 **Crash Loop**: When restart count > 5
+- 🔥 **High CPU**: When CPU load > 80%
+- 💾 **High Memory**: When memory usage > 85%
 
-> **Scope**: NowMentalHealth.Care, NowPrimary.Care, NowOptimal.com all redesigned to match an editorial, photography-driven style inspired by Recovery in the Pines. Consistent brand identity across all 3 sites.
+**Webhook Health Monitoring** (via `uptime-monitor` PM2 service):
+- Checks every 60 seconds via system-health API
+- **Threshold**: Warning only when `pending > 50` webhooks (normal queue is <30)
+- **Grace period**: 10 minutes of continuous degradation before alerting
+- **"Payment alerts" warning**: Only shown for actual `error` status (no webhooks in 24h+)
+- **Recovery messages**: Only sent if an alert was actually fired (no noise from grace-period clears)
 
-**Design System (shared across all 3 sites):**
-- **Fonts**: Playfair Display (serif, headings) + Inter (sans, body) via `next/font/google`
-- **Layout**: Full-bleed hero images with overlays, journey/path sections, service cards with photos, dark testimonial sections, side-by-side content with images, dark navy footers
-- **Photography**: Unsplash images (free commercial use) stored in `public/images/`
-- **Light Theme**: All sites use light cream/white backgrounds with dark text
-- **Responsive**: Mobile-first, glass-morphism sticky headers, mobile hamburger menus
+**Resource Thresholds**:
+- CPU: 80% (based on load avg / cores)
+- Memory: 85%
+- Alerts have cooldown - only fire once until recovered
 
-| Site | Background | Primary Accent | Button Dark | Footer | Status |
-|------|-----------|---------------|------------|--------|--------|
-| NowMentalHealth.Care | `#FBF7F4` cream | `#C2703E` terracotta | `#2D3A4A` navy | `#2D3A4A` navy | ✅ Live |
-| NowPrimary.Care | `#F8FAFC` slate | `#00A550` green | `#060F6A` navy | `#060F6A` navy | ✅ Live |
-| NowOptimal.com | `#F8FAFC` slate | `#0891B2` teal | `#0A0E1A` navy | `#0A0E1A` navy | ✅ Live |
+**Daily Reports** (8:00 AM MST):
+- **Morning Report** (8:00 AM): Patient overview, revenue, appointments via `morning-telegram-report.ts`
+- **Infrastructure Monitor** (8:30 AM): System stats, Snowflake health, AWS costs via `unified_monitor.py`
 
-**NowMentalHealth.Care** — `/home/ec2-user/nowmentalhealth-website/`
-- Port: 3003, PM2: `nowmentalhealth-website`
-- 11 visit types (no Spravato), real pricing in BookingWidget
-- Terracotta warm color scheme, emotional photography
-- Services: Initial Consult (Free), Therapy ($150), Medication Management ($99), Ketamine Consult (Free), Ketamine IV ($450), Group Screening (Free), Group Session ($75), Psychiatric Follow-Up Telehealth ($75)
+**Jarvis Bot System Queries**:
+Ask the Telegram bot anytime:
+- `/status` or `server status` or `system status`
+- `cpu usage` / `memory usage` / `disk usage`
+- `how's the server` / `check server`
 
-**NowPrimary.Care** — `/home/ec2-user/nowprimarycare-website/`
-- Port: 3008, PM2: `nowprimary-website`
-- Navy/green color scheme, Healthie booking integration preserved
-- Full editorial redesign with photos, journey section, service spotlights
+Response includes CPU %, memory %, disk %, swap, PM2 service count, and uptime with color-coded indicators.
 
-**NowOptimal.com** — `/home/ec2-user/nowoptimal-website/`
-- Port: 3007, PM2: `nowoptimal-website`
-- Teal/gold accents on light background (was dark theme)
-- Brand hub linking to all sub-brands with colored accent bars
-- No booking — just brand navigation and network overview
+**Testing the Monitor**:
+```bash
+# Manual run
+cd /home/ec2-user && python3 scripts/monitoring/health_monitor.py
 
-**Files changed per site**: layout.tsx, globals.css, tailwind.config, page.tsx, Header.tsx, Footer.tsx, public/images/*
+# Simulate outage (will trigger alert in ~5 min)
+pm2 stop telegram-ai-bot-v2
+# Wait for alert, then restart
+pm2 start telegram-ai-bot-v2
+```
 
-**PM2 Port Corrections** (actual live ports differ from old SOT):
-| PM2 Name | Actual Port | Nginx Proxy |
-|----------|-------------|-------------|
-| nowmentalhealth-website | 3003 | nowmentalhealth.care |
-| nowmenshealth-website | 3004 | nowmenshealth.care |
-| nowoptimal-website | 3007 | nowoptimal.com |
-| nowprimary-website | 3008 | nowprimary.care |
-| abxtac-website | 3009 | abxtac.com |
+**Fix History**:
+- **Jan 1, 2026**: Fixed cron log path from `/var/log/` (permission denied) to `/home/ec2-user/logs/`
+- **Jan 1, 2026**: Added CPU/memory monitoring with Telegram alerts (80%/85% thresholds)
+- **Jan 1, 2026**: Added daily system stats to morning report
+- **Jan 1, 2026**: Added Jarvis query capability (`/status`, `cpu usage`, etc.)
 
 ---
 
+## 🔧 OPERATIONAL PROCEDURES
+
+### Build & Deploy to Production
+
+**Standard Deployment**:
+```bash
+# 1. Verify preconditions
+df -h /                                    # Check disk space (>2GB free)
+pwd                                        # Should be /home/ec2-user/gmhdashboard
+pm2 describe gmh-dashboard | grep cwd     # Verify working directory
+
+# 2. Stop application
+pm2 stop gmh-dashboard
+
+# 3. Clean build artifacts
+rm -rf .next
+
+# 4. Install dependencies (if package.json changed)
+npm install
+
+# 5. Build production bundle
+npm run build
+# Look for "Exit code: 0" at end (ignore TS warnings if ignoreBuildErrors: true)
+
+# 6. Start application
+pm2 start gmh-dashboard
+# OR if deleted: pm2 start npm --name "gmh-dashboard" -- run start
+
+# 7. Save PM2 state
+pm2 save
+
+# 8. Verify deployment
+curl -I http://localhost:3011/ops/        # Should: 307 redirect to /ops/login/
+pm2 logs gmh-dashboard --lines 10         # Should: show "next start" (not "next dev")
+curl -I https://nowoptimal.com/ops/       # Test public URL
+
+# 9. Monitor for errors
+pm2 logs gmh-dashboard --lines 50
+```
+
+**Emergency Recovery** (if completely broken):
+```bash
+pm2 stop gmh-dashboard
+cd /home/ec2-user/gmhdashboard
+rm -rf .next node_modules/.cache
+npm install
+npm run build
+pm2 start gmh-dashboard
+pm2 logs gmh-dashboard --lines 50
+```
+
+### Nginx Configuration Changes
+
+**Edit config**:
+```bash
+sudo nano /etc/nginx/conf.d/nowoptimal.conf
+```

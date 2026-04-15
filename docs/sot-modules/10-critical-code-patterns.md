@@ -1,306 +1,238 @@
-## 🧩 CRITICAL CODE PATTERNS
+- S3 storage: ~$1/month (500MB)
+- **Total**: ~$135/month (use pdf-parse instead of Textract to save $30)
 
-### Patient Search — ALWAYS Use Healthie API (MANDATORY)
+**Status**: Planning complete, ready for implementation (4 weeks)
+**Location**: `/home/ec2-user/.gemini/antigravity/brain/.../document_automation_plan.md`
 
-**Problem**: The local PostgreSQL `patients` table only contains patients that have been manually linked. Many Healthie patients don't exist in the local DB. Searching the local DB for patient selection will miss most patients.
+### Access Labs API Integration ✅ ACTIVE (Jan 2026)
 
-**Rule**: Any UI that lets a user pick a patient (scheduling, messaging, new conversation, scribe, etc.) **MUST search Healthie directly** via the `users(keywords:)` GraphQL query. Never search only the local `patients` table for user-facing patient pickers.
+**Purpose**: Direct API integration with Access Medical Labs for real-time lab result retrieval and review.
 
-**Correct pattern** (search Healthie users):
-```typescript
-// ✅ CORRECT — finds ALL Healthie patients
-const data = await healthieGraphQL<{
-    users: Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null }>;
-}>(`
-    query SearchUsers($keywords: String!) {
-        users(keywords: $keywords, offset: 0, page_size: 20) {
-            id first_name last_name email
-        }
-    }
-`, { keywords: searchTerm });
-```
+**API Credentials** (stored in `~/.env.production`):
+- `ACCESS_LABS_USERNAME`: pschafer@nowoptimal.com
+- `ACCESS_LABS_PASSWORD`: (encrypted)
+- **Base URL**: `https://api.accessmedlab.com/apigateway/`
 
-**Wrong pattern** (local DB only):
-```typescript
-// ❌ WRONG — misses patients not in local DB
-const patients = await query('SELECT * FROM patients WHERE full_name ILIKE $1', [`%${search}%`]);
-```
-
-**The returned `id` from Healthie `users` is the Healthie User ID.** Use this ID for:
-- `createAppointment(input: { user_id: ... })`
-- `createConversation(input: { simple_added_users: ... })`
-- `createNote(input: { conversation_id: ... })` (conversation IDs are separate)
-- Any other Healthie mutation that references a patient
-
-**Existing endpoint**: `POST /api/ipad/messages/` with `action: 'search_patients'` already implements this correctly and can be reused from any frontend tab.
-
-### Inactive Patient Status Guard (MANDATORY — April 1, 2026)
-
-> [!CAUTION]
-> **NEVER change an inactive patient's status to active, hold, or any other status. Inactive is a deliberate clinical/administrative decision. Only a human admin can reverse it via direct database access.**
-
-**Code enforcement**: `lib/patientQueries.ts` → `updatePatient()` checks current `status_key` before any UPDATE. If the patient is `inactive` and the new status is anything other than `inactive`, the function throws an error.
-
-**Rules:**
-1. **No automated process** (cron, webhook, AI agent) may change `inactive` → any other status
-2. **No dashboard user** (read/write role) may change `inactive` → any other status via the UI
-3. **Only direct DB access** by an admin can reactivate a patient
-4. If you encounter an inactive patient during a batch operation, **skip them silently**
-
-### Healthie GraphQL Type Rules (MANDATORY)
-
-**Problem**: Healthie's GraphQL schema uses `String` (not `ID`) for most mutation input fields. Using `ID!` causes silent type-mismatch failures.
-
-**Rule**: Always check input field types via schema introspection before writing mutations. Common gotchas:
-- `createNote` → `conversation_id: String` (NOT `ID`)
-- `createConversation` → `simple_added_users: String` (NOT `ID`)
-- `createAppointment` → `user_id: String`, `other_party_id: String`, `appointment_type_id: String`
-- `createAppointment` does NOT accept `length` or `pm_status` (removed from schema as of March 2025)
-- `appointmentTypes` query: `is_visible` field does not exist (use `clients_can_book`)
-- `conversationMemberships`: does NOT accept `conversation_id` or `provider_scope` args
-- `Conversation` type: `includes_provider` field does not exist
-- To fetch messages for a conversation, use top-level `notes(conversation_id:)` query
-- Healthie dates are `"2026-03-25 11:11:36 -0700"` format — Safari cannot parse this; normalize to ISO 8601 before `new Date()`
-
-**Contact type values** (exact strings required):
-- `"In Person"` (NOT "In-Person")
-- `"Phone Call"`
-- `"Secure Videochat"` (NOT "Telehealth")
-- `"Healthie Video Call"`
-
-### Base Path Usage (MANDATORY)
-
-**Problem**: App runs at `/ops` prefix, not root `/`
-
-**Solution**: Use helpers from `lib/basePath.ts`
-
-**Client-side fetch (MUST use withBasePath)**:
-```typescript
-import { withBasePath } from '@/lib/basePath';
-
-// ❌ WRONG - will 404
-fetch('/api/admin/quickbooks/sync', { method: 'POST' });
-
-// ✅ CORRECT
-fetch(withBasePath('/api/admin/quickbooks/sync'), { method: 'POST' });
-```
-
-**Building public redirect URLs**:
-```typescript
-// In API routes (OAuth callback, etc.)
-function getPublicUrl(path: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://nowoptimal.com';
-  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
-  return `${baseUrl}${basePath}${path}`;
-}
-
-// ❌ WRONG - creates localhost URLs
-return NextResponse.redirect(new URL('/admin/quickbooks', request.url));
-
-// ✅ CORRECT
-return NextResponse.redirect(getPublicUrl('/admin/quickbooks?success=true'));
-```
-
-**Server components & <Link>** (automatic):
-```tsx
-// These work automatically (Next.js handles basePath):
-import Link from 'next/link';
-<Link href="/admin/quickbooks">QuickBooks</Link>  // ✅ Works
-
-import { redirect } from 'next/navigation';
-redirect('/login');  // ✅ Works
-```
-
-### React Hydration Prevention
-
-**Problem**: Browser extensions inject scripts, causing SSR/client mismatch
-
-**Solution**: Client-side rendering guard
-
-```typescript
-'use client';
-import { useState, useEffect } from 'react';
-
-export default function MyForm() {
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  // Return placeholder during SSR
-  if (!mounted) {
-    return <div style={{ minHeight: '300px' }} />;
-  }
-
-  // Render actual content only on client
-  return <form>...</form>;
-}
-```
-
-### Type-Safe Data Formatting
-
-**Problem**: API responses sometimes return numbers as strings
-
-**Solution**: Defensive formatting
-
-```typescript
-// ❌ UNSAFE - crashes if val is string
-function formatCurrency(val: number): string {
-  return `$${val.toFixed(2)}`;
-}
-
-// ✅ SAFE
-function formatCurrency(val: number | string | null | undefined): string {
-  const num = Number(val);
-  return Number.isFinite(num) ? `$${num.toFixed(2)}` : '$0.00';
-}
-
-function formatNumber(val: number | string | null | undefined): string {
-  const num = Number(val);
-  return Number.isFinite(num) ? num.toLocaleString() : '0';
-}
-```
-
-### UTC Date Formatting (Hydration-Safe)
-
-**Problem**: `toLocaleString()` varies by server/client timezone
-
-**Solution**: UTC-based formatter
-
-```typescript
-function safeDateFormat(dateInput: string | Date | null | undefined): string {
-  if (!dateInput) return 'N/A';
-  
-  try {
-    const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
-    if (isNaN(d.getTime())) return 'Invalid Date';
-    
-    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(d.getUTCDate()).padStart(2, '0');
-    const yyyy = d.getUTCFullYear();
-    
-    return `${mm}-${dd}-${yyyy}`;
-  } catch {
-    return 'Error';
-  }
-}
-```
-
-### Healthie Rate Limiting (MANDATORY — Feb 19, 2026)
-
-> [!CAUTION]
-> **Healthie rate limits are CREDENTIAL-BASED (API) and IP-BASED (portal). Once triggered, ALL access fails for 30-60+ minutes. VPN does NOT help for API bans. There is NO workaround except waiting.**
-
-**Two types of rate limits:**
-
-| Type | Scope | Trigger | Duration | Affects |
-|------|-------|---------|----------|--------|
-| **API** | API key | 39+ rapid GraphQL requests | 30-60 min | All API calls with that key |
-| **Portal/Website** | IP address | Rapid browser requests to `secure.gethealthie.com` | 30-60 min | Browser access from server |
-
-**Incident (Feb 18, 2026)**: AI assistant's browser subagent opened Healthie portal pages repeatedly on the **local workstation** while debugging errors, triggering an IP-based ban on `secure.gethealthie.com` from the user's local IP (not the EC2 server). Ban persisted 24+ hours — may require Healthie support to lift.
-
-**Mandatory Rules:**
-
-1. **NEVER** use raw `fetch()` for Healthie GraphQL — use one of:
-   - `HealthieClient` (automatically rate-limited via `lib/healthieRateLimiter.ts`)
-   - `healthieGraphQL()` from `lib/healthieApi.ts` (standalone wrapper)
-2. **NEVER** open Healthie portals (`secure.gethealthie.com`) in browser automation tools unless absolutely necessary
-3. **For batch scripts**: Always add `await healthieRateLimiter.acquire()` before each request
-4. **For new API routes**: Import from `@/lib/healthieApi` instead of hardcoding fetch calls
-
-**Rate Limiter Utility** (`lib/healthieRateLimiter.ts`):
-- Token-bucket: 5 requests/second (well under 250/s limit)
-- Queue-based: requests wait their turn, never dropped
-- 429 auto-backoff: 60-second pause on HTTP 429
-- Singleton: one limiter per process, all callers share it
-
-```typescript
-// In HealthieClient — already integrated, no action needed
-// graphql() method calls healthieRateLimiter.acquire() before every request
-
-// For standalone API routes — use the shared wrapper:
-import { healthieGraphQL } from '@/lib/healthieApi';
-
-const data = await healthieGraphQL<{ users: User[] }>(
-  `query { users(offset: 0, limit: 10) { id first_name } }`
-);
-
-// For batch scripts — acquire manually:
-import { healthieRateLimiter } from '@/lib/healthieRateLimiter';
-
-for (const item of items) {
-  await healthieRateLimiter.acquire();
-  await fetch(...);
-}
-```
-
-**Key Files:**
+**Scripts** (`/home/ec2-user/scripts/labs/`):
 | File | Purpose |
 |------|---------|
-| `lib/healthieRateLimiter.ts` | Token-bucket singleton (5 req/s, 429 backoff) |
-| `lib/healthieApi.ts` | Shared `healthieGraphQL()` wrapper (auth + rate limit + errors) |
-| `lib/healthie.ts` | `HealthieClient.graphql()` — integrated with rate limiter |
+| `access_labs_client.py` | API client (auth, results, orders) |
+| `fetch_results.py` | Cron job - fetches new results every 30 min |
+| `generate_lab_pdf.py` | PDF generation using reportlab |
+| `lab_s3_storage.py` | S3 upload/download with presigned URLs |
+| `healthie_lab_uploader.py` | Uploads PDFs to Healthie patient charts |
 
-### Healthie GraphQL Performance Optimization (CRITICAL — March 13, 2026)
-
-> [!CAUTION]
-> **ALWAYS filter large datasets at the GraphQL query level, NOT client-side. Fetching all records and filtering in JavaScript causes massive performance issues.**
-
-**Incident (March 13, 2026)**: iPad schedule API was timing out after 45 seconds because it fetched ALL 4,970 appointments from Healthie (29.3s response time), then filtered client-side for the provider's appointments.
-
-**The Problem:**
-```typescript
-// ❌ WRONG — Fetches 4,970 appointments in 29 seconds, then filters client-side
-const query = `query {
-  appointments(filter: "all", should_paginate: false) {
-    id date provider { id full_name } user { id first_name last_name }
-  }
-}`;
-const response = await fetch(HEALTHIE_API_URL, { body: JSON.stringify({ query }) });
-const allAppointments = response.data.appointments;
-const filtered = allAppointments.filter(a => a.provider?.id === providerId); // Client-side filtering
+**Cron Schedule**: Every 30 minutes
+```cron
+*/30 * * * * cd /home/ec2-user/scripts/labs && /usr/bin/python3 fetch_results.py >> /var/log/access-labs.log 2>&1
 ```
 
-**The Solution:**
-```typescript
-// ✅ CORRECT — Fetches only 379 provider appointments in 3.3 seconds
-const query = `query GetAppointments($providerId: ID!) {
-  appointments(
-    filter: "all",
-    provider_id: $providerId,
-    should_paginate: false
-  ) {
-    id date provider { id full_name } user { id first_name last_name }
-  }
-}`;
-const variables = { providerId };
-const response = await fetch(HEALTHIE_API_URL, {
-  body: JSON.stringify({ query, variables })
-});
-// No client-side filtering needed!
+**Data Flow**:
+1. **Fetch**: Cron polls Access Labs API for new results
+2. **Match Patient**: Fuzzy match (Snowflake cache → Healthie direct search)
+3. **Generate PDF**: `generate_lab_pdf.py` creates professional PDF with critical value highlighting
+4. **Upload to S3**: `gmh-clinical-data-lake/labs/pending/{accession}_{name}.pdf`
+5. **Queue for Review**: Inserted into `lab_review_queue` PostgreSQL table (migrated from `data/labs-review-queue.json` on Feb 26, 2026)
+6. **Provider Review**: Dashboard at `/ops/labs` shows pending labs
+7. **Approve**: PDF uploaded to Healthie (initially hidden), then made visible on approval
+
+**Patient Matching Logic** (Updated March 4, 2026 — 3-Tier Pipeline):
+1. **Tier 1 (Postgres)**: Query local `patients` table for all patients with `healthie_client_id`, fuzzy match using `thefuzz` (token_sort_ratio ≥85%)
+2. **Tier 2 (Healthie API)**: Direct search via `users(keywords: "...")` GraphQL query, filter active patients, DOB confirmation
+3. **Tier 3 (Snowflake)**: Query `PATIENT_360_VIEW` as bonus/fallback if both above fail
+- **Name normalization**: `_normalize_name()` converts `BADILLA` → `Badilla`, `DOE, JOHN` → `John Doe`
+- **DOB normalization**: `_normalize_dob()` handles `MM/DD/YYYY`, `YYYY-MM-DD`, etc.
+
+> [!IMPORTANT]
+> **Previously** matching was Snowflake-only. If Snowflake was down, ALL matching silently returned 0%. The new Tier 1 (Postgres) is always available.
+
+**Zero-Results Alerting** (Added March 4, 2026):
+- State file: `/home/ec2-user/data/last-lab-results-seen.json`
+- Sends Telegram alert if no new lab results for **48+ hours**
+- Only fires once per drought period (resets when new results arrive)
+
+**Key Fields from Snowflake** (`GMH_CLINIC.PATIENT_DATA.PATIENT_360_VIEW`):
+- `HEALTHIE_CLIENT_ID` → used as `healthie_id`
+- `PATIENT_NAME` → fuzzy match target
+- `DATE_OF_BIRTH` → DOB boost for confidence
+
+**S3 Storage**:
+- **Bucket**: `gmh-clinical-data-lake`
+- **Pending**: `labs/pending/{accession}_{name}_{uuid}.pdf`
+- **Approved**: `labs/approved/{accession}_{name}_{uuid}.pdf`
+
+**Dashboard APIs** (`/app/api/labs/`):
+- `GET /api/labs/review-queue` - List pending reviews
+- `POST /api/labs/review-queue` - Approve/reject with Healthie upload
+- `GET /api/labs/pdf/[id]` - Serve PDF from S3 (presigned URL)
+
+**Critical Value Handling**:
+- Severity levels 1-5 based on test abnormality flags
+- Critical tests highlighted in PDF
+- Google Chat alert for severity ≥4
+
+### Service Health Monitoring (PM2)
+
+**Purpose**: Automatic monitoring of critical PM2 services with Telegram alerts on down/recovery.
+
+**Cron Schedule** (all times MST — cron runs in local timezone):
+```cron
+# Morning Telegram Report - 8:00am MST
+0 8 * * * /home/ec2-user/scripts/cron-alert.sh "Morning Report" "cd /home/ec2-user/gmhdashboard && npx tsx scripts/morning-telegram-report.ts"
+
+# Infrastructure Monitoring - 8:30am MST
+30 8 * * * /home/ec2-user/scripts/cron-alert.sh "Infrastructure Monitor" "/usr/bin/python3 /home/ec2-user/scripts/unified_monitor.py"
+
+# Website health check (every 5 min)
+*/5 * * * * /home/ec2-user/scripts/website-monitor.sh >> /home/ec2-user/logs/website-monitor.log 2>&1
 ```
 
-**Performance Impact:**
-| Method | Records Fetched | Response Time | Speed Improvement |
-|--------|----------------|---------------|-------------------|
-| ❌ Client-side filter | 4,970 appointments | 29.3 seconds | Baseline |
-| ✅ GraphQL `provider_id` filter | 379 appointments | 3.3 seconds | **9x faster** |
+> [!IMPORTANT]
+> **Cron uses MST** on this server (`/etc/localtime` → `America/Phoenix`). Use MST hours directly — do NOT convert from UTC.
 
-**GraphQL Parameters That Support Filtering:**
-- `appointments`: `provider_id`, `user_id`, `filter` (all/upcoming/past), date ranges
-- `users`: `include_all_organizations`, `active_status`, `dietitian_id`
-- `form_answer_groups`: `custom_module_form_id`, `finished`, `user_id`
-- `metric_entries`: `user_id`, `category`, date ranges
+**Monitored Services**:
+- `gmh-dashboard` - Main Next.js app
+- `telegram-ai-bot-v2` - Jarvis data query bot
+- `upload-receiver` - Scribe audio receiver
+- `email-triage` - AI email routing
+- `ghl-webhooks` - GHL integration
+- `jessica-mcp` - GHL MCP server
 
-**Golden Rule**: If Healthie API docs show a filter parameter exists, ALWAYS use it in the query rather than fetching everything.
+**Alerts Sent**:
+- 🔴 **Service Down**: When any service status ≠ "online"
+- ✅ **Service Recovered**: When previously-down service comes back
+- 🔄 **Crash Loop**: When restart count > 5
+- 🔥 **High CPU**: When CPU load > 80%
+- 💾 **High Memory**: When memory usage > 85%
 
-**Key Files:**
-| File | What Was Fixed |
-|------|----------------|
-| `app/api/ipad/schedule/route.ts` | Added `provider_id` GraphQL variable, removed client-side filtering |
-| `HEALTHIE_API_COMPLETE_REFERENCE.md` | Documents all supported Healthie GraphQL parameters |
+**Webhook Health Monitoring** (via `uptime-monitor` PM2 service):
+- Checks every 60 seconds via system-health API
+- **Threshold**: Warning only when `pending > 50` webhooks (normal queue is <30)
+- **Grace period**: 10 minutes of continuous degradation before alerting
+- **"Payment alerts" warning**: Only shown for actual `error` status (no webhooks in 24h+)
+- **Recovery messages**: Only sent if an alert was actually fired (no noise from grace-period clears)
+
+**Resource Thresholds**:
+- CPU: 80% (based on load avg / cores)
+- Memory: 85%
+- Alerts have cooldown - only fire once until recovered
+
+**Daily Reports** (8:00 AM MST):
+- **Morning Report** (8:00 AM): Patient overview, revenue, appointments via `morning-telegram-report.ts`
+- **Infrastructure Monitor** (8:30 AM): System stats, Snowflake health, AWS costs via `unified_monitor.py`
+
+**Jarvis Bot System Queries**:
+Ask the Telegram bot anytime:
+- `/status` or `server status` or `system status`
+- `cpu usage` / `memory usage` / `disk usage`
+- `how's the server` / `check server`
+
+Response includes CPU %, memory %, disk %, swap, PM2 service count, and uptime with color-coded indicators.
+
+**Testing the Monitor**:
+```bash
+# Manual run
+cd /home/ec2-user && python3 scripts/monitoring/health_monitor.py
+
+# Simulate outage (will trigger alert in ~5 min)
+pm2 stop telegram-ai-bot-v2
+# Wait for alert, then restart
+pm2 start telegram-ai-bot-v2
+```
+
+**Fix History**:
+- **Jan 1, 2026**: Fixed cron log path from `/var/log/` (permission denied) to `/home/ec2-user/logs/`
+- **Jan 1, 2026**: Added CPU/memory monitoring with Telegram alerts (80%/85% thresholds)
+- **Jan 1, 2026**: Added daily system stats to morning report
+- **Jan 1, 2026**: Added Jarvis query capability (`/status`, `cpu usage`, etc.)
 
 ---
 
+## 🔧 OPERATIONAL PROCEDURES
+
+### Build & Deploy to Production
+
+**Standard Deployment**:
+```bash
+# 1. Verify preconditions
+df -h /                                    # Check disk space (>2GB free)
+pwd                                        # Should be /home/ec2-user/gmhdashboard
+pm2 describe gmh-dashboard | grep cwd     # Verify working directory
+
+# 2. Stop application
+pm2 stop gmh-dashboard
+
+# 3. Clean build artifacts
+rm -rf .next
+
+# 4. Install dependencies (if package.json changed)
+npm install
+
+# 5. Build production bundle
+npm run build
+# Look for "Exit code: 0" at end (ignore TS warnings if ignoreBuildErrors: true)
+
+# 6. Start application
+pm2 start gmh-dashboard
+# OR if deleted: pm2 start npm --name "gmh-dashboard" -- run start
+
+# 7. Save PM2 state
+pm2 save
+
+# 8. Verify deployment
+curl -I http://localhost:3011/ops/        # Should: 307 redirect to /ops/login/
+pm2 logs gmh-dashboard --lines 10         # Should: show "next start" (not "next dev")
+curl -I https://nowoptimal.com/ops/       # Test public URL
+
+# 9. Monitor for errors
+pm2 logs gmh-dashboard --lines 50
+```
+
+**Emergency Recovery** (if completely broken):
+```bash
+pm2 stop gmh-dashboard
+cd /home/ec2-user/gmhdashboard
+rm -rf .next node_modules/.cache
+npm install
+npm run build
+pm2 start gmh-dashboard
+pm2 logs gmh-dashboard --lines 50
+```
+
+### Nginx Configuration Changes
+
+**Edit config**:
+```bash
+sudo nano /etc/nginx/conf.d/nowoptimal.conf
+```
+
+**Test & reload**:
+```bash
+sudo nginx -t                  # Test config syntax
+sudo systemctl reload nginx    # Apply changes (no downtime)
+# OR
+sudo systemctl restart nginx   # Full restart (brief downtime)
+```
+
+**Key sections**:
+```nginx
+# Force trailing slash on /ops
+location = /ops {
+    return 301 /ops/;
+}
+
+# Proxy to Next.js (preserve /ops prefix)
+location /ops/ {
+    proxy_pass http://127.0.0.1:3011;   # NO trailing slash here
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection 'upgrade';
+    proxy_set_header Host $host;
+    proxy_cache_bypass $http_upgrade;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+### MANDATORY: iPad + Mobile App Sync (April 2026)

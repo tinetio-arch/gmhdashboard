@@ -1,3 +1,7 @@
+| 24 | [System Access Credentials](#system-access-credentials-updated-feb-19-2026) | 4930+ | Login URLs and credential references |
+
+---
+
 ## 📍 QUICK ORIENTATION
 
 ### What is This System?
@@ -24,7 +28,3 @@
 ### Admin Access
 - **Dashboard URL**: `https://nowoptimal.com/ops/`
 - **Admin Email**: `admin@nowoptimal.com`
-- **Admin Password**: (see `.env.local`)
-
----
-

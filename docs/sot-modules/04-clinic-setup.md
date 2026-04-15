@@ -1,3 +1,7 @@
+| uptime-monitor | python3 | - | Real-time PM2/Website Monitoring |
+
+---
+
 ## 🏥 CLINIC SETUP (DEEP DIVE JAN 2026)
 
 ### Locations
@@ -29,7 +33,3 @@
 | **Pelleting Client** | `75977` | **Default** | HIPAA, Consent, AI, Medical History |
 
 > [!WARNING]
-> **Pellet vs Injection Rule**: EvexiPel Pellets are **ONLY** done at Primary Care (Montezuma). Testosterone Injections are done at Men's Health (McCormick). **Do not send injection patients to Montezuma.**
-
----
-

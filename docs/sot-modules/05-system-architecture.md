@@ -1,3 +1,7 @@
+> **Pellet vs Injection Rule**: EvexiPel Pellets are **ONLY** done at Primary Care (Montezuma). Testosterone Injections are done at Men's Health (McCormick). **Do not send injection patients to Montezuma.**
+
+---
+
 ## 📊 SYSTEM ARCHITECTURE
 
 ### Technology Stack
@@ -123,61 +127,4 @@
 | fax-processor | N/A | ✅ | Incoming fax processor (S3 → Google Chat + Dashboard) |
 | uptime-monitor | N/A | ✅ | PM2 service + website health monitoring |
 | abxtac-website | 3009 | ✅ | ABX TAC peptide e-commerce (abxtac.com) — headless Next.js + WooCommerce |
-
-**Essential PM2 Commands:**
-```bash
-# Start a service (CORRECT way)
-pm2 start /home/ec2-user/ecosystem.config.js --only <service-name>
-
-# Restart after code changes (SAFE - preserves env vars if started from ecosystem)
-pm2 restart <service-name>
-
-# Check status
-pm2 list
-
-# View logs
-pm2 logs <service-name> --lines 50
-
-# ALWAYS save after changes
-pm2 save
-```
-
-> [!WARNING]
-> **AFTER PM2 UPDATES / `pm2 update` / SYSTEM REBOOT — USE THIS PROCEDURE:**
->
-> PM2 updates can lose process env vars (like PORT). If services restart without their PORT env var, Next.js defaults to **port 3000**, causing 502 errors and EADDRINUSE cascading failures.
->
-> **Correct restart procedure:**
-> ```bash
-> # 1. Stop all services
-> pm2 stop all
->
-> # 2. Delete all processes (clears stale state)
-> pm2 delete all
->
-> # 3. Start ALL services from ecosystem config (restores PORT env vars)
-> pm2 start /home/ec2-user/ecosystem.config.js
->
-> # 4. Wait 10 seconds, verify all online
-> sleep 10 && pm2 list
->
-> # 5. Save the process list
-> pm2 save
-> ```
->
-> **If a single service is down:**
-> ```bash
-> pm2 delete <service-name>
-> pm2 start /home/ec2-user/ecosystem.config.js --only <service-name>
-> pm2 save
-> ```
->
-> **NEVER** use `pm2 start npm -- start` directly — it won't have PORT or NODE_ENV set.
-
-> [!CAUTION]
-> **Port Conflict Incidents:**
-> - **Jan 28, 2026**: `nowprimary-website` and `nowmenshealth-website` reached **34,000+ restarts** — ad-hoc start without restart limits, port conflicts caused infinite CPU meltdown.
-> - **Mar 4, 2026**: After PM2 update, `gmh-dashboard` lost PORT=3011 env var → started on 3000 → **502 Bad Gateway**. `nowoptimal-website` also tried 3000 → EADDRINUSE. `jessica-mcp` failed because `psycopg2` wasn't installed for python3.11. **Fix**: delete ad-hoc processes, restart from ecosystem config.
-
----
 

@@ -1,46 +1,46 @@
-## 📚 REFERENCE: FILE LOCATIONS
+   ├→ Snowflake: Get visit history, lab dates (ANALYTICS - 6hr lag OK)
+   ├→ Healthie API: Get forms completion status (REAL-TIME)
+   ├→ GHL API: Get tags, custom fields (REAL-TIME)
+   └→ Bedrock AI: Summarize for natural conversation
+    ↓
+3. Return combined context to Jessica (<2 sec)
+    ↓
+Jessica: "Hi Sarah! I see you're due for your annual physical..."
+```
 
-### Configuration Files
-- **Next.js**: `next.config.js` (trailingSlash, basePath, typescript ignore)
-- **Env**: `.env.local` (all secrets)
-- **PM2**: `/home/ec2-user/ecosystem.config.js` (process definitions — root level)
-- **Nginx**: `/etc/nginx/conf.d/nowoptimal.conf` (reverse proxy)
-- **TypeScript**: `tsconfig.json` (TS compiler config)
-- **Package**: `package.json` (dependencies, scripts)
+**Patient Workflows** (Auto-triggered via Healthie):
+- **Sick Visit**: Urgent care intake forms
+- **Primary Care**: Annual exam paperwork
+- **Pelleting**: Hormone pellet therapy forms
+- **Weight Loss**: GLP-1/weight management intake
+- **Men's Health**: TRANSFER to NOW Men's Health clinic
 
-### Key Source Files
-- **Auth**: `lib/auth.ts` (sessions, cookies, roles)
-- **Database**: `lib/db.ts` (Postgres pool)
-- **Base Path**: `lib/basePath.ts` (withBasePath, getBasePath)
-- **QuickBooks**: `lib/quickbooks.ts` (API client)
-- **Healthie**: `lib/healthie.ts` (GraphQL client)
-- **Main Dashboard**: `app/page.tsx` (composite data aggregation)
-- **Layout**: `app/layout.tsx` (navigation, auth check)
+**GHL ↔ Healthie Sync**:
+- Patient created in GHL → GHL custom field `healthie_patient_id` stored
+- Patient created in Healthie → Postgres `healthie_clients` table updated
+- Appointment booked → GHL workflow triggered (SMS confirmation)
+- Forms completed in Healthie → GHL tag updated (`paperwork_complete`)
 
-### OAuth Routes (NEW Dec 28)
-- **Initiation**: `app/api/auth/quickbooks/route.ts`
-- **Callback**: `app/api/auth/quickbooks/callback/route.ts`
+**GHL ↔ Postgres Sync**:
+- **Source of Truth**: Postgres for all patient IDs
+- **GHL Field**: `ghl_contact_id` stored in Postgres `patients` table
+- **Healthie ID**: `healthie_client_id` stored in Postgres `healthie_clients` table
+- **Critical**: MCP server MUST query Postgres first, NOT Snowflake (6hr lag)
 
-### Scribe System (NEW Dec 25-27)
-**Location**: `/home/ec2-user/scripts/scribe/` (ROOT level, not in gmhdashboard)
-- **Orchestrator**: `/home/ec2-user/scripts/scribe/scribe_orchestrator.py`
-- **Telegram UI**: `/home/ec2-user/scripts/scribe/telegram_approver.py`
-- **Document Gen**: `/home/ec2-user/scripts/scribe/document_generators.py`
-- **Prompts**: `/home/ec2-user/scripts/scribe/prompts_config.yaml`
-- **Receiver**: `/home/ec2-user/scripts/scribe/upload_receiver.js` (PM2 service)
-- **Docs**: `/home/ec2-user/scripts/scribe/{SETUP,SAFETY_GUIDE,PROMPT_CUSTOMIZATION}.md`
+**GHL Workflows Required** (Must be created in GHL UI - API doesn't support workflow creation):
+| Workflow Name | Trigger | Action | Target Number |
+|---------------|---------|--------|---------------|
+| Transfer to Front Desk | Tag `transfer_front_desk` added | Forward Call | +1 (928) 277-0001 |
+| Transfer to Men's Health | Tag `transfer_mens_health` added | Forward Call | +1 (928) 212-2772 |
+| SMS Appointment Confirmation | Appointment Created | Send SMS | (Patient phone) |
 
-### Sync Scripts
-- **Healthie Ops**: `scripts/sync-healthie-ops.js` (every 6 hours)
-- **Healthie Invoices**: `scripts/sync-healthie-invoices.ts`
-- **Healthie Providers**: `scripts/sync-healthie-providers.ts`
-- **Billing Items**: `scripts/ingest-healthie-financials.ts`
-- **Scribe Sync**: `scripts/scribe/healthie_snowflake_sync.py` (hourly)
 
-### Documentation
-- **This file**: `ANTIGRAVITY_SOURCE_OF_TRUTH.md` (master reference)
-- **Copilot**: `.github/copilot-instructions.md` (GitHub Copilot specific)
-- **README**: Various MD files in root (architecture, deployment, etc.)
-
----
-
+**Files & Locations**:
+```
+/home/ec2-user/gmhdashboard/scripts/ghl-integration/
+├── webhook-server.js          # Express server for custom actions (port 3001)
+├── ghl-client.js               # GHL API wrapper
+├── JESSICA_AI_AGENT.md         # Jessica documentation
+├── JESSICA_GHL_PROMPT.md       # Copy-paste prompt for GHL
+├── JESSICA_QUICK_REFERENCE.md  # Quick decision trees
+├── YOUR_GHL_CONFIG.md          # ngrok URL and setup

@@ -1,211 +1,178 @@
-## 🔍 TROUBLESHOOTING
 
-### ⚠️ Node.js / npx Does NOT Work on This Server
+> **CRITICAL**: The staff app exists in TWO locations that MUST stay in sync:
+> - **iPad**: `public/ipad/app.js` + `public/ipad/style.css` → served at `nowoptimal.com/ops/ipad/`
+> - **Mobile**: `public/mobile/app.js` + `public/mobile/style.css` → served at `nowoptimal.com/mobile/`
+>
+> **After ANY change to `public/ipad/app.js`**, run:
+> ```bash
+> bash scripts/sync-mobile.sh
+> ```
+> This ONLY copies `app.js`. The mobile `style.css` and `index.html` are **phone-optimized and SEPARATE** — do NOT overwrite them.
+>
+> **NEVER edit `public/mobile/app.js` directly** — always edit `public/ipad/app.js` and sync.
+> **NEVER copy `public/ipad/style.css` to `public/mobile/style.css`** — they are different files optimized for different screen sizes.
+> Incident: April 9, 2026 — 28 features built on iPad but mobile was running March 18 code. Then CSS was incorrectly synced, breaking the phone layout.
 
-**Symptom**: Running `node -e "..."` or `npx tsx ...` hangs indefinitely or produces no output.
+### iPad app.js — Search Input Focus Loss Pattern (April 2026)
 
-**Cause**: The EC2 instance's Node.js installation is unreliable for ad-hoc CLI scripting. `npx` commands frequently hang.
+> **CRITICAL PATTERN**: When building search/filter UIs in `public/ipad/app.js`, NEVER re-render the entire modal innerHTML on each keystroke. This destroys and recreates the `<input>` element, causing focus loss — the user can only type one character at a time.
+>
+> **Correct pattern**: Build a static shell (header + search input) once, then only re-render the dynamic content (product grid, results list) into a child `<div>` using `getElementById().innerHTML`. Attach the `input` event listener via `addEventListener()` AFTER the element exists in the DOM.
+>
+> **Example** (from ship-to-patient peptide browser):
+> ```javascript
+> // Static shell with persistent input
+> modal.innerHTML = `<div id="search-container"><input id="my-search" /></div><div id="results"></div>`;
+> document.getElementById('my-search').addEventListener('input', (e) => renderResults(e.target.value));
+> function renderResults(query) {
+>     document.getElementById('results').innerHTML = /* filtered results */;
+> }
+> ```
+>
+> This pattern applies to ALL search modals in the iPad app. Incidents: patient name search (Feb 2026), peptide product search (Apr 2026).
 
-**Solution**: **Use Python instead** for all ad-hoc scripts, database queries, and one-off tasks:
+### PM2 Operations
+
+**Check process status**:
 ```bash
-# ❌ DON'T — hangs or crashes
-node -e "const fs = require('fs'); console.log(fs.readFileSync('file.txt','utf8'))"
-npx tsx script.ts
-
-# ✅ DO — works reliably
-python3 -c "print(open('file.txt').read())"
-python3 script.py
+pm2 list                                 # All processes
+pm2 describe gmh-dashboard               # Detailed info
+pm2 logs gmh-dashboard --lines 50        # Recent logs
+pm2 monit                                # Real-time monitoring
 ```
 
-> **Note**: Node.js works fine inside PM2-managed services (gmh-dashboard, telegram-ai-bot, etc.) and for `npm run build`. It's only the ad-hoc CLI usage that hangs.
-
-### Dashboard Not Accessible
-
-**Symptom**: `https://nowoptimal.com/ops/` returns error
-
-**Check**:
+**Restart specific service**:
 ```bash
-# 1. Is PM2 running?
-pm2 list
-# Should show: gmh-dashboard (online)
-
-# 2. Is Next.js responding?
-curl -I http://localhost:3011/ops/
-# Should: 307 redirect to /ops/login/
-
-# 3. Is Nginx running?
-sudo systemctl status nginx
-# Should: active (running)
-
-# 4. Check PM2 logs
-pm2 logs gmh-dashboard --lines 50
-# Look for: errors, "next start", port 3011
-
-# 5. Check Nginx logs
-sudo tail -50 /var/log/nginx/error.log
+pm2 restart gmh-dashboard
+pm2 restart telegram-ai-bot-v2
+pm2 restart upload-receiver
 ```
 
-**Common fixes**:
-- PM2 stopped: `pm2 start gmh-dashboard`
-- Build corrupted: See "Emergency Recovery" above
-- Nginx misconfigured: `sudo nginx -t` then fix errors
-
-### QuickBooks OAuth 404
-
-**Symptom**: `/ops/api/auth/quickbooks/` returns 404
-
-**Check**:
+**Save state** (persist after reboot):
 ```bash
-# 1. Do route files exist?
-ls -la app/api/auth/quickbooks/route.ts
-ls -la app/api/auth/quickbooks/callback/route.ts
-# Should: both exist
-
-# 2. Is build up-to-date?
-ls -la .next/server/app/api/auth/quickbooks/
-# Should: route.js exists
-
-# 3. Test route
-curl -I http://localhost:3011/ops/api/auth/quickbooks/
-# Should: 307 redirect to appcenter.intuit.com
+pm2 save
+pm2 startup                              # Generate startup script
 ```
 
-**Fix**: Rebuild application (`npm run build && pm2 restart gmh-dashboard`)
+**Current services**:
+- `gmh-dashboard` (port 3011) - Next.js dashboard
+- `telegram-ai-bot-v2` - Conversational AI for data queries
+- `upload-receiver` (port 3001) - Scribe audio file receiver
+- `ghl-webhooks` (port 3003) - GoHighLevel integration
+- `jessica-mcp` (port 3002) - MCP server
+- `email-triage` - AI email routing
+- `fax-processor` - Incoming fax processor
+- `nowprimary-website` (port 3004) - Primary Care site
+- `nowmenshealth-website` (port 3005) - Men's Health site
+- `nowoptimal-website` (port 3008) - NowOptimal parent site
+- `abxtac-website` (port 3009) - ABX TAC peptide e-commerce (abxtac.com)
+- `uptime-monitor` - PM2 service and website health monitoring
 
-### iPad "Connection Failed" on POST Requests (308 Redirect)
+### Environment Variables
 
-**Symptom**: iPad Safari shows "connection failed" when submitting SOAP notes or other POST requests
+**Location**: `/home/ec2-user/gmhdashboard/.env.local`
 
-**Cause**: Next.js `trailingSlash: true` returns HTTP 308 when a POST request lacks a trailing slash. iPad Safari drops the POST body during the 308 redirect, causing the request to fail silently on the client side. No server-side errors appear in logs because the request never reaches the route handler.
-
-**Fix**: Always include trailing slashes in client-side `fetch()` URLs for POST endpoints:
-```typescript
-// ❌ WRONG — triggers 308 redirect, iPad drops POST body
-fetch(`${basePath}/api/scribe/submit-to-healthie`, { method: 'POST', ... });
-
-// ✅ CORRECT — goes directly to the route, no redirect
-fetch(`${basePath}/api/scribe/submit-to-healthie/`, { method: 'POST', ... });
-```
-
-**History**: Same bug class as the Jan 28, 2026 Healthie webhook 308 fix (line 1593). Fixed in ScribeClient.tsx on March 24, 2026 for all 4 POST endpoints (transcribe, generate-note, generate-doc, submit-to-healthie).
-
-### Redirect Loop (ERR_TOO_MANY_REDIRECTS)
-
-**Symptom**: Browser shows "redirected too many times"
-
-**Check**:
+**Critical vars**:
 ```bash
-# 1. Verify trailingSlash setting
-grep trailingSlash next.config.js
-# Should: trailingSlash: true
+# Next.js
+NEXT_PUBLIC_BASE_PATH=/ops
+NODE_ENV=production
 
-# 2. Test redirect behavior
-curl -I http://localhost:3011/ops
-# Should: 308 redirect to /ops/
+# Healthie
+HEALTHIE_API_KEY=gh_live_...
+HEALTHIE_API_URL=https://api.gethealthie.com/graphql
+NEXT_PUBLIC_HEALTHIE_TOKEN=gh_live_...   # For client components
 
-curl -I http://localhost:3011/ops/
-# Should: 307 redirect to /ops/login/ (or 200 if logged in)
+# QuickBooks
+QUICKBOOKS_CLIENT_ID=...
+QUICKBOOKS_CLIENT_SECRET=...
+QUICKBOOKS_REDIRECT_URI=https://nowoptimal.com/ops/api/auth/quickbooks/callback
+QUICKBOOKS_ENVIRONMENT=production
+QUICKBOOKS_REALM_ID=9130349088183916
 
-# 3. Check Nginx config
-grep -A5 "location = /ops" /etc/nginx/conf.d/nowoptimal.conf
-# Should: return 301 /ops/;
+# Database
+DATABASE_HOST=clinic-pg.cbkcu8m4geoo.us-east-2.rds.amazonaws.com
+DATABASE_PORT=5432
+DATABASE_NAME=postgres
+DATABASE_USER=clinicadmin
+DATABASE_PASSWORD=...
+DATABASE_SSLMODE=require
+
+# Snowflake (use JARVIS_SERVICE_ACCOUNT — key-pair auth)
+SNOWFLAKE_ACCOUNT=KXWWLYZ-DZ83651
+SNOWFLAKE_SERVICE_USER=JARVIS_SERVICE_ACCOUNT
+SNOWFLAKE_PRIVATE_KEY_PATH=/home/ec2-user/.snowflake/rsa_key_new.p8
+SNOWFLAKE_WAREHOUSE=GMH_WAREHOUSE
+SNOWFLAKE_DATABASE=GMH_CLINIC
+SNOWFLAKE_SCHEMA=FINANCIAL_DATA
+# NOTE: Old user 'tinetio123' is blocked by MFA — do NOT use password auth
+
+# Auth
+SESSION_SECRET=...                       # HMAC signing key
+
+# Telegram (for bots)
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+TELEGRAM_AUTHORIZED_CHAT_IDS=...
+
+# AWS (for Scribe)
+AWS_REGION=us-east-1
+ANTHROPIC_API_KEY=...
+DEEPGRAM_API_KEY=...
 ```
 
-**Fix**: Ensure `trailingSlash: true` in `next.config.js`, rebuild
-
-### Disk Space Full
-
-**Symptom**: npm commands fail silently, builds corrupt
-
-**Check**:
+**After changing env vars**:
 ```bash
-df -h /
-# Usage should be <90%
+pm2 restart gmh-dashboard
+# PM2 reloads .env.local automatically
 ```
-
-**Clean**:
-```bash
-# npm logs (often 100s of MB)
-rm -rf ~/.npm/_logs/*
-
-# Old PM2 logs
-find ~/.pm2/logs -name "*.log" -mtime +7 -delete
-
-# Docker (if not using)
-sudo docker system prune -f
-```
-
-**Expand** (if needed):
-```bash
-# AWS Console → EC2 → Volumes → Modify → Increase size → Save
-# Then on server:
-sudo growpart /dev/nvme0n1 1
-sudo xfs_growfs -d /
-df -h /
-```
-
-### Scribe System Not Processing
-
-**Symptom**: Audio uploaded but no Telegram messages
-
-**Check**:
-```bash
-# 1. Is receiver running?
-pm2 list | grep upload-receiver
-# Should: online
-
-# 2. Check receiver logs
-pm2 logs upload-receiver --lines 20
-
-# 3. Check scribe logs
-tail -50 /tmp/scribe_orchestrator.log
-tail -50 /tmp/scribe_document_generation.log
-
-# 4. Test Telegram bot
-cd /home/ec2-user/scripts/scribe
-python3 -c "import telegram; bot = telegram.Bot(token='$TELEGRAM_BOT_TOKEN'); print(bot.get_me())"
-# Should: show bot info
-```
-
-**Common fixes**:
-- Receiver crashed: `pm2 restart upload-receiver`
-- Missing env vars: Check `scripts/scribe/.env`
-- Telegram token invalid: Verify with BotFather
-
-### Snowflake Sync Failing
-
-**Symptom**: Stale data in Metabase dashboards
-
-**Check**:
-```bash
-# 1. Check last sync
-tail -50 /home/ec2-user/logs/snowflake-sync.log
-# Look for: "✅ SYNC COMPLETE", errors
-
-# 2. Test Snowflake connection (use key-pair auth)
-python3 << 'EOF'
-import snowflake.connector
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
-with open('/home/ec2-user/.snowflake/rsa_key_new.p8', 'rb') as f:
-    p_key = serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
-pkb = p_key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
-conn = snowflake.connector.connect(
-    account='KXWWLYZ-DZ83651',
-    user='JARVIS_SERVICE_ACCOUNT',
-    private_key=pkb,
-    warehouse='GMH_WAREHOUSE',
-    database='GMH_CLINIC'
-)
-print("Connected:", conn.cursor().execute("SELECT CURRENT_USER()").fetchone())
-EOF
-
-# 3. Run manual sync
-cd /home/ec2-user
-node scripts/sync-healthie-ops.js
-```
-
-**Fix**: Check env vars, verify Snowflake credentials, review sync logs
 
 ---
 
+## 🧩 CRITICAL CODE PATTERNS
+
+### Patient Search — ALWAYS Use Healthie API (MANDATORY)
+
+**Problem**: The local PostgreSQL `patients` table only contains patients that have been manually linked. Many Healthie patients don't exist in the local DB. Searching the local DB for patient selection will miss most patients.
+
+**Rule**: Any UI that lets a user pick a patient (scheduling, messaging, new conversation, scribe, etc.) **MUST search Healthie directly** via the `users(keywords:)` GraphQL query. Never search only the local `patients` table for user-facing patient pickers.
+
+**Correct pattern** (search Healthie users):
+```typescript
+// ✅ CORRECT — finds ALL Healthie patients
+const data = await healthieGraphQL<{
+    users: Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null }>;
+}>(`
+    query SearchUsers($keywords: String!) {
+        users(keywords: $keywords, offset: 0, page_size: 20) {
+            id first_name last_name email
+        }
+    }
+`, { keywords: searchTerm });
+```
+
+**Wrong pattern** (local DB only):
+```typescript
+// ❌ WRONG — misses patients not in local DB
+const patients = await query('SELECT * FROM patients WHERE full_name ILIKE $1', [`%${search}%`]);
+```
+
+**The returned `id` from Healthie `users` is the Healthie User ID.** Use this ID for:
+- `createAppointment(input: { user_id: ... })`
+- `createConversation(input: { simple_added_users: ... })`
+- `createNote(input: { conversation_id: ... })` (conversation IDs are separate)
+- Any other Healthie mutation that references a patient
+
+**Existing endpoint**: `POST /api/ipad/messages/` with `action: 'search_patients'` already implements this correctly and can be reused from any frontend tab.
+
+### Inactive Patient Status Guard (MANDATORY — April 1, 2026)
+
+> [!CAUTION]
+> **NEVER change an inactive patient's status to active, hold, or any other status. Inactive is a deliberate clinical/administrative decision. Only a human admin can reverse it via direct database access.**
+
+**Code enforcement**: `lib/patientQueries.ts` → `updatePatient()` checks current `status_key` before any UPDATE. If the patient is `inactive` and the new status is anything other than `inactive`, the function throws an error.
+
+**Rules:**
+1. **No automated process** (cron, webhook, AI agent) may change `inactive` → any other status
+2. **No dashboard user** (read/write role) may change `inactive` → any other status via the UI
+3. **Only direct DB access** by an admin can reactivate a patient

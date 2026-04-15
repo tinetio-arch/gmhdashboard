@@ -1,227 +1,219 @@
-## 🔔 Alert & Notification System
 
-### AI Email Triage System
-**Inbox**: `hello@nowoptimal.com` (Google Workspace)  
-**Function**: AI-powered email classification and routing to appropriate Google Chat spaces
+### January 13, 2026 (AM): Staged Doses Bug Fixes & DEA Compliance Hardening
 
-#### Google Chat Spaces & Webhooks
 
-**1. NOW Ops & Billing**
-- **Webhook**: `https://chat.googleapis.com/v1/spaces/AAQAuw3Rvdc/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=DXw_3jUF-tpu-IVQuL2bPj0fC-GuHXJAbwOkKCjGrSA`
-- **Routes**: Billing/payments, insurance, claims, appointment no-shows/cancels, intake blockers
-- **Keywords**: billing, payment, insurance, authorization, claim, denial, no-show, cancel
+**Critical Bug Fixed: V0129 Over-Count**
+- **Issue**: V0129 showed 30ml (full) but had a 9.6ml staged dose deducted from it
+- **Cause**: Early failed staged dose attempts and race conditions from rapid clicking
+- **Fix**: Manually corrected V0129 to 20.4ml (30 - 9.6ml staged)
+- **Prevention**: Transaction-based operations with proper COMMIT/ROLLBACK
 
-**2. NOW Exec/Finance**
-- **Webhook**: `https://chat.googleapis.com/v1/spaces/AAQARw60cl0/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=m7E2GmVPaGoNE2mnYyvaRUiEtlRzv9crhs7LqvQmvA8`
-- **Routes**: KPIs, revenue, reconciliation, patient complaints, leadership decisions
-- **Keywords**: KPI, revenue, forecast, reconciliation, QuickBooks, complaint, executive
+**Patient Selector Modal for Generic Prefills**
+- **Old behavior**: Used JavaScript `prompt()` which was confusing
+- **New behavior**: Opens a modal with autocomplete patient search (same as Transactions page)
+- **File changed**: `app/inventory/StagedDosesManager.tsx`
 
-**3. NOW Patient Outreach**
-- **Webhook**: `https://chat.googleapis.com/v1/spaces/AAQAR7R9T3w/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=A8GwUsPKzf7JEqoMaMA0Ova1gqP98vnePcoSYY03N7A`
-- **Routes**: Retention, engagement, human follow-up needed
-- **Keywords**: retention, outreach, follow-up, engagement, membership, churn risk
+**Data Integrity Checks - Run This Query to Audit:**
+```sql
+-- Check for vials with staged doses that don't match remaining volume
+SELECT v.external_id, v.remaining_volume_ml,
+       sd.total_ml as staged_ml, sd.status
+FROM staged_doses sd
+JOIN vials v ON v.vial_id = sd.vial_id
+WHERE sd.status = 'staged';
 
-**4. NOW Clinical Alerts**
-- **Webhook**: `https://chat.googleapis.com/v1/spaces/AAQANhoAdgo/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=qmp8OHOsnK6mr9ERMnMX4Ejn2wLfYOwWO925dMBxFxI`
-- **Routes**: Lab results, vitals, medications, clinical follow-ups
-- **Keywords**: lab, vital, clinical, abnormal, out of range, medication, refill
-
-**Routing Logic**: AI analyzes email → classifies with confidence score → posts formatted card to appropriate space → tags suggested assignee
-**Goal**: Auto-upload lab results and imaging reports to Healthie patient charts
-
-**Sources Integrated**:
-1. **LabGen** (Lab Results)
-   - Portal: https://access.labsvc.net/labgen/
-   - Credentials: `pschafer` / `xSqQaE1232` ✅ Verified working
-   - Browser automation (Playwright)
-   - Downloads PDF reports every 15 minutes
-   
-2. **InteliPACS** (Imaging Reports)
-   - Portal: https://images.simonmed.com/Portal/app
-   - Credentials: `phil.schafer` / `Welcome123!` ✅ Verified working
-   - Browser automation (Playwright)
-   - Monitors "Critical" findings tab
-   - Downloads STAT priority reports
-
-**Architecture** (LabGen/InteliPACS → S3 → Snowflake → Healthie):
-1. **Browser Automation**: Playwright scripts poll both portals every 15 min
-2. **S3 Storage**: PDFs stored in `s3://gmh-documents/incoming/{labs|imaging}/`
-3. **Snowflake Middleware** (HIPAA-compliant tracking):
-   - `document_intake` - Ingestion tracking
-   - `patient_matches` - Name/DOB → Healthie patient_id mapping
-   - `ai_analysis_results` - Severity scores (1-5 scale)
-   - `alert_history` - De-duplication, anti-fatigue
-   - `audit_log` - Full HIPAA audit trail
-4. **AI Analysis**: Extract patient name/DOB, match to Healthie patient, analyze severity
-5. **Healthie Upload**: Auto-upload as "provider-only" (hidden from patient)
-6. **Smart Alerts**: Google Chat with tiered severity (prevent alert fatigue)
-
-**Alert Tiers** (Anti-Fatigue Strategy):
-- **Level 5 (Critical)**: Immediate Google Chat + Telegram (e.g., K+ >6.5, PE)
-- **Level 4 (Urgent)**: Immediate Google Chat (needs <3h attention)
-- **Level 3 (Significant)**: Hourly digest (same-day review)
-- **Level 2 (Important)**: Daily digest at 8am (24-48h follow-up)
-- **Level 1 (Informational)**: No alert, logged to Snowflake only
-
-**De-Duplication**: Snowflake tracks alert history - won't re-alert for same patient/finding in 24h
-
-**Patient Matching**:
-- Extract name/DOB from PDF (AWS Textract or pdf-parse)
-- Query Snowflake cache first
-- Fuzzy match against Healthie patients (Levenshtein distance)
-- Confidence ≥0.9 → auto-match, <0.7 → manual review queue
-- Cache matches in Snowflake for future speed
-
-**Cost Estimate**:
-- AWS Bedrock (AI analysis): ~$75/month (120 reports/day)
-- Snowflake (warehouse): ~$60/month (X-Small warehouse)
-- S3 storage: ~$1/month (500MB)
-- **Total**: ~$135/month (use pdf-parse instead of Textract to save $30)
-
-**Status**: Planning complete, ready for implementation (4 weeks)
-**Location**: `/home/ec2-user/.gemini/antigravity/brain/.../document_automation_plan.md`
-
-### Access Labs API Integration ✅ ACTIVE (Jan 2026)
-
-**Purpose**: Direct API integration with Access Medical Labs for real-time lab result retrieval and review.
-
-**API Credentials** (stored in `~/.env.production`):
-- `ACCESS_LABS_USERNAME`: pschafer@nowoptimal.com
-- `ACCESS_LABS_PASSWORD`: (encrypted)
-- **Base URL**: `https://api.accessmedlab.com/apigateway/`
-
-**Scripts** (`/home/ec2-user/scripts/labs/`):
-| File | Purpose |
-|------|---------|
-| `access_labs_client.py` | API client (auth, results, orders) |
-| `fetch_results.py` | Cron job - fetches new results every 30 min |
-| `generate_lab_pdf.py` | PDF generation using reportlab |
-| `lab_s3_storage.py` | S3 upload/download with presigned URLs |
-| `healthie_lab_uploader.py` | Uploads PDFs to Healthie patient charts |
-
-**Cron Schedule**: Every 30 minutes
-```cron
-*/30 * * * * cd /home/ec2-user/scripts/labs && /usr/bin/python3 fetch_results.py >> /var/log/access-labs.log 2>&1
+-- Count all Carrie Boyd vials
+SELECT 
+  COUNT(*) FILTER (WHERE remaining_volume_ml >= 29.9) as full_count,
+  COUNT(*) FILTER (WHERE remaining_volume_ml > 0 AND remaining_volume_ml < 29.9) as partial_count,
+  SUM(remaining_volume_ml) as total_ml
+FROM vials WHERE dea_drug_name LIKE '%30%';
 ```
 
-**Data Flow**:
-1. **Fetch**: Cron polls Access Labs API for new results
-2. **Match Patient**: Fuzzy match (Snowflake cache → Healthie direct search)
-3. **Generate PDF**: `generate_lab_pdf.py` creates professional PDF with critical value highlighting
-4. **Upload to S3**: `gmh-clinical-data-lake/labs/pending/{accession}_{name}.pdf`
-5. **Queue for Review**: Inserted into `lab_review_queue` PostgreSQL table (migrated from `data/labs-review-queue.json` on Feb 26, 2026)
-6. **Provider Review**: Dashboard at `/ops/labs` shows pending labs
-7. **Approve**: PDF uploaded to Healthie (initially hidden), then made visible on approval
+**Known Issues & Lessons Learned:**
+1. **Rapid clicking creates duplicates**: Users clicking "Save Prefill" multiple times creates multiple staged doses
+   - Solution: Add loading state to disable button after first click (already implemented)
+2. **Database transactions are critical**: All inventory changes MUST be in a transaction
+3. **PostgreSQL type inference**: Always use explicit casts (::uuid, ::numeric) for parameterized queries
+4. **NULL vial_id in early attempts**: Some staged doses have NULL vial_id from before we added vial tracking
+   - These are harmless (status='discarded') but show up in audits
+5. **Morning check math**: System expects = (Full vials × 30ml) + partial vials - staged doses
 
-**Patient Matching Logic** (Updated March 4, 2026 — 3-Tier Pipeline):
-1. **Tier 1 (Postgres)**: Query local `patients` table for all patients with `healthie_client_id`, fuzzy match using `thefuzz` (token_sort_ratio ≥85%)
-2. **Tier 2 (Healthie API)**: Direct search via `users(keywords: "...")` GraphQL query, filter active patients, DOB confirmation
-3. **Tier 3 (Snowflake)**: Query `PATIENT_360_VIEW` as bonus/fallback if both above fail
-- **Name normalization**: `_normalize_name()` converts `BADILLA` → `Badilla`, `DOE, JOHN` → `John Doe`
-- **DOB normalization**: `_normalize_dob()` handles `MM/DD/YYYY`, `YYYY-MM-DD`, etc.
+**Inventory Reconciliation Formula:**
+```
+Physical vials in storage = System vial total - (staged doses in syringes)
 
-> [!IMPORTANT]
-> **Previously** matching was Snowflake-only. If Snowflake was down, ALL matching silently returned 0%. The new Tier 1 (Postgres) is always available.
-
-**Zero-Results Alerting** (Added March 4, 2026):
-- State file: `/home/ec2-user/data/last-lab-results-seen.json`
-- Sends Telegram alert if no new lab results for **48+ hours**
-- Only fires once per drought period (resets when new results arrive)
-
-**Key Fields from Snowflake** (`GMH_CLINIC.PATIENT_DATA.PATIENT_360_VIEW`):
-- `HEALTHIE_CLIENT_ID` → used as `healthie_id`
-- `PATIENT_NAME` → fuzzy match target
-- `DATE_OF_BIRTH` → DOB boost for confidence
-
-**S3 Storage**:
-- **Bucket**: `gmh-clinical-data-lake`
-- **Pending**: `labs/pending/{accession}_{name}_{uuid}.pdf`
-- **Approved**: `labs/approved/{accession}_{name}_{uuid}.pdf`
-
-**Dashboard APIs** (`/app/api/labs/`):
-- `GET /api/labs/review-queue` - List pending reviews
-- `POST /api/labs/review-queue` - Approve/reject with Healthie upload
-- `GET /api/labs/pdf/[id]` - Serve PDF from S3 (presigned URL)
-
-**Critical Value Handling**:
-- Severity levels 1-5 based on test abnormality flags
-- Critical tests highlighted in PDF
-- Google Chat alert for severity ≥4
-
-### Service Health Monitoring (PM2)
-
-**Purpose**: Automatic monitoring of critical PM2 services with Telegram alerts on down/recovery.
-
-**Cron Schedule** (all times MST — cron runs in local timezone):
-```cron
-# Morning Telegram Report - 8:00am MST
-0 8 * * * /home/ec2-user/scripts/cron-alert.sh "Morning Report" "cd /home/ec2-user/gmhdashboard && npx tsx scripts/morning-telegram-report.ts"
-
-# Infrastructure Monitoring - 8:30am MST
-30 8 * * * /home/ec2-user/scripts/cron-alert.sh "Infrastructure Monitor" "/usr/bin/python3 /home/ec2-user/scripts/unified_monitor.py"
-
-# Website health check (every 5 min)
-*/5 * * * * /home/ec2-user/scripts/website-monitor.sh >> /home/ec2-user/logs/website-monitor.log 2>&1
+Example:
+- System shows: 35 full (1050ml) + V0129 (20.4ml) + V0165 (8ml) = 1078.4ml in vials
+- Plus staged: 9.6ml in syringes
+- Total controlled substance: 1088ml
 ```
 
-> [!IMPORTANT]
-> **Cron uses MST** on this server (`/etc/localtime` → `America/Phoenix`). Use MST hours directly — do NOT convert from UTC.
-
-**Monitored Services**:
-- `gmh-dashboard` - Main Next.js app
-- `telegram-ai-bot-v2` - Jarvis data query bot
-- `upload-receiver` - Scribe audio receiver
-- `email-triage` - AI email routing
-- `ghl-webhooks` - GHL integration
-- `jessica-mcp` - GHL MCP server
-
-**Alerts Sent**:
-- 🔴 **Service Down**: When any service status ≠ "online"
-- ✅ **Service Recovered**: When previously-down service comes back
-- 🔄 **Crash Loop**: When restart count > 5
-- 🔥 **High CPU**: When CPU load > 80%
-- 💾 **High Memory**: When memory usage > 85%
-
-**Webhook Health Monitoring** (via `uptime-monitor` PM2 service):
-- Checks every 60 seconds via system-health API
-- **Threshold**: Warning only when `pending > 50` webhooks (normal queue is <30)
-- **Grace period**: 10 minutes of continuous degradation before alerting
-- **"Payment alerts" warning**: Only shown for actual `error` status (no webhooks in 24h+)
-- **Recovery messages**: Only sent if an alert was actually fired (no noise from grace-period clears)
-
-**Resource Thresholds**:
-- CPU: 80% (based on load avg / cores)
-- Memory: 85%
-- Alerts have cooldown - only fire once until recovered
-
-**Daily Reports** (8:00 AM MST):
-- **Morning Report** (8:00 AM): Patient overview, revenue, appointments via `morning-telegram-report.ts`
-- **Infrastructure Monitor** (8:30 AM): System stats, Snowflake health, AWS costs via `unified_monitor.py`
-
-**Jarvis Bot System Queries**:
-Ask the Telegram bot anytime:
-- `/status` or `server status` or `system status`
-- `cpu usage` / `memory usage` / `disk usage`
-- `how's the server` / `check server`
-
-Response includes CPU %, memory %, disk %, swap, PM2 service count, and uptime with color-coded indicators.
-
-**Testing the Monitor**:
-```bash
-# Manual run
-cd /home/ec2-user && python3 scripts/monitoring/health_monitor.py
-
-# Simulate outage (will trigger alert in ~5 min)
-pm2 stop telegram-ai-bot-v2
-# Wait for alert, then restart
-pm2 start telegram-ai-bot-v2
-```
-
-**Fix History**:
-- **Jan 1, 2026**: Fixed cron log path from `/var/log/` (permission denied) to `/home/ec2-user/logs/`
-- **Jan 1, 2026**: Added CPU/memory monitoring with Telegram alerts (80%/85% thresholds)
-- **Jan 1, 2026**: Added daily system stats to morning report
-- **Jan 1, 2026**: Added Jarvis query capability (`/status`, `cpu usage`, etc.)
+**Files for DEA Compliance Audit:**
+- `/home/ec2-user/gmhdashboard/docs/SOP-Inventory-Check.md` - Staff procedure
+- `/home/ec2-user/gmhdashboard/docs/SOP-PreFilled-Doses.md` - Prefill procedure
+- PDFs available at: `nowoptimal.com/ops/menshealth/`
 
 ---
 
+### January 12, 2026: Pre-Filled (Staged) Doses System
+
+**Purpose**: Allow staff to pre-fill syringes the night before for patients coming in the next day. This improves efficiency while maintaining DEA compliance and accurate inventory tracking.
+
+**Database Table**: `staged_doses`
+- Tracks all prefilled syringes with patient info, dose details, and status
+- Links to `vials` table (which vial was used) and `dea_transactions` (audit trail)
+- Status values: `staged` (waiting to be used), `dispensed` (given to patient), `discarded` (removed/wasted)
+
+**API Endpoints**:
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/staged-doses` | GET | Fetch all staged doses |
+| `/api/staged-doses` | POST | Create new prefilled dose (deducts inventory immediately) |
+| `/api/staged-doses?id=` | DELETE | Remove prefill and restore medication to vial |
+| `/api/staged-doses/use` | POST | Convert prefill to actual dispense (no double DEA entry) |
+
+**UI Component**: `app/inventory/StagedDosesManager.tsx`
+- Appears on both Inventory page (`/ops/inventory`) and Transactions page (`/ops/transactions`)
+- Shows list of staged doses with "✓ Use This" and "Remove" buttons
+- Form for creating new prefills (patient-specific or generic)
+
+**Workflow**:
+1. **Create Prefill** (night before):
+   - Staff selects patient (or "Generic" for walk-ins)
+   - Enters dose details: dose_ml, waste_ml, syringe_count
+   - System IMMEDIATELY deducts medication from a vial
+   - System creates DEA transaction marked as "STAGED PREFILL"
+   - Prefill appears in staged doses list
+
+2. **Use Prefill** (next day when patient arrives):
+   - Staff physically hands prefilled syringes to patient
+   - Clicks "✓ Use This" button on the staged dose
+   - System creates dispense record for the patient
+   - System updates existing DEA transaction (NO double entry)
+   - Prefill disappears from list
+
+3. **Remove Prefill** (if patient no-shows or prefill unused):
+   - Staff clicks "Remove" button
+   - System RESTORES medication to the original vial
+   - System marks DEA transaction as "[VOIDED - Prefill removed]"
+   - Inventory is fully restored
+
+**DEA Compliance**:
+- ✅ Medication is logged when prefilled (before physical dispense)
+- ✅ Single DEA entry per transaction (no double-counting)
+- ✅ Voids are documented with "[VOIDED]" note
+- ✅ Full audit trail from prefill → dispense or prefill → discard
+
+**Key Design Decisions**:
+- Inventory deducted at PREFILL time (not dispense time) - ensures physical syringes match logged inventory
+- DEA transaction created at prefill, updated at dispense - avoids duplicate entries
+- Vial external ID stored in staged_doses for traceability
+- All queries use explicit type casts (::uuid, ::numeric, etc.) to avoid PostgreSQL parameter inference issues
+
+**Files Changed**:
+- `app/api/staged-doses/route.ts` - GET/POST/DELETE for staged doses
+- `app/api/staged-doses/use/route.ts` - POST to convert staged → dispensed
+- `app/inventory/StagedDosesManager.tsx` - UI component
+- `app/inventory/page.tsx` - Added StagedDosesManager
+- `app/transactions/page.tsx` - Added StagedDosesManager
+- `lib/inventoryQueries.ts` - Added COALESCE for recorded_by fallback
+- `app/transactions/TransactionsTable.tsx` - Fixed to use total_dispensed_ml
+
+**Morning Check Update**:
+- Replaced "missed transactions" checkbox with a link to Transactions page
+- Staff can now click "→ Enter Prior Day Transactions" to open transactions page in new tab
+- More actionable than a simple checkbox
+
+### January 7, 2026: Payment Status & Merge UI Fixes
+
+**QuickBooks Payment Issue Auto-Status (FIX)**:
+- **Problem**: 142 patients had unresolved payment_declined issues but still showed "Active" status
+- **Root Cause**: Payment issues were being recorded in `payment_issues` table but patient status wasn't being updated
+- **Solution**: Ran bulk update to set all patients with unresolved payment issues to "Hold - Payment Research"
+- **Affected Table**: `patients` - updated `status_key` and `alert_status`
+
+**Merge Patients Auto-Refresh (FIX)**:
+- **Problem**: After merging duplicate patients, the UI didn't refresh and patients appeared to still exist
+- **Root Cause**: `router.refresh()` in Next.js App Router only does a soft refresh
+- **Solution**: Changed to `window.location.reload()` for full page reload after merge/resolve
+- **Files Changed**: `app/admin/membership-audit/SimplifiedAuditClient.tsx`
+
+**Note on Merged Patients**:
+- Merged patients are NOT deleted (for audit trail)
+- They're marked as `status_key = 'inactive'` and `alert_status = 'Inactive (Merged)'`
+- Filter by status to exclude merged patients from views
+
+### January 6, 2026: DEA Controlled Substance System Improvements
+
+**DEA Log Reconciliation (CRITICAL FIX)**:
+- **Problem**: System had 6.5 vials more than physical inventory, dispenses spread across multiple vials incorrectly
+- **Root Cause**: Initial reconciliation used flawed logic that didn't drain vials completely before moving to next
+- **Solution**: Rewrote reconciliation to use proper FIFO (First In, First Out) - each vial fully emptied before next
+- **Result**: 
+  - Carrie Boyd: 37 empty, 1 in-progress (6.8ml), 8 full = 36.8ml (1.23 vials)
+  - TopRX: 56 empty, 24 full = 240ml correct
+
+**Controlled Substance Inventory Checks (NEW FEATURE)**:
+- **Purpose**: DEA compliance - staff must verify physical inventory twice daily
+- **Database Table**: `controlled_substance_checks` (with `check_type` column: 'morning' or 'evening')
+- **Library**: `lib/controlledSubstanceCheck.ts`
+- **API Endpoint**: `/api/inventory/controlled-check`
+- **UI Component**: `app/inventory/MorningCheckForm.tsx`
+- **Check Types**:
+  | Type | Required for Dispensing? | Purpose |
+  |------|-------------------------|---------|
+  | Morning | ✅ YES - Blocks dispensing | DEA compliance - verify inventory before opening |
+  | EOD | ❌ NO - Optional | Audit trail - verify inventory at end of day |
+
+**Timezone Handling (IMPORTANT)**:
+- All date comparisons use **Mountain Time** (`America/Phoenix`), NOT UTC
+- PostgreSQL queries use: `(NOW() AT TIME ZONE 'America/Phoenix')::DATE`
+- This ensures EOD checks submitted after 5PM MST are recorded for TODAY, not tomorrow
+- Morning check requirement is based on local Mountain Time date, not server UTC
+
+**Discrepancy Threshold & Auto-Waste (NEW)**:
+- **Threshold**: Only differences >2ml trigger a "discrepancy" requiring explanation
+- **Auto-Waste**: Differences ≤2ml are auto-documented as "user waste" (needle dead-space, spillage)
+- **Example**: If system shows 50.4ml but staff counts 49.1ml (1.3ml difference), system auto-records as waste
+
+**Morning Telegram Report (NEW)**:
+- **Script**: `scripts/morning-telegram-report.ts`
+- **Cron Job**: `0 14 * * *` (7am MST = 2pm UTC)
+- **Contents**:
+  - System health status
+  - Yesterday's morning + EOD check status
+  - Current testosterone inventory levels
+  - Last 24hr dispensing activity
+  - Unsigned dispenses count
+  - Action items (missed checks, low stock, etc.)
+
+**Environment Variables Added**:
+```bash
+TELEGRAM_BOT_TOKEN=(see .env.local)
+TELEGRAM_CHAT_ID=7540038135
+```
+
+**Telegram DEA Commands**:
+| Command | Description |
+|---------|-------------|
+| `/dea` or `/inventory` or `/t` | Show current inventory status |
+| `/check cb:1,6.8 tr:24` | Record morning check (1 CB full + 6.8ml partial, 24 TopRX) |
+| `/dea-history` | View check history |
+
+**Frontend/Backend Validation**:
+- **Frontend**: Vial dropdown only shows vials with remaining > 0
+- **Backend**: API rejects dispenses from 0ml vials
+- **Morning Check Enforcement**: API blocks controlled substance dispensing until morning check completed
+- **Error**: "Daily controlled substance audit not completed..."
+
+**Staff Documentation**:
+- Created: `docs/STAFF_DISPENSING_GUIDE.md`
+- Comprehensive guide for staff on dispensing workflow
+- Explains morning + EOD checks, waste calculation, troubleshooting
+
+**Waste Calculation Verified**:
+- 0.1ml per syringe (needle dead-space)
+- 185.7ml total waste / 1,855 syringes = exactly 0.100 ml/syringe ✅
+
+---

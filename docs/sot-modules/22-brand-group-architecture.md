@@ -1,275 +1,269 @@
-## 🏢 Brand & Group Architecture (March 25, 2026 — Telehealth Restructure)
+| Fix | File | Description |
+|-----|------|-------------|
+| **Allergy Healthie Sync** | `app/api/ipad/patient-data/route.ts` | Allergies now sync to Healthie via `createAllergySensitivity` mutation (was local-only). Categories: allergy, intolerance, sensitivity, preference. |
+| **SQL Injection Fix** | `lambda-data-pipe-python/lambda_function.py` | Replaced f-string SQL with parameterized queries |
+| **Token Validation** | `lambda-booking/src/validate-token.js`, `lambda-ask-ai/src/validate-token.js` | Validates Bearer token via Healthie `currentUser` query. 5-min cache. |
+| **Auth Fail-Closed** | `lambda-auth-node/src/index.js` | Access-check failure now blocks login (was fail-open) |
+| **Lab-Status Auth** | `app/api/headless/lab-status/route.ts` | Added x-jarvis-secret requirement |
+| **Consent Hard Gate** | `mobile-app/src/screens/CartScreen.tsx` | Consent form MUST be signed before peptide checkout |
+| **Forgot Password** | `mobile-app/src/screens/ForgotPasswordScreen.tsx` | Custom password reset UI (generates password via updateClient, no Healthie email) |
+| **HealthKit Description** | `mobile-app/app.json` | Added NSHealthShareUsageDescription + NSHealthUpdateUsageDescription |
+| **CORS Restriction** | `infra/lib/headless-app-stack.js` | Changed ALL_ORIGINS to specific allowed domains |
+| **DB Migration** | `patient_allergies` table | Added `healthie_allergy_id` column |
+| **Token Refresh (401)** | `mobile-app/src/api.ts`, `AuthContext.tsx` | apiCall auto-detects 401/403 and triggers session expiry → force logout |
+| **Form Validation** | `mobile-app/src/screens/EditProfileScreen.tsx` | Email regex, phone auto-format (xxx) xxx-xxxx, DOB auto-format + past validation, state 2-char, ZIP 5-digit |
+| **Chat Image Removed** | `mobile-app/src/screens/ChatRoomScreen.tsx` | Removed camera button that was sending text placeholders instead of images |
+| **Rate Limiting** | `infra/lib/headless-app-stack.js` | Added API Gateway throttling: burst=50, rate=25 req/sec |
+| **Form Date Auto-Format** | `mobile-app/src/components/NativeFormRenderer.tsx` | Date fields now auto-format as MM/DD/YYYY with number-pad keyboard |
+| **Stripe Key Env Var** | `AddCardScreen.tsx`, `add-card.html` | Stripe publishable keys now configurable via env var / URL param |
+| **Theme Color Cleanup** | 7 React Native screens | Replaced ~30 hardcoded `#10B981`/`#22c55e` with `theme.colors.success` |
+| **Schedule Error Toast** | `public/ipad/app.js` | Shows "Schedule failed to load" warning when schedule fetch fails but other data loads |
+| **Orphaned CSS Removed** | `public/mobile/style.css` | Deleted unused 113KB file (index.html references versioned style.3c56a1c1.css) |
+| **PII Minimization** | `lambda-ask-ai/src/gemini.js`, `index.js` | Stripped EMAIL, PHONE from Gemini context; uses first name only instead of full name |
+| **Webhook Signatures** | `lambda-data-pipe-python/lambda_function.py` | Added HMAC-SHA256 signature verification (requires HEALTHIE_WEBHOOK_SECRET env var) |
+| **Debug Page Restricted** | `public/ipad/debug.html` | Admin-only access check — non-admin users see "Admin access required" |
+| **Demographics Fix (CRITICAL)** | `app/api/ipad/patient/[id]/demographics/route.ts` | Removed `height`, `weight`, `preferred_name` from Healthie updateClient mutation — these invalid fields caused entire mutation to fail silently. Demographics now sync to Healthie correctly. |
+| **Tier Discount Alignment** | `PeptideEducationScreen.tsx` | Fixed reversed discounts: heal=40%, optimize=30%, thrive=20% (was inverted) |
+| **Primary Care Tier Access** | `app/api/jarvis/peptide-eligibility/route.ts` | Primary Care patients now get default Heal tier (was Men's Health only) |
+| **Cart Dose Extraction** | `PeptideEducationScreen.tsx` | Cart items now show dose extracted from product name (was always empty) |
+| **PII Minimization** | `lambda-ask-ai/src/gemini.js`, `index.js` | Stripped EMAIL, PHONE from Gemini context |
 
-> [!IMPORTANT]
-> **This section is the MASTER REFERENCE for how brands, groups, appointment types, and telehealth work together.**
-> Previous group assignments treated services (Weight Loss, Pelleting) as groups. The new architecture treats BRANDS as groups and SERVICES as tags.
+### Healthie API Gotchas (CRITICAL)
 
-### Architecture Principle
+> **`client_id` vs `user_id`**: Healthie uses DIFFERENT argument names for the same patient ID. Using the wrong one **silently returns empty arrays**:
+> - `entries()`, `documents()`, `conversationMemberships()` → `client_id`
+> - `appointments()`, `requestedFormCompletions()` → `user_id`
+> - `user()` → `id`
 
-| Layer | Controls | Examples |
-|-------|----------|---------|
-| **Groups** | Brand identity, default onboarding forms, mobile app theme | Men's Health, Primary Care, Mental Health, Longevity, ABX TAC |
-| **Tags** | Service access, additional appointment types, cross-brand visibility | `pelleting`, `weight-loss`, `peptides`, `telehealth`, `iv-therapy` |
-| **Requested Form Completions** | Service-specific forms sent per appointment | Pelleting consent, Weight Loss agreement (triggered by booking) |
+> **Date Format**: Healthie returns `"2026-01-30 12:15:00 -0700"` — does NOT work with `new Date()`. Convert to ISO: `${parts[0]}T${parts[1]}${parts[2]}`
 
-**Key Rule**: A patient stays in their BRAND group. They get service-specific forms when they book service-specific appointments — NOT by moving between groups.
+> **GraphQL type quirk**: `$client_id: String` (NOT `ID`) for entries/metrics queries
 
-### Brand Registry (6 Brands)
+> **createFormAnswerGroup**: Must include `finished: true` or submission stays as draft
 
-| Brand | Domain | Healthie Group | Group ID | Primary Provider | Location | Mobile Theme |
-|-------|--------|---------------|----------|-----------------|----------|-------------|
-| **NOW Men's Health** | nowmenshealth.care | NowMensHealth.Care | `75522` | Dr. Aaron Whitten (12093125) | McCormick (13029260) | Red `#DC2626` |
-| **NOW Primary Care** | nowprimary.care | NowPrimary.Care | `75523` | Phil Schafer NP (12088269) | Montezuma (13023235) | Navy `#060F6A` |
-| **NOW Longevity** | nowlongevity.care | NowLongevity.Care | **TBD — CREATE** | Both providers | Both locations | Sage `#6B8F71` |
-| **NOW Mental Health** | nowmentalhealth.care | NowMentalHealth.Care | **TBD — CREATE** | TBD (hire pending) | McCormick (13029260) | Purple `#7C3AED` |
-| **ABX TAC** | abxtac.com | ABXTAC | **TBD — CREATE** | Dr. Whitten (12093125) | N/A (telehealth only) | Green `#3A7D32` |
-| **NOW Optimal Wellness** | Mobile app only | NowOptimalWellness | `81103` | Dr. Whitten (12093125) | McCormick (13029260) | Cyan `#00D4FF` |
+> **createEntry** (journal): Uses `poster_id` (NOT `user_id`) in input
 
-### Legacy Groups → Migration Plan (DO NOT EXECUTE WITHOUT APPROVAL)
-
-These groups currently exist but should be converted to **tags** on patients in their brand groups:
-
-| Legacy Group | ID | Patients | Migration Target | Tag to Apply |
-|-------------|------|----------|-----------------|-------------|
-| Weight Loss | 75976 | 6 | → NowLongevity.Care group | `weight-loss` tag |
-| Female Pelleting | 75977 | 48 | → NowLongevity.Care group | `pelleting` tag |
-| Male Pelleting | 78546 | 2 | → NowLongevity.Care group | `pelleting` tag |
-| Sick Visit | 77894 | 11 | → NowPrimary.Care group | (already PC patients) |
-
-> [!CAUTION]
-> **DO NOT move patients between groups without explicit user approval.** Changing a patient's group in Healthie CLEARS their onboarding forms. Migration must be done carefully with form backup.
-
-### Brand Color System
-
-#### NOW Men's Health
-| Role | Hex | Usage |
-|------|-----|-------|
-| Primary | `#DC2626` | Buttons, accents, mobile app |
-| Dark | `#7F1D1D` | Nav, headers |
-| Light | `#EF4444` | Hover states |
-| Background | `#0A1118` | App dark theme |
-
-#### NOW Primary Care
-| Role | Hex | Usage |
-|------|-----|-------|
-| Primary | `#060F6A` | Buttons, nav, headers |
-| Secondary | `#00A550` | Success states, accents |
-| Accent | `#25C6CA` | CTAs, highlights |
-| Background | `#F8FAFC` | App light theme |
-
-#### NOW Longevity (Soft Sage / Earthy Calm)
-| Role | Hex | Usage |
-|------|-----|-------|
-| Primary | `#6B8F71` | Buttons, accents, mobile app |
-| Dark | `#4A6B50` | Nav, headers, status bar |
-| Light | `#A3C4A8` | CTAs, highlights, hover |
-| Background | `#1E2E20` | App dark theme |
-| Text on dark | `#A3C4A8` | Headings on dark bg |
-| Text on light | `#2D3B2E` | Text on light surfaces |
-
-> **Theme Preview**: `/home/ec2-user/.tmp/longevity-theme-preview.html`
-
-#### NOW Mental Health (Website updated March 26, 2026)
-| Role | Hex | Usage |
-|------|-----|-------|
-| Primary | `#C2703E` | Buttons, accents, website terracotta |
-| Dark | `#9A5530` | CTAs, gradients |
-| Light | `#E8A87C` | Hover, highlights |
-| Navy | `#2D3A4A` | Footer, quote sections, dark buttons |
-| Background | `#FBF7F4` | Website light theme (editorial) |
-| Mobile Primary | `#7C3AED` | Mobile app stays purple |
-
-> **Website redesign**: Editorial style with Playfair Display serif headings, Unsplash photography, warm terracotta accents on light cream background. Footer uses dark navy `#2D3A4A`. All 11 visit types with real pricing. No Spravato.
-
-#### ABX TAC
-| Role | Hex | Usage |
-|------|-----|-------|
-| Primary | `#3A7D32` | Buttons, accents, mobile app |
-| Dark | `#2D5A27` | Nav, headers |
-| Light | `#4CAF50` | Hover, highlights |
-| Background | `#050505` | App dark theme |
-
-#### NOW Optimal Wellness (Hub)
-| Role | Hex | Usage |
-|------|-----|-------|
-| Primary | `#00D4FF` | Buttons, accents |
-| Secondary | `#FFD700` | Gold accent |
-| Background | `#0A0E1A` | App dark theme |
-
-### Master Appointment Type Registry (Live in Healthie — 28 Types)
-
-> **Queried from Healthie API on March 25, 2026.** These are the REAL IDs.
-
-#### Video-Enabled Types (Telehealth already works)
-| ID | Name | Duration | Price | Contact Types |
-|----|------|----------|-------|--------------|
-| `505645` | NMH General TRT Telemedicine | 30 min | — | Healthie Video Call |
-| `505646` | Telemedicine Sick Consult | 30 min | $79 | Healthie Video Call |
-| `504715` | In-Person Sick Visit | 50 min | $129 | Video Call + In Person |
-| `504717` | Weight Loss Consult | 45 min | $99 | Video Call + In Person |
-
-#### In-Person Only Types (24 Types)
-| ID | Name | Duration | Price | Brand |
-|----|------|----------|-------|-------|
-| `504725` | Initial Male Hormone Replacement Consult | 30 min | — | Men's Health |
-| `504726` | Initial Female Hormone Replacement Therapy Consult | 30 min | — | Primary Care |
-| `504727` | EvexiPel Initial Pelleting Male | 60 min | — | Longevity |
-| `504728` | EvexiPel Repeat Pelleting Male | 45 min | — | Longevity |
-| `504730` | EvexiPel Initial Pelleting Female | 60 min | — | Longevity |
-| `504729` | EvexiPel Repeat Pelleting Female | 45 min | — | Longevity |
-| `504731` | Weight Loss Education & Measurements | 45 min | — | Longevity |
-| `504732` | 5 Week Lab Draw | 15 min | — | Men's Health |
-| `504734` | 90 Day Lab Draw | 20 min | — | Men's Health |
-| `504735` | NMH TRT Supply Refill | 20 min | — | Men's Health |
-| `504736` | NMH Peptide Education & Pickup | 20 min | — | Men's Health |
-| `504716` | Skin Laceration & Wound Care | 60 min | — | Primary Care |
-| `504718` | Sports Physical | 45 min | — | Primary Care |
-| `504719` | Medical Clearance Physical | 45 min | — | Primary Care |
-| `504741` | TB Test Administration | 15 min | — | Primary Care |
-| `504743` | Initial Primary Care Consult | 60 min | — | Primary Care |
-| `505647` | IV Therapy Good Faith Exam | 15 min | $50 | Longevity |
-| `505648` | Allergy Injection Consult | 20 min | $55 | Primary Care |
-| `505649` | Injection | 25 min | — | Primary Care |
-| `504759` | Elite Membership Initial PC Consult | 30 min | $250 | Primary Care |
-| `504760` | Premier Membership Initial PC Consult | 30 min | $250 | Primary Care |
-| `511049` | NMH Mens Health Annual Lab Draw | 15 min | — | Men's Health |
-| `511050` | NowPrimary.Care Annual Lab Draw | 15 min | — | Primary Care |
-| `511073` | Migrated Appointment | 15 min | — | System (hidden) |
-| `520702` | Male HRT Follow-Up | 30 min | — | Men's Health |
-| `520703` | PC Follow-Up | 30 min | — | Primary Care |
-
-### Telehealth Appointment Types — TO CREATE
+> **Slot availability**: Do NOT pass `location_id` to `availableSlotsForRange` — causes field error
 
 > [!CAUTION]
-> **These types do NOT exist yet.** They need to be created in Healthie via `createAppointmentType` mutation. DO NOT create without user approval.
+> **`createAppointment` dual-provider bug (Fixed March 26, 2026)**:
+> Healthie **auto-adds the API key owner as a provider** on every appointment created via API. If the API key belongs to Provider A and you create an appointment for Provider B using `providers: providerBId`, the appointment gets BOTH providers.
+>
+> **FIX**: Always use BOTH `other_party_id` AND `providers` in createAppointment:
+> ```javascript
+> input: {
+>   user_id: patientId,           // The patient
+>   other_party_id: providerId,   // Explicit single provider (from patient's perspective)
+>   providers: providerId,        // Override to prevent API key owner auto-add
+>   appointment_type_id: typeId,
+>   // ... other fields
+> }
+> ```
+> **Files fixed**: `lambda-booking/src/healthie.js`, `nowmenshealth-website/lib/healthie-booking.ts`
+> **Files to check**: Any code that calls `createAppointment` mutation — verify it uses `other_party_id`.
 
-#### Men's Health Telehealth (New)
-| Name | Duration | Price | Contact Type |
-|------|----------|-------|-------------|
-| Initial Male HRT Consult - Telehealth | 30 min | Free | Healthie Video Call |
-| Male HRT Consult - Telehealth | 30 min | $180 | Healthie Video Call |
-| Lab Review Telemedicine | 30 min | Included | Healthie Video Call |
-| Annual Lab Review Telemedicine | 30 min | Included | Healthie Video Call |
-| 90-Day Lab Review Telemedicine | 30 min | Included | Healthie Video Call |
+### CDK vs. Live Infrastructure
 
-#### Primary Care Telehealth (New)
-| Name | Duration | Price | Contact Type |
-|------|----------|-------|-------------|
-| Initial PC Consult - Telehealth | 45 min | $150 | Healthie Video Call |
-| PC Follow-Up - Telehealth | 30 min | $99 | Healthie Video Call |
-| Elite Membership Consult - Telehealth | 30 min | $250 | Healthie Video Call |
-| Premier Membership Consult - Telehealth | 30 min | $250 | Healthie Video Call |
-| Female HRT Consult - Telehealth | 30 min | $250 | Healthie Video Call |
-| Medication Management - Telehealth | 20 min | $75 | Healthie Video Call |
+| Lambda | CDK Timeout | Live Override |
+|--------|------------|--------------|
+| Auth | 10s | — |
+| Booking | 15s | **30s / 256MB** |
+| Data Pipe | 30s | — |
+| Ask AI | 60s | — |
 
-#### Longevity Telehealth (New)
-| Name | Duration | Price | Contact Type |
-|------|----------|-------|-------------|
-| Longevity Consultation | 45 min | $199 | Video Call + In Person |
-| Longevity Follow-Up - Telehealth | 30 min | $99 | Healthie Video Call |
-| Peptide Therapy Consult - Telehealth | 30 min | $99 | Healthie Video Call |
-| Weight Loss Follow-Up - Telehealth | 20 min | $75 | Healthie Video Call |
+> ⚠️ Running `cdk deploy` will revert booking Lambda to 15s/128MB. Update CDK stack first.
 
-#### Mental Health (All New — In-Person + Telehealth)
-| Name | Duration | Price | Contact Type |
-|------|----------|-------|-------------|
-| Initial Mental Health Consultation | 60 min | Free | Video Call + In Person |
-| Individual Therapy Session | 50 min | $150 | Video Call + In Person |
-| Medication Management (Psychiatric) | 30 min | $99 | Video Call + In Person |
-| Psychiatric Follow-Up - Telehealth | 20 min | $75 | Healthie Video Call |
-| Ketamine Therapy Consultation | 45 min | Free | In Person only |
-| Ketamine IV Infusion | 90 min | $450 | In Person only |
-| Group Therapy Screening | 30 min | Free | In Person only |
-| Group Therapy Session | 60 min | $75 | In Person only |
-| Crisis Assessment - Telehealth | 30 min | Free | Healthie Video Call |
+### Known Issues
 
-#### ABX TAC (New)
-| Name | Duration | Price | Contact Type |
-|------|----------|-------|-------------|
-| ABX TAC Peptide Consultation - Telehealth | 25 min | Free | Healthie Video Call |
+1. **Healthie sync can fail silently** — `healthie_synced` may be `false` while `access_status` shows `revoked`. Verify via Healthie API directly.
+2. **Multiple Healthie IDs per patient** — 2 patients have duplicate active Healthie client mappings. Revoking one doesn't block the others.
+3. **CDK stack out of sync** with live Lambda configuration (see table above).
 
-### Telehealth Video Architecture
+### Journal & Metrics Formatting (Feb 26, 2026)
 
-**Technology**: Healthie Native Video (OpenTok / Vonage WebRTC)
-**Cost**: $0 (included in Healthie Enterprise plan)
+Healthie `entries` API returns raw `metric_stat` as a single number with no units or formatting. The app now applies smart formatting based on `category`:
 
-**How it works (fully headless — no Healthie portal required):**
+| Category | Raw Value | Formatted Display |
+|----------|-----------|------------------|
+| Blood Pressure | `13686` | `136/86 mmHg` (split by digit count) |
+| Weight | `190` | `190 lbs (86.2 kg)` |
+| Height (in.) | `70` | `5'10" (177.8 cm)` |
+| Sleep | `8.5` | `8.5 hours` |
+| Steps | `10432` | `10,432 steps` |
+| Heart Rate | `72` | `72 bpm` |
 
-1. Appointment created with `contact_type = "Healthie Video Call"`
-2. Healthie generates an OpenTok video session for that appointment
-3. Query appointment via GraphQL to get:
-   - `session_id` — OpenTok session identifier
-   - `generated_token` — One-time auth token
-4. Initialize video with **Vonage API Key: `45624682`** (Healthie's public key)
-5. Both patient (mobile app) and provider (iPad) connect to same session
-6. Audio can be captured from MediaStream for Scribe (Phase 2)
+Formatting functions: `formatBloodPressure()`, `formatWeight()`, `formatHeight()`, `formatMetricValue()`, `safeParseDate()`
 
-**Patient app (iPhone/Android):**
-- `opentok-react-native` or `@vonage/client-sdk-video` package
-- New `VideoCallScreen.tsx` — fully native, NOW Optimal branded
-- "Join Video Call" button on `AppointmentsScreen.tsx` (active 15 min before)
-- Requires custom Expo dev client (not Expo Go) for native camera/mic
-
-**Provider app (iPad):**
-- Vonage Web SDK (`@vonage/client-sdk-video` for browser)
-- "Start Video Call" button on schedule tab for telehealth appointments
-- Opens in modal overlay within iPad app
-- Scribe runs on iPad mic simultaneously (Phase 1)
-
-**Lambda changes:**
-- New action: `get_video_session` — queries `session_id` + `generated_token` from appointment
-- Returns: `{ sessionId, token, apiKey: "45624682" }`
-- Security gate: only works within 15 min of appointment start time
-
-### Form Architecture (Groups + Services)
-
-| Form Type | Trigger | Scope |
-|-----------|---------|-------|
-| **Onboarding Flow** (group-level) | Auto-sent when patient joins group | HIPAA, Consent, AI Disclosure, brand-specific medical history |
-| **Requested Form Completion** | Sent when specific appointment booked | Pelleting consent, Weight Loss agreement, Mental Health screening |
-| **Appointment-linked forms** | Auto-attached to appointment type | Pre-visit questionnaire, follow-up survey |
-
-**Onboarding Flows by Brand:**
-| Brand | Flow Contents |
-|-------|--------------|
-| Men's Health | HIPAA + Consent + AI Disclosure + Men's Health History + HRT Intake |
-| Primary Care | HIPAA + Consent + AI Disclosure + Medical History |
-| Longevity | HIPAA + Consent + AI Disclosure + Wellness Questionnaire |
-| Mental Health | HIPAA + Consent + AI Disclosure + PHQ-9 + GAD-7 + Mental Health Screening |
-| ABX TAC | HIPAA + Consent + AI Disclosure + Peptide Health Screening |
-
-**Service-Specific Forms (triggered by appointment booking):**
-| Service | Form | Trigger |
-|---------|------|---------|
-| EvexiPel Pelleting | Pelleting Consent Form | Books EvexiPel appointment |
-| Weight Loss | Weight Loss Program Agreement | Books Weight Loss Consult |
-| Ketamine | Ketamine Informed Consent | Books Ketamine Consultation |
-| IV Therapy | IV Therapy Consent | Books IV Therapy GFE |
-
-### Tag → Appointment Type Mapping
-
-| Tag | Unlocks Appointment Types | Cross-Brand? |
-|-----|--------------------------|-------------|
-| `pelleting` | EvexiPel Male/Female Initial + Repeat | Yes — MH patients can book pellets |
-| `weight-loss` | Weight Loss Consult, WL Education, WL Follow-Up Tele | Yes |
-| `peptides` | Peptide Education & Pickup, Peptide Therapy Consult Tele | Yes |
-| `iv-therapy` | IV Therapy Good Faith Exam | Yes |
-| `telehealth` | (Deprecated — all groups get telehealth types natively) | N/A |
-
-### Provider Telehealth Capability
-
-| Provider | Healthie ID | Telehealth? | Brands |
-|----------|------------|------------|--------|
-| Dr. Aaron Whitten, NMD | 12093125 | Yes | Men's Health, Longevity, Wellness, ABX TAC |
-| Phil Schafer, FNP-C | 12088269 | Yes | Primary Care, Longevity |
-| Mental Health Provider (TBD) | TBD | Yes | Mental Health |
-
-### Arizona-First Telehealth
-
-Initial telehealth launch is **Arizona patients only**. Multi-state expansion requires:
-- Provider licensure in patient's state (NLC for Phil, IMLC for Dr. Whitten)
-- DEA registration in patient's state for controlled substances (testosterone = Schedule III)
-- State validation in booking flow (future feature)
+> **Height gotcha**: If Healthie returns a value ≤ 7, the formatter assumes it's in feet (not inches) and multiplies by 12. Values > 12 are treated as inches.
 
 ---
 
+## 🌐 NOW Optimal Websites & Brand System
+
+**Monorepo**: `/var/www/nowoptimal-websites/` (Git-managed)  
+**Standalone NowPrimary**: `/home/ec2-user/nowprimarycare-website/`  
+**Brand Data**: `/home/ec2-user/.tmp/brand-reports/` (JSON palette extractions)  
+**All sites**: Next.js + Tailwind CSS, served via Nginx reverse proxy
+
+### Website Portfolio
+
+| Site | Domain | Port | PM2 Name | Stack |
+|------|--------|------|----------|-------|
+| NOW Optimal (Hub) | nowoptimal.com | 3000 | `nowoptimal` | Next.js |
+| NOW Primary Care | nowprimary.care | 3001 | `nowprimary` | Next.js |
+| NOW Men's Health | nowmenshealth.care | 3002 | `nowmenshealth` | Next.js |
+| NOW Mental Health | nowmentalhealth.care | 3003 | `nowmentalhealth` | Next.js |
+| ABX TAC | abxtac.com | 3009 | `abxtac-website` | Next.js (headless WooCommerce) |
+
+**Ecosystem Config**: `/var/www/nowoptimal-websites/ecosystem.config.js`  
+**Deploy Script**: `/var/www/nowoptimal-websites/deploy.sh`
+
+> [!WARNING]
+> There is a **standalone NowPrimary.Care** at `/home/ec2-user/nowprimarycare-website/` — this is the version with Healthie booking integration (8 appointment types, BookingWidget). The one in `/var/www/nowoptimal-websites/nowprimary-website/` is the older static version. Be careful which one you're editing.
+
+### Brand Color System (Extracted from Live Sites)
+
+#### NOW Optimal Network (Hub)
+| Role | Hex | CSS Variable | Description |
+|------|-----|-------------|-------------|
+| Primary | `#0C141D` | — | Dark navy background |
+| Secondary | `#00D4FF` | `--brand-cyan` | Cyan accent |
+| Surface | `#111827` | `--brand-surface` | Card/surface background |
+| Card | `#1F2937` | `--brand-card` | Elevated card background |
+| Purple | `#7C3AED` | `--brand-purple` | Feature accent |
+| Navy | `#0A0E1A` | `--brand-navy` | Deep dark background |
+
+#### NOW Men's Health
+| Role | Hex | CSS Variable | Description |
+|------|-----|-------------|-------------|
+| Primary | `#0A1118` | — | Dark background |
+| Brand Red | `#DC2626` | `--brand-red` | Primary action/accent |
+| Red Dark | `#B91C1C` | `--brand-red-dark` | Hover states |
+| Red Light | `#EF4444` | `--brand-red-light` | Highlights |
+| Gray | `#1A1A1A` | `--brand-gray` | Surface |
+| Black | `#000000` | `--brand-black` | Deep background |
+| White | `#FFFFFF` | `--brand-white` | Text/contrast |
+
+#### NOW Primary Care
+| Role | Hex | CSS Variable | Description |
+|------|-----|-------------|-------------|
+| Primary | `#060F6A` | — | Deep navy blue (logo) |
+| Green | `#00A550` | `--tw-gradient-from` | CTA gradient start |
+| Light Blue | `#E8F0F5` | — | Background / light surface |
+| Cyan | `#25C6CA` | — | Accent (from NOWOptimal logo) |
+
+#### ABX TAC (Peptide E-Commerce)
+| Role | Hex | CSS Variable | Description |
+|------|-----|-------------|-------------|
+| Primary BG | `#050505` | `--bg-primary` | Deep black background |
+| Secondary BG | `#0A0A0A` | `--bg-secondary` | Card/section background |
+| Green | `#3A7D32` | `--green-primary` | Primary accent, tactical green |
+| Green Dark | `#2D5A27` | `--green-dark` | Dosage bands, buttons |
+| Green Light | `#4CAF50` | `--green-light` | Highlights, badges |
+| Card BG | `#111111` | `--bg-card` | Elevated card surfaces |
+| Text White | `#FFFFFF` | — | Primary text |
+| Text Gray | `#D0D0D0` | — | Body text, descriptions |
+| Text Muted | `#999999` | — | Secondary text |
+| Fonts | Rajdhani (tactical) · Share Tech Mono (mono) · Inter (body) |
+
+#### Mobile App Chameleon Themes (from `themes.ts`)
+
+| Group ID | Brand | Primary | Background |
+|----------|-------|---------|------------|
+| `75522` | Men's Health | Red `#DC2626` | Black `#0A1118` |
+| `75523` | Primary Care | Navy `#1E3A5F` | Light `#F8FAFC` |
+
+### Website Directory Structure
+
+```
+/var/www/nowoptimal-websites/
+├── nowoptimal-website/     → Hub site (nowoptimal.com)
+│   └── app/                → page.tsx, layout.tsx, privacy/, terms/
+├── nowprimary-website/     → Static version (in monorepo)
+│   └── app/                → page.tsx + services/ + api/
+├── nowmenshealth-website/  → Men's Health site
+│   └── app/                → page.tsx, layout.tsx, privacy/, terms/
+├── nowmentalhealth-website/ → Mental Health site
+│   └── app/                → page.tsx, layout.tsx, privacy/, terms/
+├── ecosystem.config.js     → PM2 config (ports 3000-3003)
+├── deploy.sh               → Build + restart all sites
+└── scripts/                → Shared utilities
+
+/home/ec2-user/nowprimarycare-website/  → LIVE booking version
+├── app/
+│   ├── api/healthie/       → Booking API (slots + book)
+│   ├── book/               → Booking page
+│   ├── about/, contact/, services/
+│   └── page.tsx            → Homepage
+├── components/
+│   ├── BookingWidget.tsx    → Healthie slot picker + booking
+│   ├── HeroSection.tsx, FeaturesSection.tsx
+│   ├── ProviderSection.tsx, LocationSection.tsx
+│   ├── Header.tsx, Footer.tsx, CTASection.tsx
+│   └── booking/            → Additional booking components
+├── lib/
+│   └── healthie-booking.ts → Healthie GraphQL client
+└── .env.local              → API keys (HEALTHIE_API_KEY, etc.)
+
+/home/ec2-user/abxtac-website/         → ABX TAC peptide store [NEW Mar 2026]
+├── app/                               → Headless Next.js 14 (TypeScript + Tailwind)
+│   ├── page.tsx                       → Homepage (hero, peptide explainer, stacks)
+│   ├── shop/                          → 10 curated peptide stacks + à la carte
+│   ├── peptides/                      → Peptide therapy info, FAQ
+│   ├── about/                         → About, NOW Network links
+│   └── globals.css                    → Dark tactical theme
+├── components/                        → Header (wellness banner), Footer
+├── lib/woocommerce.ts                 → WooCommerce REST API client
+├── public/abxtac-logo-white.png       → Brand logo
+├── .env.local                         → WooCommerce API keys (TBD)
+└── Port: 3009                         → Nginx split: /* → Next.js, /wp-* → WordPress
+```
+
+### NowPrimary.Care Healthie Booking Integration
+
+**Provider**: Phil Schafer, NP (`12088269`)  
+**Location ID**: `27565` (404 S. Montezuma, Prescott, AZ 86303)  
+**Phone**: (928) 756-0070
+
+| Appointment Type | Healthie ID | Duration | Price |
+|-----------------|-------------|----------|-------|
+| Sick Visit In-Person | `504715` | 30m | Custom |
+| Sick Visit Telehealth | `505646` | 30m | Custom |
+| Sports Physical | `504718` | 30m | $50 |
+| TB Test | `504741` | 15m | $35 |
+| Wound Care | `504716` | 30m | Custom |
+| Weight Loss Consult | `504717` | 45m | Custom |
+| Allergy Injection | `505648` | 15m | $25 |
+| IV Therapy GFE | `505647` | 60m | Custom |
+
+**Booking API Flow**:
+```
+BookingWidget → /api/healthie/slots (GET) → lib/healthie-booking.ts
+  → Healthie GraphQL: availableSlotsForRange(provider_id, appt_type_id)
+BookingWidget → /api/healthie/book (POST) → createClient + createAppointment
+```
+
+> [!IMPORTANT]
+> Do NOT pass `appointment_location_id` to `availableSlotsForRange` — it causes a field error. Only pass `provider_id` and `appointment_type_id`.
+
+> [!WARNING]
+> **Appointment Type Pricing CLEARED (March 31, 2026)**
+> All 22 appointment types that had pricing values ($50–$450) were cleared to prevent Healthie from auto-generating invoices when patients are booked. This was discovered after patient Jacob McKenney was auto-charged $180 on top of his $140/month subscription when booked into "Male HRT Follow-Up - Telehealth".
+>
+> **Root cause**: Healthie's `pricing` field on appointment types triggers automatic `requested_payment` creation (invoice_type: "appointment") when a patient is booked. This is native Healthie behavior — not controlled by our code.
+>
+> **Rule**: Do NOT set pricing on appointment types unless you intentionally want Healthie to auto-invoice patients at booking. Subscription billing should be handled through offerings/packages, not appointment type pricing.
+
+### Website Redesign — March 26, 2026 (Editorial Style)
+
+> **Scope**: NowMentalHealth.Care, NowPrimary.Care, NowOptimal.com all redesigned to match an editorial, photography-driven style inspired by Recovery in the Pines. Consistent brand identity across all 3 sites.
+
+**Design System (shared across all 3 sites):**
+- **Fonts**: Playfair Display (serif, headings) + Inter (sans, body) via `next/font/google`
+- **Layout**: Full-bleed hero images with overlays, journey/path sections, service cards with photos, dark testimonial sections, side-by-side content with images, dark navy footers
+- **Photography**: Unsplash images (free commercial use) stored in `public/images/`
+- **Light Theme**: All sites use light cream/white backgrounds with dark text
+- **Responsive**: Mobile-first, glass-morphism sticky headers, mobile hamburger menus
+
+| Site | Background | Primary Accent | Button Dark | Footer | Status |
+|------|-----------|---------------|------------|--------|--------|

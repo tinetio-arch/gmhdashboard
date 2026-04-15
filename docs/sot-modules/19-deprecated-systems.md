@@ -1,47 +1,47 @@
-## ⚠️ DEPRECATED / REMOVED SYSTEMS
+- **Routes**: Billing/payments, insurance, claims, appointment no-shows/cancels, intake blockers
+- **Keywords**: billing, payment, insurance, authorization, claim, denial, no-show, cancel
 
-### ClinicSync Integration (REMOVED Dec 28, 2025)
-**Status**: Fully deprecated and removed  
-**Reason**: API stopped working, inefficient system  
-**Replaced By**: Healthie (primary clinical source) + Snowflake (data warehouse)
+**2. NOW Exec/Finance**
+- **Webhook**: `https://chat.googleapis.com/v1/spaces/AAQARw60cl0/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=m7E2GmVPaGoNE2mnYyvaRUiEtlRzv9crhs7LqvQmvA8`
+- **Routes**: KPIs, revenue, reconciliation, patient complaints, leadership decisions
+- **Keywords**: KPI, revenue, forecast, reconciliation, QuickBooks, complaint, executive
 
-**What Was Removed**:
-- API integration code (874 file references)
-- Webhook endpoints (`/api/integrations/clinicsync`)
-- Admin UI pages (`/app/admin/clinicsync`)
-- Library files (`lib/clinicsync.ts`, `lib/clinicsyncConfig.ts`)
+**3. NOW Patient Outreach**
+- **Webhook**: `https://chat.googleapis.com/v1/spaces/AAQAR7R9T3w/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=A8GwUsPKzf7JEqoMaMA0Ova1gqP98vnePcoSYY03N7A`
+- **Routes**: Retention, engagement, human follow-up needed
+- **Keywords**: retention, outreach, follow-up, engagement, membership, churn risk
 
-**What Was Preserved**:
-- Patient data (307 patients in `patients` table - NOT affected)
-- Historical mapping data (archived tables: `clinicsync_*` marked deprecated)
+**4. NOW Clinical Alerts**
+- **Webhook**: `https://chat.googleapis.com/v1/spaces/AAQANhoAdgo/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=qmp8OHOsnK6mr9ERMnMX4Ejn2wLfYOwWO925dMBxFxI`
+- **Routes**: Lab results, vitals, medications, clinical follow-ups
+- **Keywords**: lab, vital, clinical, abnormal, out of range, medication, refill
 
-**Migration Path**: All clinical data now sourced from Healthie GraphQL API  
-**Cleanup Log**: See `CLEANUP_LOG_DEC28_2025.md` for detailed removal process
+**Routing Logic**: AI analyzes email → classifies with confidence score → posts formatted card to appropriate space → tags suggested assignee
+**Goal**: Auto-upload lab results and imaging reports to Healthie patient charts
 
----
+**Sources Integrated**:
+1. **LabGen** (Lab Results)
+   - Portal: https://access.labsvc.net/labgen/
+   - Credentials: `pschafer` / `xSqQaE1232` ✅ Verified working
+   - Browser automation (Playwright)
+   - Downloads PDF reports every 15 minutes
+   
+2. **InteliPACS** (Imaging Reports)
+   - Portal: https://images.simonmed.com/Portal/app
+   - Credentials: `phil.schafer` / `Welcome123!` ✅ Verified working
+   - Browser automation (Playwright)
+   - Monitors "Critical" findings tab
+   - Downloads STAT priority reports
 
-### December 28, 2025: Emergency Fixes & Infrastructure Hardening
-
-**Database Schema Emergency**: AWS CloudWatch detected 60 errors for missing objects. Created `quickbooks_connection_health` table and `created_at` column in `clinicsync_webhook_events`. Migration: `sql/migrations/20251228_fix_missing_schema_objects.sql`.
-
-**Server Timeout Root Cause**: Memory exhaustion (88% used, no swap). Created 4GB swap file as safety net. Recommendation: upgrade to t3.large (16GB RAM).
-
-**Snowflake Cost Optimization**: Warehouse was running 24/7 ($500-720/month). Set `AUTO_SUSPEND=60` and `AUTO_RESUME=TRUE`. Savings: $400-625/month (80-95% reduction). Current: $30-95/month.
-
-**React Hydration Errors**: Fixed 12 components using `formatDateUTC()` instead of `toLocaleDateString()`. Created `lib/dateUtils.ts`.
-
-**LabGen & InteliPACS Credentials**:
-- LabGen: `pschafer` (see `.env.local` for password)
-- InteliPACS: `phil.schafer` (see `.env.local` for password)
-
----
-
-### Stale Snowflake Sync Incident (Jan 2026)
-
-**Issue**: Patient missing from Snowflake, causing AI Scribe to fail patient identification.
-**Root Cause**: `sync-healthie-ops.js` was crashing due to SQL column errors. Data stale since Dec 22, 2025.
-**Fix**: Refactored sync script, created `scripts/import_specific_patient.ts` for surgical imports, added `AuthorizationSource: API` header.
-**Current Status**: Resolved — unified Python sync (`sync-all-to-snowflake.py`) now handles all tables every 4 hours.
-
----
-
+**Architecture** (LabGen/InteliPACS → S3 → Snowflake → Healthie):
+1. **Browser Automation**: Playwright scripts poll both portals every 15 min
+2. **S3 Storage**: PDFs stored in `s3://gmh-documents/incoming/{labs|imaging}/`
+3. **Snowflake Middleware** (HIPAA-compliant tracking):
+   - `document_intake` - Ingestion tracking
+   - `patient_matches` - Name/DOB → Healthie patient_id mapping
+   - `ai_analysis_results` - Severity scores (1-5 scale)
+   - `alert_history` - De-duplication, anti-fatigue
+   - `audit_log` - Full HIPAA audit trail
+4. **AI Analysis**: Extract patient name/DOB, match to Healthie patient, analyze severity
+5. **Healthie Upload**: Auto-upload as "provider-only" (hidden from patient)
+6. **Smart Alerts**: Google Chat with tiered severity (prevent alert fatigue)

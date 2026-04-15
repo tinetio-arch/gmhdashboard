@@ -1,3 +1,7 @@
+- **Admin Password**: (see `.env.local`)
+
+---
+
 ## 🚨 CRITICAL - READ FIRST
 
 ### 📘 NEW: Patient Workflows (Source of Truth)
@@ -40,7 +44,3 @@ Defines comprehensive workflows for:
 - **If system is down**: Check PM2 logs first: `pm2 logs gmh-dashboard --lines 50`
 - **If disk is full**: See "Disk Space Maintenance" section
 - **If OAuth broken**: See "QuickBooks OAuth" section
-- **If Scribe failing**: Check `/tmp/scribe_*.log`
-
----
-

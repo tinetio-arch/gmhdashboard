@@ -1,67 +1,119 @@
-# Claude Memory Pins
+# Claude Memory Pins — GMH Dashboard
 
-> **Purpose**: Pin each of these into every new Claude Code session via `/memory`.
-> These are the critical facts that prevent the most common AI mistakes on this codebase.
-
-## How to Use
-In each Claude Code session, run `/memory` and add the relevant pins below. Copy-paste the text after each bullet.
+> **Purpose**: Copy these into Claude Code `/memory` or session context. Each pin is a critical fact that prevents common AI mistakes on this codebase.
 
 ---
 
-## ALWAYS Pin (Every Session)
+## System Identity
 
-- **Healthie is source of truth for patient data. When Healthie and Postgres conflict, Healthie wins. Never update Healthie from Postgres — only sync Postgres FROM Healthie.**
+- GMH Dashboard is a Next.js 14 healthcare ops platform at `/home/ec2-user/gmhdashboard`
+- Production URL: `https://nowoptimal.com/ops/` (base path is `/ops`)
+- The MASTER reference document is `ANTIGRAVITY_SOURCE_OF_TRUTH.md` (5,350 lines). Use `docs/sot-modules/INDEX.md` to load only relevant sections.
 
-- **Active codebase directory: /home/ec2-user/gmhdashboard (NOT /apps/gmh-dashboard). Production URL: https://nowoptimal.com/ops/ with base path /ops.**
+## Source of Truth Hierarchy
 
-- **Before ANY code change, read the relevant SOT module from ~/gmhdashboard/docs/sot-modules/ (see INDEX.md). Before cross-system changes, read ~/gmhdashboard/docs/DEPENDENCIES.md.**
+- **Tier 1 (Real-time)**: Healthie API, Postgres database, PM2 process list
+- **Tier 2 (Near real-time)**: GHL API, Stripe
+- **Tier 3 (Delayed 4-6hr)**: Snowflake analytics warehouse
+- **RULE**: For patient data, ALWAYS query Postgres first, then Healthie API. NEVER trust Snowflake for real-time data (6hr lag).
 
-- **3-layer architecture: Layer 1 (Directives) = markdown SOPs in directives/. Layer 2 (Orchestration) = you, the AI. Layer 3 (Execution) = deterministic scripts in execution/. Never bypass layers.**
+## Base Paths & Critical Directories
 
-- **Database: Postgres for operational writes, Snowflake for analytics reads. Snowflake uses key-pair auth via JARVIS_SERVICE_ACCOUNT. Old user tinetio123 is MFA-blocked — never use password auth.**
+- Active codebase: `/home/ec2-user/gmhdashboard/` (NOT `/apps/gmh-dashboard`)
+- PM2 ecosystem config: `/home/ec2-user/ecosystem.config.js`
+- Nginx config: `/etc/nginx/conf.d/nowoptimal.conf`
+- Environment vars: `/home/ec2-user/gmhdashboard/.env.local`
+- Websites monorepo: `/var/www/nowoptimal-websites/`
+- Live NowPrimary (with booking): `/home/ec2-user/nowprimarycare-website/`
+- ABX TAC WordPress: `/var/www/abxtac/`
 
-- **Two GHL sub-accounts with separate tokens: Men's Health (most patients) and Primary Care (3 client types only). Routing is in lib/ghl.ts getGHLClientForPatient(). Tokens are sub-account scoped — mismatched locationId = auth errors.**
+## Database Connection
 
-## Pin When Working on Websites
+- Host: `clinic-pg.cbkcu8m4geoo.us-east-2.rds.amazonaws.com`
+- Database: `postgres`, User: `clinicadmin`, Port: 5432, SSL required
+- Connection pool: `lib/db.ts` — single pool for all queries
+- 88 tables total. Key tables: patients, healthie_clients, vials, dea_transactions, payment_transactions, lab_review_queue
 
-- **5 website services on separate ports: abxtac (3003), nowmentalhealth (3004), nowmenshealth (3005), nowoptimal (3006), nowprimary (3007). All behind Nginx reverse proxy. Booking widget on nowmenshealth uses Healthie API directly.**
+## Critical Providers & Patients
 
-## Pin When Working on Billing
+- **Phil Schafer NP** (Healthie ID: 12088269) — works BOTH locations
+- **Dr. Aaron Whitten** (Healthie ID: 12093125) — Medical Director, Men's Health focus
+- NOW Primary Care location ID: 13023235 (212 S Montezuma)
+- NOW Men's Health location ID: 13029260 (215 N McCormick)
+- Healthie Groups: Men's Health=75522, Primary Care=75523, Weight Loss=75976
 
-- **CRITICAL REVERSAL: In Healthie billingItems, 'sender' = PATIENT (who pays), 'recipient' = PROVIDER. In requestedPayments it's REVERSED. This has caused bugs before.**
+## PM2 Rules (NEVER VIOLATE)
 
-- **Stripe is currently disconnected. QuickBooks health check is failing. 11 patients on billing hold need resolution.**
+- NEVER start services with `pm2 start npm -- start` — always use `pm2 start ecosystem.config.js --only <name>`
+- All services MUST have `max_restarts: 10` and `restart_delay: 5000`
+- After ANY PM2 change: `pm2 save`
+- Port conflicts cause infinite restart loops (burned CPU: 34,000+ restarts incident Jan 28, 106,000+ restarts incident Feb)
+- gmh-dashboard=3011, upload-receiver=3001, jessica-mcp=3002, ghl-webhooks=3003
 
-## Pin When Working on Mobile App
+## Deployment Rules (3-Layer Architecture)
 
-- **Mobile app: 0 of 380 patients verified. is_verified field shows false for everyone. Either sync broken or onboarding flow confusing. Test verification flow before making changes.**
+1. `df -h /` — must have >2GB free disk
+2. `pm2 stop gmh-dashboard`
+3. `rm -rf .next && npm run build`
+4. `pm2 start gmh-dashboard && pm2 save`
+5. Verify: `curl -I http://localhost:3011/ops/`
+- NEVER run `pm2 start npm -- start` (loses PORT env var → cascading 502s)
 
-## Pin When Deploying
+## Code Patterns (MANDATORY)
 
-- **Deployment steps: pm2 stop → rm -rf .next → npm install (if needed) → npm run build → pm2 start → pm2 save. NEVER skip pm2 save. Check build exit code before starting.**
+- **Patient search**: ALWAYS use Healthie `users(keywords:)` GraphQL — local Postgres `patients` table is incomplete
+- **Hydration**: Use `mounted` state guard pattern in client components (`useState(false) → useEffect → setMounted(true)`)
+- **Base path**: All routes use `/ops` prefix — `lib/basePath.ts` handles this
+- **Healthie API gotcha**: `client_id` vs `user_id` — different endpoints use different arg names, wrong one silently returns empty arrays
+- **createAppointment**: MUST use BOTH `other_party_id` AND `providers` to prevent dual-provider bug
+- **DO NOT pass `location_id`** to `availableSlotsForRange` — causes field error
 
-- **Server disk was at 96% (now improving). Before deploying, check disk with df -h. If above 85%, clean logs first: pm2 flush && find /tmp -mtime +7 -delete.**
+## Patient Status Rules
 
-## Pin When Working on Labs
+- **NEVER change inactive → any other status** via code. Only direct DB admin access can reactivate.
+- Payment decline auto-sets `hold_payment_research`. Payment received auto-reactivates to `active`.
+- Status colors: active=green, active_pending=yellow, hold_*=red, inactive=red
 
-- **3 patients have critically elevated hematocrit (>60%): Donavon Connor (64.3%), Billy Garcia (61.0%), Jakob Woods (60.1% — 22 days overdue). These are clinical safety issues.**
+## iPad/Mobile Sync Rule
 
-## Pin When Working on Inventory
+- **ALWAYS edit `public/ipad/app.js`**, then run `bash scripts/sync-mobile.sh`
+- NEVER edit `public/mobile/app.js` directly
+- NEVER copy iPad CSS to mobile — they are separate files for different screen sizes
 
-- **22 peptide SKUs at zero stock including Retatrutide 12mg/24mg, HCG, PT 141, BPC-157 5mg. Female pelleting kits: 10 remaining with 36 upcoming procedures — reorder needed.**
+## Healthie Appointment Pricing Rule
 
-## Pin for Context Management
+- DO NOT set pricing on appointment types — Healthie auto-generates invoices at booking
+- Subscription billing uses offerings/packages, NOT appointment type pricing
+- Incident: Patient Jacob McKenney was double-charged $180 from pricing on appointment type
 
-- **SOT is split into 24 modules in ~/gmhdashboard/docs/sot-modules/. Read INDEX.md first, then load ONLY the modules relevant to your task. Do NOT read the full 5,273-line monolithic SOT.**
+## Timezone
 
-- **After completing work, update the relevant SOT module file AND run: bash ~/gmhdashboard/scripts/health-check.sh to verify KPIs weren't degraded.**
+- Server timezone: America/Phoenix (MST, no DST)
+- Cron jobs use MST directly — do NOT convert from UTC
+- PostgreSQL queries: `(NOW() AT TIME ZONE 'America/Phoenix')::DATE`
+
+## Snowflake Auth
+
+- Use `JARVIS_SERVICE_ACCOUNT` with key-pair auth (private key at `~/.snowflake/rsa_key_new.p8`)
+- Old user `tinetio123` is blocked by MFA — do NOT use password auth
+
+## GHL Authentication
+
+- GHL uses Private Integration Tokens (PITs), NOT OAuth2. Tokens do NOT expire.
+- Men's Health: `GHL_MENS_HEALTH_API_KEY` → Location `0dpAFAovcFXbe0G5TUFr`
+- Primary Care: `GHL_PRIMARY_CARE_API_KEY` → Location `NyfcCiwUMdmXafnUMML8`
+- DO NOT implement OAuth token refresh for GHL — unnecessary and will break things
+
+## What NOT to Do
+
+- DO NOT modify `ANTIGRAVITY_SOURCE_OF_TRUTH.md` without explicit approval
+- DO NOT restart PM2 services without checking disk space first
+- DO NOT hardcode credentials — always reference `.env.local`
+- DO NOT use `/apps/gmh-dashboard` — that path does not exist
+- DO NOT deploy without running `npm run build` first (type errors will break production)
+- DO NOT use Snowflake for real-time patient lookups (6hr lag)
+- DO NOT move patients between Healthie groups without approval (clears onboarding forms)
 
 ---
 
-## Anti-Pattern Reminders
-
-- **NEVER dump debug scripts in project root — use .tmp/ for intermediates**
-- **NEVER make direct DB modifications without documenting in SOT**
-- **NEVER revert a previous fix without confirming with Phil first**
-- **NEVER use /ops as a file path — it's a URL base path handled by Next.js config**
-- **NEVER create web pages for SOPs — generate PDFs in public/menshealth/**
+*Pin these into /memory at the start of every Claude Code session working on GMH Dashboard.*

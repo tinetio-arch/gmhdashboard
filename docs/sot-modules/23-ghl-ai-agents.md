@@ -1,133 +1,87 @@
-## 🤖 GHL AI Agents (Jessica & Max)
+| NowMentalHealth.Care | `#FBF7F4` cream | `#C2703E` terracotta | `#2D3A4A` navy | `#2D3A4A` navy | ✅ Live |
+| NowPrimary.Care | `#F8FAFC` slate | `#00A550` green | `#060F6A` navy | `#060F6A` navy | ✅ Live |
+| NowOptimal.com | `#F8FAFC` slate | `#0891B2` teal | `#0A0E1A` navy | `#0A0E1A` navy | ✅ Live |
 
-**Full SOT**: `/home/ec2-user/gmhdashboard/scripts/ghl-integration/AI_PROMPTS_SOURCE_OF_TRUTH.md` (337 lines)  
-**Prompt Directory**: `/home/ec2-user/gmhdashboard/scripts/ghl-integration/`
+**NowMentalHealth.Care** — `/home/ec2-user/nowmentalhealth-website/`
+- Port: 3003, PM2: `nowmentalhealth-website`
+- 11 visit types (no Spravato), real pricing in BookingWidget
+- Terracotta warm color scheme, emotional photography
+- Services: Initial Consult (Free), Therapy ($150), Medication Management ($99), Ketamine Consult (Free), Ketamine IV ($450), Group Screening (Free), Group Session ($75), Psychiatric Follow-Up Telehealth ($75)
 
-### AI Agents Overview
+**NowPrimary.Care** — `/home/ec2-user/nowprimarycare-website/`
+- Port: 3008, PM2: `nowprimary-website`
+- Navy/green color scheme, Healthie booking integration preserved
+- Full editorial redesign with photos, journey section, service spotlights
 
-| Agent | Brand | Role | Phone | Hours |
-|-------|-------|------|-------|-------|
-| **Jessica** (Voice) | NowPrimary.Care | Front desk — scheduling, verification, refills, billing | (928) 756-0070 | M-F 9-5 |
-| **Jessica** (Chat) | NowPrimary.Care | Same capabilities via SMS/website chat | SMS | 24/7 |
-| **Max** (Voice) | NowMensHealth.Care | TRT specialist — scheduling, refills, labs | (928) 212-2772 | M 1-6, Tu-F 9-6, Sa 9-1 |
-| **SMS Chatbot** | NowPrimary.Care | Full Jessica AI via SMS (Bedrock Claude 3.5 Sonnet) | SMS | 24/7 |
-| **NOWJarvis** | Internal | Telegram ops bot — Snowflake/Healthie/GHL queries | Telegram | 24/7 |
+**NowOptimal.com** — `/home/ec2-user/nowoptimal-website/`
+- Port: 3007, PM2: `nowoptimal-website`
+- Teal/gold accents on light background (was dark theme)
+- Brand hub linking to all sub-brands with colored accent bars
+- No booking — just brand navigation and network overview
 
-### Webhook Servers
+**Files changed per site**: layout.tsx, globals.css, tailwind.config, page.tsx, Header.tsx, Footer.tsx, public/images/*
 
-| Service | Port | PM2 Name | File |
-|---------|------|----------|------|
-| Jessica Voice AI | 3001 | `ghl-webhooks` | `webhook-server.js` |
-| Jessica MCP | 3002 | `jessica-mcp` | MCP protocol server |
-| SMS Chatbot | 3003 | `sms-chatbot` | `sms-chatbot-handler.js` |
-| Max Voice AI | 3006 | `max-webhooks` | `max-webhook-server.js` |
-
-**Ngrok Tunnel**: `https://nowoptimal.ngrok.app` → Port 3001
-
-### Jessica's 13 Custom Actions
-
-| # | Action | Endpoint | Purpose |
-|---|--------|----------|---------|
-| 1 | Verify Patient | `/api/ghl/verify-patient` | Name + DOB vs Healthie |
-| 2 | Create Patient | `/api/ghl/create-new-patient` | New patient in Healthie |
-| 3 | Send Registration | `/api/ghl/send-registration-link` | SMS registration info |
-| 4 | Get Availability | `/api/ghl/get-availability` | Available appointment slots |
-| 5 | Book Appointment | `/api/ghl/book-appointment` | Book in Healthie |
-| 6 | Check Lab Results | `/api/ghl/check-lab-results` | Lab dates (never values) |
-| 7 | Rx Refill | `/api/ghl/request-prescription-refill` | Submit refill request |
-| 8 | Find Pharmacy | `/api/ghl/find-pharmacy` | Search by zip code |
-| 9 | Provider Callback | `/api/ghl/send-provider-message` | Callback request |
-| 10 | Check Balance | `/api/ghl/patient-balance` | Account balance |
-| 11 | Send Payment Link | `/api/ghl/send-payment-link` | Stripe payment link |
-| 12 | Transfer Call | `/api/ghl/transfer-call` | Transfer to human |
-
-### Healthie Group Mapping
-
-| Agent | Healthie Group | Group ID | Provider ID |
-|-------|---------------|----------|-------------|
-| Jessica | NowPrimary.Care | `75523` | `12088269` |
-| Max | NowMensHealth.Care | `75522` | `12093125` |
-
-### SMS Chatbot Architecture
-```
-Patient SMS → GHL → Webhook → Port 3001 (Proxy) → Port 3003 (Handler)
-                                                       ↓
-                                              AWS Bedrock Claude 3.5 Sonnet
-                                                       ↓
-                                              Execute Action (Port 3001)
-                                                       ↓
-                                              GHL API sendSMS → Patient
-```
-
-**AI Model**: `us.anthropic.claude-3-5-sonnet-20241022-v2:0` (inference profile)  
-**Conversation TTL**: 30 minutes  
-**AWS Auth**: EC2 IAM role (no API keys in .env)
-
-### NOWJarvis Telegram Bot
-
-**File**: `/home/ec2-user/gmhdashboard/scripts/telegram-ai-bot-v2.ts`  
-**PM2**: `telegram-ai-bot-v2`
-
-| Command | Purpose |
-|---------|---------|
-| `/help` | Show help |
-| `/ghl` | Men's Health patients from GHL |
-| `/dashboard [SQL]` | Query PostgreSQL |
-| `/datasources` | List connected sources |
-| `/status` | System status |
-| `/schema-gaps` | Missing data requests |
-| `/refresh-schema` | Re-discover Snowflake schema |
-
-**Data Sources**: Snowflake (NLP queries), Healthie API (real-time financials), PostgreSQL (dashboard data), GHL (contacts)
-
-### JARVIS Mobile App (Patient-Facing AI Assistant) — Updated April 6, 2026
-
-**Architecture**: React Native (Expo) → API Gateway → Lambda (`lambda-ask-ai`) → Gemini 2.5 Flash + Snowflake
-**AI Model**: Google Gemini 2.5 Flash (migrated from 2.0 Flash on April 6, 2026 — Google deprecated 2.0)
-**API Gateway**: `https://o6rhh3wva6.execute-api.us-east-2.amazonaws.com/prod`
-**Lambda**: `NowOptimalHeadlessStack-AskAiLambda160D5144-qEQQ3FQOm7TG`
-
-**Source files** (`/home/ec2-user/.gemini/antigravity/scratch/nowoptimal-headless-app/backend/lambda-ask-ai/src/`):
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `index.js` | 170 | Router orchestrator — classifies intent, routes to handler |
-| `gemini.js` | 285 | Gemini 2.5 Flash integration — intent classification + answer generation |
-| `snowflake.js` | 301 | Snowflake PATIENT_360_VIEW queries with JWT key-pair auth |
-| `router.js` | 143 | Intent routing, suggested actions, loading messages |
-| `booking-handler.js` | 425 | Multi-turn booking flow with conversation history recovery |
-| `peptide-bot.js` | 440 | Peptide info/ordering with pickup vs ship channels |
-| `trt-bot.js` | 340 | TRT education + personal supply status calculation |
-| `share-handler.js` | 60 | Share conversation with care team (Google Chat + Healthie chart note) |
-
-**13 Intents**: greeting, health_data, billing_inquiry, trt_question, trt_status, peptide_info, peptide_order, book_appointment, check_availability, cancel_appointment, refill_request, general
-
-**Key fixes (April 6, 2026)**:
-- Gemini 2.0 Flash → 2.5 Flash (Google deprecated 2.0)
-- Secrets Manager `GOOGLE_AI_API_KEY` updated (old key was revoked)
-- Secrets Manager `JARVIS_SHARED_SECRET` created (was missing — broke share + peptide ordering)
-- Booking flow: conversation history recovery for multi-turn state (was losing appointment type between turns)
-- Peptide eligibility: fixed SQL crash (`first_name`/`last_name` → `full_name`)
-- All dates formatted to Phoenix (Arizona) time
-- General questions: clinic hours, phone numbers, and service info added to system prompt
-- Cancel appointment: now fetches and shows upcoming appointments
-- `createAppointment` dual-provider bug: `other_party_id` fix applied to booking Lambda
-
-**Dashboard endpoints used by Jarvis** (`/api/jarvis/`):
-- `share/` — Share conversation (Google Chat + Healthie chart note)
-- `peptide-eligibility/` — Check pickup/ship eligibility
-- `peptides/` — Peptide product catalog
-- `peptide-order/` — Submit peptide order
-- `balance/` — Patient account balance
-- `payment-link/` — Generate payment link
-
-### Key Deployment Notes
-
-- Jessica/Max prompts use **STOK format** (Situation-Task-Objective-Knowledge)
-- **Transfer number** (Primary Care): 928-277-0001
-- **Never share**: Lab result values, testosterone levels — dates only
-- **Rebranding**: Jessica knows "Granite Mountain Health Clinic" → "NOW Primary Care"
-- **GHL AI Prompts SOT last updated**: January 4, 2026 (may need refresh)
+**PM2 Port Corrections** (actual live ports differ from old SOT):
+| PM2 Name | Actual Port | Nginx Proxy |
+|----------|-------------|-------------|
+| nowmentalhealth-website | 3003 | nowmentalhealth.care |
+| nowmenshealth-website | 3004 | nowmenshealth.care |
+| nowoptimal-website | 3007 | nowoptimal.com |
+| nowprimary-website | 3008 | nowprimary.care |
+| abxtac-website | 3009 | abxtac.com |
 
 ---
 
+## 🏢 Brand & Group Architecture (March 25, 2026 — Telehealth Restructure)
+
+> [!IMPORTANT]
+> **This section is the MASTER REFERENCE for how brands, groups, appointment types, and telehealth work together.**
+> Previous group assignments treated services (Weight Loss, Pelleting) as groups. The new architecture treats BRANDS as groups and SERVICES as tags.
+
+### Architecture Principle
+
+| Layer | Controls | Examples |
+|-------|----------|---------|
+| **Groups** | Brand identity, default onboarding forms, mobile app theme | Men's Health, Primary Care, Mental Health, Longevity, ABX TAC |
+| **Tags** | Service access, additional appointment types, cross-brand visibility | `pelleting`, `weight-loss`, `peptides`, `telehealth`, `iv-therapy` |
+| **Requested Form Completions** | Service-specific forms sent per appointment | Pelleting consent, Weight Loss agreement (triggered by booking) |
+
+**Key Rule**: A patient stays in their BRAND group. They get service-specific forms when they book service-specific appointments — NOT by moving between groups.
+
+### Brand Registry (6 Brands)
+
+| Brand | Domain | Healthie Group | Group ID | Primary Provider | Location | Mobile Theme |
+|-------|--------|---------------|----------|-----------------|----------|-------------|
+| **NOW Men's Health** | nowmenshealth.care | NowMensHealth.Care | `75522` | Dr. Aaron Whitten (12093125) | McCormick (13029260) | Red `#DC2626` |
+| **NOW Primary Care** | nowprimary.care | NowPrimary.Care | `75523` | Phil Schafer NP (12088269) | Montezuma (13023235) | Navy `#060F6A` |
+| **NOW Longevity** | nowlongevity.care | NowLongevity.Care | **TBD — CREATE** | Both providers | Both locations | Sage `#6B8F71` |
+| **NOW Mental Health** | nowmentalhealth.care | NowMentalHealth.Care | **TBD — CREATE** | TBD (hire pending) | McCormick (13029260) | Purple `#7C3AED` |
+| **ABX TAC** | abxtac.com | ABXTAC | **TBD — CREATE** | Dr. Whitten (12093125) | N/A (telehealth only) | Green `#3A7D32` |
+| **NOW Optimal Wellness** | Mobile app only | NowOptimalWellness | `81103` | Dr. Whitten (12093125) | McCormick (13029260) | Cyan `#00D4FF` |
+
+### Legacy Groups → Migration Plan (DO NOT EXECUTE WITHOUT APPROVAL)
+
+These groups currently exist but should be converted to **tags** on patients in their brand groups:
+
+| Legacy Group | ID | Patients | Migration Target | Tag to Apply |
+|-------------|------|----------|-----------------|-------------|
+| Weight Loss | 75976 | 6 | → NowLongevity.Care group | `weight-loss` tag |
+| Female Pelleting | 75977 | 48 | → NowLongevity.Care group | `pelleting` tag |
+| Male Pelleting | 78546 | 2 | → NowLongevity.Care group | `pelleting` tag |
+| Sick Visit | 77894 | 11 | → NowPrimary.Care group | (already PC patients) |
+
+> [!CAUTION]
+> **DO NOT move patients between groups without explicit user approval.** Changing a patient's group in Healthie CLEARS their onboarding forms. Migration must be done carefully with form backup.
+
+### Brand Color System
+
+#### NOW Men's Health
+| Role | Hex | Usage |
+|------|-----|-------|
+| Primary | `#DC2626` | Buttons, accents, mobile app |
+| Dark | `#7F1D1D` | Nav, headers |
+| Light | `#EF4444` | Hover states |
+| Background | `#0A1118` | App dark theme |
+
+#### NOW Primary Care
+| Role | Hex | Usage |

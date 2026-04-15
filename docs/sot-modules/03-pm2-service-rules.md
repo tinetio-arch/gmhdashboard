@@ -1,3 +1,7 @@
+- **If Scribe failing**: Check `/tmp/scribe_*.log`
+
+---
+
 ## ⚙️ PM2 SERVICE CRITICAL RULES
 
 > [!CAUTION]
@@ -60,7 +64,3 @@ pm2 reset <service>     # Reset restart counter after fixing
 | nowprimary-website | node | 3004 | Primary Care Website |
 | nowmenshealth-website | node | 3005 | Men's Health Website |
 | nowoptimal-website | node | 3008 | NOW Optimal Parent Website |
-| uptime-monitor | python3 | - | Real-time PM2/Website Monitoring |
-
----
-

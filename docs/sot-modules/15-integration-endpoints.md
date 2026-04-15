@@ -1,24 +1,24 @@
-## 📞 INTEGRATION ENDPOINTS
+# Implementation: getGHLClientForPatient() in lib/ghl.ts
+# - Routes based on client_type_key field
+# - Primary Care types explicitly listed, all others default to Men's Health
 
-### Healthie
-- **GraphQL**: `https://api.gethealthie.com/graphql`
-- **Auth**: `Authorization: Basic <raw API key>` (NOT Base64 encoded)
-- **Headers**: `AuthorizationSource: API`
-- **Rate Limiter**: `lib/healthieRateLimiter.ts` (5 req/s, 429 backoff) — see Critical Code Patterns
 
-### QuickBooks
-- **OAuth**: `https://appcenter.intuit.com/connect/oauth2`
-- **Token**: `https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer`
-- **API**: `https://quickbooks.api.intuit.com/v3/company/{realmId}/...`
 
-### Snowflake
-- **Account**: `KXWWLYZ-DZ83651`
-- **Region**: `us-east-1`
-- **Warehouse**: `GMH_WAREHOUSE`
+# Healthie Provider IDs (for appointment routing)
+HEALTHIE_MENS_HEALTH_PROVIDER_ID=12093125
+HEALTHIE_PRIMARY_CARE_PROVIDER_ID=12088269  # Phil Schafer, NP
 
-### Telegram
-- **API**: `https://api.telegram.org/bot{TOKEN}/...`
-- **Webhook**: (not used, polling mode)
-
----
-
+# ============================================
+# NowMensHealth.Care Website Healthie Integration [NEW Jan 2026]
+# ============================================
+#
+# Website: https://www.nowmenshealth.care
+# Directory: /home/ec2-user/nowmenshealth-website/
+# PM2 Service: nowmenshealth-website (port 3005)
+#
+# Healthie Configuration:
+#   Location ID: 13029260 (215 N. McCormick St, Prescott)
+#   Group ID: 75522 (NowMensHealth.Care)
+#   Provider ID: 12093125 (Dr. Aaron Whitten)
+#   Timezone: America/Phoenix
+#
