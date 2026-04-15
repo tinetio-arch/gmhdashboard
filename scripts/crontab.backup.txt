@@ -1,0 +1,45 @@
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin:/home/ec2-user/.nvm/versions/node/v20.20.0/bin
+HOME=/home/ec2-user
+# Heartbeat writer - Every 5 minutes
+*/5 * * * * /home/ec2-user/scripts/cron-alert.sh "Heartbeat" "cd /home/ec2-user/gmhdashboard && npx tsx scripts/heartbeat-writer.ts"
+# Morning Telegram Report - 8am MST
+0 8 * * * /home/ec2-user/scripts/cron-alert.sh "Morning Report" "cd /home/ec2-user/gmhdashboard && npx tsx scripts/morning-telegram-report.ts"
+# Infrastructure Monitoring - 8:30am MST
+30 8 * * * /home/ec2-user/scripts/cron-alert.sh "Infrastructure Monitor" "/usr/bin/python3 /home/ec2-user/scripts/unified_monitor.py"
+# Unified Snowflake Sync - Every 4 hours
+0 */4 * * * /home/ec2-user/scripts/cron-alert.sh "Snowflake Sync" "python3 -u /home/ec2-user/scripts/sync-all-to-snowflake.py"
+# QuickBooks Sync - Every 3 hours
+0 */3 * * * /home/ec2-user/scripts/cron-alert.sh "QuickBooks Sync" "/home/ec2-user/quickbooks-sync.sh"
+# Healthie Revenue Cache - Every 6 hours at :40
+40 */6 * * * /home/ec2-user/scripts/cron-alert.sh "Healthie Revenue Cache" "python3 /home/ec2-user/scripts/cache-healthie-revenue.py"
+# Healthie Failed Payments Sync - Every 6 hours
+0 */6 * * * /home/ec2-user/scripts/cron-alert.sh "Healthie Failed Payments" "cd /home/ec2-user/gmhdashboard && npx tsx scripts/sync-healthie-failed-payments.ts"
+# Process Healthie Webhooks - Every 5 minutes
+*/5 * * * * /home/ec2-user/scripts/cron-alert.sh "Process Healthie Webhooks" "cd /home/ec2-user/gmhdashboard && npx tsx scripts/process-healthie-webhooks.ts"
+# Access Labs Auto-upload - Every 30 minutes
+*/30 * * * * /home/ec2-user/scripts/cron-alert.sh "Lab Results Fetch" "cd /home/ec2-user/scripts/labs && python3 fetch_results.py --auto-upload"
+# Lab Status Refresh - Daily at 5am UTC (10pm MST)
+0 5 * * * /home/ec2-user/scripts/cron-alert.sh "Lab Status Refresh" "cd /home/ec2-user/gmhdashboard && npx tsx scripts/refresh-lab-status.ts"
+# Peptide Purchases Sync - Every 6 hours at :50
+50 */6 * * * /home/ec2-user/scripts/cron-alert.sh "Peptide Sync" "cd /home/ec2-user/gmhdashboard && npx tsx scripts/sync-peptide-purchases.ts"
+# Website Monitor - Every 5 minutes
+*/5 * * * * /home/ec2-user/scripts/website-monitor.sh >> /home/ec2-user/logs/website-monitor.log 2>&1
+# Kill stale interactive terminal sessions - Every hour
+0 * * * * /home/ec2-user/scripts/kill-stale-terminals.sh
+# Snowflake Data Freshness Check - Every 2 hours at :10
+10 */2 * * * /home/ec2-user/scripts/cron-alert.sh "Snowflake Freshness" "python3 /home/ec2-user/scripts/snowflake-freshness-check.py"
+# Cleanup Stale Processes - Every 30 minutes
+*/30 * * * * /home/ec2-user/scripts/cleanup-stale-processes.sh >> /home/ec2-user/.tmp/stale-cleanup.log 2>&1
+# Git Auto-backup - Every 6 hours
+0 */6 * * * cd /home/ec2-user/gmhdashboard && git add app/ lib/ components/ scripts/ migrations/ config/ public/ docs/ package.json tsconfig.json ecosystem.config.js CLAUDE.md GEMINI.md ANTIGRAVITY_SOURCE_OF_TRUTH.md TASKS.md .gitignore next.config.mjs tailwind.config.ts 2>/dev/null; git diff-index --quiet HEAD || (git commit -m "Auto-backup: $(date '+\%Y-\%m-\%d \%H:\%M:\%S')" && git push origin main) >> /home/ec2-user/logs/git-backup.log 2>&1
+# Prescription Sync - Every 4 hours at :20
+20 */4 * * * /home/ec2-user/scripts/cron-alert.sh "Prescription Sync" "curl -sL https://nowoptimal.com/ops/api/cron/sync-prescriptions/ -H 'x-cron-secret: 59c7ba5958b3c753f607a1bdeeb53ae36aabac6ebcf8729f6d411f43fc704122' > /dev/null 2>&1"
+# GHL Sync - Every 2 hours at :30
+30 */2 * * * /home/ec2-user/scripts/cron-alert.sh "GHL Sync" "curl -sL https://nowoptimal.com/ops/api/cron/ghl-sync/ -H 'x-cron-secret: 59c7ba5958b3c753f607a1bdeeb53ae36aabac6ebcf8729f6d411f43fc704122' > /dev/null 2>&1"
+# Healthie ID Audit - Daily at 6am
+0 6 * * * /home/ec2-user/scripts/cron-alert.sh "Healthie ID Audit" "curl -sL http://localhost:3011/ops/api/cron/healthie-id-audit/ -H 'x-cron-secret: $(grep CRON_SECRET /home/ec2-user/gmhdashboard/.env.local | cut -d= -f2)'"
+# YPB WooCommerce Sync - Every 6 hours (NEW - kept from current crontab)
+0 */6 * * * /home/ec2-user/scripts/cron-alert.sh "YPB WC Sync" "python3 /home/ec2-user/execution/sync_ypb_woocommerce.py >> /home/ec2-user/logs/ypb-wc-sync.log 2>&1"
+# YPB Availability Sync - Twice daily (kept from current crontab)
+0 6,18 * * * python3 /home/ec2-user/execution/sync_ypb_availability.py >> /home/ec2-user/logs/ypb-sync.log 2>&1
