@@ -492,7 +492,10 @@ export async function GET(request: NextRequest) {
         };
 
         return NextResponse.json(response);
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Analytics API error:', error);
         return NextResponse.json(
             { error: 'Failed to fetch analytics data', details: String(error) },
