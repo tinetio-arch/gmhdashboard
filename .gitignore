@@ -31,3 +31,12 @@ jane_packages_clean.csv
 /tmp/
 *.local.log
 .justfile
+
+# runtime state — written by services, not source
+.heartbeat
+.processed-billing-items.json
+data/processed-emails.json
+data/processed-faxes.json
+data/labs-review-queue.json
+docs/KPI_CHECK.md
+docs/LIVE_STATUS.md
