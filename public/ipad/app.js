@@ -667,11 +667,16 @@ function setupHashRouting() {
 }
 
 function handleHash() {
+    // SECURITY: when kiosk mode is active, never let URL changes re-render the staff app.
+    // Patient pressing browser Back triggers hashchange which would otherwise switchTab()
+    // beneath the overlay, exposing staff content via Reader mode / accessibility.
+    if (window.kioskActive) return;
     const hash = window.location.hash.replace('#', '') || 'today';
     switchTab(hash);
 }
 
 function switchTab(tab) {
+    if (window.kioskActive) return; // belt-and-suspenders — no tab switches during kiosk
     removeFloatingEditBar();
     const validTabs = ['today', 'labs', 'scribe', 'inventory', 'patients', 'ceo', 'schedule', 'messages'];
     if (!validTabs.includes(tab)) tab = 'today';
@@ -739,6 +744,7 @@ function renderCurrentTab() {
         case 'labs': renderLabsView(view); break;
         case 'scribe': renderScribeView(view); break;
         case 'inventory': renderInventoryView(view); break;
+        case 'pharmacy': renderPharmacyView(view); break;
         case 'patients': renderPatientsView(view); break;
         case 'ceo': renderCEODashboard(view); break;
         case 'schedule': renderScheduleView(view); break;
@@ -1516,43 +1522,65 @@ function renderTodayView(container) {
 
 function renderCriticalLabAlerts(container, alerts) {
     if (!container || !alerts || alerts.length === 0) return;
-    container.innerHTML = `
-        <div class="section-header">
-            <h2 style="color:#ef4444;">🚨 Critical Lab Alerts</h2>
-            <span class="section-action">${alerts.length} alerts</span>
-        </div>
-        <div class="stagger-in">
-            ${alerts.map(function(a) {
-                var sevColor = a.severity === 'critical' ? '#ef4444' : a.severity === 'high' ? '#f59e0b' : '#3b82f6';
-                var collDate = a.collection_date || '';
-                var resultDate = a.result_received_at ? new Date(a.result_received_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '';
-                var approvedDate = a.approved_at ? new Date(a.approved_at).toLocaleDateString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '';
-                var provider = a.ordering_provider || 'Unknown';
-                return '<div style="background:var(--card); border:1px solid ' + sevColor + '40; border-left:5px solid ' + sevColor + '; border-radius:10px; padding:14px; margin-bottom:10px;">' +
-                    '<div style="display:flex; justify-content:space-between; align-items:start;">' +
-                        '<div style="flex:1;">' +
-                            '<div style="font-size:15px; font-weight:700; color:var(--text-primary);">' + sanitize(a.patient_name) + '</div>' +
-                            '<div style="font-size:14px; color:' + sevColor + '; font-weight:700; margin-top:4px;">' +
-                                sanitize(a.test_name) + ': ' + sanitize(a.test_value) + ' ' + sanitize(a.test_units || '') +
-                            '</div>' +
-                            '<div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">Ref range: ' + sanitize(a.reference_range || 'N/A') + '</div>' +
+
+    // Hannah → Phil task #18: group alerts by patient so each patient appears once
+    // with all their critical/urgent values listed together.
+    var groups = {};
+    var groupOrder = [];
+    alerts.forEach(function(a) {
+        var key = a.patient_id || ('name:' + (a.patient_name || 'unknown'));
+        if (!groups[key]) { groups[key] = []; groupOrder.push(key); }
+        groups[key].push(a);
+    });
+
+    var patientCount = groupOrder.length;
+    container.innerHTML = '' +
+        '<div class="section-header">' +
+            '<h2 style="color:#ef4444;">🚨 Critical Lab Alerts</h2>' +
+            '<span class="section-action">' + patientCount + ' patient' + (patientCount === 1 ? '' : 's') + ' · ' + alerts.length + ' value' + (alerts.length === 1 ? '' : 's') + '</span>' +
+        '</div>' +
+        '<div class="stagger-in">' +
+        groupOrder.map(function(key) {
+            var rows = groups[key];
+            var first = rows[0];
+            // Highest-severity colour for the card border
+            var hasCritical = rows.some(function(r) { return r.severity === 'critical'; });
+            var sevColor = hasCritical ? '#ef4444' : (rows.some(function(r) { return r.severity === 'high'; }) ? '#f59e0b' : '#3b82f6');
+            var sevLabel = hasCritical ? 'CRITICAL' : (rows.some(function(r) { return r.severity === 'high'; }) ? 'HIGH' : 'URGENT');
+            var provider = first.ordering_provider || 'Unknown';
+            var collDate = first.collection_date || '';
+            var resultDate = first.result_received_at ? new Date(first.result_received_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '';
+
+            var valueRows = rows.map(function(a) {
+                var rowColor = a.severity === 'critical' ? '#ef4444' : a.severity === 'high' ? '#f59e0b' : '#3b82f6';
+                return '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--border-light);">' +
+                    '<div style="flex:1;">' +
+                        '<div style="font-size:13px; color:' + rowColor + '; font-weight:700;">' +
+                            sanitize(a.test_name) + ': ' + sanitize(a.test_value) + ' ' + sanitize(a.test_units || '') +
                         '</div>' +
-                        '<span style="font-size:10px; padding:4px 10px; border-radius:6px; background:' + sevColor + '20; color:' + sevColor + '; font-weight:700;">' + a.severity.toUpperCase() + '</span>' +
+                        '<div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">Ref range: ' + sanitize(a.reference_range || 'N/A') + '</div>' +
                     '</div>' +
-                    '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; font-size:11px; color:var(--text-tertiary);">' +
-                        '<span>👨‍⚕️ Approved by: <strong style="color:var(--text-secondary);">' + sanitize(provider) + '</strong></span>' +
-                        (collDate ? '<span>🩸 Collected: <strong style="color:var(--text-secondary);">' + sanitize(collDate) + '</strong></span>' : '') +
-                        (resultDate ? '<span>📥 Resulted: <strong style="color:var(--text-secondary);">' + resultDate + '</strong></span>' : '') +
-                        (approvedDate ? '<span>✅ Approved: <strong style="color:var(--text-secondary);">' + approvedDate + '</strong></span>' : '') +
-                    '</div>' +
-                    '<div style="display:flex; gap:8px; margin-top:10px;">' +
-                        '<button onclick="showCriticalLabActionModal(' + a.id + ', \'' + sanitize(a.patient_name).replace(/'/g, "\\'") + '\', \'' + sanitize(a.test_name).replace(/'/g, "\\'") + '\', \'' + sanitize(a.test_value) + '\')" style="flex:1; padding:10px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color:#ef4444; font-size:13px; font-weight:600; cursor:pointer;">Take Action & Sign Off</button>' +
-                        (a.patient_id ? '<button onclick="openChartPanel(\'' + a.patient_id + '\')" style="padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">Chart</button>' : '') +
-                    '</div>' +
+                    '<button onclick="showCriticalLabActionModal(' + a.id + ', \'' + sanitize(first.patient_name).replace(/'/g, "\\'") + '\', \'' + sanitize(a.test_name).replace(/'/g, "\\'") + '\', \'' + sanitize(a.test_value) + '\')" style="padding:6px 10px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; color:#ef4444; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;">Sign Off</button>' +
                 '</div>';
-            }).join('')}
-        </div>
-    `;
+            }).join('');
+
+            return '<div style="background:var(--card); border:1px solid ' + sevColor + '40; border-left:5px solid ' + sevColor + '; border-radius:10px; padding:14px; margin-bottom:10px;">' +
+                '<div style="display:flex; justify-content:space-between; align-items:start;">' +
+                    '<div style="flex:1;">' +
+                        '<div style="font-size:16px; font-weight:700; color:var(--text-primary);">' + sanitize(first.patient_name) + '</div>' +
+                        '<div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">' +
+                            '👨‍⚕️ ' + sanitize(provider) +
+                            (collDate ? ' · 🩸 Collected ' + sanitize(collDate) : '') +
+                            (resultDate ? ' · 📥 Resulted ' + resultDate : '') +
+                        '</div>' +
+                    '</div>' +
+                    '<span style="font-size:10px; padding:4px 10px; border-radius:6px; background:' + sevColor + '20; color:' + sevColor + '; font-weight:700;">' + sevLabel + ' · ' + rows.length + '</span>' +
+                '</div>' +
+                '<div style="margin-top:6px;">' + valueRows + '</div>' +
+                (first.patient_id ? '<div style="margin-top:10px;"><button onclick="openChartForPatient(\'' + first.patient_id + '\', \'' + sanitize(first.patient_name || '').replace(/\'/g, "\\\'") + '\')" style="width:100%; padding:8px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Open Chart</button></div>' : '') +
+            '</div>';
+        }).join('') +
+        '</div>';
 }
 
 // ─── CRITICAL LAB ALERTS (legacy async loader) ──────────────────────────────────
@@ -1609,7 +1637,7 @@ async function loadCriticalLabAlerts() {
                                 style="flex:1; padding:8px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color:#ef4444; font-size:12px; font-weight:600; cursor:pointer;">
                                 Take Action
                             </button>
-                            <button onclick="openPatientChart('${a.patient_id || ''}')"
+                            <button onclick="openChartForPatient('${a.patient_id || ''}', '${sanitize(a.patient_name || '').replace(/'/g, "\\'")}')"
                                 style="padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:12px; cursor:pointer;">
                                 View Chart
                             </button>
@@ -5621,7 +5649,7 @@ function renderChartPanel(content) {
         <!-- Kiosk Mode: Hand iPad to Patient + Send Forms (chart header) -->
         <div style="padding:6px 12px; display:flex; gap:6px;">
             ${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? `
-            <button class="kiosk-launch-btn" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify((d.pending_forms || []).filter(f => f.status !== 'completed')).replace(/"/g, '&quot;')}, '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="flex:1; justify-content:center; padding:10px 16px; font-size:13px;">
+            <button class="kiosk-launch-btn" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify((d.pending_forms || []).filter(f => f.status !== 'completed')).replace(/"/g, '&quot;')}, '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}', ${JSON.stringify(demo || {}).replace(/"/g, '&quot;')})" style="flex:1; justify-content:center; padding:10px 16px; font-size:13px;">
                 📋 Hand iPad to Patient <span class="kiosk-badge">${(d.pending_forms || []).filter(f => f.status !== 'completed').length}</span>
             </button>` : ''}
             <button onclick="showSendFormsModal('${d.healthie_id || ''}', '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? '' : 'flex:1;'} padding:10px 16px; font-size:13px; background:rgba(0,212,255,0.12); border:1px solid rgba(0,212,255,0.35); border-radius:8px; color:var(--cyan); font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px;">
@@ -6852,6 +6880,28 @@ function renderChartingTab(container, d) {
 
 // ==================== FORMS TAB ====================
 // Shows: Patient intake/medical forms (NOT SOAP notes — those go in Charting)
+// Cancel a Healthie form for the patient. Pass requestId for pending requests, or
+// answerGroupId for completed/in-progress submissions (e.g., empty kiosk stubs).
+async function cancelPatientForm(requestId, answerGroupId, formName) {
+    const what = requestId ? 'cancel' : 'delete';
+    if (!confirm(`${what === 'cancel' ? 'Cancel' : 'Delete'} "${formName}"?\n\nThis cannot be undone.`)) return;
+    try {
+        const body = requestId ? { request_id: requestId } : { answer_group_id: answerGroupId };
+        const r = await apiFetch('/ops/api/ipad/forms/cancel/', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+        if (r.success) {
+            showToast(`${what === 'cancel' ? 'Cancelled' : 'Deleted'} ${formName}`, 'success');
+            if (chartPanelPatientId) loadChartData(chartPanelPatientId);
+        } else {
+            showToast('Failed: ' + (r.error || 'Unknown error'), 'error');
+        }
+    } catch (e) {
+        showToast('Failed: ' + (e.message || 'Network error'), 'error');
+    }
+}
+
 function renderFormsTab(container, d) {
     // Kiosk launch button in Intake Forms tab
     const pendingKioskForms = (d.pending_forms || []).filter(f => f.status !== 'completed');
@@ -6859,7 +6909,7 @@ function renderFormsTab(container, d) {
         const kioskBtnDiv = document.createElement('div');
         kioskBtnDiv.style.cssText = 'padding:8px 12px;';
         kioskBtnDiv.innerHTML = `
-            <button class="kiosk-launch-btn-large" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify(pendingKioskForms).replace(/"/g, '&quot;')}, '${((d.demographics || {}).full_name || 'Patient').replace(/'/g, "\\'")}')">
+            <button class="kiosk-launch-btn-large" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify(pendingKioskForms).replace(/"/g, '&quot;')}, '${((d.demographics || {}).full_name || 'Patient').replace(/'/g, "\\'")}', ${JSON.stringify(d.demographics || {}).replace(/"/g, '&quot;')})">
                 📋 Hand iPad to Patient — ${pendingKioskForms.length} form${pendingKioskForms.length > 1 ? 's' : ''} pending
             </button>
         `;
@@ -6867,6 +6917,7 @@ function renderFormsTab(container, d) {
     }
 
     const allForms = d.healthie_chart_notes || [];
+    const allPending = d.pending_forms || [];
     const cleanAnswer = (txt) => (txt || '').replace(/Invalid Date/gi, '').replace(/&nbsp;/gi, ' ').replace(/<[^>]+>/g, '').replace(/\s{2,}/g, ' ').trim() || '—';
     // Filter OUT SOAP/chart notes — keep only patient-filled forms (intake, consent, history, etc.)
     const patientForms = allForms.filter(n => {
@@ -6886,18 +6937,51 @@ function renderFormsTab(container, d) {
         return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
     });
 
+    // FIX(2026-04-15): show ALL forms (filled and unfilled). No dedup — Brandy Campbell case
+    // proved that "completed" form_answer_groups can be empty stubs (kiosk bail-out artifacts),
+    // so we want to see both the pending request AND the empty completed shell so staff can
+    // cancel/clean either one.
+    const pendingForms = allPending.filter(p => p.status !== 'completed');
+    const pendingCards = pendingForms.map(p => {
+        const statusLabel = p.status === 'in_progress' ? 'IN PROGRESS' : 'NOT STARTED';
+        const statusColor = p.status === 'in_progress' ? '#f59e0b' : '#94a3b8';
+        const isOnboarding = p.source === 'onboarding';
+        const sourceLabel = isOnboarding
+            ? `<span style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7; font-weight:600;">${sanitize(p.flow_name || 'Onboarding')}</span>`
+            : '';
+        const dateLine = p.date ? `Sent ${formatDateDisplay(p.date)}` : (isOnboarding ? 'Onboarding flow item' : 'Requested');
+        // Cancel works only for requestedFormCompletions; onboarding items are baked into the
+        // patient's flow and removing them via API isn't supported. Hide the button there.
+        const cancelBtn = (!isOnboarding && p.request_id)
+            ? `<button onclick="event.stopPropagation(); cancelPatientForm('${p.request_id}', null, '${(p.name || 'this form').replace(/'/g, "\\'")}')" title="Cancel this form request" style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; padding:4px 8px; border-radius:5px; cursor:pointer; white-space:nowrap;">✕ Cancel</button>`
+            : '';
+        return `
+            <div class="chart-lab-card" style="margin:6px 12px; padding:12px 14px; border-radius:10px; background:var(--surface); border:1px solid ${statusColor}40; border-left:3px solid ${statusColor};">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:14px; font-weight:600; color:var(--text-primary); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">${sanitize(p.name || 'Form')} ${sourceLabel}</div>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${dateLine}</div>
+                    </div>
+                    <span style="font-size:9px; padding:3px 7px; border-radius:5px; background:${statusColor}20; color:${statusColor}; font-weight:700; white-space:nowrap;">${statusLabel}</span>
+                    ${cancelBtn}
+                </div>
+            </div>`;
+    }).join('');
+
     container.innerHTML = `
+        ${pendingCards}
         ${patientForms.length > 0 ? patientForms.slice(0, 20).map((n, idx) => {
             const intake = isIntake(n.name);
             // Auto-expand first intake form
             const expanded = intake && idx === 0;
             return `
             <div class="chart-lab-card" data-form-idx="${idx}" style="margin:6px 12px; padding:12px 14px; border-radius:10px; background:var(--surface); border:1px solid ${intake ? 'rgba(0,212,255,0.25)' : 'var(--border-light)'}; ${intake ? 'border-left:3px solid var(--cyan);' : ''} cursor:pointer;">
-                <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                    <div style="flex:1; min-width:0;">
                         <div style="font-size:14px; font-weight:600; color:${intake ? 'var(--cyan)' : 'var(--text-primary)'};">${intake ? '⭐ ' : ''}${n.name || 'Form'}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${formatDateDisplay(n.created_at)}${n.form_answers?.length ? ' · ' + n.form_answers.length + ' fields' : ''}</div>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${formatDateDisplay(n.created_at)}${n.form_answers?.length ? ' · ' + n.form_answers.length + ' fields' : ' · empty (no answers)'}</div>
                     </div>
+                    <button onclick="event.stopPropagation(); cancelPatientForm(null, '${n.id}', '${(n.name || 'this form').replace(/'/g, "\\'")}')" title="Delete this form submission" style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; padding:4px 8px; border-radius:5px; cursor:pointer; white-space:nowrap;">✕</button>
                     <span style="font-size:14px; color:var(--text-tertiary); transition:transform 0.2s;" class="form-chevron">${expanded ? '▼' : '▶'}</span>
                 </div>
                 ${!expanded && n.form_answers?.length > 0 ? `<div style="margin-top:6px; font-size:12px; color:var(--text-tertiary); line-height:1.4;">${n.form_answers.slice(0, 3).map(a => '<b>' + (a.label || '') + ':</b> ' + cleanAnswer(a.displayed_answer || a.answer).substring(0, 60)).join(' · ')}${n.form_answers.length > 3 ? ' …' : ''}</div>` : ''}
@@ -6910,7 +6994,7 @@ function renderFormsTab(container, d) {
                     `).join('')}
                 </div>
             </div>`;
-        }).join('') : '<div class="chart-empty" style="padding:24px; text-align:center;">No patient forms on file</div>'}
+        }).join('') : (pendingCards ? '' : '<div class="chart-empty" style="padding:24px; text-align:center;">No patient forms on file</div>')}
     `;
 
     // Make form cards clickable to expand/collapse
@@ -8783,7 +8867,7 @@ function renderPatientsView(container) {
         const color = p.avatar_color || getAvatarColor(name);
         const pType = formatClientType(p.client_type_key || p.client_type || '');
         return `
-                        <div class="recent-patient-card" onclick="openChartPanel('${p.healthie_client_id || p.healthie_id || p.id || p.patient_id}')">
+                        <div class="recent-patient-card" onclick="openChartForPatient('${p.healthie_client_id || p.healthie_id || p.id || p.patient_id}', '${(name || '').replace(/'/g, "\\'")}')">
                             ${p.avatar_url ? `<div class="patient-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>`}
                             <div class="recent-patient-name">${name}</div>
                             ${pType ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${pType}</div>` : ''}
@@ -8862,7 +8946,7 @@ function renderPatientListItem(p) {
 
     const pid = p.healthie_client_id || p.healthie_id || p.id || p.patient_id;
     return `
-        <div class="patient-list-item" onclick="openChartPanel('${pid}')" style="cursor:pointer;">
+        <div class="patient-list-item" onclick="openChartForPatient('${pid}', '${(name || '').replace(/'/g, "\\'")}')" style="cursor:pointer;">
             ${p.avatar_url ? `<div class="patient-list-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>`}
             <div class="patient-list-info">
                 <div class="patient-list-name">${sanitize(name)}
@@ -8874,6 +8958,7 @@ function renderPatientListItem(p) {
                 </div>
             </div>
             <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${label}</span>
+            ${hasHealthie ? `<button onclick="event.stopPropagation(); showMessagePatientModal('${pid}', '${(name || '').replace(/'/g, "\\'")}', '')" title="Send message to patient" style="margin-left:6px; padding:4px 8px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:11px; border-radius:5px; cursor:pointer; white-space:nowrap;">💬</button>` : ''}
         </div>
     `;
 }
@@ -8969,7 +9054,7 @@ async function selectPatient(id) {
                         ${patient.healthie_client_id ? '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ Healthie</span>' : '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(239,68,68,0.12); color:#ef4444;">❌ Not linked</span>'}
                     </div>
                 </div>
-                <button onclick="openChartPanel('${patient.healthie_client_id || id}')" style="padding:6px 14px; border-radius:8px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; color:#0a0f1a; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap;">Open Chart</button>
+                <button onclick="openChartForPatient('${patient.healthie_client_id || id}', '${(name || '').replace(/'/g, "\\'")}')" style="padding:6px 14px; border-radius:8px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; color:#0a0f1a; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap;">Open Chart</button>
             </div>
             <div id="patient360Data">
                 <div class="patient-360-loading">
@@ -10957,6 +11042,9 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
                 body: JSON.stringify({ action: 'get_appointment_types' })
             });
             scheduleAppointmentTypes = data.appointment_types || [];
+            // Build name→default-length lookup so the grid can flag custom-duration appts.
+            window._apptTypeDefaultLen = {};
+            scheduleAppointmentTypes.forEach(function(t) { window._apptTypeDefaultLen[t.name] = t.length || 30; });
         } catch (e) {
             console.error('[Schedule] Failed to load appointment types:', e);
         }
@@ -11059,6 +11147,21 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
                     </select>
                 </div>
 
+                <!-- Duration (custom override; defaults to type's length, capped 5–120) -->
+                <div style="margin-bottom:14px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Duration <span id="addSchedDurDefault" style="color:var(--text-tertiary); text-transform:none; letter-spacing:0; font-size:10px;"></span></label>
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <button type="button" data-dur="15" onclick="setSchedDuration(15)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">15</button>
+                        <button type="button" data-dur="30" onclick="setSchedDuration(30)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">30</button>
+                        <button type="button" data-dur="45" onclick="setSchedDuration(45)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">45</button>
+                        <button type="button" data-dur="60" onclick="setSchedDuration(60)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">60</button>
+                        <button type="button" data-dur="90" onclick="setSchedDuration(90)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">90</button>
+                        <button type="button" data-dur="120" onclick="setSchedDuration(120)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">120</button>
+                        <input id="addSchedDuration" type="number" min="5" max="120" step="5" placeholder="min" oninput="onSchedDurationInput()" style="width:64px; padding:6px 8px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:12px; font-family:inherit;">
+                    </div>
+                    <div id="addSchedDurWarn" style="display:none; margin-top:6px; padding:6px 10px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; color:#f87171; font-size:11px;"></div>
+                </div>
+
                 <!-- Date & Time -->
                 <div style="display:flex; gap:10px; margin-bottom:14px;">
                     <div style="flex:1;">
@@ -11115,6 +11218,104 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
             if (this.value === '12093125') locSel.value = 'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301';
             else locSel.value = 'NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1';
         });
+    }
+
+    // Duration defaults to selected appointment type's length; updates whenever type changes.
+    var typeSel = document.getElementById('addSchedType');
+    if (typeSel) {
+        typeSel.addEventListener('change', function() {
+            var def = parseInt(this.selectedOptions[0]?.dataset?.length || '30', 10);
+            setSchedDuration(def);
+            var lbl = document.getElementById('addSchedDurDefault');
+            if (lbl) lbl.textContent = '(type default: ' + def + ' min)';
+        });
+    }
+    setSchedDuration(30); // initial paint
+}
+
+// Duration chip + input handlers (Add to Schedule modal)
+function setSchedDuration(min) {
+    var input = document.getElementById('addSchedDuration');
+    if (input) input.value = String(min);
+    var chips = document.querySelectorAll('#addScheduleModal .dur-chip');
+    chips.forEach(function(c) {
+        var sel = parseInt(c.getAttribute('data-dur'), 10) === min;
+        c.style.background = sel ? 'rgba(0,212,255,0.15)' : 'var(--surface)';
+        c.style.borderColor = sel ? 'var(--cyan)' : 'var(--border-light)';
+        c.style.color = sel ? 'var(--cyan)' : 'var(--text-secondary)';
+        c.style.fontWeight = sel ? '700' : '400';
+    });
+    validateSchedDuration();
+}
+function onSchedDurationInput() {
+    var v = parseInt(document.getElementById('addSchedDuration').value || '0', 10);
+    var chips = document.querySelectorAll('#addScheduleModal .dur-chip');
+    chips.forEach(function(c) {
+        var sel = parseInt(c.getAttribute('data-dur'), 10) === v;
+        c.style.background = sel ? 'rgba(0,212,255,0.15)' : 'var(--surface)';
+        c.style.borderColor = sel ? 'var(--cyan)' : 'var(--border-light)';
+        c.style.color = sel ? 'var(--cyan)' : 'var(--text-secondary)';
+        c.style.fontWeight = sel ? '700' : '400';
+    });
+    validateSchedDuration();
+}
+// Hard-block ONLY out-of-range duration (5–120). Overlaps now show a warning but DO NOT block booking.
+// Provider availability windows are enforced server-side by Healthie.
+// Returns: true=OK, false=hard-blocked (range only). Overlap is signaled via dataset.warnOverlap.
+function validateSchedDuration() {
+    var warn = document.getElementById('addSchedDurWarn');
+    var dur = parseInt(document.getElementById('addSchedDuration')?.value || '0', 10);
+    var dateVal = document.getElementById('addSchedDate')?.value;
+    var timeVal = document.getElementById('addSchedTime')?.value;
+    var provId = document.getElementById('addSchedProvider')?.value;
+    if (!warn) return true;
+    warn.style.display = 'none'; warn.textContent = ''; warn.dataset.warnOverlap = '';
+    warn.style.background = 'rgba(239,68,68,0.1)'; warn.style.borderColor = 'rgba(239,68,68,0.3)'; warn.style.color = '#f87171';
+    if (!dur || dur < 5 || dur > 120) {
+        warn.textContent = 'Duration must be 5–120 min'; warn.style.display = 'block'; return false;
+    }
+    if (!dateVal || !timeVal || !provId || typeof scheduleAllData === 'undefined' || !Array.isArray(scheduleAllData)) return true;
+    // Compute requested window in minutes-of-day
+    var hh = parseInt(timeVal.split(':')[0], 10), mm = parseInt(timeVal.split(':')[1], 10);
+    var reqStart = hh * 60 + mm, reqEnd = reqStart + dur;
+    for (var i = 0; i < scheduleAllData.length; i++) {
+        var a = scheduleAllData[i];
+        if (!a || a.provider_id !== provId || !a.date) continue;
+        var m = String(a.date).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
+        if (!m || m[1] !== dateVal) continue;
+        var aStart = parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+        var aEnd = aStart + (a.length || 30);
+        if (reqStart < aEnd && reqEnd > aStart) {
+            // SOFT warning: surface the overlap but allow staff to book anyway.
+            warn.textContent = '⚠ Overlaps existing appt at ' + (a.time || (m[2] + ':' + m[3])) + ' (' + (a.full_name || 'patient') + '). You can still book.';
+            warn.style.background = 'rgba(251,191,36,0.1)';
+            warn.style.borderColor = 'rgba(251,191,36,0.3)';
+            warn.style.color = '#fbbf24';
+            warn.style.display = 'block';
+            warn.dataset.warnOverlap = '1';
+            return true;
+        }
+    }
+    return true;
+}
+
+// Edit duration of an existing appointment (Hannah-flow item).
+async function editApptDuration(apptId, currentLen, defaultLen, patientName) {
+    var cur = currentLen || defaultLen || 30;
+    var input = window.prompt('Edit duration for ' + (patientName || 'appointment') + ' (5–120 min). Type default: ' + (defaultLen || '?') + ' min.', String(cur));
+    if (input === null) return;
+    var n = parseInt(input, 10);
+    if (isNaN(n) || n < 5 || n > 120) { showToast('Duration must be 5–120 min', 'error'); return; }
+    if (n === currentLen) return;
+    try {
+        await apiFetch('/ops/api/ipad/schedule/', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'update_length', appointment_id: apptId, length: n })
+        });
+        showToast('Duration updated to ' + n + ' min', 'success');
+        await loadScheduleForRange(true);
+    } catch (e) {
+        showToast('Failed: ' + (e.message || 'Error'), 'error');
     }
 }
 
@@ -11196,6 +11397,10 @@ async function submitAddToSchedule() {
     if (!patientId) { showToast('Please select a patient', 'error'); return; }
     if (!typeId) { showToast('Please select appointment type', 'error'); return; }
     if (!dateVal || !timeVal) { showToast('Please select date and time', 'error'); return; }
+
+    // Custom duration (HARD-block on overlap or out-of-range)
+    var durationVal = parseInt(document.getElementById('addSchedDuration')?.value || '0', 10);
+    if (!validateSchedDuration()) { showToast('Fix the duration warning before booking', 'error'); return; }
 
     // Construct datetime in Phoenix timezone (MST = UTC-7)
     var datetime = dateVal + 'T' + timeVal + ':00-07:00';
@@ -11279,6 +11484,7 @@ async function submitAddToSchedule() {
                 provider_id: providerId,
                 appointment_type_id: typeId,
                 datetime: datetime,
+                length: durationVal || null,
                 contact_type: contactType,
                 location: location
             })
@@ -11835,7 +12041,14 @@ async function showMessagePatientModal(patientId, patientName, appointmentType) 
         '<h3 style="margin:0; font-size:18px;">💬 Message ' + (patientName || 'patient') + '</h3>' +
         '<button onclick="document.getElementById(\'msgPatientModal\').remove()" style="background:none; border:none; color:var(--text-secondary); font-size:22px; cursor:pointer;">&times;</button>' +
         '</div>' +
-        '<div id="msgPatientChannel" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; font-size:13px; color:var(--text-secondary); margin-bottom:12px;">Checking channel…</div>' +
+        '<div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">' +
+        '<label style="font-size:12px; color:var(--text-secondary); white-space:nowrap;">Send via:</label>' +
+        '<select id="msgPatientAccount" onchange="onMsgAccountChange()" style="flex:1; padding:8px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-primary); font-size:13px;">' +
+        '<option value="">Loading…</option>' +
+        '</select>' +
+        '</div>' +
+        '<div id="msgPatientChannel" style="padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; font-size:12px; color:var(--text-secondary); margin-bottom:6px;">Checking channel…</div>' +
+        '<label style="font-size:11px; color:var(--text-tertiary); display:flex; align-items:center; gap:6px; cursor:pointer; margin-bottom:12px;"><input type="checkbox" id="msgPatientSaveOverride" style="margin:0;"> Remember this choice for future messages to this patient</label>' +
         '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Message</label>' +
         '<textarea id="msgPatientBody" rows="5" maxlength="1600" placeholder="Type your message…" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-family:inherit; resize:vertical; margin-bottom:6px;"></textarea>' +
         '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">' +
@@ -11868,21 +12081,84 @@ async function showMessagePatientModal(patientId, patientName, appointmentType) 
         var data = await resp.json();
         var chEl = document.getElementById('msgPatientChannel');
         if (!chEl) return;
-        if (!resp.ok || !data.success || data.channel.channel === 'unavailable') {
-            chEl.style.background = 'rgba(239,68,68,0.08)';
-            chEl.style.borderColor = 'rgba(239,68,68,0.3)';
-            chEl.style.color = '#ef4444';
-            chEl.innerHTML = '❌ Cannot message this patient — ' + (data.channel?.reason || data.error || 'unknown reason');
-            sendBtn.setAttribute('data-no-channel', '1');
-            sendBtn.disabled = true;
-            sendBtn.style.opacity = '0.5';
-        } else {
-            chEl.innerHTML = 'Channel: <strong style="color:var(--text-primary);">' + data.channel.label + '</strong>' + (data.channel.phone ? ' &middot; ' + data.channel.phone : '');
+        // Populate the account dropdown; the selected value IS the channel that will be used.
+        var accountSel = document.getElementById('msgPatientAccount');
+        var currentOverride = data.patient?.messaging_account_override || '';
+        var suggested = data.channel?.channel && data.channel.channel !== 'unavailable' ? data.channel.channel : '';
+        if (accountSel && data.available_accounts) {
+            accountSel.innerHTML = ''; // clear "Loading…"
+            data.available_accounts.forEach(function(a) {
+                var opt = document.createElement('option');
+                opt.value = a.key;
+                var tags = [];
+                if (a.key === currentOverride) tags.push('saved');
+                if (a.key === suggested && a.key !== currentOverride) tags.push('auto-detected');
+                opt.textContent = a.label + (tags.length ? ' — ' + tags.join(', ') : '');
+                accountSel.appendChild(opt);
+            });
+            // Prefer saved override, then auto-detected suggestion, else first option
+            accountSel.value = currentOverride || suggested || accountSel.options[0].value;
+            // If patient's saved override differs from the auto-suggestion, pre-check
+            // "remember" so if staff changes it, saving is the default.
+            var saveCb = document.getElementById('msgPatientSaveOverride');
+            if (saveCb && currentOverride) saveCb.checked = true;
         }
+
+        // Render channel info for the CURRENTLY-selected account (may differ from server suggestion).
+        renderMsgChannelInfo(accountSel?.value, data, resp.ok);
     } catch (err) {
         var chEl2 = document.getElementById('msgPatientChannel');
         if (chEl2) { chEl2.textContent = 'Could not check channel: ' + (err.message || err); }
     }
+}
+
+// Cached GET response so re-rendering the channel info line doesn't re-fetch.
+window._msgModalLastData = null;
+
+function renderMsgChannelInfo(accountKey, data, respOk) {
+    var chEl = document.getElementById('msgPatientChannel');
+    if (!chEl) return;
+    window._msgModalLastData = data;
+    var acct = (data?.available_accounts || []).find(function(a){ return a.key === accountKey; });
+    var label = acct ? acct.label : 'Unknown';
+    var serverSub = data?.channel?.channel;
+    var serverFoundContact = respOk && data?.success && serverSub !== 'unavailable';
+    var currentOverride = data?.patient?.messaging_account_override || '';
+    var phone = data?.channel?.phone || '';
+
+    // Case 1: the account they picked matches the one the server successfully probed.
+    if (serverFoundContact && accountKey === serverSub) {
+        chEl.style.background = 'rgba(34,197,94,0.08)';
+        chEl.style.borderColor = 'rgba(34,197,94,0.3)';
+        chEl.style.color = '#4ade80';
+        chEl.innerHTML = '✅ Will send to <strong style="color:var(--text-primary);">' + label + '</strong>' + (phone ? ' &middot; ' + phone : '');
+        return;
+    }
+    // Case 2: user picked a different account than what the server probed.
+    // We can't be 100% sure the contact exists there without a re-probe; show a neutral note.
+    if (accountKey && accountKey !== serverSub) {
+        chEl.style.background = 'rgba(251,191,36,0.08)';
+        chEl.style.borderColor = 'rgba(251,191,36,0.3)';
+        chEl.style.color = '#fbbf24';
+        chEl.innerHTML = '⚠ Will try <strong style="color:var(--text-primary);">' + label + '</strong>. If the patient\'s contact isn\'t in this account, send will fail — check "Remember" before sending to save this choice.';
+        return;
+    }
+    // Case 3: server said unavailable and user hasn\'t picked anything yet
+    chEl.style.background = 'rgba(239,68,68,0.08)';
+    chEl.style.borderColor = 'rgba(239,68,68,0.3)';
+    chEl.style.color = '#ef4444';
+    chEl.innerHTML = '❌ No contact auto-located — pick an account above.';
+}
+
+function onMsgAccountChange() {
+    var sel = document.getElementById('msgPatientAccount');
+    var data = window._msgModalLastData;
+    if (!sel || !data) return;
+    renderMsgChannelInfo(sel.value, data, true);
+    // Auto-check "Remember" when staff picks something different from the saved override
+    var saveCb = document.getElementById('msgPatientSaveOverride');
+    var currentOverride = data?.patient?.messaging_account_override || '';
+    if (saveCb && sel.value !== currentOverride) saveCb.checked = true;
 }
 
 async function sendPatientMessage() {
@@ -11896,12 +12172,19 @@ async function sendPatientMessage() {
     if (!confirm('Send this message now?')) return;
 
     btn.disabled = true; btn.textContent = 'Sending…'; btn.style.opacity = '0.7';
+    // Always send the selected account so the server probes THAT one (not auto-routing).
+    // If "Remember" is checked, also persist it as an override for future messages.
+    var accountChoice = document.getElementById('msgPatientAccount')?.value || '';
+    var saveOverride = document.getElementById('msgPatientSaveOverride')?.checked;
+    var payload = { patient_id: patientId, body: body, appointment_type: apptType };
+    if (accountChoice && saveOverride) payload.save_account_override = accountChoice;
+    else if (accountChoice) payload.use_account_for_send = accountChoice;
     try {
         var resp = await fetch('/ops/api/ipad/schedule/message/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ patient_id: patientId, body: body, appointment_type: apptType }),
+            body: JSON.stringify(payload),
         });
         var data = await resp.json();
         if (!resp.ok || !data.success) throw new Error(data.error || 'Send failed');
@@ -12008,7 +12291,7 @@ function showNewPatientModal() {
                     </div>
                     <div style="flex:1;">
                         <label style="${labelStyle}">Clinic</label>
-                        <select id="npClinic" style="${fieldStyle}" onchange="updateClinicFromType()">
+                        <select id="npClinic" style="${fieldStyle}">
                             <option value="nowprimary.care">NowPrimary.Care</option>
                             <option value="nowmenshealth.care">NowMensHealth.Care</option>
                         </select>
@@ -12524,10 +12807,13 @@ function renderScheduleDayGrid(contentEl) {
                         if (isTele) html += '<span style="font-size:8px; flex-shrink:0;">📹</span>';
                         html += '<span style="font-size:12px; font-weight:600; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + sanitize(p.full_name || '?') + '</span>';
                         html += '</div>';
-                        html += '<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.time || '') + ' · ' + abbreviateType(p.appointment_type) + '</div>';
+                        var _defLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+                        var _isCustomDur = p.length && _defLen && p.length !== _defLen;
+                        html += '<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.time || '') + ' · ' + abbreviateType(p.appointment_type) + (p.length ? ' · ' + p.length + 'm' : '') + (_isCustomDur ? ' <span title="Custom duration (default ' + _defLen + 'm)" style="color:#fbbf24;">⏱</span>' : '') + '</div>';
                         html += '</div>';
                         // Action buttons
                         html += '<div style="display:flex; gap:3px; flex-shrink:0;">';
+                        if (!isFinal && apptId) html += '<button onclick="event.stopPropagation(); editApptDuration(\x27' + apptId + '\x27, ' + (p.length || 'null') + ', ' + (_defLen || 'null') + ', \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:' + (_isCustomDur ? 'rgba(251,191,36,0.2)' : 'rgba(255,255,255,0.05)') + '; border:1px solid ' + (_isCustomDur ? 'rgba(251,191,36,0.4)' : 'var(--border-light)') + '; color:' + (_isCustomDur ? '#fbbf24' : 'var(--text-tertiary)') + '; font-size:9px; cursor:pointer;" title="Edit duration">⏱</button>';
                         if (!isFinal && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + dateStr + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:9px; cursor:pointer;" title="Move/reschedule">↔</button>';
                         if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:9px; cursor:pointer;" title="Message patient">💬</button>';
                         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:9px; cursor:pointer;">📋</button>';
@@ -12941,6 +13227,12 @@ function openVitalsModal(patientId, patientName) {
     html += '<div style="font-size:13px; color:var(--text-tertiary); margin-bottom:14px;">Patient: <strong style="color:var(--text-primary);">' + patientName + '</strong></div>';
 
     var selectStyle = 'width:100%; padding:10px 8px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:13px; font-family:inherit;';
+
+    // Dictation row (Hannah → Phil task #15) — speak vitals, auto-fills the fields below
+    html += '<div style="display:flex; gap:8px; margin-bottom:14px; align-items:center;">';
+    html += '<button id="vitalsDictateBtn" type="button" onclick="toggleVitalsDictation()" style="padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">🎤 Dictate</button>';
+    html += '<input id="vitalsDictateInput" type="text" placeholder="e.g. \'BP 120 over 80, pulse 72, temp 98.6, sat 98, weight 185\'" style="' + formStyle + '" oninput="parseDictatedVitalsToFields(this.value)">';
+    html += '</div>';
 
     // Row 1: Blood Pressure + Method
     html += '<div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">';
@@ -14973,6 +15265,12 @@ async function checkoutCart() {
         buttons.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
     }
 
+    // Per-attempt idempotency key for cart checkout (Coby Cook pattern protection)
+    const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('cart-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
+    let result = null;
     try {
         showToast('Processing charge...', 'info');
         const response = await fetch('/ops/api/ipad/billing/charge/', {
@@ -14989,11 +15287,12 @@ async function checkoutCart() {
                     name: item.name,
                     amount: Math.round(item.amount * (1 - discountPct / 100) * 100) / 100,
                     quantity: item.quantity
-                }))
+                })),
+                idempotency_key: idempotencyKey
             })
         });
 
-        const result = await response.json();
+        result = await response.json();
 
         if (result.success) {
             // Clear server cart for this patient
@@ -15033,12 +15332,62 @@ async function checkoutCart() {
         }
     } catch (err) {
         console.error('Cart charge error:', err);
-        showToast('Network error - check before retrying.', 'error');
+        showToast('Connection lost — checking if charge succeeded…', 'info');
+        const recovered = await pollChargeRecovery(idempotencyKey, 30000);
+        if (recovered && recovered.status === 'succeeded') {
+            // Clear server cart for this patient
+            try {
+                await fetch('/ops/api/ipad/billing/cart/?patient_id=' + encodeURIComponent(patient.healthieId || patient.patientId), {
+                    method: 'DELETE', credentials: 'include'
+                });
+            } catch (e) { /* ignore */ }
+            modal?.remove();
+            window._billingCart = [];
+            window._cartDiscountPct = 0;
+            showChargeSuccess({
+                patientName: patient.patientName,
+                amount: recovered.amount || total,
+                description: desc,
+                chargeId: recovered.charge_id,
+                productId: cart[0]?.product_id,
+                itemCount: cart.length,
+            });
+            showToast('Charge recovered after network drop — confirmed succeeded.', 'success');
+            if (typeof loadPatientPaymentData === 'function') {
+                loadPatientPaymentData(patient.healthieId || patient.patientId);
+            }
+            return;
+        }
+        if (recovered && recovered.status === 'failed') {
+            showToast('Charge failed: ' + (recovered.error_message || 'see recovery record'), 'error');
+        } else {
+            showToast('Network error — charge did NOT go through. Safe to retry.', 'error');
+        }
         if (modal) {
             const buttons = modal.querySelectorAll('button');
             buttons.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
         }
     }
+}
+
+// Recovery poller for cart/processCharge — same pattern as ship-order.
+async function pollChargeRecovery(idempotencyKey, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 30000);
+    let attempt = 0;
+    while (Date.now() < deadline) {
+        attempt++;
+        try {
+            const r = await fetch('/ops/api/ipad/billing/recovery/?idempotency_key=' + encodeURIComponent(idempotencyKey), {
+                credentials: 'include'
+            });
+            if (r.ok) {
+                const data = await r.json();
+                if (data.found && data.transaction) return data.transaction;
+            }
+        } catch (e) { /* keep polling */ }
+        await new Promise(res => setTimeout(res, Math.min(2000 + attempt * 1000, 5000)));
+    }
+    return null;
 }
 
 function showCustomChargeForm(patientId, healthieId, patientName) {
@@ -15150,6 +15499,13 @@ async function processCharge({ patientId, healthieId, patientName, amount, descr
         buttons.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
     }
 
+    // Per-attempt idempotency key — server replays prior result if same key arrives twice,
+    // and we can use /recovery to recover state if the iPad's fetch loses the response.
+    const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('charge-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
+    let result = null;
     try {
         showToast('Processing charge...', 'info');
         const response = await fetch('/ops/api/ipad/billing/charge/', {
@@ -15161,11 +15517,12 @@ async function processCharge({ patientId, healthieId, patientName, amount, descr
                 amount: amount,
                 description: description,
                 stripe_account: stripeAccount,
-                product_id: productId
+                product_id: productId,
+                idempotency_key: idempotencyKey
             })
         });
 
-        const result = await response.json();
+        result = await response.json();
 
         if (result.success) {
             modal?.remove();
@@ -15194,7 +15551,30 @@ async function processCharge({ patientId, healthieId, patientName, amount, descr
         }
     } catch (err) {
         console.error('Charge error:', err);
-        showToast('Network error - charge may not have processed. Check before retrying.', 'error');
+        // Network drop: poll /recovery to see if the charge actually went through
+        showToast('Connection lost — checking if charge succeeded…', 'info');
+        const recovered = await pollChargeRecovery(idempotencyKey, 30000);
+        if (recovered && recovered.status === 'succeeded') {
+            modal?.remove();
+            showChargeSuccess({
+                patientName,
+                amount: recovered.amount || amount,
+                description,
+                chargeId: recovered.charge_id,
+                productId,
+                paymentMethod: undefined,
+            });
+            showToast('Charge recovered after network drop — confirmed succeeded.', 'success');
+            if (typeof loadPatientPaymentData === 'function') {
+                loadPatientPaymentData(healthieId || patientId);
+            }
+            return;
+        }
+        if (recovered && recovered.status === 'failed') {
+            showToast('Charge failed: ' + (recovered.error_message || 'see recovery record'), 'error');
+        } else {
+            showToast('Network error — charge did NOT go through. Safe to retry.', 'error');
+        }
         if (modal) {
             const buttons = modal.querySelectorAll('button');
             buttons.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
@@ -15844,6 +16224,15 @@ async function executeShipOrder() {
 
     if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; btn.style.opacity = '0.6'; }
 
+    // FIX(2026-04-15): per-checkout idempotency key. If the network drops mid-charge
+    // (Coby Cook case — server completed but iPad never got the response), we can
+    // poll /recovery to find out whether the charge actually went through, and a
+    // staff retry won't double-charge thanks to the server-side replay guard.
+    const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('ship-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
+    let result = null;
     try {
         const response = await fetch('/ops/api/ipad/billing/ship-order/', {
             method: 'POST',
@@ -15857,11 +16246,12 @@ async function executeShipOrder() {
                     price: i.price,
                     quantity: i.quantity
                 })),
-                shipping_address: window._shipOverrideAddress || null
+                shipping_address: window._shipOverrideAddress || null,
+                idempotency_key: idempotencyKey
             })
         });
 
-        const result = await response.json();
+        result = await response.json();
 
         if (result.success) {
             document.getElementById('ship-modal')?.remove();
@@ -15889,9 +16279,56 @@ async function executeShipOrder() {
         }
     } catch (err) {
         console.error('Ship order error:', err);
-        showToast('Network error — check before retrying', 'error');
-        if (btn) { btn.disabled = false; btn.textContent = '📦 Charge & Ship'; btn.style.opacity = '1'; }
+        // Network failure: poll /recovery to see if the charge actually went through
+        // before letting staff retry (would otherwise double-charge).
+        if (btn) { btn.disabled = true; btn.textContent = 'Connection lost — checking…'; btn.style.opacity = '0.6'; }
+        const recovered = await pollShipOrderRecovery(idempotencyKey, 30000);
+        if (recovered && recovered.status === 'succeeded') {
+            const orderedItems = [...cart];
+            window._shipCart = [];
+            window._shipOverrideAddress = null;
+            document.getElementById('ship-modal')?.remove();
+            showShipOrderConfirmation({
+                patientName: patient.patientName,
+                charge: { id: recovered.charge_id, amount: recovered.amount, status: 'succeeded', card: { brand: null, last4: null } },
+                wooOrder: null,
+                shipping: null,
+                dispenseIds: [],
+                items: orderedItems,
+                consentSent: false,
+                recovered: true,
+            });
+            showToast('Charge recovered after network drop — confirmed succeeded.', 'success');
+            if (typeof loadPatientPaymentData === 'function') {
+                loadPatientPaymentData(patient.healthieId || patient.patientId);
+            }
+        } else {
+            showToast('Network error — charge did NOT go through. Safe to retry.', 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '📦 Charge & Ship'; btn.style.opacity = '1'; }
+        }
     }
+}
+
+// Poll the recovery endpoint until we find a transaction or timeout.
+// Returns the transaction (with status) or null if nothing landed within timeoutMs.
+async function pollShipOrderRecovery(idempotencyKey, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 30000);
+    let attempt = 0;
+    while (Date.now() < deadline) {
+        attempt++;
+        try {
+            const r = await fetch('/ops/api/ipad/billing/recovery/?idempotency_key=' + encodeURIComponent(idempotencyKey), {
+                credentials: 'include'
+            });
+            if (r.ok) {
+                const data = await r.json();
+                if (data.found && data.transaction) return data.transaction;
+            }
+        } catch (e) { /* keep polling — likely still offline */ }
+        // Backoff: 2s, 3s, 4s, 5s, 5s, 5s...
+        await new Promise(res => setTimeout(res, Math.min(2000 + attempt * 1000, 5000)));
+    }
+    return null;
 }
 
 // ─── SHIP ORDER CONFIRMATION (comprehensive) ──────────────────────────────────
@@ -16829,6 +17266,78 @@ async function deleteMessage(noteId) {
     }
 }
 
+// Vitals dictation (Hannah → Phil task #15) — uses _startDictation, parses spoken
+// numbers like "BP one twenty over eighty, pulse seventy two" into the modal fields.
+var _vitalsDictationRec = null;
+function toggleVitalsDictation() {
+    var btn = document.getElementById('vitalsDictateBtn');
+    if (!btn) return;
+    if (_vitalsDictationRec && _vitalsDictationRec._active) {
+        _stopDictation(_vitalsDictationRec, 'vitalsDictateInput', 'vitalsDictateBtn',
+            { bg: 'var(--surface)', border: 'var(--border-light)', color: 'var(--text-secondary)', text: '🎤 Dictate', placeholder: "e.g. 'BP 120 over 80, pulse 72, temp 98.6, sat 98, weight 185'" });
+        _vitalsDictationRec = null;
+        var inp = document.getElementById('vitalsDictateInput');
+        if (inp && inp.value) parseDictatedVitalsToFields(inp.value);
+    } else {
+        _vitalsDictationRec = _startDictation('vitalsDictateInput', 'vitalsDictateBtn', function() {
+            var b = document.getElementById('vitalsDictateBtn');
+            if (b) b.textContent = '🎤 Dictate';
+        });
+        if (_vitalsDictationRec) btn.textContent = '⏹ Stop';
+    }
+}
+
+// Convert spoken number words → digits, then extract vitals into the modal fields.
+function _wordsToDigits(s) {
+    var map = { zero:0, oh:0, one:1, two:2, to:2, too:2, three:3, four:4, for:4, five:5, six:6, seven:7, eight:8, ate:8, nine:9,
+        ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19,
+        twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90, hundred:100 };
+    var tokens = s.toLowerCase().replace(/-/g, ' ').split(/\s+/);
+    var out = [], i = 0;
+    while (i < tokens.length) {
+        var t = tokens[i];
+        if (t in map) {
+            var num = map[t]; i++;
+            while (i < tokens.length && tokens[i] in map) {
+                var nxt = map[tokens[i]];
+                if (nxt === 100 && num) num *= 100;
+                else if (nxt < 10 && num % 10 === 0 && num > 0) num += nxt;
+                else if (num > 0 && nxt < 100 && (num < 100)) num = num * 100 + nxt; // "one twenty" → 120
+                else num += nxt;
+                i++;
+            }
+            out.push(String(num));
+        } else { out.push(t); i++; }
+    }
+    return out.join(' ');
+}
+
+function parseDictatedVitalsToFields(raw) {
+    if (!raw) return;
+    var text = _wordsToDigits(raw).toLowerCase();
+    var setIfEmpty = function(id, val) {
+        var el = document.getElementById(id);
+        if (el && val != null && (!el.value || el.dataset.dictated === '1')) {
+            el.value = val; el.dataset.dictated = '1';
+            if (id === 'vHeight' || id === 'vWeight') calcBMI();
+        }
+    };
+    var bp = text.match(/(?:bp|blood pressure)?\s*(\d{2,3})\s*(?:\/|over|on)\s*(\d{2,3})/);
+    if (bp) setIfEmpty('vBP', bp[1] + '/' + bp[2]);
+    var hr = text.match(/(?:pulse|heart rate|hr|p)\s*(?:of|is|at)?\s*(\d{2,3})/);
+    if (hr) setIfEmpty('vPulse', hr[1]);
+    var temp = text.match(/(?:temp|temperature|t)\s*(?:of|is|at)?\s*(\d{2,3}(?:\.\d)?)/);
+    if (temp) setIfEmpty('vTemp', temp[1]);
+    var rr = text.match(/(?:rr|resp|respirations?|respiratory rate|breathing)\s*(?:of|is|at)?\s*(\d{1,2})/);
+    if (rr) setIfEmpty('vRR', rr[1]);
+    var spo2 = text.match(/(?:sp[o0]2|sat|saturation|oxygen|o2 sat)\s*(?:of|is|at)?\s*(\d{2,3})\s*%?/);
+    if (spo2) setIfEmpty('vSpO2', spo2[1]);
+    var wt = text.match(/(?:weight|wt)\s*(?:of|is|at)?\s*(\d{2,4}(?:\.\d)?)/);
+    if (wt) setIfEmpty('vWeight', wt[1]);
+    var ht = text.match(/(?:height|ht)\s*(?:of|is|at)?\s*(\d{2,3}(?:\.\d)?)/);
+    if (ht) setIfEmpty('vHeight', ht[1]);
+}
+
 // Speech-to-text — shared helper. No cached state. Only appends final results
 // to the input. You can freely delete/edit the textarea without interference.
 function _startDictation(inputId, btnId, onStop) {
@@ -17133,7 +17642,11 @@ async function submitResetPassword(mode) {
 let kioskActive = false;
 let kioskSessionIds = [];
 let kioskPopstateHandler = null;
+let kioskBeforeUnloadHandler = null;
 let kioskOriginalOverscroll = '';
+let kioskOriginalMainDisplay = '';
+let kioskOriginalChartDisplay = '';
+let kioskOriginalHash = '';
 
 /**
  * Launch kiosk mode — fullscreen patient form overlay
@@ -17275,11 +17788,16 @@ async function submitSendForms() {
     }
 }
 
-function launchKioskMode(patientId, healthieId, pendingForms, patientName) {
+function launchKioskMode(patientId, healthieId, pendingForms, patientName, demographics) {
     // Parse forms if passed as string (from inline HTML attribute)
     if (typeof pendingForms === 'string') {
         try { pendingForms = JSON.parse(pendingForms); } catch(e) { pendingForms = []; }
     }
+    // FIX(2026-04-15): accept demographics so forms can pre-fill name/DOB/email/phone/address
+    if (typeof demographics === 'string') {
+        try { demographics = JSON.parse(demographics); } catch(e) { demographics = {}; }
+    }
+    window.kioskPatientDemo = demographics || {};
 
     if (!pendingForms || pendingForms.length === 0) {
         showToast('No pending forms for this patient', 'info');
@@ -17292,7 +17810,24 @@ function launchKioskMode(patientId, healthieId, pendingForms, patientName) {
     }
 
     kioskActive = true;
+    window.kioskActive = true; // expose for the hash-routing guard
     kioskSessionIds = [];
+
+    // SECURITY: hide the staff app entirely so it cannot be reached via Reader mode,
+    // accessibility tooling, pinch-zoom, or any underlying-DOM exploit. The kiosk
+    // overlay is the only thing the patient can see while in this mode.
+    const mainEl = document.getElementById('mainContent');
+    if (mainEl) {
+        kioskOriginalMainDisplay = mainEl.style.display || '';
+        mainEl.style.display = 'none';
+        mainEl.setAttribute('aria-hidden', 'true');
+    }
+    // Same for the global chart panel if it's open
+    const chartPanel = document.getElementById('globalChartPanel');
+    if (chartPanel) {
+        kioskOriginalChartDisplay = chartPanel.style.display || '';
+        chartPanel.style.display = 'none';
+    }
 
     // Create overlay
     const overlay = document.createElement('div');
@@ -17303,13 +17838,29 @@ function launchKioskMode(patientId, healthieId, pendingForms, patientName) {
     // Lock navigation
     kioskOriginalOverscroll = document.body.style.overscrollBehavior;
     document.body.style.overscrollBehavior = 'contain';
-    history.pushState({ kiosk: true }, '');
-    kioskPopstateHandler = function(e) {
+
+    // Push 5 history entries so back/forward stays trapped even with rapid taps.
+    // Each popstate immediately re-pushes to keep the trap deep.
+    kioskOriginalHash = window.location.hash;
+    for (let i = 0; i < 5; i++) {
+        history.pushState({ kiosk: true, depth: i }, '');
+    }
+    kioskPopstateHandler = function() {
         if (kioskActive) {
             history.pushState({ kiosk: true }, '');
         }
     };
     window.addEventListener('popstate', kioskPopstateHandler);
+
+    // Confirm prompt blocks accidental tab close / refresh / nav-away
+    kioskBeforeUnloadHandler = function(e) {
+        if (kioskActive) {
+            e.preventDefault();
+            e.returnValue = 'Patient kiosk mode is active. Staff PIN required to exit.';
+            return e.returnValue;
+        }
+    };
+    window.addEventListener('beforeunload', kioskBeforeUnloadHandler);
 
     // Start with form select (or jump to first form if only one)
     const formQueue = pendingForms.filter(f => f.status !== 'completed');
@@ -17483,6 +18034,31 @@ function renderKioskField(field) {
     const desc = field.description ? `<div class="kiosk-field-description">${sanitize(field.description)}</div>` : '';
     const id = 'kioskField_' + field.id;
 
+    // FIX(2026-04-15): Pre-fill from patient demographics when the field label matches a
+    // known profile field. Patients were being asked to re-type name/DOB/email/phone/address.
+    const demo = window.kioskPatientDemo || {};
+    const label = (field.label || '').toLowerCase().trim();
+    const prefillFromDemo = () => {
+        // Match by label keywords
+        if (/\b(full name|patient name|your name|^name$|first name|last name|legal name|preferred name)\b/i.test(label)) {
+            if (/first/.test(label))      return (demo.first_name || (demo.full_name || '').split(' ')[0] || '');
+            if (/last/.test(label))       return (demo.last_name || (demo.full_name || '').split(' ').slice(-1)[0] || '');
+            if (/preferred/.test(label))  return demo.preferred_name || '';
+            return demo.full_name || '';
+        }
+        if (/\b(email|e-mail)\b/i.test(label))                          return demo.email || '';
+        if (/\b(phone|mobile|cell|contact number)\b/i.test(label))      return demo.phone_primary || demo.phone_number || '';
+        if (/\b(dob|date of birth|birthdate|birthday)\b/i.test(label))  return demo.dob || '';
+        if (/\b(gender|sex)\b/i.test(label))                            return demo.gender || '';
+        if (/\b(address|street)\b/i.test(label))                        return demo.address_line1 || '';
+        if (/\bcity\b/i.test(label))                                    return demo.city || '';
+        if (/\bstate\b/i.test(label))                                   return demo.state || '';
+        if (/\b(zip|postal)\b/i.test(label))                            return demo.postal_code || '';
+        return '';
+    };
+    const prefillValue = prefillFromDemo();
+    const valueAttr = prefillValue ? ` value="${String(prefillValue).replace(/"/g, '&quot;')}"` : '';
+
     let inputHtml = '';
 
     // Normalize Healthie mod_type strings (they come in many forms; map each
@@ -17511,23 +18087,23 @@ function renderKioskField(field) {
 
     switch (alias) {
         case 'text':
-            inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
+            inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}"${valueAttr} ${req}>`;
             break;
 
         case 'textarea':
-            inputHtml = `<textarea id="${id}" class="kiosk-input" rows="4" placeholder="Enter your answer" data-field-id="${field.id}" ${req}></textarea>`;
+            inputHtml = `<textarea id="${id}" class="kiosk-input" rows="4" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>${prefillValue ? sanitize(prefillValue) : ''}</textarea>`;
             break;
 
         case 'number':
-            inputHtml = `<input type="number" id="${id}" class="kiosk-input" placeholder="Enter a number" data-field-id="${field.id}" inputmode="decimal" ${req}>`;
+            inputHtml = `<input type="number" id="${id}" class="kiosk-input" placeholder="Enter a number" data-field-id="${field.id}" inputmode="decimal"${valueAttr} ${req}>`;
             break;
 
         case 'phone':
-            inputHtml = `<input type="tel" id="${id}" class="kiosk-input" placeholder="(___) ___-____" data-field-id="${field.id}" ${req} oninput="formatKioskPhone(this)">`;
+            inputHtml = `<input type="tel" id="${id}" class="kiosk-input" placeholder="(___) ___-____" data-field-id="${field.id}"${valueAttr} ${req} oninput="formatKioskPhone(this)">`;
             break;
 
         case 'date':
-            inputHtml = `<input type="date" id="${id}" class="kiosk-input" data-field-id="${field.id}" ${req}>`;
+            inputHtml = `<input type="date" id="${id}" class="kiosk-input" data-field-id="${field.id}"${valueAttr} ${req}>`;
             break;
 
         case 'time':
@@ -17595,8 +18171,17 @@ function renderKioskField(field) {
         case 'read_only':
         case 'label':
         case 'header':
-            // Display-only field — just show label text, no input
-            return `<div class="kiosk-field"><div style="font-size:14px; color:#334155; line-height:1.5; padding:8px 0; border-bottom:1px solid #e2e8f0;">${sanitize(field.label)}</div>${desc}</div>`;
+        case 'hipaa': {
+            // FIX(2026-04-15): Display-only fields — render the full agreement text from
+            // options_array (HTML paragraphs from Healthie form builder). Previously only
+            // rendered the title label, hiding the actual HIPAA/AI/consent agreement.
+            const title = field.label ? `<h3 style="font-size:18px; font-weight:700; color:#0f172a; margin:0 0 12px 0;">${sanitize(field.label)}</h3>` : '';
+            const body = Array.isArray(field.options) && field.options.length
+                ? `<div class="kiosk-agreement-text" style="font-size:15px; color:#334155; line-height:1.65; max-height:60vh; overflow-y:auto; padding:16px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; margin-bottom:12px;">${field.options.join('')}</div>`
+                : '';
+            const sublabel = desc || '';
+            return `<div class="kiosk-field">${title}${body}${sublabel}</div>`;
+        }
 
         default:
             inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
@@ -17989,16 +18574,32 @@ async function validateKioskPin() {
 
 function exitKioskMode() {
     kioskActive = false;
+    window.kioskActive = false;
 
     // Remove overlay
     document.getElementById('kioskOverlay')?.remove();
     document.getElementById('kioskUnlockOverlay')?.remove();
+
+    // Restore staff app visibility
+    const mainEl = document.getElementById('mainContent');
+    if (mainEl) {
+        mainEl.style.display = kioskOriginalMainDisplay || '';
+        mainEl.removeAttribute('aria-hidden');
+    }
+    const chartPanel = document.getElementById('globalChartPanel');
+    if (chartPanel) {
+        chartPanel.style.display = kioskOriginalChartDisplay || '';
+    }
 
     // Restore navigation
     document.body.style.overscrollBehavior = kioskOriginalOverscroll;
     if (kioskPopstateHandler) {
         window.removeEventListener('popstate', kioskPopstateHandler);
         kioskPopstateHandler = null;
+    }
+    if (kioskBeforeUnloadHandler) {
+        window.removeEventListener('beforeunload', kioskBeforeUnloadHandler);
+        kioskBeforeUnloadHandler = null;
     }
 
     // Clean up state
@@ -18017,3 +18618,162 @@ function exitKioskMode() {
 // 1775768467
 // 1775781086
 // 1775790331
+
+// ─── PHARMACY TAB ───────────────────────────────────────────
+// Staff view: list peptide orders per pharmacy, take/upload packing slip photo
+
+let pharmacyOrders = null;
+let activePharmacyFilter = 'All';
+let pharmacyUploadingId = null;
+
+const PHARMACY_TAB_COLORS = {
+    'Alpha BioMed': { bg: '#dbeafe', fg: '#1e40af' },
+    'ABXTAC': { bg: '#d1fae5', fg: '#065f46' },
+};
+
+async function loadPharmacyOrders() {
+    try {
+        const resp = await fetch('/ops/api/peptides/orders/', { credentials: 'include' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        pharmacyOrders = await resp.json();
+    } catch (e) {
+        console.error('[pharmacy] load failed', e);
+        pharmacyOrders = [];
+    }
+}
+
+function renderPharmacyView(container) {
+    if (pharmacyOrders === null) {
+        container.innerHTML = `
+            <h1 style="font-size:28px; margin-bottom:20px;">Pharmacy</h1>
+            ${renderLoadingState()}
+        `;
+        loadPharmacyOrders().then(() => {
+            if (currentTab === 'pharmacy') renderCurrentTab();
+        });
+        return;
+    }
+
+    const orders = pharmacyOrders;
+    const pharmacies = ['All', 'Alpha BioMed', 'ABXTAC'];
+    const counts = orders.reduce((acc, o) => {
+        const k = o.supplier || 'Unknown';
+        acc[k] = (acc[k] || 0) + 1;
+        return acc;
+    }, {});
+
+    const filtered = activePharmacyFilter === 'All'
+        ? orders
+        : orders.filter(o => o.supplier === activePharmacyFilter);
+
+    container.innerHTML = `
+        <h1 style="font-size:28px; margin-bottom:8px;">Pharmacy</h1>
+        <p style="color:var(--text-tertiary); margin:0 0 20px 0; font-size:14px;">
+            Take a photo of the packing slip to attach it to an order.
+        </p>
+
+        <div class="inventory-tabs" style="margin-bottom:16px;">
+            ${pharmacies.map(p => {
+                const count = p === 'All' ? orders.length : (counts[p] || 0);
+                const active = activePharmacyFilter === p;
+                return `<button class="inv-tab ${active ? 'active' : ''}" onclick="setPharmacyFilter('${p}')">${p} (${count})</button>`;
+            }).join('')}
+        </div>
+
+        <input type="file" id="pharmacyFileInput" accept="image/*,application/pdf" capture="environment" style="display:none;" onchange="handlePharmacyFileSelected(event)">
+
+        <div id="pharmacyList">
+            ${filtered.length === 0
+                ? renderEmptyState('📦', 'No orders', activePharmacyFilter === 'All' ? 'No pharmacy orders yet.' : `No orders from ${activePharmacyFilter} yet.`)
+                : filtered.slice(0, 50).map(renderPharmacyOrderCard).join('')
+            }
+        </div>
+    `;
+}
+
+function renderPharmacyOrderCard(order) {
+    const color = PHARMACY_TAB_COLORS[order.supplier] || { bg: '#f1f5f9', fg: '#475569' };
+    const hasPackingSheet = !!order.packing_sheet_url;
+    const isUploading = pharmacyUploadingId === order.order_id;
+    const dateStr = new Date(order.order_date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+
+    return `
+        <div style="background:#fff; border:1px solid rgba(148,163,184,0.22); border-radius:12px; padding:16px; margin-bottom:12px; box-shadow:0 2px 8px rgba(15,23,42,0.04);">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+                <div style="flex:1; min-width:0;">
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
+                        <span style="background:${color.bg}; color:${color.fg}; padding:3px 10px; border-radius:6px; font-size:12px; font-weight:600;">
+                            ${order.supplier || 'Unknown'}
+                        </span>
+                        ${order.po_number ? `<span style="background:#f1f5f9; color:#475569; padding:3px 10px; border-radius:6px; font-size:12px; font-family:monospace;">${order.po_number}</span>` : ''}
+                        <span style="color:var(--text-tertiary); font-size:13px;">${dateStr}</span>
+                    </div>
+                    <div style="font-size:16px; font-weight:600; margin-bottom:4px;">${order.peptide_name}</div>
+                    <div style="color:var(--text-secondary); font-size:14px;">Qty received: <strong>${order.quantity}</strong></div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:8px; min-width:110px;">
+                    ${hasPackingSheet
+                        ? `<button class="toggle-btn" style="background:#059669; color:#fff;" onclick="viewPharmacyPackingSheet('${order.order_id}')">📄 View Slip</button>
+                           <button class="toggle-btn" style="background:#6366f1; color:#fff;" onclick="triggerPharmacyUpload('${order.order_id}')" ${isUploading ? 'disabled' : ''}>📷 Replace</button>`
+                        : `<button class="toggle-btn" style="background:#6366f1; color:#fff;" onclick="triggerPharmacyUpload('${order.order_id}')" ${isUploading ? 'disabled' : ''}>${isUploading ? 'Uploading…' : '📷 Upload Slip'}</button>`
+                    }
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function setPharmacyFilter(p) {
+    activePharmacyFilter = p;
+    renderCurrentTab();
+}
+
+function triggerPharmacyUpload(orderId) {
+    window._pharmacyUploadTarget = orderId;
+    document.getElementById('pharmacyFileInput')?.click();
+}
+
+async function handlePharmacyFileSelected(ev) {
+    const file = ev.target.files?.[0];
+    const orderId = window._pharmacyUploadTarget;
+    ev.target.value = '';
+    if (!file || !orderId) return;
+
+    pharmacyUploadingId = orderId;
+    if (currentTab === 'pharmacy') renderCurrentTab();
+
+    try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const resp = await fetch(`/ops/api/peptides/orders/${orderId}/upload/`, {
+            method: 'POST',
+            credentials: 'include',
+            body: fd,
+        });
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || `HTTP ${resp.status}`);
+        }
+        showToast('Packing slip uploaded ✓', 'success');
+        pharmacyOrders = null; // force reload
+    } catch (e) {
+        console.error('[pharmacy] upload failed', e);
+        showToast('Upload failed: ' + e.message, 'error');
+    } finally {
+        pharmacyUploadingId = null;
+        if (currentTab === 'pharmacy') renderCurrentTab();
+    }
+}
+
+async function viewPharmacyPackingSheet(orderId) {
+    try {
+        const resp = await fetch(`/ops/api/peptides/orders/${orderId}/upload/`, { credentials: 'include' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const { url } = await resp.json();
+        window.open(url, '_blank');
+    } catch (e) {
+        console.error('[pharmacy] view failed', e);
+        showToast('Could not load packing slip', 'error');
+    }
+}
+
