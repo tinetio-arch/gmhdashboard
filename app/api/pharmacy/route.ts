@@ -3,15 +3,15 @@
  * Handles all pharmacy types: tirzepatide, farmakaio, olympia, toprx, carrieboyd
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { fetchPharmacyOrders, createPharmacyOrder, updatePharmacyOrder, deletePharmacyOrder, PharmacyType } from '@/lib/specialtyOrderQueries';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser } from '@/lib/auth';
 
-const VALID_PHARMACIES: PharmacyType[] = ['tirzepatide', 'farmakaio', 'olympia', 'toprx', 'carrieboyd'];
+const VALID_PHARMACIES: PharmacyType[] = ['tirzepatide', 'farmakaio', 'olympia', 'toprx', 'carrieboyd', 'alphabiomed', 'abxtac'];
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
     try {
-        await requireUser('read');
+        await requireApiUser(request, 'read');
         const { searchParams } = new URL(request.url);
         const pharmacy = searchParams.get('pharmacy') as PharmacyType;
 
@@ -21,15 +21,18 @@ export async function GET(request: Request) {
 
         const orders = await fetchPharmacyOrders(pharmacy);
         return NextResponse.json(orders);
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error fetching pharmacy orders:', error);
         return NextResponse.json({ error: 'Failed to fetch orders' }, { status: 500 });
     }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const body = await request.json();
         const pharmacy = body.pharmacy as PharmacyType;
 
@@ -58,15 +61,18 @@ export async function POST(request: Request) {
         });
 
         return NextResponse.json(order);
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error creating pharmacy order:', error);
         return NextResponse.json({ error: 'Failed to create order' }, { status: 500 });
     }
 }
 
-export async function PATCH(request: Request) {
+export async function PATCH(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const body = await request.json();
         const pharmacy = body.pharmacy as PharmacyType;
 
@@ -95,15 +101,18 @@ export async function PATCH(request: Request) {
         });
 
         return NextResponse.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error updating pharmacy order:', error);
         return NextResponse.json({ error: 'Failed to update order' }, { status: 500 });
     }
 }
 
-export async function DELETE(request: Request) {
+export async function DELETE(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const { searchParams } = new URL(request.url);
         const pharmacy = searchParams.get('pharmacy') as PharmacyType;
         const orderId = searchParams.get('order_id');
@@ -118,7 +127,10 @@ export async function DELETE(request: Request) {
 
         await deletePharmacyOrder(pharmacy, orderId);
         return NextResponse.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error deleting pharmacy order:', error);
         return NextResponse.json({ error: 'Failed to delete order' }, { status: 500 });
     }

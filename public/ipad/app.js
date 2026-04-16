@@ -18622,83 +18622,98 @@ function exitKioskMode() {
 // 1775790331
 
 // ─── PHARMACY SUB-TAB (inside Inventory) ────────────────────
-// Staff view: list peptide orders per pharmacy, take/upload packing slip photo
+// Uses the specialty pharmacy system (tirzepatide/farmakaio/olympia/toprx/
+// carrieboyd/alphabiomed/abxtac). Patient-level orders with tracking-slip
+// PDF/photo uploads via /api/pharmacy/upload.
+// NOT connected to peptide inventory.
 
-let pharmacyOrders = null;
-let activePharmacyFilter = 'All';
+const PHARMACIES = [
+    { key: 'tirzepatide', label: 'Strive', color: { bg: '#dbeafe', fg: '#1e40af' } },
+    { key: 'farmakaio',   label: 'Farmakaio', color: { bg: '#fef3c7', fg: '#92400e' } },
+    { key: 'olympia',     label: 'Olympia', color: { bg: '#e0e7ff', fg: '#3730a3' } },
+    { key: 'toprx',       label: 'TopRX', color: { bg: '#fce7f3', fg: '#9f1239' } },
+    { key: 'carrieboyd',  label: 'Carrie Boyd', color: { bg: '#ede9fe', fg: '#5b21b6' } },
+    { key: 'alphabiomed', label: 'Alpha BioMed', color: { bg: '#d1fae5', fg: '#065f46' } },
+    { key: 'abxtac',      label: 'ABXTAC', color: { bg: '#cffafe', fg: '#155e75' } },
+];
+
+let pharmacyOrdersByType = {};        // { farmakaio: [...], strive: [...], ... }
+let activePharmacyKey = 'farmakaio';  // default to Farmakaio
 let pharmacyUploadingId = null;
-let pharmacyLoading = false;
+let pharmacyLoadingKey = null;
 
-const PHARMACY_TAB_COLORS = {
-    'Alpha BioMed': { bg: '#dbeafe', fg: '#1e40af' },
-    'ABXTAC': { bg: '#d1fae5', fg: '#065f46' },
-};
-
-async function loadPharmacyOrders() {
-    if (pharmacyLoading) return;
-    pharmacyLoading = true;
+async function loadPharmacyOrdersFor(key) {
+    if (pharmacyLoadingKey === key) return;
+    pharmacyLoadingKey = key;
     try {
-        const resp = await fetch('/ops/api/peptides/orders/', { credentials: 'include' });
+        const resp = await fetch(`/ops/api/pharmacy/?pharmacy=${encodeURIComponent(key)}`, { credentials: 'include' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        pharmacyOrders = await resp.json();
+        pharmacyOrdersByType[key] = await resp.json();
     } catch (e) {
-        console.error('[pharmacy] load failed', e);
-        pharmacyOrders = [];
+        console.error('[pharmacy] load failed for', key, e);
+        pharmacyOrdersByType[key] = [];
     } finally {
-        pharmacyLoading = false;
+        pharmacyLoadingKey = null;
     }
 }
 
 function renderPharmacySection() {
-    if (pharmacyOrders === null) {
-        // Kick off load and show loading state; re-render when done
-        loadPharmacyOrders().then(() => {
-            if (currentTab === 'inventory' && activeInventoryTab === 'pharmacy') renderCurrentTab();
+    const orders = pharmacyOrdersByType[activePharmacyKey];
+
+    if (orders === undefined) {
+        loadPharmacyOrdersFor(activePharmacyKey).then(() => {
+            if (currentTab === 'inventory' && activeInventoryTab === 'pharmacy') {
+                const contentEl = document.getElementById('inventoryContent');
+                if (contentEl) contentEl.innerHTML = renderInventoryContent();
+            }
         });
-        return renderLoadingState();
     }
 
-    const orders = pharmacyOrders;
-    const pharmacies = ['All', 'Alpha BioMed', 'ABXTAC'];
-    const counts = orders.reduce((acc, o) => {
-        const k = o.supplier || 'Unknown';
-        acc[k] = (acc[k] || 0) + 1;
-        return acc;
-    }, {});
-
-    const filtered = activePharmacyFilter === 'All'
-        ? orders
-        : orders.filter(o => o.supplier === activePharmacyFilter);
+    const activeMeta = PHARMACIES.find(p => p.key === activePharmacyKey) || PHARMACIES[0];
 
     return `
         <p style="color:var(--text-tertiary); margin:0 0 16px 0; font-size:14px;">
-            Take a photo of the packing slip to attach it to an order.
+            Patient orders and tracking slips per pharmacy. Tap 📷 to photograph a tracking slip.
         </p>
 
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
-            ${pharmacies.map(p => {
-                const count = p === 'All' ? orders.length : (counts[p] || 0);
-                const active = activePharmacyFilter === p;
-                return `<button class="inv-tab ${active ? 'active' : ''}" onclick="setPharmacyFilter('${p}')">${p} (${count})</button>`;
+            ${PHARMACIES.map(p => {
+                const active = activePharmacyKey === p.key;
+                return `<button class="inv-tab ${active ? 'active' : ''}" onclick="setPharmacyKey('${p.key}')" style="${active ? `background:${p.color.bg}; color:${p.color.fg};` : ''}">${p.label}</button>`;
             }).join('')}
         </div>
 
         <input type="file" id="pharmacyFileInput" accept="image/*,application/pdf" capture="environment" style="display:none;" onchange="handlePharmacyFileSelected(event)">
 
         <div id="pharmacyList">
-            ${filtered.length === 0
-                ? renderEmptyState('📦', 'No orders', activePharmacyFilter === 'All' ? 'No pharmacy orders yet.' : `No orders from ${activePharmacyFilter} yet.`)
-                : filtered.slice(0, 50).map(renderPharmacyOrderCard).join('')
+            ${orders === undefined
+                ? renderLoadingState()
+                : orders.length === 0
+                    ? renderEmptyState('📦', 'No orders', `No orders in ${activeMeta.label} yet.`)
+                    : orders.slice(0, 100).map(o => renderPharmacyOrderCard(o, activeMeta)).join('')
             }
         </div>
     `;
 }
 
-function renderPharmacyOrderCard(order) {
-    const color = PHARMACY_TAB_COLORS[order.supplier] || { bg: '#f1f5f9', fg: '#475569' };
-    const hasPackingSheet = !!order.packing_sheet_url;
+function setPharmacyKey(key) {
+    activePharmacyKey = key;
+    const contentEl = document.getElementById('inventoryContent');
+    if (contentEl) contentEl.innerHTML = renderInventoryContent();
+}
+
+function renderPharmacyOrderCard(order, activeMeta) {
+    const color = activeMeta?.color || { bg: '#f1f5f9', fg: '#475569' };
+    const hasSlip = !!order.pdf_s3_key;
     const isUploading = pharmacyUploadingId === order.order_id;
-    const dateStr = new Date(order.order_date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    const dateStr = order.date_ordered
+        ? new Date(order.date_ordered).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+        : '—';
+    const patient = order.healthie_patient_name || order.patient_name || 'Unknown patient';
+    const med = order.medication_ordered || '';
+    const dose = order.dose ? ` · ${order.dose}` : '';
+    const orderNum = order.order_number ? ` · ${order.order_number}` : '';
+    const status = order.status || 'Pending';
 
     return `
         <div style="background:#fff; border:1px solid rgba(148,163,184,0.22); border-radius:12px; padding:16px; margin-bottom:12px; box-shadow:0 2px 8px rgba(15,23,42,0.04);">
@@ -18706,17 +18721,17 @@ function renderPharmacyOrderCard(order) {
                 <div style="flex:1; min-width:0;">
                     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
                         <span style="background:${color.bg}; color:${color.fg}; padding:3px 10px; border-radius:6px; font-size:12px; font-weight:600;">
-                            ${order.supplier || 'Unknown'}
+                            ${status}
                         </span>
-                        ${order.po_number ? `<span style="background:#f1f5f9; color:#475569; padding:3px 10px; border-radius:6px; font-size:12px; font-family:monospace;">${order.po_number}</span>` : ''}
-                        <span style="color:var(--text-tertiary); font-size:13px;">${dateStr}</span>
+                        <span style="color:var(--text-tertiary); font-size:13px;">${dateStr}${orderNum}</span>
                     </div>
-                    <div style="font-size:16px; font-weight:600; margin-bottom:4px;">${order.peptide_name}</div>
-                    <div style="color:var(--text-secondary); font-size:14px;">Qty received: <strong>${order.quantity}</strong></div>
+                    <div style="font-size:16px; font-weight:600; margin-bottom:4px;">${escapeHtmlSafe(patient)}</div>
+                    ${med ? `<div style="color:var(--text-secondary); font-size:14px;">${escapeHtmlSafe(med)}${dose}</div>` : ''}
+                    ${order.notes ? `<div style="color:var(--text-tertiary); font-size:13px; margin-top:4px;">${escapeHtmlSafe(order.notes)}</div>` : ''}
                 </div>
-                <div style="display:flex; flex-direction:column; gap:8px; min-width:110px;">
-                    ${hasPackingSheet
-                        ? `<button class="toggle-btn" style="background:#059669; color:#fff;" onclick="viewPharmacyPackingSheet('${order.order_id}')">📄 View Slip</button>
+                <div style="display:flex; flex-direction:column; gap:8px; min-width:120px;">
+                    ${hasSlip
+                        ? `<button class="toggle-btn" style="background:#059669; color:#fff;" onclick="viewPharmacyPdf('${encodeURIComponent(order.pdf_s3_key)}')">📄 View Slip</button>
                            <button class="toggle-btn" style="background:#6366f1; color:#fff;" onclick="triggerPharmacyUpload('${order.order_id}')" ${isUploading ? 'disabled' : ''}>📷 Replace</button>`
                         : `<button class="toggle-btn" style="background:#6366f1; color:#fff;" onclick="triggerPharmacyUpload('${order.order_id}')" ${isUploading ? 'disabled' : ''}>${isUploading ? 'Uploading…' : '📷 Upload Slip'}</button>`
                     }
@@ -18726,15 +18741,9 @@ function renderPharmacyOrderCard(order) {
     `;
 }
 
-function setPharmacyFilter(p) {
-    activePharmacyFilter = p;
-    // Re-render just the inventory content block if possible
-    const contentEl = document.getElementById('inventoryContent');
-    if (contentEl) {
-        contentEl.innerHTML = renderInventoryContent();
-    } else {
-        renderCurrentTab();
-    }
+function escapeHtmlSafe(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 
 function triggerPharmacyUpload(orderId) {
@@ -18757,8 +18766,10 @@ async function handlePharmacyFileSelected(ev) {
 
     try {
         const fd = new FormData();
+        fd.append('order_id', orderId);
+        fd.append('order_type', activePharmacyKey);
         fd.append('file', file);
-        const resp = await fetch(`/ops/api/peptides/orders/${orderId}/upload/`, {
+        const resp = await fetch('/ops/api/pharmacy/upload', {
             method: 'POST',
             credentials: 'include',
             body: fd,
@@ -18767,9 +18778,10 @@ async function handlePharmacyFileSelected(ev) {
             const data = await resp.json().catch(() => ({}));
             throw new Error(data.error || `HTTP ${resp.status}`);
         }
-        showToast('Packing slip uploaded ✓', 'success');
-        pharmacyOrders = null; // force reload
-        await loadPharmacyOrders();
+        showToast('Tracking slip uploaded ✓', 'success');
+        // Invalidate + reload current pharmacy's orders
+        delete pharmacyOrdersByType[activePharmacyKey];
+        await loadPharmacyOrdersFor(activePharmacyKey);
     } catch (e) {
         console.error('[pharmacy] upload failed', e);
         showToast('Upload failed: ' + e.message, 'error');
@@ -18779,15 +18791,15 @@ async function handlePharmacyFileSelected(ev) {
     }
 }
 
-async function viewPharmacyPackingSheet(orderId) {
+async function viewPharmacyPdf(encodedS3Key) {
     try {
-        const resp = await fetch(`/ops/api/peptides/orders/${orderId}/upload/`, { credentials: 'include' });
+        const resp = await fetch(`/ops/api/pharmacy/upload?s3_key=${encodedS3Key}`, { credentials: 'include' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const { url } = await resp.json();
-        window.open(url, '_blank');
+        if (url) window.open(url, '_blank');
     } catch (e) {
         console.error('[pharmacy] view failed', e);
-        showToast('Could not load packing slip', 'error');
+        showToast('Could not load tracking slip', 'error');
     }
 }
 

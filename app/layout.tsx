@@ -41,12 +41,15 @@ export default async function RootLayout({
     { label: 'Olympia', href: '/pharmacy/olympia' },
     { label: 'TopRX', href: '/pharmacy/toprx' },
     { label: 'Carrie Boyd', href: '/pharmacy/carrieboyd' },
+    { label: 'Alpha BioMed', href: '/pharmacy/alphabiomed' },
+    { label: 'ABXTAC', href: '/pharmacy/abxtac' },
   ];
 
   const adminItems = user ? [
     { label: 'User Admin', href: '/admin/users' },
     { label: 'Shipments', href: '/admin/shipments' },
     { label: 'App Control', href: '/admin/app-control' },
+    { label: 'GHL Messages', href: '/admin/ghl-messages' },
     (user.can_sign || userHasRole(user, 'admin')) ? { label: 'Provider Signatures', href: '/provider/signatures' } : null,
   ].filter((item): item is { label: string; href: string } => item !== null) : [];
 

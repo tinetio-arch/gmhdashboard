@@ -28,7 +28,7 @@ export interface PharmacyOrder {
     created_at: string;
 }
 
-export type PharmacyType = 'tirzepatide' | 'farmakaio' | 'olympia' | 'toprx' | 'carrieboyd';
+export type PharmacyType = 'tirzepatide' | 'farmakaio' | 'olympia' | 'toprx' | 'carrieboyd' | 'alphabiomed' | 'abxtac';
 
 const TABLE_NAMES: Record<PharmacyType, string> = {
     tirzepatide: 'tirzepatide_orders',
@@ -36,6 +36,8 @@ const TABLE_NAMES: Record<PharmacyType, string> = {
     olympia: 'olympia_orders',
     toprx: 'toprx_orders',
     carrieboyd: 'carrieboyd_orders',
+    alphabiomed: 'alphabiomed_orders',
+    abxtac: 'abxtac_orders',
 };
 
 // ==================== GENERIC FUNCTIONS ====================

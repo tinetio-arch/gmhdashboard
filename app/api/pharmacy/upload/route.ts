@@ -9,7 +9,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { updatePharmacyOrder, getPharmacyOrder, PharmacyType } from '@/lib/specialtyOrderQueries';
 import { requireApiUser } from '@/lib/auth';
 
-const VALID_PHARMACIES: PharmacyType[] = ['tirzepatide', 'farmakaio', 'olympia', 'toprx', 'carrieboyd'];
+const VALID_PHARMACIES: PharmacyType[] = ['tirzepatide', 'farmakaio', 'olympia', 'toprx', 'carrieboyd', 'alphabiomed', 'abxtac'];
 const BUCKET_NAME = 'gmh-specialty-orders';
 
 // Use default credential provider chain (reads from ~/.aws/credentials)
@@ -42,7 +42,10 @@ export async function GET(request: NextRequest) {
 
         const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
         return NextResponse.json({ url });
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error getting presigned URL:', error);
         return NextResponse.json({ error: 'Failed to get PDF URL' }, { status: 500 });
     }
@@ -113,7 +116,10 @@ export async function POST(request: NextRequest) {
             healthie_document_id: healthieDocumentId,
             uploaded_to_healthie: !!healthieDocumentId,
         });
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error uploading PDF:', error);
         return NextResponse.json({ error: 'Failed to upload PDF' }, { status: 500 });
     }
