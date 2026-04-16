@@ -33,10 +33,12 @@ export interface PeptideOrder {
   order_id: string;
   product_id: string;
   peptide_name: string;
+  supplier: string | null;
   quantity: number;
   order_date: string;
   po_number: string | null;
   notes: string | null;
+  packing_sheet_url: string | null;
   created_by: string | null;
   created_at: Date;
 }
@@ -213,14 +215,16 @@ export async function fetchPeptideInventorySummary(): Promise<PeptideInventorySu
  */
 export async function fetchPeptideOrders(limit = 100): Promise<PeptideOrder[]> {
   return query<PeptideOrder>(`
-    SELECT 
+    SELECT
       o.order_id,
       o.product_id,
       p.name as peptide_name,
+      p.supplier,
       o.quantity,
       o.order_date::text,
       o.po_number,
       o.notes,
+      o.packing_sheet_url,
       o.created_by,
       o.created_at
     FROM peptide_orders o
@@ -339,10 +343,12 @@ export async function createPeptideOrder(data: {
       order_id,
       product_id,
       (SELECT name FROM peptide_products WHERE product_id = $1) as peptide_name,
+      (SELECT supplier FROM peptide_products WHERE product_id = $1) as supplier,
       quantity,
       order_date::text,
       po_number,
       notes,
+      packing_sheet_url,
       created_by,
       created_at
   `, [data.product_id, data.quantity, data.order_date, data.po_number, data.notes, data.created_by]);
@@ -377,10 +383,12 @@ export async function updatePeptideOrder(
       order_id,
       product_id,
       (SELECT name FROM peptide_products WHERE product_id = peptide_orders.product_id) as peptide_name,
+      (SELECT supplier FROM peptide_products WHERE product_id = peptide_orders.product_id) as supplier,
       quantity,
       order_date::text,
       po_number,
       notes,
+      packing_sheet_url,
       created_by,
       created_at
   `, params);

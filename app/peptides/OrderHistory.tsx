@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import type { PeptideOrder } from '@/lib/peptideQueries';
 import { withBasePath } from '@/lib/basePath';
@@ -9,6 +9,14 @@ interface OrderHistoryProps {
     orders: PeptideOrder[];
 }
 
+const PHARMACIES = ['All', 'Alpha BioMed', 'ABXTAC'] as const;
+type PharmacyFilter = typeof PHARMACIES[number];
+
+const PHARMACY_COLORS: Record<string, { bg: string; text: string }> = {
+    'Alpha BioMed': { bg: '#dbeafe', text: '#1e40af' },
+    'ABXTAC': { bg: '#d1fae5', text: '#065f46' },
+};
+
 export default function OrderHistory({ orders }: OrderHistoryProps) {
     const router = useRouter();
     const [isExpanded, setIsExpanded] = useState(false);
@@ -16,6 +24,10 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
     const [editQty, setEditQty] = useState('');
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [pharmacyFilter, setPharmacyFilter] = useState<PharmacyFilter>('All');
+    const [uploadingId, setUploadingId] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const uploadTargetRef = useRef<string | null>(null);
 
     const startEdit = (order: PeptideOrder) => {
         setEditingId(order.order_id);
@@ -63,15 +75,61 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
         }
     };
 
-    // Group orders by PO number
-    const ordersByPo: Record<string, PeptideOrder[]> = {};
-    orders.forEach(order => {
-        const key = order.po_number || 'No PO';
-        if (!ordersByPo[key]) ordersByPo[key] = [];
-        ordersByPo[key].push(order);
-    });
+    const triggerUpload = (orderId: string) => {
+        uploadTargetRef.current = orderId;
+        fileInputRef.current?.click();
+    };
 
-    const displayOrders = isExpanded ? orders : orders.slice(0, 10);
+    const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        const orderId = uploadTargetRef.current;
+        if (!file || !orderId) return;
+        e.target.value = '';
+
+        setUploadingId(orderId);
+        setError(null);
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const res = await fetch(withBasePath(`/api/peptides/orders/${orderId}/upload`), {
+                method: 'POST',
+                body: formData,
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.error || `Upload failed (HTTP ${res.status})`);
+            }
+            router.refresh();
+        } catch (e: any) {
+            setError(e.message || 'Upload failed');
+        } finally {
+            setUploadingId(null);
+        }
+    };
+
+    const viewPackingSheet = async (orderId: string) => {
+        try {
+            const res = await fetch(withBasePath(`/api/peptides/orders/${orderId}/upload`));
+            if (!res.ok) throw new Error('Failed to fetch');
+            const { url } = await res.json();
+            window.open(url, '_blank');
+        } catch {
+            setError('Could not load packing sheet');
+        }
+    };
+
+    const filteredOrders = pharmacyFilter === 'All'
+        ? orders
+        : orders.filter(o => o.supplier === pharmacyFilter);
+
+    const displayOrders = isExpanded ? filteredOrders : filteredOrders.slice(0, 15);
+
+    const pharmacyCounts = orders.reduce<Record<string, number>>((acc, o) => {
+        const key = o.supplier || 'Unknown';
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+    }, {});
 
     return (
         <div style={{ marginTop: '2rem' }}>
@@ -79,13 +137,53 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                marginBottom: '1rem'
+                marginBottom: '1rem',
+                flexWrap: 'wrap',
+                gap: '0.75rem',
             }}>
-                <h3 style={{ margin: 0, fontSize: '1.25rem' }}>Order History</h3>
+                <h3 style={{ margin: 0, fontSize: '1.25rem' }}>
+                    Order History — Pharmacy
+                </h3>
                 <span style={{ color: '#64748b', fontSize: '0.875rem' }}>
-                    {orders.length} orders
+                    {filteredOrders.length} orders
                 </span>
             </div>
+
+            {/* Pharmacy filter tabs */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                {PHARMACIES.map(p => {
+                    const isActive = pharmacyFilter === p;
+                    const count = p === 'All' ? orders.length : (pharmacyCounts[p] || 0);
+                    return (
+                        <button
+                            key={p}
+                            onClick={() => { setPharmacyFilter(p); setIsExpanded(false); }}
+                            style={{
+                                padding: '0.5rem 1rem',
+                                borderRadius: '0.5rem',
+                                border: isActive ? '2px solid #0ea5e9' : '1px solid #e2e8f0',
+                                background: isActive ? '#f0f9ff' : '#fff',
+                                color: isActive ? '#0369a1' : '#64748b',
+                                fontWeight: isActive ? 700 : 500,
+                                cursor: 'pointer',
+                                fontSize: '0.875rem',
+                                transition: 'all 0.15s',
+                            }}
+                        >
+                            {p} <span style={{ opacity: 0.6 }}>({count})</span>
+                        </button>
+                    );
+                })}
+            </div>
+
+            {/* Hidden file input for uploads */}
+            <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.webp"
+                style={{ display: 'none' }}
+                onChange={handleFileSelected}
+            />
 
             <div style={{
                 background: '#fff',
@@ -99,8 +197,10 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                         <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
                             <th style={headerStyle}>Date</th>
                             <th style={headerStyle}>PO Number</th>
+                            <th style={headerStyle}>Pharmacy</th>
                             <th style={headerStyle}>Peptide</th>
                             <th style={{ ...headerStyle, textAlign: 'right' }}>Qty</th>
+                            <th style={headerStyle}>Packing Sheet</th>
                             <th style={headerStyle}>Created By</th>
                             <th style={{ ...headerStyle, textAlign: 'right', width: '1%' }}></th>
                         </tr>
@@ -108,6 +208,8 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                     <tbody>
                         {displayOrders.map((order) => {
                             const isEditing = editingId === order.order_id;
+                            const isUploading = uploadingId === order.order_id;
+                            const colors = PHARMACY_COLORS[order.supplier || ''] || { bg: '#f1f5f9', text: '#475569' };
                             return (
                             <tr key={order.order_id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                                 <td style={cellStyle}>
@@ -127,6 +229,19 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                                         fontFamily: 'monospace',
                                     }}>
                                         {order.po_number || 'INITIAL'}
+                                    </span>
+                                </td>
+                                <td style={cellStyle}>
+                                    <span style={{
+                                        display: 'inline-block',
+                                        padding: '0.2rem 0.5rem',
+                                        background: colors.bg,
+                                        color: colors.text,
+                                        borderRadius: '0.25rem',
+                                        fontSize: '0.75rem',
+                                        fontWeight: 600,
+                                    }}>
+                                        {order.supplier || 'Unknown'}
                                     </span>
                                 </td>
                                 <td style={cellStyle}>{order.peptide_name}</td>
@@ -156,6 +271,29 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                                         order.quantity
                                     )}
                                 </td>
+                                <td style={cellStyle}>
+                                    {order.packing_sheet_url ? (
+                                        <button
+                                            onClick={() => viewPackingSheet(order.order_id)}
+                                            style={{
+                                                ...actionBtnStyle('#059669'),
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: '0.25rem',
+                                            }}
+                                        >
+                                            View
+                                        </button>
+                                    ) : (
+                                        <button
+                                            onClick={() => triggerUpload(order.order_id)}
+                                            disabled={isUploading}
+                                            style={actionBtnStyle('#6366f1')}
+                                        >
+                                            {isUploading ? 'Uploading…' : 'Upload'}
+                                        </button>
+                                    )}
+                                </td>
                                 <td style={{ ...cellStyle, color: '#64748b' }}>
                                     {order.created_by || 'Import'}
                                 </td>
@@ -165,14 +303,14 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                                             <button
                                                 onClick={() => saveEdit(order)}
                                                 disabled={saving}
-                                                style={editActionStyle('#059669')}
+                                                style={actionBtnStyle('#059669')}
                                             >
                                                 {saving ? '…' : 'Save'}
                                             </button>
                                             <button
                                                 onClick={cancelEdit}
                                                 disabled={saving}
-                                                style={{ ...editActionStyle('#64748b'), marginLeft: '0.25rem' }}
+                                                style={{ ...actionBtnStyle('#64748b'), marginLeft: '0.25rem' }}
                                             >
                                                 Cancel
                                             </button>
@@ -181,7 +319,7 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                                         <button
                                             onClick={() => startEdit(order)}
                                             title="Edit received quantity"
-                                            style={editActionStyle('#0ea5e9')}
+                                            style={actionBtnStyle('#0ea5e9')}
                                         >
                                             Edit
                                         </button>
@@ -205,7 +343,7 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                     </div>
                 )}
 
-                {orders.length > 10 && (
+                {filteredOrders.length > 15 && (
                     <div style={{ padding: '1rem', textAlign: 'center', borderTop: '1px solid #f1f5f9' }}>
                         <button
                             onClick={() => setIsExpanded(!isExpanded)}
@@ -218,14 +356,16 @@ export default function OrderHistory({ orders }: OrderHistoryProps) {
                                 fontSize: '0.875rem',
                             }}
                         >
-                            {isExpanded ? 'Show Less ▲' : `Show All ${orders.length} Orders ▼`}
+                            {isExpanded ? 'Show Less' : `Show All ${filteredOrders.length} Orders`}
                         </button>
                     </div>
                 )}
 
-                {orders.length === 0 && (
+                {filteredOrders.length === 0 && (
                     <p style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
-                        No order history yet.
+                        {pharmacyFilter === 'All'
+                            ? 'No order history yet.'
+                            : `No orders from ${pharmacyFilter} yet.`}
                     </p>
                 )}
             </div>
@@ -244,7 +384,7 @@ const cellStyle: React.CSSProperties = {
     padding: '0.75rem 1rem',
 };
 
-const editActionStyle = (color: string): React.CSSProperties => ({
+const actionBtnStyle = (color: string): React.CSSProperties => ({
     background: 'transparent',
     border: `1px solid ${color}`,
     color,
