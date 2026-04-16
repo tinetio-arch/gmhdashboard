@@ -351,6 +351,44 @@ export async function createPeptideOrder(data: {
 }
 
 /**
+ * Update a peptide order (typically to correct an erroneous received quantity).
+ * Returns null if the order_id does not exist.
+ */
+export async function updatePeptideOrder(
+  orderId: string,
+  data: { quantity?: number; po_number?: string | null; notes?: string | null }
+): Promise<PeptideOrder | null> {
+  const updates: string[] = [];
+  const params: any[] = [];
+  let i = 1;
+
+  if (data.quantity !== undefined) { updates.push(`quantity = $${i++}`); params.push(data.quantity); }
+  if (data.po_number !== undefined) { updates.push(`po_number = $${i++}`); params.push(data.po_number); }
+  if (data.notes !== undefined) { updates.push(`notes = $${i++}`); params.push(data.notes); }
+
+  if (updates.length === 0) return null;
+
+  params.push(orderId);
+  const rows = await query<PeptideOrder>(`
+    UPDATE peptide_orders
+    SET ${updates.join(', ')}
+    WHERE order_id = $${i}
+    RETURNING
+      order_id,
+      product_id,
+      (SELECT name FROM peptide_products WHERE product_id = peptide_orders.product_id) as peptide_name,
+      quantity,
+      order_date::text,
+      po_number,
+      notes,
+      created_by,
+      created_at
+  `, params);
+
+  return rows[0] || null;
+}
+
+/**
  * Record patient dispense (deducts from inventory when status=Paid AND education_complete=true)
  */
 export async function createPeptideDispense(data: {
