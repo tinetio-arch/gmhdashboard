@@ -8188,6 +8188,7 @@ function renderInventoryView(container) {
             <button class="inv-tab ${activeInventoryTab === 'dea' ? 'active' : ''}" onclick="setInventoryTab('dea')">DEA Controlled</button>
             <button class="inv-tab ${activeInventoryTab === 'peptides' ? 'active' : ''}" onclick="setInventoryTab('peptides')">Peptides</button>
             <button class="inv-tab ${activeInventoryTab === 'supplies' ? 'active' : ''}" onclick="setInventoryTab('supplies')">Supplies</button>
+            <button class="inv-tab ${activeInventoryTab === 'pharmacy' ? 'active' : ''}" onclick="setInventoryTab('pharmacy')">Pharmacy</button>
         </div>
         <div id="inventoryContent">
             ${renderInventoryContent()}
