@@ -744,7 +744,6 @@ function renderCurrentTab() {
         case 'labs': renderLabsView(view); break;
         case 'scribe': renderScribeView(view); break;
         case 'inventory': renderInventoryView(view); break;
-        case 'pharmacy': renderPharmacyView(view); break;
         case 'patients': renderPatientsView(view); break;
         case 'ceo': renderCEODashboard(view); break;
         case 'schedule': renderScheduleView(view); break;
@@ -8173,6 +8172,7 @@ function renderInventoryView(container) {
                 <button class="inv-tab ${activeInventoryTab === 'dea' ? 'active' : ''}" onclick="setInventoryTab('dea')">DEA Controlled</button>
                 <button class="inv-tab ${activeInventoryTab === 'peptides' ? 'active' : ''}" onclick="setInventoryTab('peptides')">Peptides</button>
                 <button class="inv-tab ${activeInventoryTab === 'supplies' ? 'active' : ''}" onclick="setInventoryTab('supplies')">Supplies</button>
+                <button class="inv-tab ${activeInventoryTab === 'pharmacy' ? 'active' : ''}" onclick="setInventoryTab('pharmacy')">Pharmacy</button>
             </div>
             ${renderLoadingState()}
         `;
@@ -8205,6 +8205,7 @@ function renderInventoryContent() {
         case 'dea': return renderDEASection();
         case 'peptides': return renderPeptidesSection();
         case 'supplies': return renderSuppliesSection();
+        case 'pharmacy': return renderPharmacySection();
         default: return '';
     }
 }
@@ -18619,12 +18620,13 @@ function exitKioskMode() {
 // 1775781086
 // 1775790331
 
-// ─── PHARMACY TAB ───────────────────────────────────────────
+// ─── PHARMACY SUB-TAB (inside Inventory) ────────────────────
 // Staff view: list peptide orders per pharmacy, take/upload packing slip photo
 
 let pharmacyOrders = null;
 let activePharmacyFilter = 'All';
 let pharmacyUploadingId = null;
+let pharmacyLoading = false;
 
 const PHARMACY_TAB_COLORS = {
     'Alpha BioMed': { bg: '#dbeafe', fg: '#1e40af' },
@@ -18632,6 +18634,8 @@ const PHARMACY_TAB_COLORS = {
 };
 
 async function loadPharmacyOrders() {
+    if (pharmacyLoading) return;
+    pharmacyLoading = true;
     try {
         const resp = await fetch('/ops/api/peptides/orders/', { credentials: 'include' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -18639,19 +18643,18 @@ async function loadPharmacyOrders() {
     } catch (e) {
         console.error('[pharmacy] load failed', e);
         pharmacyOrders = [];
+    } finally {
+        pharmacyLoading = false;
     }
 }
 
-function renderPharmacyView(container) {
+function renderPharmacySection() {
     if (pharmacyOrders === null) {
-        container.innerHTML = `
-            <h1 style="font-size:28px; margin-bottom:20px;">Pharmacy</h1>
-            ${renderLoadingState()}
-        `;
+        // Kick off load and show loading state; re-render when done
         loadPharmacyOrders().then(() => {
-            if (currentTab === 'pharmacy') renderCurrentTab();
+            if (currentTab === 'inventory' && activeInventoryTab === 'pharmacy') renderCurrentTab();
         });
-        return;
+        return renderLoadingState();
     }
 
     const orders = pharmacyOrders;
@@ -18666,13 +18669,12 @@ function renderPharmacyView(container) {
         ? orders
         : orders.filter(o => o.supplier === activePharmacyFilter);
 
-    container.innerHTML = `
-        <h1 style="font-size:28px; margin-bottom:8px;">Pharmacy</h1>
-        <p style="color:var(--text-tertiary); margin:0 0 20px 0; font-size:14px;">
+    return `
+        <p style="color:var(--text-tertiary); margin:0 0 16px 0; font-size:14px;">
             Take a photo of the packing slip to attach it to an order.
         </p>
 
-        <div class="inventory-tabs" style="margin-bottom:16px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
             ${pharmacies.map(p => {
                 const count = p === 'All' ? orders.length : (counts[p] || 0);
                 const active = activePharmacyFilter === p;
@@ -18725,7 +18727,13 @@ function renderPharmacyOrderCard(order) {
 
 function setPharmacyFilter(p) {
     activePharmacyFilter = p;
-    renderCurrentTab();
+    // Re-render just the inventory content block if possible
+    const contentEl = document.getElementById('inventoryContent');
+    if (contentEl) {
+        contentEl.innerHTML = renderInventoryContent();
+    } else {
+        renderCurrentTab();
+    }
 }
 
 function triggerPharmacyUpload(orderId) {
@@ -18740,7 +18748,11 @@ async function handlePharmacyFileSelected(ev) {
     if (!file || !orderId) return;
 
     pharmacyUploadingId = orderId;
-    if (currentTab === 'pharmacy') renderCurrentTab();
+    const rerender = () => {
+        const contentEl = document.getElementById('inventoryContent');
+        if (contentEl) contentEl.innerHTML = renderInventoryContent();
+    };
+    rerender();
 
     try {
         const fd = new FormData();
@@ -18756,12 +18768,13 @@ async function handlePharmacyFileSelected(ev) {
         }
         showToast('Packing slip uploaded ✓', 'success');
         pharmacyOrders = null; // force reload
+        await loadPharmacyOrders();
     } catch (e) {
         console.error('[pharmacy] upload failed', e);
         showToast('Upload failed: ' + e.message, 'error');
     } finally {
         pharmacyUploadingId = null;
-        if (currentTab === 'pharmacy') renderCurrentTab();
+        rerender();
     }
 }
 
