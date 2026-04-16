@@ -13,7 +13,10 @@ export async function GET(request: NextRequest) {
         await requireApiUser(request, 'read');
         const orders = await fetchPeptideOrders();
         return NextResponse.json(orders);
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         const errMsg = error instanceof Error ? error.message : String(error);
         console.error('Error fetching peptide orders:', errMsg);
         return NextResponse.json(
@@ -46,9 +49,12 @@ export async function POST(request: NextRequest) {
         });
 
         return NextResponse.json(order);
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'UnauthorizedError') {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         const errMsg = error instanceof Error ? error.message : String(error);
-        console.error('Error creating peptide order:', { error: errMsg, body });
+        console.error('Error creating peptide order:', errMsg);
         return NextResponse.json(
             { error: `Failed to create peptide order: ${errMsg}` },
             { status: 500 }
