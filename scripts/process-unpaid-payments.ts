@@ -11,6 +11,7 @@ dotenv.config({ path: '/home/ec2-user/.env' });
 dotenv.config({ path: '.env.local' });
 
 import { query as dbQuery } from '../lib/db';
+import { transitionStatus } from '../lib/status-transitions';
 
 const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY;
 const HEALTHIE_API_URL = 'https://api.gethealthie.com/graphql';
@@ -80,13 +81,25 @@ async function main() {
             minute: '2-digit'
         });
 
+        const t = await transitionStatus({
+            patientId: p.patient_id,
+            toStatus: 'hold_payment_research',
+            source: 'script:process-unpaid-payments',
+            actor: 'system',
+            reason: 'Unpaid Healthie payment detected',
+            metadata: { fn: 'process-unpaid-payments', healthie_client_id: p.healthie_client_id },
+        });
+        if (!t.applied) {
+            console.log(`  ⏭️  ${p.full_name}: skipped (${t.blockReason})`);
+            continue;
+        }
+
         await dbQuery(
-            `UPDATE patients 
-             SET status_key = 'hold_payment_research', 
-                 alert_status = 'Hold - Payment Research',
-                 notes = COALESCE(notes, '') || E'\n[' || $1 || '] AUTO: Unpaid Healthie payment detected. Status set to Hold.',
-                 last_modified = NOW() 
-             WHERE patient_id = $2`,
+            `UPDATE patients
+                SET alert_status = 'Hold - Payment Research',
+                    notes = COALESCE(notes, '') || E'\n[' || $1 || '] AUTO: Unpaid Healthie payment detected. Status set to Hold.',
+                    last_modified = NOW()
+              WHERE patient_id = $2::uuid`,
             [timestamp, p.patient_id]
         );
         console.log(`  ✓ ${p.full_name}`);

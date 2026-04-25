@@ -77,6 +77,7 @@ async function runPaymentSync() {
 
     // Import and run the sync logic directly
     const { query: dbQuery } = await import('../lib/db');
+    const { transitionStatus } = await import('../lib/status-transitions');
 
     const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY!;
     const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
@@ -185,45 +186,69 @@ async function runPaymentSync() {
                 const noteEntry = `[${timestamp}] AUTO-SYNC: One-time payment ${status} - $${p.price || '?'}`;
 
                 // Try healthie_clients match first (canonical source)
-                const result = await dbQuery(`
-                    UPDATE patients p
-                    SET 
-                        status_key = 'hold_payment_research',
-                        alert_status = 'Hold - Payment Research',
-                        notes = CASE 
-                            WHEN p.notes IS NULL OR p.notes = '' THEN $2
-                            ELSE p.notes || E'\\n' || $2
-                        END,
-                        last_modified = NOW()
-                    FROM healthie_clients hc
-                    WHERE hc.patient_id::text = p.patient_id::text
-                        AND hc.healthie_client_id = $1
-                        AND hc.is_active = TRUE
-                        AND p.status_key NOT IN ('hold_payment_research', 'inactive')
-                    RETURNING p.patient_id, p.full_name
-                `, [healthieId, noteEntry]);
+                const candidates = await dbQuery<{ patient_id: string; full_name: string }>(`
+                    SELECT p.patient_id::text, p.full_name
+                      FROM patients p
+                      JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text
+                     WHERE hc.healthie_client_id = $1
+                       AND hc.is_active = TRUE
+                       AND p.status_key NOT IN ('hold_payment_research', 'inactive')
+                `, [healthieId]);
 
-                if (result.length > 0) {
+                let appliedAny = false;
+                for (const cand of candidates) {
+                    const t = await transitionStatus({
+                        patientId: cand.patient_id,
+                        toStatus: 'hold_payment_research',
+                        source: 'script:startup-payment-sync',
+                        actor: 'system',
+                        reason: `One-time payment ${status} - $${p.price || '?'}`,
+                        metadata: { fn: 'one-time-by-healthie-id', healthieId, patientName },
+                    });
+                    if (!t.applied) continue;
+                    await dbQuery(`
+                        UPDATE patients
+                           SET alert_status = 'Hold - Payment Research',
+                               notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || E'\\n' || $2 END,
+                               last_modified = NOW()
+                         WHERE patient_id = $1::uuid
+                    `, [cand.patient_id, noteEntry]);
+                    appliedAny = true;
+                }
+
+                if (appliedAny) {
                     patientsMarkedHold.push(patientName);
                     console.log(`  ⚠️  ${patientName}: Set to HOLD (one-time: ${status})`);
                 } else if (patientName !== 'Unknown') {
                     // Fallback to name match
-                    const nameResult = await dbQuery(`
-                        UPDATE patients
-                        SET 
-                            status_key = 'hold_payment_research',
-                            alert_status = 'Hold - Payment Research',
-                            notes = CASE 
-                                WHEN notes IS NULL OR notes = '' THEN $2
-                                ELSE notes || E'\\n' || $2
-                            END,
-                            last_modified = NOW()
-                        WHERE LOWER(full_name) = LOWER($1)
-                            AND status_key NOT IN ('hold_payment_research', 'inactive')
-                        RETURNING patient_id
-                    `, [patientName, noteEntry]);
+                    const nameCandidates = await dbQuery<{ patient_id: string }>(`
+                        SELECT patient_id::text FROM patients
+                         WHERE LOWER(full_name) = LOWER($1)
+                           AND status_key NOT IN ('hold_payment_research', 'inactive')
+                    `, [patientName]);
 
-                    if (nameResult.length > 0) {
+                    let nameApplied = false;
+                    for (const cand of nameCandidates) {
+                        const t = await transitionStatus({
+                            patientId: cand.patient_id,
+                            toStatus: 'hold_payment_research',
+                            source: 'script:startup-payment-sync',
+                            actor: 'system',
+                            reason: `One-time payment ${status} - $${p.price || '?'} (name match)`,
+                            metadata: { fn: 'one-time-by-name', patientName },
+                        });
+                        if (!t.applied) continue;
+                        await dbQuery(`
+                            UPDATE patients
+                               SET alert_status = 'Hold - Payment Research',
+                                   notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || E'\\n' || $2 END,
+                                   last_modified = NOW()
+                             WHERE patient_id = $1::uuid
+                        `, [cand.patient_id, noteEntry]);
+                        nameApplied = true;
+                    }
+
+                    if (nameApplied) {
                         patientsMarkedHold.push(patientName + ' (name match)');
                         console.log(`  ⚠️  ${patientName}: Set to HOLD (one-time name match: ${status})`);
                     }
@@ -292,42 +317,64 @@ async function runPaymentSync() {
             const timestamp = new Date().toISOString().split('T')[0];
             const noteEntry = `[${timestamp}] AUTO-SYNC: Recurring payment FAILED - $${item.amount_paid || '?'} - ${failureReason.substring(0, 100)}`;
 
-            const result = await dbQuery(`
-                UPDATE patients p
-                SET 
-                    status_key = 'hold_payment_research',
-                    alert_status = 'Hold - Payment Research',
-                    notes = CASE 
-                        WHEN p.notes IS NULL OR p.notes = '' THEN $2
-                        ELSE p.notes || E'\\n' || $2
-                    END,
-                    last_modified = NOW()
-                FROM healthie_clients hc
-                WHERE hc.patient_id::text = p.patient_id::text
-                    AND hc.healthie_client_id = $1
-                    AND hc.is_active = TRUE
-                    AND p.status_key NOT IN ('hold_payment_research', 'inactive')
-                RETURNING p.patient_id, p.full_name
-            `, [healthieId, noteEntry]);
+            const candidates = await dbQuery<{ patient_id: string; full_name: string }>(`
+                SELECT p.patient_id::text, p.full_name
+                  FROM patients p
+                  JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text
+                 WHERE hc.healthie_client_id = $1
+                   AND hc.is_active = TRUE
+                   AND p.status_key NOT IN ('hold_payment_research', 'inactive')
+            `, [healthieId]);
+
+            let matched = false;
+            for (const cand of candidates) {
+                const t = await transitionStatus({
+                    patientId: cand.patient_id,
+                    toStatus: 'hold_payment_research',
+                    source: 'script:startup-payment-sync',
+                    actor: 'system',
+                    reason: `Recurring payment failed - $${item.amount_paid || '?'} - ${failureReason.substring(0, 100)}`,
+                    metadata: { fn: 'recurring-by-healthie-id', healthieId, patientName },
+                });
+                if (!t.applied) continue;
+                await dbQuery(`
+                    UPDATE patients
+                       SET alert_status = 'Hold - Payment Research',
+                           notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || E'\\n' || $2 END,
+                           last_modified = NOW()
+                     WHERE patient_id = $1::uuid
+                `, [cand.patient_id, noteEntry]);
+                matched = true;
+            }
 
             // Fallback to name match if no healthie_clients match
-            let matched = result.length > 0;
             if (!matched && patientName !== 'Unknown') {
-                const nameResult = await dbQuery(`
-                    UPDATE patients
-                    SET 
-                        status_key = 'hold_payment_research',
-                        alert_status = 'Hold - Payment Research',
-                        notes = CASE 
-                            WHEN notes IS NULL OR notes = '' THEN $2
-                            ELSE notes || E'\\n' || $2
-                        END,
-                        last_modified = NOW()
-                    WHERE LOWER(full_name) = LOWER($1)
-                        AND status_key NOT IN ('hold_payment_research', 'inactive')
-                    RETURNING patient_id, full_name
-                `, [patientName, noteEntry]);
-                matched = nameResult.length > 0;
+                const nameCandidates = await dbQuery<{ patient_id: string }>(`
+                    SELECT patient_id::text FROM patients
+                     WHERE LOWER(full_name) = LOWER($1)
+                       AND status_key NOT IN ('hold_payment_research', 'inactive')
+                `, [patientName]);
+
+                for (const cand of nameCandidates) {
+                    const t = await transitionStatus({
+                        patientId: cand.patient_id,
+                        toStatus: 'hold_payment_research',
+                        source: 'script:startup-payment-sync',
+                        actor: 'system',
+                        reason: `Recurring payment failed (name match) - $${item.amount_paid || '?'}`,
+                        metadata: { fn: 'recurring-by-name', patientName },
+                    });
+                    if (!t.applied) continue;
+                    await dbQuery(`
+                        UPDATE patients
+                           SET alert_status = 'Hold - Payment Research',
+                               notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || E'\\n' || $2 END,
+                               last_modified = NOW()
+                         WHERE patient_id = $1::uuid
+                    `, [cand.patient_id, noteEntry]);
+                    matched = true;
+                }
+
                 if (matched) {
                     patientsMarkedHold.push(patientName + ' (name match)');
                     console.log(`  ⚠️  ${patientName}: Set to HOLD (name match, recurring: ${item.state})`);

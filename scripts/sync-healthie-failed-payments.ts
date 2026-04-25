@@ -23,6 +23,7 @@ import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
 import { query as dbQuery } from '../lib/db';
+import { transitionStatus } from '../lib/status-transitions';
 
 // Track processed billing item IDs to prevent reprocessing stale failures
 const PROCESSED_FILE = path.join(__dirname, '..', '.processed-billing-items.json');
@@ -250,18 +251,34 @@ async function setPatientToPaymentHold(patientId: string, patientName: string, r
     const timestamp = new Date().toISOString();
     const noteEntry = `[${timestamp.split('T')[0]}] AUTO-SYNC: ${reason}`;
 
+    // Preserve original guard: skip if already on hold or inactive
+    const cur = await dbQuery<{ status_key: string | null }>(
+        'SELECT status_key FROM patients WHERE patient_id = $1::uuid',
+        [patientId]
+    );
+    if (cur.length === 0) return;
+    if (cur[0].status_key === 'hold_payment_research' || cur[0].status_key === 'inactive') return;
+
+    const t = await transitionStatus({
+        patientId,
+        toStatus: 'hold_payment_research',
+        source: 'script:sync-healthie-failed-payments',
+        actor: 'system',
+        reason: `setPatientToPaymentHold: ${reason}`,
+        metadata: { fn: 'setPatientToPaymentHold', patientName },
+    });
+    if (!t.applied) return;
+
     await dbQuery(`
     UPDATE patients
-    SET 
-      status_key = 'hold_payment_research',
+    SET
       alert_status = 'Hold - Payment Research',
-      notes = CASE 
+      notes = CASE
         WHEN notes IS NULL OR notes = '' THEN $2
         ELSE notes || E'\\n' || $2
       END,
       last_modified = NOW()
-    WHERE patient_id = $1
-      AND status_key NOT IN ('hold_payment_research', 'inactive')
+    WHERE patient_id = $1::uuid
   `, [patientId, noteEntry]);
 }
 
@@ -269,21 +286,36 @@ async function reactivatePatient(patientId: string, patientName: string): Promis
     const timestamp = new Date().toISOString();
     const noteEntry = `[${timestamp.split('T')[0]}] AUTO-SYNC: Payment succeeded - reactivated from hold.`;
 
+    // Preserve original guard: only reactivate if currently on hold_payment_research
+    const cur = await dbQuery<{ status_key: string | null }>(
+        'SELECT status_key FROM patients WHERE patient_id = $1::uuid',
+        [patientId]
+    );
+    if (cur.length === 0 || cur[0].status_key !== 'hold_payment_research') return;
+
+    const t = await transitionStatus({
+        patientId,
+        toStatus: 'active',
+        source: 'script:sync-healthie-failed-payments',
+        actor: 'system',
+        reason: 'reactivatePatient: payment succeeded',
+        metadata: { fn: 'reactivatePatient', patientName },
+    });
+    if (!t.applied) return;
+
     await dbQuery(`
     UPDATE patients
     SET
-      status_key = 'active',
       alert_status = 'Active',
       notes = CASE
         WHEN notes IS NULL OR notes = '' THEN $2
         ELSE notes || E'\\n' || $2
       END,
       last_modified = NOW()
-    WHERE patient_id = $1
-      AND status_key = 'hold_payment_research'
+    WHERE patient_id = $1::uuid
   `, [patientId, noteEntry]);
 
-    // FIX(2026-04-06): Audit log for sync-script reactivation
+    // FIX(2026-04-06): Legacy audit log retained for back-compat with old dashboards
     try {
       await dbQuery(
         `INSERT INTO patient_status_activity_log

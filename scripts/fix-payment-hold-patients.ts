@@ -19,6 +19,7 @@ dotenv.config({ path: '/home/ec2-user/.env' });
 dotenv.config({ path: '.env.local' });
 
 import { query as dbQuery } from '../lib/db';
+import { transitionStatus } from '../lib/status-transitions';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
@@ -130,14 +131,25 @@ async function main() {
 
         const newNotes = [...keepLines, summaryLine].join('\n');
 
+        const t = await transitionStatus({
+            patientId: patient.patient_id,
+            toStatus: 'active',
+            source: 'script:fix-payment-hold-patients',
+            actor: 'system',
+            reason: 'Cron loop bug remediation: payment confirmed succeeded',
+            metadata: { fn: 'fix-payment-hold', spamLinesRemoved: lines.length - keepLines.length },
+        });
+        if (!t.applied) {
+            console.log(`  ⏭️  ${patient.full_name}: transitionStatus blocked (${t.blockReason})`);
+            continue;
+        }
+
         await dbQuery(`
             UPDATE patients
-            SET 
-                status_key = 'active',
-                alert_status = 'Active',
-                notes = $2,
-                last_modified = NOW()
-            WHERE patient_id = $1
+               SET alert_status = 'Active',
+                   notes = $2,
+                   last_modified = NOW()
+             WHERE patient_id = $1::uuid
         `, [patient.patient_id, newNotes]);
 
         console.log(`  ✅ ${patient.full_name}: Reactivated, cleaned ${lines.length - keepLines.length} spam lines`);

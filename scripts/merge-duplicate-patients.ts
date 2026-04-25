@@ -5,6 +5,7 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { Pool } from 'pg';
+import { transitionStatus } from '../lib/status-transitions';
 
 const pool = new Pool({
     host: process.env.DATABASE_HOST,
@@ -32,20 +33,28 @@ async function mergeDuplicates() {
         console.log(`  KEEP: ${dup.keepId}`);
         console.log(`  DEACTIVATE: ${dup.deactivateId}`);
 
-        // Mark the duplicate as inactive
-        const result1 = await pool.query(`
-      UPDATE patients 
-      SET status_key = 'inactive',
-          ghl_sync_status = 'skipped',
-          ghl_sync_error = 'Duplicate record - merged with ' || $2
-      WHERE patient_id = $1
-      RETURNING patient_id
-    `, [dup.deactivateId, dup.keepId]);
+        // Mark the duplicate as inactive (via chokepoint helper + secondary GHL fields)
+        const t = await transitionStatus({
+            patientId: dup.deactivateId,
+            toStatus: 'inactive',
+            source: 'script:merge-duplicate-patients',
+            actor: 'system',
+            reason: `Duplicate record - merged with ${dup.keepId}`,
+            metadata: { fn: 'merge-duplicate-patients', keepId: dup.keepId, pair: dup.pair },
+        });
 
-        if (result1.rowCount && result1.rowCount > 0) {
+        if (t.applied) {
+            await pool.query(`
+                UPDATE patients
+                   SET ghl_sync_status = 'skipped',
+                       ghl_sync_error = 'Duplicate record - merged with ' || $2
+                 WHERE patient_id = $1::uuid
+            `, [dup.deactivateId, dup.keepId]);
             console.log(`  ✅ Deactivated duplicate`);
+        } else if (t.blocked) {
+            console.log(`  ⚠️ Blocked: ${t.blockReason}`);
         } else {
-            console.log(`  ⚠️ Duplicate record not found`);
+            console.log(`  ⚠️ Duplicate record not applied (from=${t.fromStatus})`);
         }
 
         // Reset the kept patient to pending for sync
