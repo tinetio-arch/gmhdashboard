@@ -6,6 +6,7 @@ dotenv.config({ path: '.env.local' });
 // Billing item sync is now handled by Python: /home/ec2-user/scripts/sync-all-to-snowflake.py
 import { processPendingEvents, type WebhookEventRow } from '@/lib/healthie/processor';
 import { sendChatMessage } from '@/lib/notifications/chat';
+import { transitionStatus } from '@/lib/status-transitions';
 import fetch from 'node-fetch';
 
 // Environment variables
@@ -315,20 +316,37 @@ async function reactivatePatient(patientName: string, timestamp: string) {
 
     const noteEntry = `[${timestamp}] PAYMENT RECEIVED - Auto-reactivated from Hold - Payment Research.`;
 
-    const result = await pool.query(`
-      UPDATE patients
-      SET
-        alert_status = 'Active',
-        status_key = 'active',
-        notes = CASE
-          WHEN notes IS NULL OR notes = '' THEN $1
-          ELSE notes || E'\\n' || $1
-        END,
-        last_modified = NOW()
-      WHERE LOWER(full_name) = LOWER($2)
-        AND status_key = 'hold_payment_research'
-      RETURNING patient_id, full_name as patient_name
-    `, [noteEntry, patientName]);
+    // Find candidates matching original WHERE filter
+    const candidates = await pool.query<{ patient_id: string; patient_name: string }>(
+      `SELECT patient_id, full_name AS patient_name
+         FROM patients
+        WHERE LOWER(full_name) = LOWER($1)
+          AND status_key = 'hold_payment_research'`,
+      [patientName]
+    );
+
+    const result = { rows: [] as { patient_id: string; patient_name: string }[] };
+    for (const cand of candidates.rows) {
+      const t = await transitionStatus({
+        patientId: cand.patient_id,
+        toStatus: 'active',
+        source: 'webhook_processor',
+        actor: 'system',
+        reason: 'Payment received — auto-reactivated from hold',
+        metadata: { fn: 'reactivatePatient', timestamp, patientName },
+      });
+      if (!t.applied) continue;
+      // Apply the rest of the original UPDATE (notes + last_modified + alert_status)
+      await pool.query(
+        `UPDATE patients
+            SET alert_status = 'Active',
+                notes = CASE WHEN notes IS NULL OR notes = '' THEN $1 ELSE notes || E'\\n' || $1 END,
+                last_modified = NOW()
+          WHERE patient_id = $2::uuid`,
+        [noteEntry, cand.patient_id]
+      );
+      result.rows.push(cand);
+    }
 
     // FIX(2026-04-06): Audit log for script-based reactivation
     if (result.rows.length > 0) {
@@ -448,30 +466,44 @@ async function handleBillingItems(resourceId?: string) {
 
       const noteEntry = `[${timestamp}] RECURRING PAYMENT FAILED - $${amount} - ${packageName} - ${failReason}. Auto-set to Hold - Payment Research.`;
 
-      // Try matching by Healthie ID first (more reliable than name)
-      let result = await pool.query(`
-        UPDATE patients SET
-          alert_status = 'Hold - Payment Research',
-          status_key = 'hold_payment_research',
-          notes = CASE WHEN notes IS NULL OR notes = '' THEN $1 ELSE notes || E'\\n' || $1 END,
-          last_modified = NOW()
-        WHERE healthie_client_id = $2
-          AND status_key NOT IN ('hold_payment_research', 'inactive')
-        RETURNING patient_id, full_name as patient_name
-      `, [noteEntry, patientHealthieId]);
+      // Find candidate(s): prefer Healthie ID, fall back to name. Skip those already on hold/inactive.
+      let candidates = (await pool.query<{ patient_id: string; patient_name: string }>(
+        `SELECT patient_id, full_name AS patient_name
+           FROM patients
+          WHERE healthie_client_id = $1
+            AND status_key NOT IN ('hold_payment_research', 'inactive')`,
+        [patientHealthieId]
+      )).rows;
+      if (candidates.length === 0 && patientName !== 'Unknown') {
+        candidates = (await pool.query<{ patient_id: string; patient_name: string }>(
+          `SELECT patient_id, full_name AS patient_name
+             FROM patients
+            WHERE LOWER(full_name) = LOWER($1)
+              AND status_key NOT IN ('hold_payment_research', 'inactive')`,
+          [patientName]
+        )).rows;
+      }
 
-      // Fall back to name match if Healthie ID didn't match
-      if (result.rows.length === 0 && patientName !== 'Unknown') {
-        result = await pool.query(`
-          UPDATE patients SET
-            alert_status = 'Hold - Payment Research',
-            status_key = 'hold_payment_research',
-            notes = CASE WHEN notes IS NULL OR notes = '' THEN $1 ELSE notes || E'\\n' || $1 END,
-            last_modified = NOW()
-          WHERE LOWER(full_name) = LOWER($2)
-            AND status_key NOT IN ('hold_payment_research', 'inactive')
-          RETURNING patient_id, full_name as patient_name
-        `, [noteEntry, patientName]);
+      const result = { rows: [] as { patient_id: string; patient_name: string }[] };
+      for (const cand of candidates) {
+        const t = await transitionStatus({
+          patientId: cand.patient_id,
+          toStatus: 'hold_payment_research',
+          source: 'webhook_processor',
+          actor: 'system',
+          reason: `Recurring payment failed: ${failReason}`,
+          metadata: { fn: 'recurringPackagePayment', state, amount, packageName, patientHealthieId },
+        });
+        if (!t.applied) continue;
+        await pool.query(
+          `UPDATE patients
+              SET alert_status = 'Hold - Payment Research',
+                  notes = CASE WHEN notes IS NULL OR notes = '' THEN $1 ELSE notes || E'\\n' || $1 END,
+                  last_modified = NOW()
+            WHERE patient_id = $2::uuid`,
+          [noteEntry, cand.patient_id]
+        );
+        result.rows.push(cand);
       }
 
       if (result.rows.length > 0) {
@@ -681,24 +713,39 @@ async function handler(event: WebhookEventRow) {
         const noteEntry = `[${timestamp}] PAYMENT DECLINED - Amount: $${amount || '?'}, Due: ${paymentDueDate}. Status auto-set to Hold - Payment Research.`;
 
 
-        // Update patient by matching name in the 'patients' table
-        // Use "Hold - Payment Research" status (existing) - staff will manually set to Inactive if needed
-        const updateQuery = `
-          UPDATE patients 
-          SET 
-            alert_status = 'Hold - Payment Research',
-            status_key = 'hold_payment_research',
-            notes = CASE 
-              WHEN notes IS NULL OR notes = '' THEN $1
-              ELSE notes || E'\\n' || $1
-            END,
-            last_modified = NOW()
-          WHERE LOWER(full_name) = LOWER($2)
-          RETURNING patient_id, full_name as patient_name`;
+        // Find candidate(s) by name. Skip already on hold or inactive
+        // (was previously: would have updated regardless — now we skip inactive
+        //  to avoid triggering the rule that blocks moving out of inactive,
+        //  and skip already-on-hold to avoid no-op churn).
+        const candidates = (await pool.query<{ patient_id: string; patient_name: string }>(
+          `SELECT patient_id, full_name AS patient_name
+             FROM patients
+            WHERE LOWER(full_name) = LOWER($1)
+              AND status_key NOT IN ('hold_payment_research', 'inactive')`,
+          [patientName]
+        )).rows;
 
-
-        const result = await pool.query(updateQuery, [noteEntry, patientName]);
-
+        const result = { rows: [] as { patient_id: string; patient_name: string }[] };
+        for (const cand of candidates) {
+          const t = await transitionStatus({
+            patientId: cand.patient_id,
+            toStatus: 'hold_payment_research',
+            source: 'webhook_processor',
+            actor: 'system',
+            reason: `Payment declined ($${amount || '?'} due ${paymentDueDate})`,
+            metadata: { eventType: event.event_type, resourceId: event.resource_id, status, amount, currency },
+          });
+          if (!t.applied) continue;
+          await pool.query(
+            `UPDATE patients
+                SET alert_status = 'Hold - Payment Research',
+                    notes = CASE WHEN notes IS NULL OR notes = '' THEN $1 ELSE notes || E'\\n' || $1 END,
+                    last_modified = NOW()
+              WHERE patient_id = $2::uuid`,
+            [noteEntry, cand.patient_id]
+          );
+          result.rows.push(cand);
+        }
 
         if (result.rows.length > 0) {
           console.log('[Healthie Webhooks] ✅ Patient status updated to Hold - Payment Research:', {
@@ -1004,39 +1051,45 @@ async function handler(event: WebhookEventRow) {
           const noteEntry = `[${timestamp}] SCHEDULED PAYMENT FAILED - ${failureReason}. Auto-set to Hold - Payment Research.`;
 
           // Use healthie_clients table (canonical source) for matching
-          const result = await pool.query(`
-            UPDATE patients p
-            SET 
-              alert_status = 'Hold - Payment Research',
-              status_key = 'hold_payment_research',
-              notes = CASE 
-                WHEN p.notes IS NULL OR p.notes = '' THEN $1
-                ELSE p.notes || E'\n' || $1
-              END,
-              last_modified = NOW()
-            FROM healthie_clients hc
-            WHERE hc.patient_id::text = p.patient_id::text
-              AND hc.healthie_client_id = $2
-              AND hc.is_active = TRUE
-              AND p.status_key NOT IN ('hold_payment_research', 'inactive')
-            RETURNING p.patient_id, p.full_name as patient_name
-          `, [noteEntry, patientId]);
+          let candidates = (await pool.query<{ patient_id: string; patient_name: string }>(
+            `SELECT p.patient_id, p.full_name AS patient_name
+               FROM patients p
+               JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text
+              WHERE hc.healthie_client_id = $1
+                AND hc.is_active = TRUE
+                AND p.status_key NOT IN ('hold_payment_research', 'inactive')`,
+            [patientId]
+          )).rows;
 
-          // Fallback to name match if no healthie_clients match
-          if (result.rowCount === 0 && patientName !== 'Unknown patient') {
-            await pool.query(`
-              UPDATE patients 
-              SET 
-                alert_status = 'Hold - Payment Research',
-                status_key = 'hold_payment_research',
-                notes = CASE 
-                  WHEN notes IS NULL OR notes = '' THEN $1
-                  ELSE notes || E'\n' || $1
-                END,
-                last_modified = NOW()
-              WHERE LOWER(full_name) = LOWER($2)
-                AND status_key NOT IN ('hold_payment_research', 'inactive')
-            `, [noteEntry, patientName]);
+          // Fallback to name match
+          if (candidates.length === 0 && patientName !== 'Unknown patient') {
+            candidates = (await pool.query<{ patient_id: string; patient_name: string }>(
+              `SELECT patient_id, full_name AS patient_name
+                 FROM patients
+                WHERE LOWER(full_name) = LOWER($1)
+                  AND status_key NOT IN ('hold_payment_research', 'inactive')`,
+              [patientName]
+            )).rows;
+          }
+
+          for (const cand of candidates) {
+            const t = await transitionStatus({
+              patientId: cand.patient_id,
+              toStatus: 'hold_payment_research',
+              source: 'webhook_processor',
+              actor: 'system',
+              reason: `Scheduled payment failed: ${failureReason}`,
+              metadata: { eventType: event.event_type, resourceId: event.resource_id, amount, healthiePatientId: patientId },
+            });
+            if (!t.applied) continue;
+            await pool.query(
+              `UPDATE patients
+                  SET alert_status = 'Hold - Payment Research',
+                      notes = CASE WHEN notes IS NULL OR notes = '' THEN $1 ELSE notes || E'\n' || $1 END,
+                      last_modified = NOW()
+                WHERE patient_id = $2::uuid`,
+              [noteEntry, cand.patient_id]
+            );
           }
 
           await pool.end();

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query, getPool } from '@/lib/db';
+import { transitionStatus } from '@/lib/status-transitions';
 
 export const dynamic = 'force-dynamic';
 
@@ -226,12 +227,18 @@ export async function POST(req: NextRequest) {
       // Mark the merged patient as inactive (don't delete for audit trail)
       try {
         console.log(`[MERGE] Marking patient ${mergePatientId} as inactive`);
+        await transitionStatus({
+          patientId: mergePatientId,
+          toStatus: 'inactive',
+          source: 'admin_api',
+          actor: user.email || 'system',
+          reason: `Merged into patient ${keepPatient.full_name} (${keepPatientId})`,
+          metadata: { keepPatientId, mergePatientId },
+          client,
+        });
+        // Override the default alert_status label with the merge-specific one
         await client.query(
-          `UPDATE patients 
-           SET status_key = 'inactive',
-               alert_status = 'Inactive (Merged)',
-               updated_at = NOW()
-           WHERE patient_id = $1::uuid`,
+          `UPDATE patients SET alert_status = 'Inactive (Merged)' WHERE patient_id = $1::uuid`,
           [mergePatientId]
         );
         console.log(`[MERGE] Patient ${mergePatientId} marked as inactive`);

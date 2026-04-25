@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { transitionStatus } from '@/lib/status-transitions';
 
 export async function POST(req: NextRequest) {
   try {
@@ -96,13 +97,17 @@ export async function POST(req: NextRequest) {
             )
         `, [primaryPatientId, duplicatePatientIds]);
 
-        // Mark duplicate patients as inactive
-        await query(`
-          UPDATE patients 
-          SET status_key = 'inactive',
-              updated_at = NOW()
-          WHERE patient_id = ANY($1::uuid[])
-        `, [duplicatePatientIds]);
+        // Mark duplicate patients as inactive (one per call — helper is single-patient)
+        for (const dupId of duplicatePatientIds) {
+          await transitionStatus({
+            patientId: dupId,
+            toStatus: 'inactive',
+            source: 'admin_api',
+            actor: user.email || 'system',
+            reason: `Duplicate merged into primary patient ${primaryPatientId}`,
+            metadata: { primaryPatientId, action: 'merge' },
+          });
+        }
 
         // Disable/expire duplicate membership packages in jane_packages_import
         // Mark all packages for this normalized name as inactive, except those matching the primary patient
@@ -162,13 +167,17 @@ export async function POST(req: NextRequest) {
         throw error;
       }
     } else {
-      // Remove duplicates (mark as inactive)
-      await query(`
-        UPDATE patients 
-        SET status_key = 'inactive',
-            updated_at = NOW()
-        WHERE patient_id = ANY($1::uuid[])
-      `, [duplicatePatientIds]);
+      // Remove duplicates (mark as inactive — one per call, helper is single-patient)
+      for (const dupId of duplicatePatientIds) {
+        await transitionStatus({
+          patientId: dupId,
+          toStatus: 'inactive',
+          source: 'admin_api',
+          actor: user.email || 'system',
+          reason: `Duplicate removed (primary patient ${primaryPatientId})`,
+          metadata: { primaryPatientId, action: 'remove' },
+        });
+      }
 
       // Disable/expire duplicate membership packages
       if (disableMembershipPackages !== false && normName) {
