@@ -5185,10 +5185,11 @@ textarea.kiosk-input {
     white-space: nowrap;
   }
 
-  /* ─── TAB BAR: fit all 5 tabs without overflow ─── */
+  /* ─── TAB BAR: fit all tabs; cap safe-area clearance to avoid Safari overhang ─── */
   .tab-bar {
-    height: 56px;
-    padding: 2px 4px calc(2px + env(safe-area-inset-bottom));
+    height: auto;
+    min-height: 56px;
+    padding: 2px 4px max(4px, min(env(safe-area-inset-bottom), 10px));
     gap: 0;
   }
 
@@ -5546,7 +5547,8 @@ textarea.kiosk-input {
   }
 }
 
-  /* ─── NEW FEATURES (Apr 2026): inline-styled elements need overrides ─── */
+/* ─── NEW FEATURES (Apr 2026): inline-styled elements need overrides ─── */
+@media (max-width: 768px) {
 
   /* Global: prevent any inline-styled div from overflowing */
   .tab-view > div {
@@ -5660,6 +5662,30 @@ textarea.kiosk-input {
     width: 95vw !important;
     max-width: 95vw !important;
   }
+
+  /* CEO Dashboard — fix revenue banner overflow + drill-down modals */
+  #ceo-drill-modal > div,
+  #resolve-charge-modal > div,
+  #revenue-breakdown-modal > div {
+    width: 95vw !important;
+    max-width: 95vw !important;
+  }
+
+  /* ─── CEO REVENUE BANNER — MOBILE FIX ─── */
+  /* Prevent revenue numbers from being cut off.
+     Cap safe-area at 10px — Safari's bottom toolbar inflates env(safe-area-inset-bottom)
+     to 80-100px on devices where the URL bar is visible, causing a huge empty gap.
+     10px gives just enough clearance for the iOS home indicator. */
+  .main-content {
+    bottom: calc(var(--tab-height) + min(env(safe-area-inset-bottom, 0px), 10px) + 8px) !important;
+  }
+
+  .tab-bar {
+    /* Content height = tab-height; bottom padding minimal to push tabs to the bottom */
+    height: auto !important;
+    min-height: var(--tab-height) !important;
+    padding-bottom: max(4px, min(env(safe-area-inset-bottom, 0px), 10px)) !important;
+  }
 }
 
 /* ─── EXTRA SMALL PHONES (iPhone SE, 320px) ─── */
@@ -5692,5 +5718,13 @@ textarea.kiosk-input {
 
   .healthie-appt-card {
     font-size: 12px;
+  }
+
+  /* Reduce iPad-sized padding on loading/empty states for phone screens */
+  .loading-state {
+    padding: 40px 16px !important;
+  }
+  .coming-soon {
+    padding: 40px 16px !important;
   }
 }

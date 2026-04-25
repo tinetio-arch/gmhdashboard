@@ -6,26 +6,37 @@
    NEW: Patient timeout fix, CEO tab restrictions, print labels, split-vial dispensing
    ============================================================ */
 
-// Log version immediately so we can verify correct file is loaded
-console.log('%c📱 iPad App v2.4.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
-console.log('✅ v2.4.0: Timeout fixes, CEO restrictions, print labels, split-vial dispense');
-console.log('🕒 Build time: March 18, 2026');
+// ─── PRODUCTION LOG SUPPRESSION ─────────────────────────────
+// Set to true only for local debugging — false for App Store builds.
+// When false, console.log and console.warn are silenced to prevent
+// PHI leaking into device logs (HIPAA compliance).
+const DEBUG_MODE = false;
+if (!DEBUG_MODE) {
+    const _noop = () => {};
+    console.log = _noop;
+    console.warn = _noop;
+    // console.error is preserved so real crashes still surface
+}
 
 // Show version in page (will be visible in bottom corner)
 window.addEventListener('DOMContentLoaded', () => {
+    // Position version stamp pinned DIRECTLY above the tab bar.
+    // Uses the same safe-area cap (10px) as the tab-bar padding so they stay glued together.
+    // Safari's URL bar can inflate env(safe-area-inset-bottom) to 80-100px — cap it.
     document.body.insertAdjacentHTML('beforeend', `
         <div style="
             position: fixed;
-            bottom: 10px;
-            right: 10px;
-            background: rgba(0, 0, 0, 0.7);
+            bottom: calc(var(--tab-height, 60px) + max(4px, min(env(safe-area-inset-bottom, 0px), 10px)) + 2px);
+            right: 8px;
+            background: rgba(0, 0, 0, 0.55);
             color: #22d3ee;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 9px;
             font-family: monospace;
-            z-index: 9999;
+            z-index: 10;
             pointer-events: none;
+            opacity: 0.6;
         ">v2.4.0</div>
     `);
 });
@@ -34,10 +45,13 @@ window.addEventListener('DOMContentLoaded', () => {
 let dashboardData = null;       // from /ops/api/ipad/dashboard
 let healthieAppointments = [];  // from /ops/api/cron/morning-prep
 let inventorySummary = null;    // from /ops/api/inventory/intelligence/summary
+let statusActivity = null;      // from /ops/api/dashboard/status-activity (Phase 1.4)
 let inventoryAlerts = [];       // from /ops/api/inventory/intelligence/alerts
 let vialList = [];              // individual vials from /ops/api/inventory/vials
 let labsQueue = [];             // from /ops/api/labs/review-queue
 let patient360Cache = {};       // patient_id -> 360 data
+let patient360CacheTs = {};     // patient_id -> epoch ms (TTL tracker — FIX 2026-04-22)
+const PATIENT_360_TTL_MS = 5 * 60 * 1000;  // 5 min — long enough to save requests, short enough to avoid stale vitals/meds
 let allPatients = [];            // from /ops/api/patients
 let scribeSessions = [];         // from /ops/api/scribe/sessions
 let activeScribeSession = null;  // currently selected session
@@ -63,28 +77,53 @@ const WASTE_PER_SYRINGE = 0.1;  // mL waste per testosterone syringe
 
 // ─── BACKGROUND TRANSCRIPTION POLLING SERVICE ───────────────
 // Survives tab navigation, page visibility changes, and user actions
-let activePolls = new Map(); // sessionId → { sessionId, attempts, maxAttempts, interval }
+// FIX(2026-04-22): Added exponential backoff, document.hidden skip, and circuit breaker
+let activePolls = new Map(); // sessionId → { sessionId, attempts, maxAttempts, interval, consecutiveErrors, currentDelay }
+
+const POLL_INITIAL_DELAY = 5000;   // 5s — first 6 polls
+const POLL_MID_DELAY = 15000;      // 15s — after 30s
+const POLL_MAX_DELAY = 30000;      // 30s — after 2 min
+const POLL_MAX_ATTEMPTS = 40;      // ~5 min total with backoff
+const POLL_MAX_CONSECUTIVE_ERRORS = 3; // stop after 3 network failures in a row
+
+function _getPollDelay(attempts) {
+    if (attempts < 6) return POLL_INITIAL_DELAY;
+    if (attempts < 14) return POLL_MID_DELAY;
+    return POLL_MAX_DELAY;
+}
 
 function startBackgroundTranscriptionPoll(sessionId) {
-    if (activePolls.has(sessionId)) {
-        console.log(`[Background Poll] Already polling session ${sessionId}`);
-        return;
-    }
+    if (activePolls.has(sessionId)) return;
 
     const pollInfo = {
         sessionId,
         attempts: 0,
-        maxAttempts: 60,
+        maxAttempts: POLL_MAX_ATTEMPTS,
         interval: null,
+        consecutiveErrors: 0,
+        currentDelay: POLL_INITIAL_DELAY,
     };
 
     activePolls.set(sessionId, pollInfo);
 
-    pollInfo.interval = setInterval(async () => {
+    function scheduleNext() {
+        const delay = _getPollDelay(pollInfo.attempts);
+        pollInfo.currentDelay = delay;
+        pollInfo.interval = setTimeout(pollOnce, delay);
+    }
+
+    async function pollOnce() {
         pollInfo.attempts++;
+
+        // Skip poll when app is backgrounded — saves battery on mobile
+        if (document.hidden) {
+            scheduleNext();
+            return;
+        }
 
         try {
             const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+            pollInfo.consecutiveErrors = 0;
 
             if (data?.success && data.data?.status === 'transcribed') {
                 stopBackgroundPoll(sessionId);
@@ -94,34 +133,43 @@ function startBackgroundTranscriptionPoll(sessionId) {
                 showToast(`✅ Transcription complete for ${patientName}`, 'success');
                 updateBadges();
                 if (currentTab === 'scribe') renderCurrentTab();
+                return;
             } else if (data?.data?.status === 'error') {
                 stopBackgroundPoll(sessionId);
                 showToast(`❌ Transcription failed`, 'error');
                 scribeLoaded = false;
                 await loadScribeSessions();
                 if (currentTab === 'scribe') renderCurrentTab();
+                return;
             } else if (pollInfo.attempts >= pollInfo.maxAttempts) {
                 stopBackgroundPoll(sessionId);
                 showToast(`⏱ Transcription timed out - check back later`, 'warning');
+                return;
             }
+            scheduleNext();
         } catch (err) {
             if (err.message === 'AUTH_EXPIRED') {
                 stopBackgroundPoll(sessionId);
                 throw err;
             }
-            console.warn(`[Background Poll] Error for ${sessionId}:`, err);
+            pollInfo.consecutiveErrors++;
+            if (pollInfo.consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) {
+                stopBackgroundPoll(sessionId);
+                showToast('Transcription polling stopped — network issues. Tap retry later.', 'warning');
+                return;
+            }
+            scheduleNext();
         }
-    }, 5000);
+    }
 
-    console.log(`[Background Poll] Started for session ${sessionId}`);
+    scheduleNext();
 }
 
 function stopBackgroundPoll(sessionId) {
     const pollInfo = activePolls.get(sessionId);
     if (pollInfo?.interval) {
-        clearInterval(pollInfo.interval);
+        clearTimeout(pollInfo.interval);
         activePolls.delete(sessionId);
-        console.log(`[Background Poll] Stopped for session ${sessionId}`);
     }
 }
 
@@ -136,23 +184,19 @@ async function checkForPendingTranscriptions() {
         const sessions = scribeSessions.filter(s => s.status === 'transcribing');
         if (sessions.length === 0) return;
 
-        console.log(`[Scribe Recovery] Found ${sessions.length} sessions in 'transcribing' status`);
-
         for (const session of sessions) {
             const check = await apiFetch(`/ops/api/scribe/transcribe?session_id=${session.session_id}`);
 
             if (check?.success && check.data?.status === 'transcribed') {
-                console.log(`[Scribe Recovery] ✅ Recovered completed transcription for ${session.patient_name}`);
                 scribeLoaded = false;
                 await loadScribeSessions();
                 showToast(`✅ Recovered completed transcription for ${session.patient_name}`, 'success');
             } else if (check?.data?.status === 'transcribing') {
-                console.log(`[Scribe Recovery] Session ${session.session_id} still processing - starting background poll`);
                 startBackgroundTranscriptionPoll(session.session_id);
             }
         }
     } catch (err) {
-        console.warn('[Scribe Recovery] Check failed:', err);
+        console.error('[Scribe Recovery] Check failed:', err);
     }
 }
 
@@ -432,6 +476,9 @@ async function handleLogout() {
         console.warn('Logout API failed:', e);
     }
 
+    // Stop all background polling before clearing state
+    if (typeof stopAllBackgroundPolls === 'function') stopAllBackgroundPolls();
+
     // Clear local state
     currentUser = null;
     dashboardData = null;
@@ -592,12 +639,11 @@ function applyRolePermissions() {
         }
     }
 
-    // CEO tab — Phil Schafer ONLY
-    const isPhil = currentUser.email === 'admin@nowoptimal.com';
+    // CEO tab — admin role only (server-side permission check)
+    const canViewCEO = currentUser.permissions?.can_view_ceo_dashboard === true;
     const isProviderOrAdmin = currentUser.is_provider === true
-        || currentUser.email === 'admin@granitemountainhealth.com'
-        || currentUser.email === 'admin@nowoptimal.com';
-    if (isPhil && nav && !nav.querySelector('[data-tab="ceo"]')) {
+        || currentUser.permissions?.can_view_ceo_dashboard === true;
+    if (canViewCEO && nav && !nav.querySelector('[data-tab="ceo"]')) {
         const ceoTab = document.createElement('button');
         ceoTab.className = 'tab-item';
         ceoTab.dataset.tab = 'ceo';
@@ -682,8 +728,8 @@ function switchTab(tab) {
     if (!validTabs.includes(tab)) tab = 'today';
     // RBAC: prevent access to tabs user doesn't have permission for
     if (currentUser?.permissions) {
-        // CEO tab — Phil Schafer ONLY
-        if (tab === 'ceo' && currentUser.email !== 'admin@nowoptimal.com') tab = 'today';
+        // CEO tab — admin role only (server-side permission)
+        if (tab === 'ceo' && !currentUser.permissions?.can_view_ceo_dashboard) tab = 'today';
         if (tab === 'scribe' && !currentUser.permissions.can_use_scribe) tab = 'today';
         // Schedule and Messages tabs available to all authenticated users
     }
@@ -927,14 +973,16 @@ async function loadAllData() {
 
     let anySuccess = false;
 
-    // Parallel fetch: dashboard + inventory + schedule + patients + labs
+    // Parallel fetch: dashboard + inventory + schedule + patients + labs + signals + status activity
     const results = await Promise.allSettled([
         loadDashboard(),
         loadInventoryAlerts(),
         loadInventorySummary(),
         loadHealthieAppointments(),
         loadAllPatients(),
-        loadLabsQueue()
+        loadLabsQueue(),
+        loadPatientSignals(),
+        loadStatusActivity()
     ]);
 
     anySuccess = results.some(r => r.status === 'fulfilled' && r.value === true);
@@ -981,7 +1029,7 @@ async function loadAllData() {
 async function loadDashboard() {
     try {
         const data = await apiFetch('/ops/api/ipad/dashboard/');
-        if (data.success && data.data) {
+        if (data && data.success && data.data) {
             // Normalize snake_case API fields to camelCase used by frontend
             const d = data.data;
             dashboardData = {
@@ -998,14 +1046,43 @@ async function loadDashboard() {
                 totalActivePatients: d.total_active_patients || d.totalActivePatients || 0,
                 patientsByType: d.patients_by_type || d.patientsByType || {},
                 ceo: d.ceo || {},
+                stripe_today: d.stripe_today || 0,
+                stripe_month: d.stripe_month || 0,
+                healthie_today: d.healthie_today || 0,
+                healthie_month: d.healthie_month || 0,
+                revenue_source: d.revenue_source || 'unknown',
             };
             return true;
         }
-        dashboardData = data.data || data;
-        return true;
+        // FIX(2026-04-22): previously fell through to `dashboardData = data.data || data`
+        // which served the unnormalized blob — every downstream .stagedDoses / .ceo read
+        // silently became undefined, rendering $0 across the CEO dashboard.
+        // Now: surface the failure so the UI can render an error state instead of lying.
+        console.error('[Dashboard] API responded without success/data shape:', data);
+        if (typeof showToast === 'function') showToast('Dashboard data unavailable — showing last known values', 'warning');
+        return false;
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         console.warn('Dashboard load failed:', e);
+        return false;
+    }
+}
+
+// Signals cache — keyed by patient_id (UUID).
+// Populated by loadPatientSignals(); renderPatientListItem reads from this.
+let patientSignalsCache = {};
+
+async function loadPatientSignals() {
+    try {
+        const data = await apiFetch('/ops/api/patients/signals/bulk/');
+        if (data && data.signals && typeof data.signals === 'object') {
+            patientSignalsCache = data.signals;
+            return true;
+        }
+        return false;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Patient signals load failed:', e);
         return false;
     }
 }
@@ -1015,6 +1092,8 @@ async function loadHealthieAppointments() {
     try {
         // Use lightweight schedule endpoint (cookie-authenticated, no cron secret)
         const data = await apiFetch('/ops/api/ipad/schedule/');
+        // FIX(2026-04-22): explicit Array.isArray guards — previously `{success:true, patients:null}`
+        // slipped through every branch and left healthieAppointments untouched (stale data).
         if (data?.success && Array.isArray(data.patients)) {
             healthieAppointments = data.patients.map(p => ({
                 id: p.appointment_id || '',
@@ -1031,6 +1110,10 @@ async function loadHealthieAppointments() {
             }));
         } else if (Array.isArray(data)) {
             healthieAppointments = data;
+        } else {
+            console.warn('[iPad] Unexpected schedule response shape:', data);
+            healthieAppointments = [];
+            return false;
         }
         return true;
     } catch (e) {
@@ -1059,16 +1142,36 @@ async function loadInventorySummary() {
     }
 }
 
+async function loadStatusActivity() {
+    try {
+        const data = await apiFetch('/ops/api/dashboard/status-activity/?days=7');
+        if (data?.success && data?.data) {
+            statusActivity = data.data;
+            return true;
+        }
+        return false;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Status activity load failed:', e);
+        return false;
+    }
+}
+
 async function loadVialList() {
     try {
         // Fetch individual active vials for the DEA inventory view
         const data = await apiFetch('/ops/api/inventory/vials/');
+        // FIX(2026-04-22): guard against null/non-array payloads that previously
+        // left vialList stale (showed old DEA counts after a soft API failure).
         if (data?.success && Array.isArray(data.data)) {
             vialList = data.data;
         } else if (Array.isArray(data)) {
             vialList = data;
-        } else if (data?.vials) {
+        } else if (Array.isArray(data?.vials)) {
             vialList = data.vials;
+        } else {
+            console.warn('[iPad] Unexpected vials response shape:', data);
+            vialList = [];
         }
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
@@ -1102,14 +1205,21 @@ async function loadLabsQueue() {
         // First load pending, then also load all for history
         const data = await apiFetch('/ops/api/labs/review-queue/?status=all&limit=100');
         // API returns { success, items: [...], counts: {...} }
+        // FIX(2026-04-22): strict Array.isArray on every branch so null items doesn't
+        // slip through and leave labsQueue untouched between reloads.
         if (data?.success && Array.isArray(data.items)) {
             labsQueue = data.items;
         } else if (Array.isArray(data)) {
             labsQueue = data;
-        } else if (data?.data && Array.isArray(data.data)) {
+        } else if (Array.isArray(data?.data)) {
             labsQueue = data.data;
-        } else if (data?.labs) {
+        } else if (Array.isArray(data?.labs)) {
             labsQueue = data.labs;
+        } else {
+            console.warn('[iPad] Unexpected labs response shape:', data);
+            labsQueue = [];
+            labsLoaded = true;
+            return false;
         }
         labsLoaded = true;
         return true;
@@ -1149,12 +1259,17 @@ async function loadAllPatients() {
 }
 
 async function loadPatient360(patientId, forceRefresh = false) {
-    if (!forceRefresh && patient360Cache[patientId]) return patient360Cache[patientId];
+    // FIX(2026-04-22): Added TTL so long-running iPad sessions don't serve stale
+    // vitals/meds. Cached entry older than PATIENT_360_TTL_MS is treated as absent.
+    const cachedTs = patient360CacheTs[patientId] || 0;
+    const fresh = (Date.now() - cachedTs) < PATIENT_360_TTL_MS;
+    if (!forceRefresh && fresh && patient360Cache[patientId]) return patient360Cache[patientId];
     try {
         const data = await apiFetch(`/ops/api/ipad/patient/${patientId}/`, { _timeout: 10000 });
         // API returns { success, data: { demographics, recent_dispenses, recent_peptides, payment_issues, staged_doses, summary } }
         const result = (data?.success && data?.data) ? data.data : data;
         patient360Cache[patientId] = result;
+        patient360CacheTs[patientId] = Date.now();
         return result;
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
@@ -1170,6 +1285,7 @@ async function loadPatient360(patientId, forceRefresh = false) {
 // Invalidate patient cache after mutations so next view shows fresh data
 function invalidatePatientCache(patientId) {
     delete patient360Cache[patientId];
+    delete patient360CacheTs[patientId];
 }
 
 // ─── BADGE UPDATES ──────────────────────────────────────────
@@ -1229,6 +1345,12 @@ function formatDate() {
 function getInitials(name) {
     if (!name) return '?';
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+}
+
+// FIX(2026-04-22): HTML-escape initials for safe use inside onerror="" attributes.
+// Prevents XSS if a patient name contains quotes or script fragments.
+function safeInitials(name) {
+    return sanitize(getInitials(name));
 }
 
 function getStagedDoses() {
@@ -1438,7 +1560,7 @@ function renderTodayView(container) {
             <div class="section-header">
                 <h2>📋 My Tasks</h2>
                 <div style="display:flex; gap:6px;">
-                    ${currentUser?.email === 'admin@nowoptimal.com' ? '<button onclick="showAllStaffTasks()" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">All Staff</button>' : ''}
+                    ${currentUser?.permissions?.can_view_ceo_dashboard ? '<button onclick="showAllStaffTasks()" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">All Staff</button>' : ''}
                     <button onclick="showCreateTaskModal()" style="padding:6px 12px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:6px; color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">+ New Task</button>
                 </div>
             </div>
@@ -1447,6 +1569,9 @@ function renderTodayView(container) {
 
         <!-- Pending Appointment Approvals (below Tasks) -->
         <div id="pendingApptRequestsHost"></div>
+
+        <!-- Pending Peptide Orders (GLP approval required) -->
+        <div id="pendingPeptideOrdersHost"></div>
         <!-- Pending Break Requests — admin only -->
         <div id="pendingBlockRequestsHost"></div>
 
@@ -1500,7 +1625,7 @@ function renderTodayView(container) {
     // Load staff tasks — from cache instantly, then refresh from API
     if (window._cachedStaffTasks) {
         const c = document.getElementById('myStaffTasks');
-        if (c) renderStaffTasksUI(c, window._cachedStaffTasks, currentUser?.email === 'admin@nowoptimal.com');
+        if (c) renderStaffTasksUI(c, window._cachedStaffTasks, currentUser?.permissions?.can_view_ceo_dashboard);
     }
     setTimeout(() => loadMyStaffTasks(), 1000);
 
@@ -1509,6 +1634,9 @@ function renderTodayView(container) {
         var host = document.getElementById('pendingApptRequestsHost');
         if (host) host.innerHTML = renderPendingRequestsCard();
     });
+
+    // Load pending peptide orders (GLP approval) — shows below appointment requests
+    loadPendingPeptideOrders();
 
     // Load pending break requests — admin only
     loadPendingBlockRequests().then(function() {
@@ -1588,27 +1716,39 @@ async function loadCriticalLabAlerts() {
     const container = document.getElementById('criticalLabAlerts');
     if (!container) return;
 
-    // Only providers see critical lab alerts (Phil + Dr. Whitten)
-    const isProvider = currentUser?.email === 'admin@nowoptimal.com' ||
+    // Only providers/admins see critical lab alerts
+    const isProvider = currentUser?.permissions?.can_view_ceo_dashboard ||
                        currentUser?.can_sign ||
                        currentUser?.role === 'admin';
     if (!isProvider) return;
 
+    let scanFailed = false;
     try {
-        // First trigger a scan for new critical values
-        await fetch('/ops/api/ipad/critical-labs/', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+        // First trigger a scan for new critical values.
+        // FIX(2026-04-22): previously .catch(()=>{}) silently swallowed scan failures,
+        // letting providers see stale "all clear" while the scanner was broken.
+        const scanResp = await fetch('/ops/api/ipad/critical-labs/', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (!scanResp.ok) {
+            scanFailed = true;
+            console.warn('[Critical Labs] scan trigger failed:', scanResp.status);
+        }
 
         // Then load pending alerts (raw fetch to avoid auth refresh cycle)
         const alertResp = await fetch('/ops/api/ipad/critical-labs/?status=pending', { credentials: 'include' });
         const data = alertResp.ok ? await alertResp.json() : { alerts: [] };
         const alerts = data.alerts || [];
 
-        if (alerts.length === 0) {
+        if (alerts.length === 0 && !scanFailed) {
             container.innerHTML = '';
             return;
         }
 
+        const banner = scanFailed
+            ? `<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.35); border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:12px; color:#f59e0b;">⚠️ Scanner unavailable — alerts below may be stale.</div>`
+            : '';
+
         container.innerHTML = `
+            ${banner}
             <div class="section-header">
                 <h2 style="color:#ef4444;">🚨 Critical Lab Alerts</h2>
                 <span class="section-action">${alerts.length} alerts</span>
@@ -1646,7 +1786,8 @@ async function loadCriticalLabAlerts() {
             </div>
         `;
     } catch (e) {
-        console.warn('[Critical Labs] Load error:', e);
+        console.error('[Critical Labs] Load error:', e);
+        if (typeof showToast === 'function') showToast('Critical lab alerts unavailable', 'error');
     }
 }
 
@@ -1719,7 +1860,7 @@ async function loadMyStaffTasks() {
     const container = document.getElementById('myStaffTasks');
     if (!container) return;
     const myEmail = currentUser?.email || '';
-    const isAdmin = myEmail === 'admin@nowoptimal.com';
+    const isAdmin = currentUser?.permissions?.can_view_ceo_dashboard === true;
 
     // Show cached tasks immediately if available
     let tasks = window._cachedStaffTasks || [];
@@ -2679,8 +2820,14 @@ function closeLabPdf() {
 async function loadScribeSessions() {
     try {
         const data = await apiFetch('/ops/api/scribe/sessions/?limit=30');
+        // FIX(2026-04-22): previously the else branch was missing, so a soft API failure
+        // ({ success:false } or non-array data) left scribeSessions stale — transcription
+        // completion notifications would never fire because the list had the old records.
         if (data?.success && Array.isArray(data.data)) {
             scribeSessions = data.data;
+        } else {
+            console.warn('[Scribe] Unexpected sessions response shape:', data);
+            scribeSessions = [];
         }
         scribeLoaded = true;
 
@@ -3299,8 +3446,14 @@ async function beginScribeCapture() {
         recordingMimeType = getRecordingMimeType();
         const recorderOptions = recordingMimeType ? { mimeType: recordingMimeType } : {};
         mediaRecorder = new MediaRecorder(stream, recorderOptions);
-        // Update recordingMimeType to what the browser actually chose
+        // FIX(2026-04-22): Capture what the browser actually chose for MIME type.
+        // On iOS Safari, isTypeSupported may return false for all candidates but
+        // MediaRecorder still works — it picks its own type (usually audio/mp4).
+        // If mimeType is still empty, default to 'audio/mp4' on Apple devices, 'audio/webm' elsewhere.
         recordingMimeType = mediaRecorder.mimeType || recordingMimeType;
+        if (!recordingMimeType) {
+            recordingMimeType = /iPad|iPhone|Macintosh/.test(navigator.userAgent) ? 'audio/mp4' : 'audio/webm';
+        }
         console.log('[Scribe] MediaRecorder created with mimeType:', mediaRecorder.mimeType);
 
         mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
@@ -4177,7 +4330,22 @@ async function submitNoteToHealthie() {
         });
 
         if (result?.success) {
-            showToast('Note submitted to Healthie! ✅', 'success');
+            // FIX(2026-04-22): surface partial failures so providers don't see a misleading ✅
+            // when Healthie actually rejected the signature, PDF, allergies, or vitals.
+            const failures = result?.data?.partial_failures || [];
+            if (failures.length > 0) {
+                const human = failures.map(f => ({
+                    lock: 'chart lock',
+                    sign: 'provider signature',
+                    pdf: 'PDF upload',
+                    supplementary_docs: 'work/discharge docs',
+                    allergies: 'allergies',
+                    vitals: 'vitals',
+                })[f] || f).join(', ');
+                showToast(`⚠️ Note submitted — failed: ${human}. Chart may be incomplete.`, 'warning', 8000);
+            } else {
+                showToast('Note submitted to Healthie! ✅', 'success');
+            }
 
             // Auto-advance appointment to "Completed"
             var patId = activeScribeSession?.patient_id || '';
@@ -4953,7 +5121,9 @@ async function changePatientGroup(groupId, groupName) {
 }
 
 // Common service tags for quick-add
-const COMMON_TAGS = ['pelleting', 'weight-loss', 'peptides', 'iv-therapy', 'telehealth', 'first-responder'];
+// FIX(2026-04-16): Removed 'first-responder' — that's a patient flag (Interesting),
+// not a service tag. These tags unlock specific appointment types via service_tag_config.
+const COMMON_TAGS = ['pelleting', 'weight-loss', 'peptides', 'iv-therapy', 'telehealth'];
 
 async function showTagPicker() {
     const healthieId = getChartHealthieId();
@@ -4971,7 +5141,7 @@ async function showTagPicker() {
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
                 ${COMMON_TAGS.map(tag => `
                     <button onclick="addTagToPatient('${tag}')"
-                        style="padding:6px 12px;border-radius:6px;background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.3);color:#a855f7;font-size:11px;font-weight:500;cursor:pointer;">
+                        style="padding:6px 12px;border-radius:6px;background:rgba(0,212,255,0.12);border:1px solid rgba(0,212,255,0.4);color:#00D4FF;font-size:11px;font-weight:600;cursor:pointer;">
                         ${tag}
                     </button>
                 `).join('')}
@@ -5079,7 +5249,8 @@ async function removeTagFromPatient(tagId, tagName) {
 // Healthie portal URLs (secure.gethealthie.com/video_calls/) require Healthie login which iPad doesn't have.
 // Now uses session_id + generated_token from Healthie API with Vonage Web SDK.
 // FIX(2026-03-31): Pass patient_id to video page for chart access and scribe recording
-async function startProviderVideoCall(appointmentId, patientName, patientId) {
+// FIX(2026-03-31): Pass patient_id to video page for chart access and scribe recording
+function startProviderVideoCall(appointmentId, patientName, patientId) {
     showToast('Launching video call...', 'info');
     var encodedName = encodeURIComponent(patientName || 'Patient');
     var videoUrl = '/ops/ipad/video.html?appointment_id=' + appointmentId + '&patient_name=' + encodedName + '&patient_id=' + encodeURIComponent(patientId || '');
@@ -5243,14 +5414,27 @@ async function deleteVital(vitalId, source, btnEl, patientId, category, value, d
         const result = await resp.json();
 
         if (result.success) {
-            // Also delete the paired diastolic entry if this was a BP
+            // Also delete the paired diastolic entry if this was a BP.
+            // FIX(2026-04-22): previously .catch(()=>{}) let a failed diastolic delete
+            // pass as "✅ Removed" leaving half a BP reading in the DB. Now awaited + warned.
+            let diastolicWarning = '';
             if (diaId && diaId !== 'null' && diaId !== '') {
-                fetch(`/ops/api/ipad/vitals?id=${encodeURIComponent(diaId)}&source=${source}&patient_id=${encodeURIComponent(patientId || '')}&category=Blood Pressure Diastolic&value=`, {
-                    method: 'DELETE', credentials: 'include'
-                }).catch(() => {});
+                try {
+                    const diaResp = await fetch(`/ops/api/ipad/vitals?id=${encodeURIComponent(diaId)}&source=${source}&patient_id=${encodeURIComponent(patientId || '')}&category=Blood Pressure Diastolic&value=`, {
+                        method: 'DELETE', credentials: 'include'
+                    });
+                    if (!diaResp.ok) {
+                        diastolicWarning = ' (diastolic remained — manual cleanup needed)';
+                        console.warn('[Vital Delete] Diastolic delete failed:', diaResp.status);
+                    }
+                } catch (diaErr) {
+                    diastolicWarning = ' (diastolic delete error — manual cleanup needed)';
+                    console.warn('[Vital Delete] Diastolic delete threw:', diaErr);
+                }
             }
             const count = result.deleted_count || 1;
-            showToast(`✅ Removed ${count > 1 ? count + ' vitals (incl. duplicates)' : 'vital'}`, 'success');
+            const toastType = diastolicWarning ? 'warning' : 'success';
+            showToast(`${diastolicWarning ? '⚠️' : '✅'} Removed ${count > 1 ? count + ' vitals (incl. duplicates)' : 'vital'}${diastolicWarning}`, toastType);
             // Remove from cached data — remove all matching category+value (duplicates)
             if (chartPanelData?.healthie_vitals) {
                 if (category && value) {
@@ -5502,17 +5686,19 @@ function renderChartPanel(content) {
     content.innerHTML = `
         <!-- Patient Photo + Demographics -->
         <div style="padding:0 4px; border-bottom:1px solid rgba(255,255,255,0.08); margin-bottom:0;">
-            <div style="display:flex; align-items:center; gap:12px; padding:10px 0 6px;">
-                ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border);">\ud83d\udc64</div>`}
-                <div style="flex:1;">
-                    <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
+            <div style="display:flex; align-items:center; gap:12px; padding:10px 0 6px; flex-wrap:wrap;">
+                ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan); flex-shrink:0;" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border); flex-shrink:0;">\ud83d\udc64</div>`}
+                <div style="flex:1; min-width:0;">
+                    <div style="font-size:15px; font-weight:600; color:var(--text-primary); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span>${demo.full_name || 'Unknown'}</span>
+                        <button onclick="closeGlobalChart()" style="padding:2px 8px; border-radius:5px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer; flex-shrink:0; margin-left:auto;" title="Close chart">✕</button>
+                    </div>
                     <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob && isNaN(Number(demo.dob)) && demo.dob.includes('-') ? `DOB: ${formatDateDisplay(demo.dob)} (${calcAge(demo.dob)}yo)` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''} ${d.healthie_id ? '\u00b7 <span style="font-family:monospace; font-size:10px; opacity:0.6;">HID: ' + d.healthie_id + '</span>' : ''}</div>
                 </div>
-                <div style="display:flex; gap:6px; align-items:center;">
+                <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; width:100%;">
                     <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
                     <button onclick="showResetPasswordDialog()" style="padding:4px 10px; border-radius:6px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); color:var(--yellow); font-size:11px; font-weight:600; cursor:pointer;" title="Reset patient Healthie password">🔑 Password</button>
                     <button onclick="toggleInterestingPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.2); color:#a855f7; font-size:11px; font-weight:600; cursor:pointer;" title="Interesting facts about this patient">⭐ Interesting</button>
-                    <button onclick="closeGlobalChart()" style="padding:4px 10px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer;" title="Close chart">✕</button>
                 </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
@@ -5535,7 +5721,7 @@ function renderChartPanel(content) {
             </div>` : ''}
             <div id="patientTagsSection" style="padding:2px 0 6px;">
                 <div style="display:flex; flex-wrap:wrap; gap:3px; align-items:center;">
-                    ${(demo.tags || []).map(t => `<span class="patient-tag-badge" data-tag-id="${t.id}" data-tag-name="${t.name}" style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7; cursor:pointer; display:inline-flex; align-items:center; gap:3px;" onclick="confirmRemoveTag('${t.id}', '${t.name}')" title="Click to remove">${t.name} <span style="opacity:0.5;">\u00d7</span></span>`).join('')}
+                    ${(demo.tags || []).map(t => `<span class="patient-tag-badge" data-tag-id="${t.id}" data-tag-name="${t.name}" style="font-size:10px; padding:3px 8px; border-radius:5px; background:rgba(0,212,255,0.15); color:#00D4FF; cursor:pointer; display:inline-flex; align-items:center; gap:3px; font-weight:500;" onclick="confirmRemoveTag('${t.id}', '${t.name}')" title="Click to remove">${t.name} <span style="opacity:0.5;">\u00d7</span></span>`).join('')}
                     <span onclick="showTagPicker()" style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(0,212,255,0.1); color:var(--cyan); cursor:pointer; border:1px dashed rgba(0,212,255,0.3);" title="Add tag">+ Tag</span>
                 </div>
             </div>
@@ -6286,7 +6472,12 @@ async function submitEditMedication(medId) {
         });
 
         if (resp.success) {
-            showToast('Medication updated', 'success');
+            // FIX(2026-04-23): Show warning if name/dosage were locked (DoseSpot-mirrored medication)
+            if (resp.warning) {
+                showToast(resp.warning, 'info');
+            } else {
+                showToast('Medication updated', 'success');
+            }
             document.getElementById('editMedOverlay')?.remove();
             loadChartData(chartPanelPatientId);
         } else {
@@ -7019,12 +7210,26 @@ function formatDobForEdit(isoDate) {
     return `${m[2]}/${m[3]}/${m[1]}`;
 }
 
-// Convert MM/DD/YYYY → YYYY-MM-DD for saving to DB/Healthie
+// FIX(2026-04-21): Convert MM/DD/YYYY → YYYY-MM-DD for saving to DB/Healthie.
+// Old fallback returned raw input as-is, which could send invalid formats to the API.
+// Now handles M/D/YYYY, already-ISO, and rejects anything else.
 function parseDobToISO(display) {
     if (!display) return '';
-    const m = String(display).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-    if (!m) return display; // fallback: return as-is if already ISO or unrecognized
-    return `${m[3]}-${m[1]}-${m[2]}`;
+    var s = String(display).trim();
+    if (!s) return '';
+    // Already ISO (YYYY-MM-DD)
+    var isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) return s;
+    // MM/DD/YYYY or M/D/YYYY (1-2 digit month/day)
+    var mdyMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (mdyMatch) {
+        var mm = mdyMatch[1].padStart(2, '0');
+        var dd = mdyMatch[2].padStart(2, '0');
+        return mdyMatch[3] + '-' + mm + '-' + dd;
+    }
+    // Unrecognized — return empty so the API gets null instead of garbage
+    console.warn('[parseDobToISO] Unrecognized format:', s);
+    return '';
 }
 
 // Auto-insert slashes as user types: 01 → 01/, 01/15 → 01/15/
@@ -8258,7 +8463,17 @@ function renderDEASection() {
                     System auto-selects vial (FEFO) and creates DEA transaction
                 </p>
                 <div class="modal-field">
-                    <label>Patient</label>
+                    <label>Patient (optional)</label>
+                    <div style="display:flex; gap:8px; margin-bottom:8px;">
+                        <button onclick="selectStageDosePatient(null, 'Generic Prefill')"
+                                style="padding:8px 16px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:13px; font-weight:600; cursor:pointer; flex-shrink:0;"
+                                id="stageDoseGenericBtn">
+                            💉 Generic (No Patient)
+                        </button>
+                        <div style="flex:1; font-size:11px; color:var(--text-tertiary); display:flex; align-items:center;">
+                            or search a specific patient below
+                        </div>
+                    </div>
                     <div class="patient-search-wrapper">
                         <input type="text" id="stageDosePatientSearch" class="patient-search-input"
                                placeholder="Type 2+ letters to search patients…" autocomplete="off" />
@@ -8320,7 +8535,7 @@ function renderDEASection() {
                 </div>
                 <div class="modal-row">
                     <div class="modal-field half">
-                        <label>TopRx Vials (10mL)</label>
+                        <label>TopRx Full Vials (10mL)</label>
                         <input type="number" id="deaCheckTopRxVials" min="0" value="0">
                     </div>
                     <div class="modal-field half">
@@ -8328,6 +8543,22 @@ function renderDEASection() {
                         <input type="number" id="deaCheckTopRxPartial" step="0.5" min="0" value="0">
                     </div>
                 </div>
+                <div id="deaCheckSyringeSection" style="border-top:1px solid var(--border); margin:12px 0; padding-top:12px; display:none;">
+                    <div style="font-size:11px; color:#f59e0b; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">💉 Prefilled Syringes on Shelf</div>
+                    <div class="modal-row">
+                        <div class="modal-field half">
+                            <label>How many syringes?</label>
+                            <input type="number" id="deaCheckSyringeCount" min="0" value="0">
+                        </div>
+                        <div class="modal-field half">
+                            <label>mL per syringe</label>
+                            <input type="number" id="deaCheckSyringeDose" step="0.05" min="0" value="0.60" readonly style="opacity:0.7;">
+                            <span style="font-size:10px; color:var(--text-tertiary);">0.50 dose + 0.10 waste</span>
+                        </div>
+                    </div>
+                    <div id="deaCheckSyringeTotal" style="font-size:13px; color:#f59e0b; margin-bottom:8px;"></div>
+                </div>
+                <div id="deaCheckGrandTotal" style="font-size:15px; font-weight:bold; color:var(--primary); margin-bottom:12px; padding:8px; background:var(--bg-secondary); border-radius:8px; text-align:center;"></div>
                 <div class="modal-field">
                     <label>Notes</label>
                     <input type="text" id="deaCheckNotes" placeholder="Notes (required if discrepancy)" class="patient-search-input">
@@ -8381,13 +8612,14 @@ function openStageDoseModal() {
 
 function selectStageDosePatient(id, name) {
     stageDosePatientId = id;
-    stageDosePatientName = name;
+    stageDosePatientName = name || 'Generic Prefill';
     const badge = document.getElementById('stageDosePatientBadge');
     const results = document.getElementById('stageDosePatientResults');
     const input = document.getElementById('stageDosePatientSearch');
     if (input) input.value = '';
     if (results) { results.innerHTML = ''; results.style.display = 'none'; }
-    if (badge) { badge.style.display = 'flex'; badge.innerHTML = `<span>👤 ${name}</span><button onclick="clearStageDosePatient()" class="patient-clear-btn">✕</button>`; }
+    const icon = id ? '👤' : '💉';
+    if (badge) { badge.style.display = 'flex'; badge.innerHTML = `<span>${icon} ${stageDosePatientName}</span><button onclick="clearStageDosePatient()" class="patient-clear-btn">✕</button>`; }
 }
 
 function clearStageDosePatient() {
@@ -8399,7 +8631,7 @@ function clearStageDosePatient() {
 function closeStageDoseModal() { document.getElementById('stageDoseModal').classList.remove('visible'); }
 
 async function submitStageDose() {
-    if (!stageDosePatientId) { showToast('Select a patient first', 'error'); return; }
+    // Patient is optional — generic staging (no patient) is allowed for prefilled syringes
     const doseMl = parseFloat(document.getElementById('stageDoseMl').value);
     const wasteMl = parseFloat(document.getElementById('stageDoseWaste').value);
     const syringeCount = parseInt(document.getElementById('stageDoseSyringes').value);
@@ -8436,20 +8668,103 @@ async function openDEACheckModal(type) {
     document.getElementById('deaCheckModal').classList.add('visible');
     try {
         const counts = await apiFetch('/ops/api/inventory/controlled-check/?action=counts');
+        const cbVialMl = counts?.carrieboyd_total_ml || 0;
+        const trVialMl = counts?.toprx_total_ml || 0;
+        const cbStagedMl = counts?.carrieboyd_staged_ml || 0;
+        const trStagedMl = counts?.toprx_staged_ml || 0;
+        const grandTotal = cbVialMl + trVialMl + cbStagedMl + trStagedMl;
+
         document.getElementById('deaCheckSystemCounts').innerHTML = `
-            <div class="dea-expected-row"><span>Carrie Boyd (30mL):</span> <strong>${counts?.carrieboyd_full_vials || 0} full + ${(counts?.carrieboyd_partial_ml || 0).toFixed(1)}mL partial = ${(counts?.carrieboyd_total_ml || 0).toFixed(1)}mL</strong></div>
-            <div class="dea-expected-row"><span>TopRx (10mL):</span> <strong>${counts?.toprx_full_vials || 0} full + ${(counts?.toprx_partial_ml || 0).toFixed(1)}mL partial = ${(counts?.toprx_total_ml || 0).toFixed(1)}mL</strong></div>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">System Expected Counts</div>
+            <div class="dea-expected-row"><span>Carrie Boyd Vials:</span> <strong>${counts?.carrieboyd_full_vials || 0} full + ${(counts?.carrieboyd_partial_ml || 0).toFixed(1)}mL partial = ${cbVialMl.toFixed(1)}mL</strong></div>
+            <div class="dea-expected-row"><span>TopRx Vials:</span> <strong>${counts?.toprx_full_vials || 0} full + ${(counts?.toprx_partial_ml || 0).toFixed(1)}mL partial = ${trVialMl.toFixed(1)}mL</strong></div>
+            ${(cbStagedMl + trStagedMl) > 0 ? `<div class="dea-expected-row" style="color:#f59e0b;"><span>💉 Prefilled Syringes:</span> <strong>${(cbStagedMl + trStagedMl).toFixed(1)}mL in staged syringes</strong></div>` : ''}
+            <div class="dea-expected-row" style="border-top:1px solid var(--border); padding-top:8px; margin-top:8px; font-size:15px;">
+                <span>📋 TOTAL ACCOUNTABLE:</span> <strong style="color:var(--primary);">${grandTotal.toFixed(1)}mL</strong>
+            </div>
         `;
+        // Store for submit comparison
+        window._deaSystemCounts = counts;
+        // Show/hide syringe section based on whether staged doses exist
+        const syringeSection = document.getElementById('deaCheckSyringeSection');
+        if (syringeSection) {
+            syringeSection.style.display = (cbStagedMl + trStagedMl) > 0 ? 'block' : 'none';
+        }
+        // Reset inputs and attach listeners
+        const syringeInput = document.getElementById('deaCheckSyringeCount');
+        if (syringeInput) syringeInput.value = '0';
+        attachDEACheckListeners();
+        updateDEACheckTotal();
     } catch (e) {
         document.getElementById('deaCheckSystemCounts').innerHTML = '<div class="patient-search-empty">Could not load system counts</div>';
     }
 }
 
+// Live calculation as staff enters counts
+function updateDEACheckTotal() {
+    const cbFull = parseInt(document.getElementById('deaCheckCbVials')?.value) || 0;
+    const cbPartial = parseFloat(document.getElementById('deaCheckCbPartial')?.value) || 0;
+    const trFull = parseInt(document.getElementById('deaCheckTopRxVials')?.value) || 0;
+    const trPartial = parseFloat(document.getElementById('deaCheckTopRxPartial')?.value) || 0;
+
+    // Only count syringes if the section is visible (staged doses exist)
+    const syringeSection = document.getElementById('deaCheckSyringeSection');
+    const syringesVisible = syringeSection && syringeSection.style.display !== 'none';
+    const syringeCount = syringesVisible ? (parseInt(document.getElementById('deaCheckSyringeCount')?.value) || 0) : 0;
+    const syringeDose = 0.60; // fixed: 0.50 dose + 0.10 waste
+
+    const vialTotal = (cbFull * 30) + cbPartial + (trFull * 10) + trPartial;
+    const syringeTotal = syringeCount * syringeDose;
+    const grandTotal = vialTotal + syringeTotal;
+
+    const syringeTotalEl = document.getElementById('deaCheckSyringeTotal');
+    if (syringeTotalEl) {
+        if (syringeCount > 0) {
+            syringeTotalEl.style.display = 'block';
+            syringeTotalEl.textContent = `= ${syringeCount} × ${syringeDose}mL = ${syringeTotal.toFixed(1)}mL`;
+        } else {
+            syringeTotalEl.style.display = 'none';
+        }
+    }
+
+    const grandTotalEl = document.getElementById('deaCheckGrandTotal');
+    if (!grandTotalEl) return;
+
+    const systemCounts = window._deaSystemCounts;
+    if (systemCounts) {
+        const systemTotal = (systemCounts.carrieboyd_total_ml || 0) + (systemCounts.toprx_total_ml || 0) +
+                           (systemCounts.carrieboyd_staged_ml || 0) + (systemCounts.toprx_staged_ml || 0);
+        const diff = Math.abs(grandTotal - systemTotal);
+        const match = diff <= 2.0;
+        grandTotalEl.innerHTML = match
+            ? `YOUR COUNT: ${grandTotal.toFixed(1)}mL ✅ Matches system (${systemTotal.toFixed(1)}mL)`
+            : `YOUR COUNT: ${grandTotal.toFixed(1)}mL ⚠️ System expects ${systemTotal.toFixed(1)}mL (${diff.toFixed(1)}mL off)`;
+        grandTotalEl.style.color = match ? 'var(--primary)' : '#ef4444';
+    } else {
+        grandTotalEl.textContent = `YOUR COUNT: ${grandTotal.toFixed(1)}mL`;
+    }
+}
+
+// Attach live calculation to all DEA check inputs (called after modal opens)
+function attachDEACheckListeners() {
+    ['deaCheckCbVials','deaCheckCbPartial','deaCheckTopRxVials','deaCheckTopRxPartial','deaCheckSyringeCount'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.oninput = updateDEACheckTotal; // oninput avoids listener accumulation
+    });
+}
+
 async function submitDEACheck() {
+    const syringeCount = parseInt(document.getElementById('deaCheckSyringeCount').value) || 0;
+    const syringeDose = parseFloat(document.getElementById('deaCheckSyringeDose').value) || 0.60;
+    const syringeTotalMl = syringeCount * syringeDose;
+
     const data = {
         carrieboyd_full_vials: parseInt(document.getElementById('deaCheckCbVials').value) || 0,
         carrieboyd_partial_ml: parseFloat(document.getElementById('deaCheckCbPartial').value) || 0,
         toprx_vials: parseInt(document.getElementById('deaCheckTopRxVials').value) || 0,
+        toprx_partial_ml: parseFloat(document.getElementById('deaCheckTopRxPartial').value) || 0,
+        physical_syringe_count: syringeCount,
+        physical_syringe_ml: syringeTotalMl,
         check_type: deaCheckType,
         notes: document.getElementById('deaCheckNotes').value || null,
         discrepancyNotes: document.getElementById('deaCheckNotes').value || null,
@@ -8870,7 +9185,7 @@ function renderPatientsView(container) {
         const pType = formatClientType(p.client_type_key || p.client_type || '');
         return `
                         <div class="recent-patient-card" onclick="openChartForPatient('${p.healthie_client_id || p.healthie_id || p.id || p.patient_id}', '${(name || '').replace(/'/g, "\\'")}')">
-                            ${p.avatar_url ? `<div class="patient-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>`}
+                            ${p.avatar_url ? `<div class="patient-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${safeInitials(name)}'"/></div>` : `<div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>`}
                             <div class="recent-patient-name">${name}</div>
                             ${pType ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${pType}</div>` : ''}
                         </div>
@@ -8937,6 +9252,34 @@ function formatClientType(raw) {
     return map[raw] || raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+// Signal dot colors mirror /ops/patients/ (lib/patientSignals.ts)
+const SIGNAL_DOT_COLORS = {
+    good: '#16a34a',
+    warn: '#d97706',
+    bad: '#dc2626',
+    na: '#cbd5e1',
+    none: '#94a3b8'
+};
+
+function renderSignalDot(state, title) {
+    const color = SIGNAL_DOT_COLORS[state] || SIGNAL_DOT_COLORS.none;
+    return `<span title="${(title||'').replace(/"/g,'&quot;')}" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:3px;vertical-align:middle;"></span>`;
+}
+
+function renderSignalDots(sig) {
+    if (!sig) return '';
+    // 5 dots: Intake (placeholder for Phase 5b), Consents, App, Labs, Last Visit
+    return `
+        <span style="margin-left:6px; white-space:nowrap; vertical-align:middle;" title="📋 Intake: (coming Phase 5b)&#10;✍️ ${sig.consents?.label||'—'}&#10;📱 ${sig.app?.label||'—'}&#10;🔬 ${sig.labs?.label||'—'}&#10;📅 ${sig.lastVisit?.label||'—'}">
+            ${renderSignalDot('na', '📋 Intake: coming soon')}
+            ${renderSignalDot(sig.consents?.state || 'none', '✍️ ' + (sig.consents?.label || ''))}
+            ${renderSignalDot(sig.app?.state || 'none', '📱 ' + (sig.app?.label || ''))}
+            ${renderSignalDot(sig.labs?.state || 'none', '🔬 ' + (sig.labs?.label || ''))}
+            ${renderSignalDot(sig.lastVisit?.state || 'none', '📅 ' + (sig.lastVisit?.label || ''))}
+        </span>
+    `;
+}
+
 function renderPatientListItem(p) {
     const name = p.name || p.patient_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
     const color = p.avatar_color || getAvatarColor(name);
@@ -8947,9 +9290,12 @@ function renderPatientListItem(p) {
     const hasHealthie = !!(p.healthie_client_id || p.healthie_id);
 
     const pid = p.healthie_client_id || p.healthie_id || p.id || p.patient_id;
+    // Signals keyed by local patient_id (UUID). Fall back across naming.
+    const signalsKey = p.patient_id || p.id;
+    const signals = (patientSignalsCache && signalsKey) ? patientSignalsCache[signalsKey] : null;
     return `
         <div class="patient-list-item" onclick="openChartForPatient('${pid}', '${(name || '').replace(/'/g, "\\'")}')" style="cursor:pointer;">
-            ${p.avatar_url ? `<div class="patient-list-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>`}
+            ${p.avatar_url ? `<div class="patient-list-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${safeInitials(name)}'"/></div>` : `<div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>`}
             <div class="patient-list-info">
                 <div class="patient-list-name">${sanitize(name)}
                     ${hasHealthie ? '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:#22c55e; font-weight:500;">✓</span>' : ''}
@@ -9047,7 +9393,7 @@ async function selectPatient(id) {
     detail.innerHTML = `
         <div class="patient-detail">
             <div class="patient-detail-header">
-                ${patient.avatar_url ? `<div class="patient-detail-avatar" style="background:${color}; overflow:hidden; padding:0;" id="patientAvatar-${id}"><img src="${patient.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-detail-avatar" style="background:${color}" id="patientAvatar-${id}">${getInitials(name)}</div>`}
+                ${patient.avatar_url ? `<div class="patient-detail-avatar" style="background:${color}; overflow:hidden; padding:0;" id="patientAvatar-${id}"><img src="${patient.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${safeInitials(name)}'"/></div>` : `<div class="patient-detail-avatar" style="background:${color}" id="patientAvatar-${id}">${getInitials(name)}</div>`}
                 <div style="flex:1">
                     <div class="patient-detail-name">${sanitize(name)}</div>
                     ${patient.dob ? `<div class="patient-detail-dob">DOB: ${formatDateDisplay(patient.dob)}</div>` : ''}
@@ -9266,7 +9612,7 @@ function renderPatient360(data, patient, patientId) {
     if (healthiePhoto) {
         const avatarEl = document.getElementById(`patientAvatar-${patientId}`);
         if (avatarEl) {
-            avatarEl.innerHTML = `<img src="${healthiePhoto}" style="width:100%; height:100%; border-radius:inherit; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(demo.full_name || '')}'"/>`;
+            avatarEl.innerHTML = `<img src="${healthiePhoto}" style="width:100%; height:100%; border-radius:inherit; object-fit:cover;" onerror="this.parentElement.textContent='${safeInitials(demo.full_name || '')}'"/>`;
         }
     }
 
@@ -9335,6 +9681,9 @@ function renderPatient360(data, patient, patientId) {
             </div>
         </div>
     `;
+
+    // ─── Family Connections ───
+    html += renderFamilyConnectionsSection(patientId, data.family);
 
     // ─── Inline Clinical Sections (collapsible) ───
     html += renderInlineAllergiesSection(data);
@@ -9520,6 +9869,215 @@ function renderPatient360(data, patient, patientId) {
     loadPatientLabData(patientId);
     // Async: load payment data from Healthie
     loadPatientPaymentData(patientId);
+}
+
+// ─── FAMILY CONNECTIONS ──────────────────────────────────────
+function renderFamilyConnectionsSection(patientId, family) {
+    var fam = family || {};
+    var html = '<div class="patient-360-section">';
+    html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">';
+    html += '<h3 style="margin:0;">Family Connections</h3>';
+    html += '<button class="btn-secondary btn-sm" onclick="openLinkFamilyModal(\'' + patientId + '\')" style="font-size:11px;">+ Link Family Member</button>';
+    html += '</div>';
+    html += '<div id="familyConnectionsList-' + patientId + '">';
+
+    var hasAny = false;
+
+    if (fam.parent) {
+        hasAny = true;
+        html += renderFamilyCard(fam.parent, 'Dependent of', 'parent', patientId);
+    }
+    if (fam.spouse) {
+        hasAny = true;
+        html += renderFamilyCard(fam.spouse, 'Spouse', 'spouse', patientId);
+    }
+    if (fam.dependents && fam.dependents.length > 0) {
+        fam.dependents.forEach(function(d) {
+            hasAny = true;
+            html += renderFamilyCard(d, 'Dependent', 'dependent', patientId);
+        });
+    }
+
+    if (!hasAny) {
+        html += '<div style="padding:8px 0; font-size:12px; color:var(--text-tertiary);">No family connections linked</div>';
+    }
+
+    html += '</div></div>';
+    return html;
+}
+
+function renderFamilyCard(member, label, relType, currentPatientId) {
+    var name = sanitize(member.full_name || 'Unknown');
+    var dob = member.dob ? ' (' + formatDateDisplay(member.dob) + ')' : '';
+    var healthieBadge = member.healthie_client_id
+        ? '<span style="font-size:9px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.12); color:#22c55e; margin-left:6px;">Healthie</span>'
+        : '<span style="font-size:9px; padding:1px 5px; border-radius:3px; background:rgba(239,68,68,0.12); color:#ef4444; margin-left:6px;">No Healthie</span>';
+
+    var relColors = { parent: '#8b5cf6', spouse: '#0ea5e9', dependent: '#22c55e' };
+    var borderColor = relColors[relType] || '#6b7280';
+
+    return '<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; margin-bottom:6px; background:var(--surface); border-radius:8px; border-left:3px solid ' + borderColor + ';">'
+        + '<div>'
+        + '<div style="font-size:13px; font-weight:600; color:var(--text-primary);">' + name + dob + '</div>'
+        + '<div style="font-size:11px; color:var(--text-secondary);">' + label + healthieBadge + '</div>'
+        + '</div>'
+        + '<button onclick="unlinkFamilyMember(\'' + currentPatientId + '\', \'' + member.patient_id + '\', \'' + relType + '\')" '
+        + 'style="font-size:10px; padding:3px 8px; border-radius:4px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); color:#ef4444; cursor:pointer;" '
+        + 'title="Remove connection">Unlink</button>'
+        + '</div>';
+}
+
+var _familySearchTimeout = null;
+var _familySelectedPatient = null;
+
+function openLinkFamilyModal(patientId) {
+    _familySelectedPatient = null;
+    var modal = document.createElement('div');
+    modal.className = 'modal-overlay visible';
+    modal.id = 'familyLinkModal';
+    modal.innerHTML = '<div class="modal modal-large" style="max-width:480px;">'
+        + '<h3>Link Family Member</h3>'
+        + '<div class="modal-field">'
+        + '<label>Search Patient</label>'
+        + '<input type="text" id="familySearchInput" placeholder="Search by name..." '
+        + 'oninput="searchPatientsForFamily(this.value, \'' + patientId + '\')" '
+        + 'style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; outline:none; box-sizing:border-box;">'
+        + '</div>'
+        + '<div id="familySearchResults" style="max-height:200px; overflow-y:auto; margin-bottom:12px;"></div>'
+        + '<div id="familySelectedInfo" style="display:none; padding:10px; background:rgba(139,92,246,0.08); border:1px solid rgba(139,92,246,0.2); border-radius:8px; margin-bottom:12px;">'
+        + '<div id="familySelectedName" style="font-weight:600; font-size:14px; color:var(--text-primary);"></div>'
+        + '</div>'
+        + '<div id="familyRelTypeSection" style="display:none;">'
+        + '<div class="modal-field">'
+        + '<label>Relationship</label>'
+        + '<select id="familyRelType" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px;">'
+        + '<option value="spouse">Spouse</option>'
+        + '<option value="parent">This patient is a dependent of selected</option>'
+        + '<option value="child">Selected is a dependent of this patient</option>'
+        + '<option value="caregiver">Caregiver</option>'
+        + '<option value="legal_guardian">Legal Guardian</option>'
+        + '<option value="family_member">Family Member</option>'
+        + '<option value="other">Other</option>'
+        + '</select>'
+        + '</div>'
+        + '</div>'
+        + '<div class="modal-actions">'
+        + '<button class="btn-cancel" onclick="document.getElementById(\'familyLinkModal\').remove()">Cancel</button>'
+        + '<button class="btn-primary" id="familyLinkBtn" onclick="submitFamilyLink(\'' + patientId + '\')" disabled>Link</button>'
+        + '</div>'
+        + '</div>';
+    document.body.appendChild(modal);
+    setTimeout(function() { document.getElementById('familySearchInput')?.focus(); }, 100);
+}
+
+function searchPatientsForFamily(searchQuery, currentPatientId) {
+    clearTimeout(_familySearchTimeout);
+    var resultsEl = document.getElementById('familySearchResults');
+    if (!searchQuery || searchQuery.length < 2) { if (resultsEl) resultsEl.innerHTML = ''; return; }
+    if (resultsEl) resultsEl.innerHTML = '<div style="padding:8px; font-size:12px; color:var(--text-tertiary);">Searching...</div>';
+    _familySearchTimeout = setTimeout(async function() {
+        try {
+            var resp = await fetch('/ops/api/patients/search/?q=' + encodeURIComponent(searchQuery), { credentials: 'include' });
+            var data = resp.ok ? await resp.json() : null;
+            if (!resultsEl) resultsEl = document.getElementById('familySearchResults');
+            if (!resultsEl) return;
+            var pts = (data && data.patients) ? data.patients : [];
+            // Filter out current patient
+            pts = pts.filter(function(p) { return String(p.patient_id || p.id) !== String(currentPatientId); });
+            if (pts.length === 0) {
+                resultsEl.innerHTML = '<div style="padding:8px; font-size:12px; color:var(--text-tertiary);">No matching patients</div>';
+                return;
+            }
+            resultsEl.innerHTML = pts.map(function(p) {
+                var pid = p.patient_id || p.id || '';
+                var name = p.full_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
+                var email = p.email || '';
+                var hid = p.healthie_id || p.healthie_client_id || '';
+                var safeName = sanitize(name).replace(/'/g, "\\'");
+                var safeEmail = sanitize(email).replace(/'/g, "\\'");
+                return '<div onclick="selectPatientForFamily(\'' + pid + '\', \'' + safeName + '\', \'' + safeEmail + '\', \'' + hid + '\')" '
+                    + 'style="padding:8px 12px; cursor:pointer; border-radius:6px; font-size:13px; color:var(--text-primary); border-bottom:1px solid var(--border-light);" '
+                    + 'onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">'
+                    + '<div style="font-weight:500;">' + sanitize(name) + '</div>'
+                    + (email ? '<div style="font-size:11px; color:var(--text-tertiary);">' + sanitize(email) + '</div>' : '')
+                    + '</div>';
+            }).join('');
+        } catch (e) {
+            if (resultsEl) resultsEl.innerHTML = '<div style="padding:8px; font-size:12px; color:#ef4444;">Search failed</div>';
+        }
+    }, 300);
+}
+
+function selectPatientForFamily(patientId, name, email, healthieId) {
+    _familySelectedPatient = { patient_id: patientId, full_name: name, email: email, healthie_id: healthieId };
+    var resultsEl = document.getElementById('familySearchResults');
+    if (resultsEl) resultsEl.innerHTML = '';
+    var infoEl = document.getElementById('familySelectedInfo');
+    if (infoEl) {
+        infoEl.style.display = 'block';
+        document.getElementById('familySelectedName').textContent = name + (email ? ' (' + email + ')' : '');
+    }
+    var relSection = document.getElementById('familyRelTypeSection');
+    if (relSection) relSection.style.display = 'block';
+    var linkBtn = document.getElementById('familyLinkBtn');
+    if (linkBtn) linkBtn.disabled = false;
+}
+
+async function submitFamilyLink(currentPatientId) {
+    if (!_familySelectedPatient) return;
+    var relType = document.getElementById('familyRelType')?.value;
+    if (!relType) return;
+    var linkBtn = document.getElementById('familyLinkBtn');
+    if (linkBtn) { linkBtn.disabled = true; linkBtn.textContent = 'Linking...'; }
+
+    try {
+        var result = await apiFetch('/ops/api/ipad/patient/' + currentPatientId + '/family/', {
+            method: 'POST',
+            body: JSON.stringify({
+                relatedPatientId: _familySelectedPatient.patient_id,
+                relationshipType: relType
+            })
+        });
+        if (result.success) {
+            showToast('Family member linked!', 'success');
+            document.getElementById('familyLinkModal')?.remove();
+            invalidatePatientCache(currentPatientId);
+            if (_familySelectedPatient.patient_id) invalidatePatientCache(_familySelectedPatient.patient_id);
+            selectPatient(currentPatientId);
+        } else {
+            showToast(result.error || 'Link failed', 'error');
+            if (linkBtn) { linkBtn.disabled = false; linkBtn.textContent = 'Link'; }
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Failed to link family member', 'error');
+        if (linkBtn) { linkBtn.disabled = false; linkBtn.textContent = 'Link'; }
+    }
+}
+
+async function unlinkFamilyMember(currentPatientId, relatedPatientId, relType) {
+    if (!confirm('Remove this family connection?')) return;
+    try {
+        showToast('Unlinking...', 'info');
+        var result = await apiFetch('/ops/api/ipad/patient/' + currentPatientId + '/family/', {
+            method: 'DELETE',
+            body: JSON.stringify({
+                relatedPatientId: relatedPatientId,
+                relationshipType: relType
+            })
+        });
+        if (result.success) {
+            showToast('Family member unlinked', 'success');
+            invalidatePatientCache(currentPatientId);
+            invalidatePatientCache(relatedPatientId);
+            selectPatient(currentPatientId);
+        } else {
+            showToast(result.error || 'Unlink failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Failed to unlink', 'error');
+    }
 }
 
 // ─── STATUS CHANGE MODAL ────────────────────────────────────
@@ -10197,6 +10755,345 @@ async function printLabelToClinic(patientId, patientName, medication, options = 
     }
 }
 
+// ─── CEO AGENT STATUS ───────────────────────────────────────
+let ceoAgentData = null;
+
+async function loadAgentStatus() {
+    try {
+        const resp = await fetch('/ops/api/ipad/ceo/agent-status', { credentials: 'include' });
+        if (!resp.ok) return;
+        ceoAgentData = await resp.json();
+        renderAgentCards();
+    } catch (e) {
+        console.warn('[CEO] Agent status load failed:', e);
+    }
+}
+
+async function resolveDecision(decisionId, action) {
+    try {
+        const resp = await fetch('/ops/api/ipad/ceo/resolve-decision', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ decision_id: decisionId, action })
+        });
+        if (resp.ok) {
+            showToast(action === 'resolved' ? 'Decision resolved' : 'Decision dismissed', 'success');
+            loadAgentStatus();
+        }
+    } catch (e) {
+        showToast('Failed to resolve', 'error');
+    }
+}
+
+function renderAgentCards() {
+    const container = document.getElementById('ceoAgentCards');
+    if (!container || !ceoAgentData) return;
+
+    const decisions = ceoAgentData.pending_decisions || [];
+    const summary = ceoAgentData.today_summary || {};
+    const sysStatus = ceoAgentData.system_status;
+
+    let html = '';
+
+    // Card 1: Needs Your Decision (only shows if there are pending items)
+    if (decisions.length > 0) {
+        html += `
+        <div style="background:var(--card); border:1px solid rgba(239,68,68,0.3); border-left:4px solid #ef4444; border-radius:12px; padding:16px; margin-bottom:12px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                <div style="font-size:15px; font-weight:700; color:#ef4444;">Needs Your Decision</div>
+                <span style="font-size:11px; padding:2px 8px; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; font-weight:600;">${decisions.length}</span>
+            </div>
+            ${decisions.map(d => {
+                const timeAgo = getTimeAgo(d.created_at);
+                const catLabel = (d.category || '').replace(/_/g, ' ');
+                return `
+                <div style="padding:10px 0; border-top:1px solid var(--border-light);">
+                    <div style="font-size:13px; color:var(--text-primary); margin-bottom:4px;">${sanitize(d.summary)}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:8px;">${sanitize(d.agent_name.replace(/_/g, ' '))} · ${catLabel} · ${timeAgo}</div>
+                    <div style="display:flex; gap:8px;">
+                        <button onclick="resolveDecision(${d.id}, 'resolved')" style="padding:6px 14px; background:#22c55e; border:none; border-radius:6px; color:#fff; font-size:12px; font-weight:600; cursor:pointer;">Resolve</button>
+                        <button onclick="resolveDecision(${d.id}, 'dismissed')" style="padding:6px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Dismiss</button>
+                    </div>
+                </div>`;
+            }).join('')}
+        </div>`;
+    }
+
+    // Card 2: System Status (single line, always visible)
+    if (sysStatus) {
+        const isHealthy = sysStatus.action_type !== 'error';
+        const statusColor = isHealthy ? '#22c55e' : '#ef4444';
+        const statusText = isHealthy ? 'All systems healthy' : (sysStatus.summary || 'Issues detected');
+        const statusTime = getTimeAgo(sysStatus.created_at);
+        html += `
+        <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:14px 16px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:10px; height:10px; border-radius:50%; background:${statusColor}; box-shadow:0 0 6px ${statusColor}80;"></div>
+                <span style="font-size:13px; color:var(--text-primary); font-weight:500;">${sanitize(statusText)}</span>
+            </div>
+            <span style="font-size:11px; color:var(--text-tertiary);">${statusTime}</span>
+        </div>`;
+    }
+
+    // Card 3: Agent Activity (collapsible, default collapsed)
+    if (summary.total > 0) {
+        const fixLabel = summary.auto_fixes > 0 ? `${summary.auto_fixes} auto-fixed` : '';
+        const errLabel = summary.errors > 0 ? `${summary.errors} errors` : '';
+        const parts = [fixLabel, errLabel].filter(Boolean).join(', ');
+        const summaryLine = parts ? `${summary.total} actions today (${parts})` : `${summary.total} actions today`;
+
+        html += `
+        <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; margin-bottom:20px; overflow:hidden;">
+            <div onclick="toggleAgentLog()" style="padding:14px 16px; display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
+                <span style="font-size:13px; color:var(--text-secondary); font-weight:500;">${summaryLine}</span>
+                <span id="agentLogToggle" style="font-size:11px; color:var(--text-tertiary);">show ▾</span>
+            </div>
+            <div id="agentLogDetail" style="display:none; border-top:1px solid var(--border-light); padding:0 16px;">
+                ${(ceoAgentData.today_activity || []).map(a => `
+                    <div style="padding:8px 0; border-bottom:1px solid var(--border-light); display:flex; align-items:flex-start; gap:8px;">
+                        <span style="font-size:11px; margin-top:2px;">${a.action_type === 'auto_fix' ? '🔧' : a.action_type === 'error' ? '⚠' : 'ℹ'}</span>
+                        <div>
+                            <div style="font-size:12px; color:var(--text-primary);">${sanitize(a.summary)}</div>
+                            <div style="font-size:11px; color:var(--text-tertiary);">${sanitize(a.agent_name.replace(/_/g, ' '))} · ${getTimeAgo(a.created_at)}</div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+}
+
+function toggleAgentLog() {
+    const detail = document.getElementById('agentLogDetail');
+    const toggle = document.getElementById('agentLogToggle');
+    if (!detail) return;
+    if (detail.style.display === 'none') {
+        detail.style.display = 'block';
+        if (toggle) toggle.textContent = 'hide ▴';
+    } else {
+        detail.style.display = 'none';
+        if (toggle) toggle.textContent = 'show ▾';
+    }
+}
+
+function getTimeAgo(isoStr) {
+    if (!isoStr) return '';
+    const diff = Date.now() - new Date(isoStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    return Math.floor(hrs / 24) + 'd ago';
+}
+
+async function resolveFailedCharge(source, id) {
+    const modal = document.createElement('div');
+    modal.id = 'resolve-charge-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:10001; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML = `
+        <div style="background:var(--bg-primary, #1a1a2e); border-radius:16px; width:90%; max-width:400px; padding:24px; border:1px solid var(--border-light);">
+            <div style="font-size:16px; font-weight:700; color:var(--text-primary); margin-bottom:16px;">Resolve Charge</div>
+            <select id="resolveAction" style="width:100%; padding:10px; margin-bottom:12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px;">
+                <option value="resolved">Resolved — payment collected</option>
+                <option value="dismissed">Dismissed — written off</option>
+                <option value="retried">Retried — re-charged successfully</option>
+            </select>
+            <textarea id="resolveNotes" rows="2" placeholder="Notes (optional)"
+                style="width:100%; padding:10px; margin-bottom:16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; box-sizing:border-box;"></textarea>
+            <div style="display:flex; gap:10px;">
+                <button onclick="document.getElementById('resolve-charge-modal')?.remove()"
+                    style="flex:1; padding:12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>
+                <button onclick="submitResolveCharge('${source}', '${id}')"
+                    style="flex:2; padding:12px; background:#22c55e; border:none; border-radius:10px; color:white; font-weight:700; font-size:14px; cursor:pointer;">Clear Charge</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function submitResolveCharge(source, id) {
+    const action = document.getElementById('resolveAction')?.value;
+    const notes = document.getElementById('resolveNotes')?.value;
+    try {
+        const resp = await fetch('/ops/api/ipad/ceo/resolve-charge', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source, id, action, notes })
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status }));
+            showToast('Failed: ' + (err.error || resp.status), 'error');
+            return;
+        }
+        const result = await resp.json();
+        if (result.success) {
+            document.getElementById('resolve-charge-modal')?.remove();
+            showToast('Charge cleared', 'success');
+            loadAllData();
+        } else {
+            showToast('Failed: ' + (result.error || 'Unknown'), 'error');
+        }
+    } catch (e) {
+        showToast('Error: ' + (e.message || 'Connection failed'), 'error');
+    }
+}
+
+async function showCEODrillDown(card, extraParams) {
+    const modal = document.createElement('div');
+    modal.id = 'ceo-drill-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10001; display:flex; align-items:flex-start; justify-content:center; padding-top:60px; backdrop-filter:blur(4px); overflow-y:auto;';
+    modal.innerHTML = '<div style="color:var(--text-tertiary); font-size:14px; padding:40px;">Loading...</div>';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    document.body.appendChild(modal);
+
+    try {
+        let url = '/ops/api/ipad/ceo/drill-down?card=' + encodeURIComponent(card);
+        if (extraParams) url += '&' + extraParams;
+        const resp = await fetch(url, { credentials: 'include' });
+        if (!resp.ok) throw new Error('Failed to load');
+        const result = await resp.json();
+        const items = result.data || [];
+
+        let rows = '';
+        if (items.length === 0) {
+            rows = '<div style="color:var(--text-tertiary); padding:20px; text-align:center;">No data found</div>';
+        } else {
+            rows = items.map(function(item) {
+                const name = item.patient_name || item.vial_id || item.note || '—';
+                const amount = item.amount != null ? '$' + Number(item.amount).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0}) : '';
+                const desc = item.description || item.vendor || item.type || '';
+                const detail = item.date || '';
+                const extra = item.remaining_ml != null ? item.remaining_ml + 'mL remaining' : (item.phone || '');
+                return '<div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid #1f2937;">' +
+                    '<div style="flex:1; min-width:0;">' +
+                        '<div style="font-size:14px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + sanitize(name) + '</div>' +
+                        '<div style="font-size:11px; color:var(--text-tertiary);">' + sanitize(desc) + (detail ? ' · ' + sanitize(String(detail)) : '') + (extra ? ' · ' + sanitize(extra) : '') + '</div>' +
+                    '</div>' +
+                    (amount ? '<div style="font-size:14px; font-weight:600; color:#22d3ee; flex-shrink:0; margin-left:12px;">' + amount + '</div>' : '') +
+                '</div>';
+            }).join('');
+        }
+
+        const total = items.reduce(function(s, i) { return s + (parseFloat(i.amount) || 0); }, 0);
+        const totalLine = total > 0 ? '<div style="text-align:right; padding:12px 0; font-size:16px; font-weight:700; color:#22c55e;">Total: $' + total.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + '</div>' : '';
+
+        modal.innerHTML = '<div style="background:var(--bg-primary, #0C141D); border-radius:16px; width:92%; max-width:550px; max-height:80vh; overflow-y:auto; border:1px solid rgba(100,200,255,0.15);">' +
+            '<div style="padding:20px; border-bottom:1px solid #1f2937; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; background:var(--bg-primary, #0C141D); z-index:1;">' +
+                '<div><div style="font-size:16px; font-weight:700; color:var(--text-primary);">' + sanitize(result.title || card) + '</div>' +
+                '<div style="font-size:12px; color:var(--text-tertiary);">' + items.length + ' items</div></div>' +
+                '<button onclick="document.getElementById(\'ceo-drill-modal\')?.remove()" style="background:none; border:none; color:#6b7280; font-size:22px; cursor:pointer; padding:8px;">✕</button>' +
+            '</div>' +
+            '<div style="padding:0 20px;">' + rows + totalLine + '</div>' +
+            '<div style="height:20px;"></div>' +
+        '</div>';
+    } catch (e) {
+        modal.innerHTML = '<div style="background:var(--bg-primary); border-radius:16px; padding:24px; width:90%; max-width:400px;">' +
+            '<div style="color:#ef4444;">Failed to load data</div>' +
+            '<button onclick="document.getElementById(\'ceo-drill-modal\')?.remove()" style="margin-top:12px; padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); cursor:pointer;">Close</button>' +
+        '</div>';
+    }
+}
+
+function renderDataWarnings() {
+    const container = document.getElementById('ceoDataWarnings');
+    if (!container) return;
+    const ceo = (dashboardData || {}).ceo || {};
+    const warnings = ceo.data_warnings || [];
+    const cronHealth = ceo.cron_health || {};
+    const revenueSource = (dashboardData || {}).revenue_source || 'unknown';
+
+    let html = '';
+
+    if (warnings.length > 0) {
+        html += `
+        <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-left:4px solid #ef4444; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
+            <div style="font-size:13px; font-weight:700; color:#ef4444; margin-bottom:8px;">Data Warnings</div>
+            ${warnings.map(w => `<div style="font-size:12px; color:var(--text-secondary); padding:3px 0;">• ${sanitize(w)}</div>`).join('')}
+        </div>`;
+    }
+
+    if (revenueSource && revenueSource !== 'healthie+stripe') {
+        html += `
+        <div style="background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.25); border-radius:8px; padding:8px 12px; margin-bottom:12px; font-size:11px; color:var(--text-tertiary);">
+            Revenue source: ${sanitize(revenueSource === 'stripe_only' ? 'Direct Stripe only (Healthie cache missing)' : revenueSource === 'healthie_only' ? 'Healthie only (Stripe query failed)' : revenueSource)}
+        </div>`;
+    }
+
+    container.innerHTML = html;
+}
+
+// ─── STATUS ACTIVITY (Phase 1.4 chokepoint widget) ──────────
+const STATUS_KEY_LABELS = {
+    'active': 'Active',
+    'active_pending': 'Active (Pending Lab)',
+    'hold_payment_research': 'Hold — Payment',
+    'hold_patient_research': 'Hold — Patient',
+    'hold_service_change': 'Hold — Service Change',
+    'hold_contract_renewal': 'Hold — Contract',
+    'inactive_payment_research': 'Inactive — Payment',
+    'inactive': 'Inactive',
+};
+
+function renderStatusActivityCard() {
+    const sa = statusActivity;
+    if (!sa) return '';
+    const days = sa.windowDays || 7;
+    const total = sa.totalApplied || 0;
+    const blocked = sa.totalBlocked || 0;
+    const byTo = sa.byToStatus || {};
+    const recent = Array.isArray(sa.recent) ? sa.recent : [];
+
+    const sortedKeys = Object.keys(byTo).sort((a, b) => byTo[b] - byTo[a]);
+    const tiles = sortedKeys.length === 0
+        ? '<div style="grid-column: 1 / -1; text-align:center; color:var(--text-tertiary); font-size:12px; padding:8px 0;">No status changes in the last ' + days + ' days</div>'
+        : sortedKeys.map(k => {
+            const label = STATUS_KEY_LABELS[k] || k;
+            const isInactive = k.startsWith('inactive');
+            const isHold = k.startsWith('hold');
+            const color = isInactive ? '#ef4444' : isHold ? '#f59e0b' : '#22c55e';
+            return `
+                <div style="background:var(--surface); border-radius:8px; padding:10px 12px; min-width:0;">
+                    <div style="font-size:20px; font-weight:700; color:${color}; line-height:1;">${byTo[k]}</div>
+                    <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">→ ${sanitize(label)}</div>
+                </div>`;
+        }).join('');
+
+    const recentRows = recent.slice(0, 5).map(r => {
+        const when = r.createdAt ? new Date(r.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+        const arrow = r.fromStatus ? `${STATUS_KEY_LABELS[r.fromStatus] || r.fromStatus} → ${STATUS_KEY_LABELS[r.toStatus] || r.toStatus || '?'}` : (STATUS_KEY_LABELS[r.toStatus] || r.toStatus || '?');
+        const blockedBadge = r.blocked ? '<span style="background:rgba(239,68,68,0.15); color:#ef4444; font-size:9px; font-weight:700; padding:1px 5px; border-radius:4px; margin-left:6px;">BLOCKED</span>' : '';
+        return `
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; padding:6px 0; border-bottom:1px solid var(--border-light); gap:10px;">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-size:12px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${sanitize(r.patientName || r.patientId.slice(0, 8))}${blockedBadge}</div>
+                    <div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${sanitize(arrow)} · ${sanitize(r.source)}${r.actor ? ' · ' + sanitize(r.actor) : ''}</div>
+                </div>
+                <div style="font-size:10px; color:var(--text-tertiary); white-space:nowrap;">${sanitize(when)}</div>
+            </div>`;
+    }).join('');
+
+    return `
+        <div style="background:var(--card); border:1px solid ${blocked > 0 ? 'rgba(239,68,68,0.3)' : 'var(--border-light)'}; border-radius:12px; padding:20px; margin-bottom:20px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                <h3 style="font-size:16px; margin:0; color:var(--text-primary);">🔀 Status Activity (${days}d)</h3>
+                <div style="font-size:12px; color:var(--text-tertiary);">${total} change${total === 1 ? '' : 's'}${blocked > 0 ? ` · <span style="color:#ef4444;">${blocked} blocked</span>` : ''}</div>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px; margin-bottom:${recent.length > 0 ? '14' : '0'}px;">
+                ${tiles}
+            </div>
+            ${recent.length > 0 ? `
+                <div style="margin-top:6px; padding-top:8px; border-top:1px solid var(--border-light);">
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; margin-bottom:4px;">Recent</div>
+                    ${recentRows}
+                </div>
+            ` : ''}
+        </div>`;
+}
+
 // ─── CEO DASHBOARD ──────────────────────────────────────────
 function renderCEODashboard(container) {
     const dd = dashboardData || {};
@@ -10228,27 +11125,51 @@ function renderCEODashboard(container) {
                 <button onclick="loadAllData()" style="padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>
             </div>
 
-            <!-- Revenue Banner (tap for breakdown) -->
-            <div onclick="showRevenueBreakdown()" style="background:linear-gradient(135deg, #0C141D 0%, #1a2744 50%, #0f2027 100%); border:1px solid rgba(0,212,255,0.15); border-radius:16px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden; cursor:pointer;">
+            <!-- Data Warnings (shown if API detects problems) -->
+            <div id="ceoDataWarnings"></div>
+
+            <!-- Agent Status Cards (loaded async) -->
+            <div id="ceoAgentCards"></div>
+
+            <!-- Revenue Banner -->
+            <div style="background:linear-gradient(135deg, #0C141D 0%, #1a2744 50%, #0f2027 100%); border:1px solid rgba(0,212,255,0.15); border-radius:16px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden;">
                 <div style="position:absolute; top:-20px; right:-20px; width:120px; height:120px; background:radial-gradient(circle, rgba(0,212,255,0.08) 0%, transparent 70%); pointer-events:none;"></div>
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                    <div style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.1em; font-weight:600;">Revenue Overview</div>
-                    <div style="font-size:10px; color:var(--text-tertiary);">Tap for breakdown →</div>
+
+                <!-- Combined Total Row -->
+                <div onclick="showRevenueBreakdown('month')" style="cursor:pointer; margin-bottom:16px;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <div style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.1em; font-weight:600;">Combined Revenue</div>
+                        <div style="font-size:10px; color:var(--text-tertiary);">Tap for full breakdown</div>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap;">
+                        <div onclick="event.stopPropagation(); showRevenueBreakdown('today')" style="flex:1; min-width:0; cursor:pointer;">
+                            <div style="font-size:10px; color:#22d3ee; font-weight:600; margin-bottom:4px;">TODAY</div>
+                            <div style="font-size:clamp(18px, 5vw, 28px); font-weight:800; color:#22d3ee; line-height:1; overflow:hidden; text-overflow:ellipsis;">$${Number(revenue.today || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+                        </div>
+                        <div style="width:1px; height:36px; background:rgba(255,255,255,0.08); flex-shrink:0;"></div>
+                        <div onclick="event.stopPropagation(); showRevenueBreakdown('week')" style="flex:1; min-width:0; cursor:pointer;">
+                            <div style="font-size:10px; color:#a855f7; font-weight:600; margin-bottom:4px;">7 DAYS</div>
+                            <div style="font-size:clamp(16px, 4vw, 22px); font-weight:700; color:#a855f7; line-height:1; overflow:hidden; text-overflow:ellipsis;">$${Number(revenue.week || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+                        </div>
+                        <div style="width:1px; height:36px; background:rgba(255,255,255,0.08); flex-shrink:0;"></div>
+                        <div onclick="event.stopPropagation(); showRevenueBreakdown('month')" style="flex:1; min-width:0; cursor:pointer;">
+                            <div style="font-size:10px; color:#22c55e; font-weight:600; margin-bottom:4px;">30 DAYS</div>
+                            <div style="font-size:clamp(16px, 4vw, 22px); font-weight:700; color:#22c55e; line-height:1; overflow:hidden; text-overflow:ellipsis;">$${Number(revenue.month || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+                        </div>
+                    </div>
                 </div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap;">
-                    <div style="flex:1; min-width:90px;">
-                        <div style="font-size:11px; color:#22d3ee; font-weight:600; margin-bottom:4px;">TODAY</div>
-                        <div style="font-size:32px; font-weight:800; color:#22d3ee; line-height:1;">$${Number(revenue.today || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+
+                <!-- Source Breakdown Row -->
+                <div style="border-top:1px solid rgba(255,255,255,0.06); padding-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div onclick="showCEODrillDown('stripe_transactions')" style="background:rgba(255,255,255,0.03); border-radius:8px; padding:10px 12px; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:10px; color:#f59e0b; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">iPad Stripe</div>
+                        <div style="font-size:18px; font-weight:700; color:#f59e0b;">$${Number(dd.stripe_today || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary);">30d: $${Number(dd.stripe_month || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
                     </div>
-                    <div style="width:1px; height:40px; background:rgba(255,255,255,0.08);"></div>
-                    <div style="flex:1; min-width:90px;">
-                        <div style="font-size:11px; color:#a855f7; font-weight:600; margin-bottom:4px;">THIS WEEK</div>
-                        <div style="font-size:24px; font-weight:700; color:#a855f7; line-height:1;">$${Number(revenue.week || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
-                    </div>
-                    <div style="width:1px; height:40px; background:rgba(255,255,255,0.08);"></div>
-                    <div style="flex:1; min-width:90px;">
-                        <div style="font-size:11px; color:#22c55e; font-weight:600; margin-bottom:4px;">THIS MONTH</div>
-                        <div style="font-size:24px; font-weight:700; color:#22c55e; line-height:1;">$${Number(revenue.month || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+                    <div onclick="showCEODrillDown('healthie_succeeded')" style="background:rgba(255,255,255,0.03); border-radius:8px; padding:10px 12px; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:10px; color:#10b981; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">Healthie Billing</div>
+                        <div style="font-size:18px; font-weight:700; color:#10b981;">$${Number(dd.healthie_today || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary);">30d: $${Number(dd.healthie_month || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
                     </div>
                 </div>
             </div>
@@ -10269,13 +11190,13 @@ function renderCEODashboard(container) {
                 </div>
                 <div onclick="scrollToSection('ceoAccountsReceivable')" style="background:var(--card); border:1px solid ${acctReceivable.length > 0 ? 'rgba(239,68,68,0.3)' : 'var(--border-light)'}; border-radius:12px; padding:16px; text-align:center; cursor:pointer;">
                     <div style="font-size:32px; font-weight:700; color:${acctReceivable.length > 0 ? '#ef4444' : 'var(--text-primary)'};">${acctReceivable.length}</div>
-                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Failed Charges</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Unpaid</div>
                 </div>
             </div>
 
             <!-- Testosterone Inventory -->
-            <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px;">
-                <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">💉 Testosterone Inventory</h3>
+            <div onclick="showCEODrillDown('testosterone_vials')" style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px; cursor:pointer;">
+                <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">💉 Testosterone Inventory <span style="font-size:10px; color:var(--text-tertiary); font-weight:400;">tap for detail</span></h3>
                 ${tInventory.length === 0 ? '<p style="color:var(--text-tertiary); font-size:14px;">No inventory data available</p>' :
                 tInventory.map(v => {
                     const shortVendor = v.vendor.includes('Carrie Boyd') ? 'Carrie Boyd (30mL)' : v.vendor.includes('TopRX') ? 'TopRX (10mL)' : v.vendor;
@@ -10299,14 +11220,26 @@ function renderCEODashboard(container) {
             <!-- Peptide Sales -->
             <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px;">
                 <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">📦 Peptide Sales</h3>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-                    <div style="background:var(--surface); border-radius:8px; padding:14px; text-align:center;">
-                        <div style="font-size:24px; font-weight:700; color:#22d3ee;">$${Number(peptideSales.today_peptide_revenue || 0).toFixed(0)}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Today's Peptide Revenue</div>
+                <div style="font-size:12px; color:var(--text-tertiary); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.05em;">Today</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
+                    <div onclick="showCEODrillDown('peptides_inhouse')" style="background:var(--surface); border-radius:8px; padding:12px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:22px; font-weight:700; color:#22d3ee;">$${Number(peptideSales.today_inhouse_revenue || 0).toFixed(0)}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">In-House (${peptideSales.today_inhouse_orders || 0})</div>
                     </div>
-                    <div style="background:var(--surface); border-radius:8px; padding:14px; text-align:center;">
-                        <div style="font-size:24px; font-weight:700; color:#a855f7;">${peptideSales.today_peptide_orders || 0}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Orders Shipped Today</div>
+                    <div onclick="showCEODrillDown('peptides_shipped')" style="background:var(--surface); border-radius:8px; padding:12px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:22px; font-weight:700; color:#a855f7;">$${Number(peptideSales.today_shipped_revenue || 0).toFixed(0)}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Shipped (${peptideSales.today_shipped_orders || 0})</div>
+                    </div>
+                </div>
+                <div style="font-size:12px; color:var(--text-tertiary); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.05em;">Last 30 Days</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div onclick="showCEODrillDown('peptides_inhouse')" style="background:var(--surface); border-radius:8px; padding:12px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:22px; font-weight:700; color:#22d3ee;">$${Number(peptideSales.month_inhouse_revenue || 0).toFixed(0)}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">In-House (${peptideSales.month_inhouse_orders || 0})</div>
+                    </div>
+                    <div onclick="showCEODrillDown('peptides_shipped')" style="background:var(--surface); border-radius:8px; padding:12px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:22px; font-weight:700; color:#a855f7;">$${Number(peptideSales.month_shipped_revenue || 0).toFixed(0)}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Shipped (${peptideSales.month_shipped_orders || 0})</div>
                     </div>
                 </div>
             </div>
@@ -10323,34 +11256,51 @@ function renderCEODashboard(container) {
                 `).join('')}
             </div>
 
+            ${renderStatusActivityCard()}
+
             <!-- Patient Retention -->
-            <div style="background:var(--card); border:1px solid ${(retention.expiring_contracts > 0 || retention.no_recent_visit > 0) ? 'rgba(251,191,36,0.3)' : 'var(--border-light)'}; border-radius:12px; padding:20px; margin-bottom:20px;">
+            <div style="background:var(--card); border:1px solid ${(retention.expiring_contracts > 0 || (retention.expired_contracts || 0) > 0 || retention.no_recent_visit > 0) ? 'rgba(251,191,36,0.3)' : 'var(--border-light)'}; border-radius:12px; padding:20px; margin-bottom:20px;">
                 <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">📊 Patient Retention</h3>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-                    <div style="background:var(--surface); border-radius:8px; padding:14px; text-align:center;">
+                <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;">
+                    <div onclick="showCEODrillDown('retention_expiring')" style="background:var(--surface); border-radius:8px; padding:14px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
                         <div style="font-size:24px; font-weight:700; color:${retention.expiring_contracts > 0 ? '#f59e0b' : 'var(--text-primary)'};">${retention.expiring_contracts}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Contracts Expiring (30d)</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Expiring (30d)</div>
                     </div>
-                    <div style="background:var(--surface); border-radius:8px; padding:14px; text-align:center;">
-                        <div style="font-size:24px; font-weight:700; color:${retention.no_recent_visit > 0 ? '#ef4444' : 'var(--text-primary)'};">${retention.no_recent_visit}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">No Visit in 60+ Days</div>
+                    <div onclick="showCEODrillDown('retention_expired')" style="background:var(--surface); border-radius:8px; padding:14px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:24px; font-weight:700; color:${(retention.expired_contracts || 0) > 0 ? '#ef4444' : 'var(--text-primary)'};">${retention.expired_contracts || 0}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Expired</div>
+                    </div>
+                    <div onclick="showCEODrillDown('retention_no_lab')" style="background:var(--surface); border-radius:8px; padding:14px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:24px; font-weight:700; color:${retention.no_recent_visit > 0 ? '#f59e0b' : 'var(--text-primary)'};">${retention.no_recent_visit}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">No Lab 90d+</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Accounts Receivable (replaces broken Payment Issues) -->
+            <!-- Accounts Receivable — All Sources -->
             <div id="ceoAccountsReceivable" style="background:var(--card); border:1px solid ${acctReceivable.length > 0 ? 'rgba(239,68,68,0.2)' : 'var(--border-light)'}; border-radius:12px; padding:20px; margin-bottom:20px;">
-                <h3 style="font-size:16px; margin:0 0 14px; color:${acctReceivable.length > 0 ? '#ef4444' : 'var(--text-primary)'};">💳 Accounts Receivable</h3>
-                ${acctReceivable.length === 0 ? '<p style="color:var(--text-tertiary); font-size:14px;">No failed charges in the last 30 days</p>' :
-                acctReceivable.slice(0, 10).map(ar => `
-                    <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">
-                        <div>
-                            <div style="font-size:14px; color:var(--text-primary);">${sanitize(ar.patient_name)}</div>
-                            <div style="font-size:11px; color:var(--text-tertiary);">${ar.description || 'Charge'} · ${ar.days_ago}d ago</div>
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+                    <h3 style="font-size:16px; margin:0; color:${acctReceivable.length > 0 ? '#ef4444' : 'var(--text-primary)'};">💳 Failed & Unpaid Charges</h3>
+                    <span style="font-size:12px; color:var(--text-tertiary);">${acctReceivable.length} items · $${acctReceivable.reduce((s,a) => s + parseFloat(a.amount || 0), 0).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})}</span>
+                </div>
+                ${acctReceivable.length === 0 ? '<p style="color:var(--text-tertiary); font-size:14px;">No outstanding charges</p>' :
+                acctReceivable.slice(0, 15).map(ar => {
+                    const sourceLabel = ar.source === 'healthie_billing' ? 'Healthie Billing' : ar.source === 'payment_issues' ? 'Legacy AR' : 'iPad Stripe';
+                    const sourceColor = ar.source === 'healthie_billing' ? '#10b981' : ar.source === 'payment_issues' ? '#8b5cf6' : '#f59e0b';
+                    return `
+                    <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-light);">
+                        <div onclick="${ar.patient_id ? `openChartForPatient('${ar.patient_id}', '${sanitize(ar.patient_name).replace(/'/g, "\\'")}')` : ''}" style="flex:1; min-width:0; ${ar.patient_id ? 'cursor:pointer;' : ''}">
+                            <div style="font-size:14px; color:var(--text-primary);">${sanitize(ar.patient_name)} ${ar.patient_id ? '<span style="font-size:10px; color:var(--text-tertiary);">→ chart</span>' : ''}</div>
+                            <div style="font-size:11px; color:var(--text-tertiary);">
+                                <span style="color:${sourceColor}; font-weight:600;">${sourceLabel}</span> · ${sanitize(ar.description || ar.status || 'Charge')} · ${ar.days_ago}d ago
+                            </div>
                         </div>
-                        <span style="font-size:13px; font-weight:600; color:#ef4444;">$${parseFloat(ar.amount || 0).toFixed(2)}</span>
-                    </div>
-                `).join('')}
+                        <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+                            <span style="font-size:13px; font-weight:600; color:#ef4444;">$${parseFloat(ar.amount || 0).toFixed(0)}</span>
+                            <button onclick="resolveFailedCharge('${ar.source}', '${ar.id}')" style="padding:4px 10px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.3); border-radius:6px; color:#22c55e; font-size:10px; font-weight:600; cursor:pointer;">Clear</button>
+                        </div>
+                    </div>`;
+                }).join('')}
             </div>
 
             <!-- Recent Receipts -->
@@ -10367,17 +11317,19 @@ function renderCEODashboard(container) {
     `;
 
     loadRecentReceipts();
+    loadAgentStatus();
+    renderDataWarnings();
 }
 
 // ─── LOAD RECENT RECEIPTS FOR CEO DASHBOARD ────────────────
-async function showRevenueBreakdown() {
+async function showRevenueBreakdown(initialPeriod) {
     const modal = document.createElement('div');
     modal.id = 'revenue-breakdown-modal';
     modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10001; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(4px);';
     modal.innerHTML = '<div style="color:var(--text-tertiary); font-size:14px;">Loading revenue data...</div>';
     document.body.appendChild(modal);
 
-    let period = 'month';
+    let period = initialPeriod || 'month';
 
     async function loadBreakdown(p, specificDate) {
         if (p) period = p;
@@ -10719,16 +11671,20 @@ async function renderScheduleView(container) {
 
     console.log('[Schedule] renderScheduleView - mode:', scheduleViewMode);
     container.innerHTML = '<div style="padding: 0 4px;">' +
-        // Header row
-        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">' +
-        '<div><h1 style="font-size:24px; margin:0; color:var(--text-primary);">Schedule</h1>' +
-        '<p id="scheduleDateLabel" style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;"></p></div>' +
-        '<div style="display:flex; gap:6px;">' +
-        '<button onclick="showAddToScheduleModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ Book Appt</button>' +
-        '<button onclick="showNewPatientModal()" style="padding:8px 14px; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.3); border-radius:8px; color:#22c55e; font-size:13px; font-weight:600; cursor:pointer;">+ New Patient</button>' +
-        '<button onclick="showBreakModal()" style="padding:8px 14px; background:rgba(234,179,8,0.15); border:1px solid rgba(234,179,8,0.35); border-radius:8px; color:#eab308; font-size:13px; font-weight:600; cursor:pointer;">⏸ Break</button>' +
-        '<button onclick="loadScheduleForRange(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻</button>' +
-        '</div></div>' +
+        // Title row — title on left, refresh tucked right
+        '<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px;">' +
+        '<div style="min-width:0;">' +
+        '<h1 style="font-size:24px; margin:0; color:var(--text-primary); line-height:1.2;">Schedule</h1>' +
+        '<p id="scheduleDateLabel" style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;"></p>' +
+        '</div>' +
+        '<button onclick="loadScheduleForRange(true)" aria-label="Refresh" title="Refresh" style="flex-shrink:0; width:36px; height:36px; display:inline-flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:16px; cursor:pointer;">↻</button>' +
+        '</div>' +
+        // Action row — one primary (Book Appt), two secondaries (Patient / Break)
+        '<div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">' +
+        '<button onclick="showAddToScheduleModal()" style="flex:1 1 160px; min-height:40px; padding:10px 14px; background:var(--cyan); border:1px solid var(--cyan); border-radius:8px; color:#0f172a; font-size:13px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:4px;">+ Book Appointment</button>' +
+        '<button onclick="showNewPatientModal()" style="flex:0 1 auto; min-height:40px; padding:10px 12px; background:transparent; border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:4px;"><span style="color:#22c55e;">+</span> Patient</button>' +
+        '<button onclick="showBreakModal()" style="flex:0 1 auto; min-height:40px; padding:10px 12px; background:transparent; border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">⏸ Break</button>' +
+        '</div>' +
         // View mode toggle + date nav
         '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">' +
         '<div style="display:flex; gap:4px;">' +
@@ -11499,6 +12455,207 @@ async function submitAddToSchedule() {
         console.error('[Schedule] Create error:', e);
         showToast('Failed: ' + (e.message || 'Error'), 'error');
         btn.textContent = 'Add to Schedule'; btn.disabled = false;
+    }
+}
+
+// ─── Pending Peptide Orders (GLP Staff Approval) ────────────────────
+
+window._pendingPeptideOrders = [];
+
+async function loadPendingPeptideOrders() {
+    try {
+        var resp = await fetch('/ops/api/ipad/pending-orders/?status=pending', { credentials: 'include' });
+        if (!resp.ok) return;
+        var data = await resp.json();
+        window._pendingPeptideOrders = data.orders || [];
+        var host = document.getElementById('pendingPeptideOrdersHost');
+        if (host) host.innerHTML = renderPendingPeptideOrdersCard();
+    } catch (e) {
+        console.warn('[pending-peptide] Load failed:', e);
+    }
+}
+
+function renderPendingPeptideOrdersCard() {
+    var orders = window._pendingPeptideOrders || [];
+    if (orders.length === 0) return '';
+
+    var html = '<div class="section-header" style="margin-top:16px;">' +
+        '<h2>⚖️ Pending GLP Orders (' + orders.length + ')</h2>' +
+        '<span class="section-action" style="color:#f59e0b;">Requires Staff Approval</span>' +
+    '</div>';
+
+    orders.forEach(function(order) {
+        var items = order.items || [];
+        var addr = order.shipping_address || {};
+        var addrStr = [addr.address_line1, addr.city, addr.state, addr.postal_code].filter(Boolean).join(', ');
+        var timeAgo = getTimeAgo(order.created_at);
+
+        // Initialize all items as checked (approved) by default
+        if (!window._pendingItemSelections) window._pendingItemSelections = {};
+        if (!window._pendingItemSelections[order.id]) {
+            window._pendingItemSelections[order.id] = {};
+            items.forEach(function(i) { window._pendingItemSelections[order.id][i.sku] = true; });
+        }
+
+        var selectedSkus = window._pendingItemSelections[order.id];
+        var approvedTotal = 0;
+        items.forEach(function(i) { if (selectedSkus[i.sku]) approvedTotal += i.unit_price * i.quantity; });
+        var shippingCost = approvedTotal >= 400 ? 0 : 20;
+        var chargeTotal = approvedTotal > 0 ? approvedTotal + shippingCost : 0;
+        var approvedCount = Object.values(selectedSkus).filter(Boolean).length;
+
+        html += '<div style="background:var(--surface); border:1px solid rgba(245,158,11,0.3); border-radius:10px; padding:14px; margin:8px 0;">' +
+            '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">' +
+                '<div>' +
+                    '<div style="font-size:14px; font-weight:600; color:var(--text-primary);">' + sanitize(order.patient_name || 'Unknown') + '</div>' +
+                    '<div style="font-size:11px; color:var(--text-tertiary); margin-top:4px;">' +
+                        'Ship to: ' + sanitize(addrStr) +
+                        ' · ' + (order.discount_tier || 'retail') + ' tier' +
+                        ' · ' + timeAgo +
+                    '</div>' +
+                '</div>' +
+                '<div style="text-align:right;">' +
+                    '<div style="font-size:16px; font-weight:700; color:' + (approvedCount === items.length ? '#f59e0b' : '#8b5cf6') + ';">$' + chargeTotal.toFixed(2) + '</div>' +
+                    '<div style="font-size:10px; color:var(--text-tertiary);">' + approvedCount + '/' + items.length + ' items</div>' +
+                '</div>' +
+            '</div>' +
+            // Per-item checkboxes
+            '<div style="border-top:1px solid rgba(255,255,255,0.06); padding-top:8px;">';
+
+        items.forEach(function(item) {
+            var checked = selectedSkus[item.sku];
+            var checkColor = checked ? '#10b981' : '#ef4444';
+            var checkBg = checked ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.1)';
+            var textColor = checked ? 'var(--text-primary)' : 'var(--text-tertiary)';
+            var textDecor = checked ? 'none' : 'line-through';
+
+            html += '<div onclick="togglePendingItem(\'' + order.id + '\',\'' + item.sku + '\')" style="display:flex; align-items:center; gap:10px; padding:8px 6px; cursor:pointer; border-radius:6px; margin:2px 0; background:' + checkBg + ';">' +
+                '<div style="width:22px; height:22px; border-radius:5px; border:2px solid ' + checkColor + '; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:14px; color:' + checkColor + ';">' + (checked ? '✓' : '') + '</div>' +
+                '<div style="flex:1; min-width:0;">' +
+                    '<div style="font-size:13px; font-weight:500; color:' + textColor + '; text-decoration:' + textDecor + ';">' + sanitize(item.name) + ' x' + item.quantity + '</div>' +
+                    '<div style="font-size:11px; color:var(--text-tertiary);">' + item.sku + '</div>' +
+                '</div>' +
+                '<div style="font-size:13px; font-weight:600; color:' + textColor + '; text-decoration:' + textDecor + ';">$' + (item.unit_price * item.quantity).toFixed(2) + '</div>' +
+            '</div>';
+        });
+
+        html += '</div>' +
+            '<div style="display:flex; gap:8px; margin-top:12px; justify-content:flex-end; align-items:center;">' +
+                '<button onclick="denyPendingPeptideOrder(\'' + order.id + '\')" style="padding:8px 16px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4); border-radius:6px; color:#ef4444; font-size:12px; font-weight:600; cursor:pointer;">Deny All</button>' +
+                '<button onclick="resolvePendingPeptideOrder(\'' + order.id + '\')" style="padding:8px 16px; background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.4); border-radius:6px; color:#10b981; font-size:12px; font-weight:600; cursor:pointer;">' +
+                    (approvedCount === items.length ? 'Approve All & Charge $' + chargeTotal.toFixed(2) : 'Approve Selected (' + approvedCount + ') · $' + chargeTotal.toFixed(2)) +
+                '</button>' +
+            '</div>' +
+        '</div>';
+    });
+
+    return html;
+}
+
+function togglePendingItem(orderId, sku) {
+    if (!window._pendingItemSelections) window._pendingItemSelections = {};
+    if (!window._pendingItemSelections[orderId]) return;
+    window._pendingItemSelections[orderId][sku] = !window._pendingItemSelections[orderId][sku];
+    // Re-render just the pending orders section
+    var host = document.getElementById('pendingPeptideOrdersHost');
+    if (host) host.innerHTML = renderPendingPeptideOrdersCard();
+}
+
+async function resolvePendingPeptideOrder(orderId) {
+    var order = (window._pendingPeptideOrders || []).find(function(o) { return o.id === orderId; });
+    if (!order) return;
+
+    var selections = window._pendingItemSelections[orderId] || {};
+    var items = order.items || [];
+    var approvedSkus = Object.keys(selections).filter(function(sku) { return selections[sku]; });
+    var deniedSkus = Object.keys(selections).filter(function(sku) { return !selections[sku]; });
+    var approvedItems = items.filter(function(i) { return selections[i.sku]; });
+    var deniedItems = items.filter(function(i) { return !selections[i.sku]; });
+
+    if (approvedSkus.length === 0) {
+        if (!confirm('No items selected. Deny this entire order?')) return;
+        denyPendingPeptideOrder(orderId);
+        return;
+    }
+
+    // Build confirmation message
+    var approvedTotal = approvedItems.reduce(function(s, i) { return s + i.unit_price * i.quantity; }, 0);
+    var shipping = approvedTotal >= 400 ? 0 : 20;
+    var chargeAmount = approvedTotal + shipping;
+    var msg = 'Charge $' + chargeAmount.toFixed(2) + ' to ' + order.patient_name + '?\n\n';
+    msg += 'APPROVE & SHIP:\n';
+    approvedItems.forEach(function(i) { msg += '  ✓ ' + i.name + ' x' + i.quantity + ' ($' + (i.unit_price * i.quantity).toFixed(2) + ')\n'; });
+    if (deniedItems.length > 0) {
+        msg += '\nDENY (will not ship):\n';
+        deniedItems.forEach(function(i) { msg += '  ✗ ' + i.name + ' x' + i.quantity + '\n'; });
+        msg += '\nPatient will be notified of denied items.';
+    }
+
+    if (!confirm(msg)) return;
+
+    // Get denial reason if any items are denied
+    var denialReason = '';
+    if (deniedItems.length > 0) {
+        denialReason = prompt('Reason for denied items (optional):') || '';
+    }
+
+    showToast('Processing order...', 'info');
+    try {
+        var action = (approvedSkus.length === items.length) ? 'approve' : 'resolve';
+        var resp = await fetch('/ops/api/ipad/pending-orders/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                order_id: orderId,
+                action: action,
+                approved_skus: approvedSkus,
+                denial_reason: denialReason || undefined,
+            })
+        });
+        var data = await resp.json();
+        if (data.success) {
+            var approvedNames = (data.approved_items || []).join(', ');
+            var deniedNames = (data.denied_items || []).join(', ');
+            if (deniedNames) {
+                showToast('Partial approval — Shipped: ' + approvedNames + '. Denied: ' + deniedNames + '. Charged $' + data.charge.amount.toFixed(2), 'success');
+            } else {
+                showToast('Order approved! Charged $' + data.charge.amount.toFixed(2) + ' to card ending ' + data.charge.card_last4, 'success');
+            }
+            delete window._pendingItemSelections[orderId];
+            loadPendingPeptideOrders();
+        } else {
+            showToast('Approval failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (err) {
+        console.error('[pending-peptide] Resolve error:', err);
+        showToast('Network error processing order', 'error');
+    }
+}
+
+async function denyPendingPeptideOrder(orderId) {
+    var reason = prompt('Reason for denial (optional):');
+    if (reason === null) return;
+
+    showToast('Denying order...', 'info');
+    try {
+        var resp = await fetch('/ops/api/ipad/pending-orders/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ order_id: orderId, action: 'deny', denial_reason: reason || 'Staff denied' })
+        });
+        var data = await resp.json();
+        if (data.success) {
+            showToast('Order denied. Patient has been notified.', 'success');
+            delete window._pendingItemSelections[orderId];
+            loadPendingPeptideOrders();
+        } else {
+            showToast('Deny failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (err) {
+        console.error('[pending-peptide] Deny error:', err);
+        showToast('Network error denying order', 'error');
     }
 }
 
@@ -14427,8 +15584,11 @@ async function submitDemographicsEdit(patientId) {
         successEl.style.display = 'block';
 
         btn.textContent = '✅ Saved';
-        // Clear cache and reload
-        delete patient360Cache[patientId];
+        // Clear cache and reload.
+        // FIX(2026-04-22): now uses invalidatePatientCache() which clears both the
+        // data map AND the TTL map. Raw `delete patient360Cache[...]` left a stale
+        // timestamp that could re-suppress a refresh.
+        invalidatePatientCache(patientId);
         setTimeout(() => {
             document.getElementById('editDemoModal')?.remove();
             invalidatePatientCache(patientId);
@@ -15047,6 +16207,19 @@ async function selectProduct(product) {
     const patient = window._currentChargePatient;
     if (!patient) return;
 
+    // FIX(2026-04-22): Check if this product already exists in a pending consent (ship flow).
+    // Warns staff to prevent double-charging the same item through both billing and ship paths.
+    try {
+        var consentCheck = await fetch('/ops/api/ipad/billing/pending-consent/?patient_id=' + encodeURIComponent(patient.patientId || patient.healthieId), { credentials: 'include' }).then(function(r) { return r.json(); }).catch(function() { return null; });
+        if (consentCheck && consentCheck.has_consent && consentCheck.items) {
+            var matchingSku = consentCheck.items.find(function(ci) { return ci.name === product.name; });
+            if (matchingSku) {
+                var proceed = confirm('⚠️ "' + product.name + '" is already in a ' + (consentCheck.consent_status || 'pending') + ' consent/ship order for this patient (by ' + (consentCheck.created_by || 'staff') + '). Adding it to the billing cart may result in a double charge.\n\nContinue anyway?');
+                if (!proceed) return;
+            }
+        }
+    } catch (e) { /* non-blocking */ }
+
     // Save to server
     try {
         await fetch('/ops/api/ipad/billing/cart/', {
@@ -15101,7 +16274,8 @@ async function loadServerCart() {
                 amount: parseFloat(item.price) * item.quantity,
                 quantity: item.quantity,
                 current_stock: parseInt(item.current_stock) || 0,
-                added_by: item.added_by
+                added_by: item.added_by,
+                created_at: item.created_at || null
             }));
         } else {
             window._billingCart = [];
@@ -15124,7 +16298,7 @@ function renderCart() {
 
     cartArea.style.display = 'block';
     const subtotal = cart.reduce((sum, item) => sum + item.amount, 0);
-    const isPhil = currentUser && currentUser.email === 'admin@nowoptimal.com';
+    const isPhil = currentUser?.permissions?.can_view_ceo_dashboard === true;
 
     cartArea.innerHTML = `
         <div style="font-size: 12px; font-weight: 600; color: var(--text-secondary, #aaa); text-transform: uppercase; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
@@ -15144,6 +16318,13 @@ function renderCart() {
                             ${item.current_stock > 0 ? item.current_stock + ' in stock' : 'Out of stock'}
                         </span>
                         ${item.added_by ? '<span style="color: var(--text-tertiary, #555);">by ' + item.added_by.split('@')[0] + '</span>' : ''}
+                        ${(function() {
+                            if (!item.created_at) return '';
+                            var ageMs = Date.now() - new Date(item.created_at + 'Z').getTime();
+                            var ageHrs = Math.round(ageMs / 3600000);
+                            if (ageHrs >= 1) return '<span style="padding:1px 4px; border-radius:3px; background:rgba(245,158,11,0.15); color:#f59e0b; font-weight:600;">' + ageHrs + 'h old</span>';
+                            return '';
+                        })()}
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
@@ -15764,14 +16945,46 @@ async function shipPeptidesToPatient() {
     showToast('Loading peptide catalog...', 'info');
 
     try {
-        const response = await fetch('/ops/api/ipad/billing/woo-products/?patient_id=' + encodeURIComponent(healthieId || patientId), {
-            credentials: 'include'
-        });
-        const data = await response.json();
-        if (!data.success) throw new Error(data.error || 'Failed to load products');
+        // FIX(2026-04-22): Load products AND check for pending consent in parallel.
+        // If consent exists, auto-populate the ship cart from consent items so staff
+        // don't have to re-add products manually (consent sends clear the in-memory cart).
+        var [productsResp, consentResp] = await Promise.all([
+            fetch('/ops/api/ipad/billing/woo-products/?patient_id=' + encodeURIComponent(healthieId || patientId), { credentials: 'include' }).then(r => r.json()),
+            fetch('/ops/api/ipad/billing/pending-consent/?patient_id=' + encodeURIComponent(patientId), { credentials: 'include' }).then(r => r.json()).catch(() => null)
+        ]);
 
-        window._shipProducts = data.products;
-        window._shipDiscount = data.discount;
+        if (!productsResp.success) throw new Error(productsResp.error || 'Failed to load products');
+
+        window._shipProducts = productsResp.products;
+        window._shipDiscount = productsResp.discount;
+        window._shipCategories = productsResp.categories_available || [];
+        window._shipSelectedCategory = 'all';
+
+        // Auto-populate ship cart from pending consent items
+        if (consentResp && consentResp.has_consent && consentResp.items && consentResp.items.length > 0) {
+            var consentItems = consentResp.items;
+            consentItems.forEach(function(ci) {
+                // Match consent item to a product in the catalog by SKU
+                var product = window._shipProducts.find(function(p) { return p.sku === ci.sku; });
+                if (product) {
+                    window._shipCart.push({
+                        sku: product.sku,
+                        woo_product_id: product.id,
+                        name: product.name,
+                        price: product.price,
+                        retail_price: product.retail_price,
+                        quantity: ci.quantity || 1,
+                        image_url: product.vial_image_url || product.image_url || ''
+                    });
+                }
+            });
+            var consentStatus = consentResp.consent_status || 'pending';
+            var consentBy = consentResp.created_by || 'staff';
+            var consentAge = consentResp.created_at ? Math.round((Date.now() - new Date(consentResp.created_at + 'Z').getTime()) / 60000) : 0;
+            var ageLabel = consentAge < 60 ? consentAge + 'm ago' : Math.round(consentAge / 60) + 'h ago';
+            showToast('Cart loaded from ' + consentStatus + ' consent (' + consentBy + ', ' + ageLabel + ')', 'info');
+        }
+
         showShipProductBrowser();
     } catch (err) {
         console.error('Failed to load WooCommerce products:', err);
@@ -15796,13 +17009,10 @@ function showShipProductBrowser() {
         backdrop-filter: blur(4px);
     `;
 
-    // FIX(2026-04-12): Staff tier selector — toggle pricing between tiers
-    window._shipTierRates = { retail: 0, heal: 0.10, optimize: 0.20, thrive: 0.30, at_cost: 0.50 };
+    // Staff tier selector — admin defaults to at_cost, others to retail
+    window._shipTierRates = { retail: 0, heal: 0.10, optimize: 0.20, thrive: 0.30 };
     window._shipDiscount = { ...discount };
-    window._shipSelectedTier = discount.rate > 0 ? 'heal' : 'retail';
-    if (discount.reason?.includes('optimize')) window._shipSelectedTier = 'optimize';
-    if (discount.reason?.includes('thrive')) window._shipSelectedTier = 'thrive';
-    if (discount.reason?.includes('cost')) window._shipSelectedTier = 'at_cost';
+    window._shipSelectedTier = discount.reason === 'at_cost' ? 'at_cost' : 'retail';
 
     modal.innerHTML = `
         <div style="display:flex; flex-direction:column; height:100%; max-width:900px; margin:0 auto; width:100%;">
@@ -15816,7 +17026,7 @@ function showShipProductBrowser() {
                             <option value="heal">Heal (10% off)</option>
                             <option value="optimize">Optimize (20% off)</option>
                             <option value="thrive">Thrive (30% off)</option>
-                            <option value="at_cost">At Cost (50% off)</option>
+                            <option value="at_cost">At Cost (wholesale + $10)</option>
                         </select>
                         <span style="margin-left:6px;">· $20 shipping · Free over $400</span>
                     </div>
@@ -15829,6 +17039,7 @@ function showShipProductBrowser() {
                 <input type="text" id="ship-search" placeholder="Search peptides by name or SKU..."
                     style="width:100%; padding:12px 16px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.15); border-radius:8px; color:#fff; font-size:14px; box-sizing:border-box;" />
             </div>
+            <div id="ship-category-tabs" style="padding:4px 20px 8px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none;"></div>
             <div id="ship-product-grid" style="flex:1; overflow-y:auto; padding:0 20px 20px;"></div>
         </div>
     `;
@@ -15845,20 +17056,29 @@ function showShipProductBrowser() {
     searchInput.addEventListener('input', (e) => renderProductGrid(e.target.value));
     setTimeout(() => searchInput?.focus(), 100);
 
+    // Render category filter tabs
+    renderShipCategoryTabs();
+
     // FIX(2026-04-12): Tier change handler — recalculates all prices and re-renders grid
     window.changeShipTier = function(tierKey) {
         window._shipSelectedTier = tierKey;
-        const rate = window._shipTierRates[tierKey] || 0;
-        // Recalculate prices on all products
-        window._shipProducts.forEach(p => {
-            p.price = Math.round(p.retail_price * (1 - rate) * 100) / 100;
-        });
-        // Update discount object for display
-        window._shipDiscount = {
-            rate: rate,
-            reason: tierKey + '_tier',
-            label: tierKey === 'retail' ? 'Retail' : tierKey.charAt(0).toUpperCase() + tierKey.slice(1) + ' (' + Math.round(rate * 100) + '% off)'
-        };
+        if (tierKey === 'at_cost') {
+            // At-cost uses wholesale + $10 handling, not a percentage
+            window._shipProducts.forEach(p => {
+                p.price = p.at_cost_price != null ? Math.round(p.at_cost_price * 100) / 100 : p.retail_price;
+            });
+            window._shipDiscount = { rate: 0, reason: 'at_cost', label: 'At Cost (wholesale + $10)' };
+        } else {
+            const rate = window._shipTierRates[tierKey] || 0;
+            window._shipProducts.forEach(p => {
+                p.price = Math.round(p.retail_price * (1 - rate) * 100) / 100;
+            });
+            window._shipDiscount = {
+                rate: rate,
+                reason: tierKey + '_tier',
+                label: tierKey === 'retail' ? 'Retail' : tierKey.charAt(0).toUpperCase() + tierKey.slice(1) + ' (' + Math.round(rate * 100) + '% off)'
+            };
+        }
         // Recalculate cart prices too
         window._shipCart.forEach(ci => {
             const product = window._shipProducts.find(p => p.sku === ci.sku);
@@ -15870,9 +17090,22 @@ function showShipProductBrowser() {
     };
 
     function renderProductGrid(searchQuery) {
-        const filtered = searchQuery
-            ? products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.sku.toLowerCase().includes(searchQuery.toLowerCase()))
-            : products;
+        const selectedCat = window._shipSelectedCategory || 'all';
+        let filtered = products;
+
+        // Category filter
+        if (selectedCat !== 'all') {
+            if (selectedCat === 'biobox') {
+                filtered = filtered.filter(p => p.section === 'BioBox Labs');
+            } else {
+                filtered = filtered.filter(p => p.therapeutic_category?.slug === selectedCat);
+            }
+        }
+
+        // Search filter
+        if (searchQuery) {
+            filtered = filtered.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
+        }
 
         // Update cart button in header
         const cartCount = window._shipCart.reduce((s, i) => s + i.quantity, 0);
@@ -15892,57 +17125,92 @@ function showShipProductBrowser() {
         const gridEl = document.getElementById('ship-product-grid');
         if (!gridEl) return;
 
-        gridEl.innerHTML = `
-            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">
-                ${filtered.map(p => {
-                    const inCart = window._shipCart.find(c => c.sku === p.sku);
-                    const safeDesc = (p.description || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
-                    const safeCategory = (p.category || '').replace(/'/g, "\\'");
-                    return `
-                    <div style="background:rgba(255,255,255,0.04); border:1px solid ${inCart ? 'rgba(124,58,237,0.5)' : 'rgba(255,255,255,0.08)'}; border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px;">
-                        <div style="display:flex; gap:10px; align-items:flex-start; cursor:pointer;" onclick="togglePeptideInfo('${p.sku}')">
-                            <img src="${p.vial_image_url || p.image_url || ''}" onerror="this.style.display='none'"
-                                style="width:48px; height:48px; border-radius:8px; object-fit:cover; background:rgba(255,255,255,0.05);" />
-                            <div style="flex:1; min-width:0;">
-                                <div style="font-size:13px; font-weight:600; color:#fff;">${p.name}</div>
-                                <div style="font-size:11px; color:#888;">${p.sku} · ${p.category} · <span style="color:#c084fc;">tap for info</span></div>
-                            </div>
-                        </div>
-                        <div id="peptide-info-${p.sku}" style="display:none; padding:10px; background:rgba(255,255,255,0.03); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
-                            ${safeDesc ? `<div style="font-size:12px; color:#ccc; margin-bottom:8px;">${safeDesc}</div>` : ''}
-                            <div style="font-size:11px; color:#aaa; line-height:1.6;">
-                                <strong style="color:#c084fc;">Category:</strong> ${safeCategory}<br/>
-                                <strong style="color:#c084fc;">SKU:</strong> ${p.sku}<br/>
-                                ${p.stock_quantity != null ? `<strong style="color:#c084fc;">Stock:</strong> ${p.stock_quantity} units<br/>` : ''}
-                                <strong style="color:#c084fc;">Retail:</strong> $${p.retail_price.toFixed(2)}
-                                ${window._shipDiscount?.rate > 0 ? ` · <strong style="color:#10b981;">Patient Price:</strong> $${p.price.toFixed(2)} (${Math.round(window._shipDiscount.rate * 100)}% off)` : ''}
-                            </div>
-                        </div>
-                        <div style="display:flex; align-items:center; justify-content:space-between;">
-                            <div>
-                                ${window._shipDiscount?.rate > 0 ? `
-                                    <span style="font-size:12px; color:#888; text-decoration:line-through;">$${p.retail_price.toFixed(2)}</span>
-                                    <span style="font-size:15px; font-weight:700; color:#10b981; margin-left:4px;">$${p.price.toFixed(2)}</span>
-                                ` : `
-                                    <span style="font-size:15px; font-weight:700; color:#fff;">$${p.price.toFixed(2)}</span>
-                                `}
-                            </div>
-                            ${inCart ? `
-                                <div style="display:flex; align-items:center; gap:6px;">
-                                    <button onclick="updateShipCartQty('${p.sku}', -1)" style="width:28px; height:28px; background:rgba(255,255,255,0.1); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">−</button>
-                                    <span style="font-size:14px; font-weight:600; color:#fff; min-width:20px; text-align:center;">${inCart.quantity}</span>
-                                    <button onclick="updateShipCartQty('${p.sku}', 1)" style="width:28px; height:28px; background:rgba(124,58,237,0.3); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">+</button>
-                                </div>
-                            ` : `
-                                <button onclick="addToShipCart('${p.sku}')" style="padding:6px 14px; background:rgba(124,58,237,0.2); border:1px solid rgba(124,58,237,0.4); border-radius:6px; color:#c084fc; font-size:12px; font-weight:600; cursor:pointer;">Add</button>
-                            `}
-                        </div>
+        const peptides = filtered.filter(p => p.section !== 'BioBox Labs');
+        const biobox = filtered.filter(p => p.section === 'BioBox Labs');
+
+        function renderCard(p) {
+            const inCart = window._shipCart.find(c => c.sku === p.sku);
+            const safeDesc = (p.description || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
+            const safeCategory = (p.category || '').replace(/'/g, "\\'");
+            const imgSrc = p.image_url || p.vial_image_url || '';
+            return `
+            <div style="background:rgba(255,255,255,0.04); border:1px solid ${inCart ? 'rgba(124,58,237,0.5)' : 'rgba(255,255,255,0.08)'}; border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+                <div style="display:flex; gap:10px; align-items:flex-start; cursor:pointer;" onclick="togglePeptideInfo('${p.sku}')">
+                    <img src="${imgSrc}" onerror="this.style.display='none'"
+                        style="width:48px; height:48px; border-radius:8px; object-fit:cover; background:rgba(255,255,255,0.05);" />
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:13px; font-weight:600; color:#fff;">${p.name}</div>
+                        <div style="font-size:11px; color:#888;">${p.sku} · ${p.category} · <span style="color:#c084fc;">tap for info</span></div>
                     </div>
-                    `;
-                }).join('')}
+                </div>
+                <div id="peptide-info-${p.sku}" style="display:none; padding:10px; background:rgba(255,255,255,0.03); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
+                    ${safeDesc ? '<div style="font-size:12px; color:#ccc; margin-bottom:8px;">' + safeDesc + '</div>' : ''}
+                    ${p.biomarkers && p.biomarkers.length > 0 ? '<div style="margin-bottom:8px;"><strong style="color:#10b981; font-size:11px;">Biomarkers:</strong><div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;">' + p.biomarkers.map(function(b) { return '<span style="font-size:10px; padding:2px 6px; background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.3); border-radius:4px; color:#6ee7b7;">' + b + '</span>'; }).join('') + '</div></div>' : ''}
+                    <div style="font-size:11px; color:#aaa; line-height:1.6;">
+                        <strong style="color:#c084fc;">Category:</strong> ${safeCategory}<br/>
+                        <strong style="color:#c084fc;">SKU:</strong> ${p.sku}<br/>
+                        ${p.stock_quantity != null ? '<strong style="color:#c084fc;">Stock:</strong> ' + p.stock_quantity + ' units<br/>' : ''}
+                        <strong style="color:#c084fc;">Retail:</strong> $${p.retail_price.toFixed(2)}
+                        ${(window._shipDiscount?.rate > 0 || window._shipDiscount?.reason === 'at_cost') && p.price !== p.retail_price ? ' · <strong style="color:#10b981;">Patient Price:</strong> $' + p.price.toFixed(2) + (window._shipDiscount?.reason === 'at_cost' ? ' (at cost)' : ' (' + Math.round(window._shipDiscount.rate * 100) + '% off)') : ''}
+                    </div>
+                </div>
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                    <div>
+                        ${(window._shipDiscount?.rate > 0 || window._shipDiscount?.reason === 'at_cost') && p.price !== p.retail_price ? `
+                            <span style="font-size:12px; color:#888; text-decoration:line-through;">$${p.retail_price.toFixed(2)}</span>
+                            <span style="font-size:15px; font-weight:700; color:#10b981; margin-left:4px;">$${p.price.toFixed(2)}</span>
+                        ` : `
+                            <span style="font-size:15px; font-weight:700; color:#fff;">$${p.price.toFixed(2)}</span>
+                        `}
+                    </div>
+                    ${inCart ? `
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <button onclick="updateShipCartQty('${p.sku}', -1)" style="width:28px; height:28px; background:rgba(255,255,255,0.1); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">−</button>
+                            <span style="font-size:14px; font-weight:600; color:#fff; min-width:20px; text-align:center;">${inCart.quantity}</span>
+                            <button onclick="updateShipCartQty('${p.sku}', 1)" style="width:28px; height:28px; background:rgba(124,58,237,0.3); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">+</button>
+                        </div>
+                    ` : `
+                        <button onclick="addToShipCart('${p.sku}')" style="padding:6px 14px; background:rgba(124,58,237,0.2); border:1px solid rgba(124,58,237,0.4); border-radius:6px; color:#c084fc; font-size:12px; font-weight:600; cursor:pointer;">Add</button>
+                    `}
+                </div>
             </div>
-            ${filtered.length === 0 ? '<div style="text-align:center; padding:40px; color:#888;">No products found</div>' : ''}
-        `;
+            `;
+        }
+
+        let html = '';
+
+        if (selectedCat === 'all' && !searchQuery) {
+            // Group by therapeutic category when showing all
+            const categories = window._shipCategories || [];
+            for (const cat of categories) {
+                const catProducts = filtered.filter(p => p.therapeutic_category?.slug === cat.slug);
+                if (catProducts.length === 0) continue;
+                html += '<div style="font-size:15px; font-weight:700; color:' + cat.color + '; margin:16px 0 8px; padding-bottom:6px; border-bottom:1px solid ' + cat.color + '33;">' + cat.label + ' (' + catProducts.length + ')</div>';
+                html += '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px; margin-bottom:8px;">' + catProducts.map(renderCard).join('') + '</div>';
+            }
+            // BioBox section
+            const biobox = filtered.filter(p => p.section === 'BioBox Labs');
+            if (biobox.length > 0) {
+                html += '<div style="font-size:15px; font-weight:700; color:#10b981; margin:16px 0 8px; padding-bottom:6px; border-bottom:1px solid rgba(16,185,129,0.3);">BioBox Labs (' + biobox.length + ')</div>';
+                html += '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">' + biobox.map(renderCard).join('') + '</div>';
+            }
+            // Uncategorized peptides (shouldn't happen, but safety net)
+            const uncategorized = filtered.filter(p => p.section !== 'BioBox Labs' && !p.therapeutic_category);
+            if (uncategorized.length > 0) {
+                html += '<div style="font-size:15px; font-weight:700; color:#888; margin:16px 0 8px; padding-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.1);">Other (' + uncategorized.length + ')</div>';
+                html += '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">' + uncategorized.map(renderCard).join('') + '</div>';
+            }
+        } else {
+            // Filtered view — flat grid
+            if (filtered.length > 0) {
+                html += '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">' + filtered.map(renderCard).join('') + '</div>';
+            }
+        }
+
+        if (filtered.length === 0) {
+            html = '<div style="text-align:center; padding:40px; color:#888;">No products found</div>';
+        }
+        gridEl.innerHTML = html;
     }
 
     // Initial render of product grid
@@ -15951,6 +17219,41 @@ function showShipProductBrowser() {
     // Expose for cart updates (add/remove need to refresh the grid)
     window._refreshShipGrid = () => renderProductGrid(document.getElementById('ship-search')?.value || '');
 }
+
+function renderShipCategoryTabs() {
+    const tabsEl = document.getElementById('ship-category-tabs');
+    if (!tabsEl) return;
+    const categories = window._shipCategories || [];
+    const selected = window._shipSelectedCategory || 'all';
+    const allCount = (window._shipProducts || []).length;
+
+    let html = '';
+
+    // "All" tab
+    const allActive = selected === 'all';
+    html += '<button onclick="selectShipCategory(\'all\')" style="' +
+        'padding:6px 14px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer; border:1px solid; transition:all 0.15s; ' +
+        (allActive ? 'background:rgba(124,58,237,0.3); border-color:rgba(124,58,237,0.6); color:#c084fc;' : 'background:rgba(255,255,255,0.05); border-color:rgba(255,255,255,0.12); color:#aaa;') +
+        '">All (' + allCount + ')</button>';
+
+    // Category tabs
+    for (const cat of categories) {
+        const isActive = selected === cat.slug;
+        html += '<button onclick="selectShipCategory(\'' + cat.slug + '\')" style="' +
+            'padding:6px 14px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer; border:1px solid; transition:all 0.15s; ' +
+            (isActive ? 'background:' + cat.color + '22; border-color:' + cat.color + '88; color:' + cat.color + ';' : 'background:rgba(255,255,255,0.05); border-color:rgba(255,255,255,0.12); color:#aaa;') +
+            '">' + cat.label + ' (' + cat.count + ')</button>';
+    }
+
+    tabsEl.innerHTML = html;
+}
+
+window.selectShipCategory = function(slug) {
+    window._shipSelectedCategory = slug;
+    renderShipCategoryTabs();
+    const q = document.getElementById('ship-search')?.value || '';
+    window._refreshShipGrid ? window._refreshShipGrid() : null;
+};
 
 function removeFromShipCart(sku) {
     window._shipCart = window._shipCart.filter(c => c.sku !== sku);
@@ -15966,7 +17269,8 @@ function removeFromShipCart(sku) {
 async function processRefund(transactionId, description, amount) {
     const patientName = chartPanelData?.demographics?.full_name || 'Patient';
 
-    if (!confirm(`Refund $${parseFloat(amount).toFixed(2)} to ${patientName}?\n\n${description}\n\nThis will refund the charge to the patient's card and send a refund receipt to their Healthie chart.`)) {
+    // FIX(2026-04-22): Updated confirm to mention WC/ShipStation cancellation
+    if (!confirm('Refund $' + parseFloat(amount).toFixed(2) + ' to ' + patientName + '?\n\n' + description + '\n\nThis will:\n\u2022 Refund the charge to the patient\'s card\n\u2022 Cancel the WooCommerce/ShipStation order (if shipped)\n\u2022 Reverse peptide dispenses\n\u2022 Upload a refund receipt to Healthie')) {
         return;
     }
 
@@ -15986,7 +17290,16 @@ async function processRefund(transactionId, description, amount) {
         const result = await response.json();
 
         if (result.success) {
-            showToast(`Refunded $${result.refund.amount.toFixed(2)} to ${patientName}. Receipt sent to chart.`, 'success');
+            // FIX(2026-04-22): Show WC cancellation status in success toast
+            var msgs = ['Refunded $' + result.refund.amount.toFixed(2) + ' to ' + patientName];
+            if (result.wc_order_cancelled) {
+                msgs.push('WC order #' + result.wc_order_id + ' cancelled');
+            } else if (result.wc_order_id && !result.wc_order_cancelled) {
+                showToast('\u26a0\ufe0f WC order #' + result.wc_order_id + ' could not be auto-cancelled \u2014 cancel manually in WooCommerce!', 'error');
+            }
+            if (result.dispenses_reversed) msgs.push(result.dispenses_reversed + ' dispense(s) reversed');
+            msgs.push('Receipt sent to chart');
+            showToast(msgs.join(' \u00b7 '), 'success');
 
             // Reload the patient chart to reflect the refund
             const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
@@ -16008,9 +17321,25 @@ function togglePeptideInfo(sku) {
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-function addToShipCart(sku) {
+async function addToShipCart(sku) {
     const product = window._shipProducts.find(p => p.sku === sku);
     if (!product) return;
+
+    // FIX(2026-04-22): Check if this product is already in the patient's DB-persisted billing cart.
+    // Warns staff to prevent double-charging through both billing and ship paths.
+    var patient = window._shipPatient;
+    if (patient && !window._shipCart.find(c => c.sku === sku)) {
+        try {
+            var cartResp = await fetch('/ops/api/ipad/billing/cart/?patient_id=' + encodeURIComponent(patient.patientId || patient.healthieId), { credentials: 'include' }).then(function(r) { return r.json(); }).catch(function() { return null; });
+            if (cartResp && cartResp.items && cartResp.items.length > 0) {
+                var match = cartResp.items.find(function(ci) { return ci.product_name === product.name; });
+                if (match) {
+                    var proceed = confirm('⚠️ "' + product.name + '" is already in this patient\'s in-clinic billing cart (added by ' + (match.added_by || 'staff') + '). Adding it to the ship cart may result in a double charge.\n\nContinue anyway?');
+                    if (!proceed) return;
+                }
+            }
+        } catch (e) { /* non-blocking */ }
+    }
 
     const existing = window._shipCart.find(c => c.sku === sku);
     if (existing) {
@@ -16203,6 +17532,10 @@ async function sendPeptideConsent() {
         });
         const result = await response.json();
         if (result.success) {
+            // FIX(2026-04-22): Show warning if a prior consent was replaced
+            if (result.prior_consent_warning) {
+                showToast('⚠️ ' + result.prior_consent_warning, 'info');
+            }
             showToast('Consent form sent to ' + patient.patientName, 'success');
             if (btn) { btn.textContent = '✓ Consent Sent'; btn.style.background = 'rgba(16,185,129,0.2)'; btn.style.borderColor = 'rgba(16,185,129,0.4)'; btn.style.color = '#10b981'; }
         } else {
@@ -16835,8 +18168,8 @@ async function loadMessagesConversations(force) {
     }
     containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
     try {
-        // Phil (admin) sees all conversations; everyone else sees only their own
-        var isPhilAdmin = currentUser && (currentUser.email === 'admin@granitemountainhealth.com' || currentUser.email === 'admin@nowoptimal.com');
+        // Admins see all conversations; everyone else sees only their own
+        var isPhilAdmin = currentUser?.permissions?.can_view_ceo_dashboard === true;
         var msgUrl = '/ops/api/ipad/messages/';
         if (!isPhilAdmin && currentUser?.healthie_provider_id) {
             msgUrl += '?provider_id=' + currentUser.healthie_provider_id;
