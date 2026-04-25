@@ -11,6 +11,7 @@
 
 const { createQuickBooksClient } = require('../lib/quickbooks');
 const { query } = require('../lib/db');
+const { transitionStatus } = require('../lib/status-transitions');
 
 async function dailyPaymentCheck() {
   console.log('[Daily Payment Check] Starting payment evaluation...');
@@ -127,15 +128,30 @@ async function dailyPaymentCheck() {
 
                   // Update patient status if rule specifies
                   if (rule.auto_update_status && rule.target_status_key) {
-                    await query(`
-                      UPDATE patients SET
-                        status_key = $1,
-                        updated_at = NOW()
-                      WHERE patient_id = $2
-                    `, [rule.target_status_key, patient.patient_id]);
-
-                    totalUpdated++;
-                    console.log(`[Daily Payment Check] Updated patient ${patient.full_name} status to ${rule.target_status_key}`);
+                    const t = await transitionStatus({
+                      patientId: patient.patient_id,
+                      toStatus: rule.target_status_key,
+                      source: 'script:daily-payment-check',
+                      actor: 'system',
+                      reason: `Overdue invoice ${worstInvoice.Id} (${daysOverdue}d)`,
+                      metadata: {
+                        fn: 'daily-payment-check',
+                        ruleId: rule.rule_id ?? null,
+                        qbInvoiceId: worstInvoice.Id,
+                        daysOverdue,
+                        previousStatus: patient.status_key,
+                      },
+                    });
+                    if (t.applied) {
+                      await query(
+                        `UPDATE patients SET updated_at = NOW() WHERE patient_id = $1`,
+                        [patient.patient_id]
+                      );
+                      totalUpdated++;
+                      console.log(`[Daily Payment Check] Updated patient ${patient.full_name} status to ${rule.target_status_key}`);
+                    } else if (t.blocked) {
+                      console.warn(`[Daily Payment Check] Blocked status change for ${patient.full_name}: ${t.blockReason}`);
+                    }
                   }
                 }
               }

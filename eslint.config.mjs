@@ -60,5 +60,24 @@ export default [
       'prefer-const': 'off',
       'no-unused-vars': 'off'
     }
+  },
+  // Phase 1.4 (hardening): chokepoint enforcement.
+  // Block direct `UPDATE patients SET status_key` writes everywhere except the helper itself.
+  // The DB trigger is the runtime backstop; this rule catches violations at code-review time.
+  {
+    files: ['app/**/*.{js,ts,tsx}', 'lib/**/*.{js,ts,tsx}', 'scripts/**/*.{js,ts,tsx}'],
+    ignores: ['lib/status-transitions.ts'],
+    rules: {
+      'no-restricted-syntax': ['error',
+        {
+          selector: "Literal[value=/UPDATE\\s+patients\\s+SET\\s+(\\w+\\s*=\\s*[^,]+,\\s*)*status_key/i]",
+          message: 'Direct status_key writes are forbidden. Use transitionStatus() from lib/status-transitions.ts. The DB trigger will reject rule violations even if this rule is bypassed.'
+        },
+        {
+          selector: "TemplateElement[value.raw=/UPDATE\\s+patients\\s+SET\\s+(\\w+\\s*=\\s*[^,]+,\\s*)*status_key/i]",
+          message: 'Direct status_key writes are forbidden. Use transitionStatus() from lib/status-transitions.ts. The DB trigger will reject rule violations even if this rule is bypassed.'
+        }
+      ]
+    }
   }
 ];

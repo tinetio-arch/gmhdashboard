@@ -1,6 +1,7 @@
 import { getPool, query } from './db';
 import { computeLabStatus, type LabStatusState } from './patientFormatting';
 import { stripHonorifics } from './nameUtils';
+import { transitionStatus, type StatusKey } from './status-transitions';
 
 export type PatientDataEntryRow = {
   patient_id: string;
@@ -600,58 +601,69 @@ export async function updatePatient(payload: PatientDataEntryPayload): Promise<P
     );
     const statusKey = enforceLabStatusOnPatientStatus(payload.statusKey, labStatusState);
 
-    // GUARD: Never change an inactive patient's status — inactive is a deliberate clinical decision.
-    // Only direct database access by an admin can reverse it. (Added 2026-04-01)
-    if (statusKey && statusKey !== 'inactive') {
-      const currentRow = await client.query<{ status_key: string | null }>(
-        'SELECT status_key FROM patients WHERE patient_id = $1',
-        [payload.patientId]
-      );
-      if (currentRow.rows[0]?.status_key === 'inactive') {
-        throw new Error('Cannot change status of an inactive patient. Inactive status can only be reversed by an admin via direct database access.');
+    const currentRow = await client.query<{ status_key: StatusKey | null }>(
+      'SELECT status_key FROM patients WHERE patient_id = $1',
+      [payload.patientId]
+    );
+    const fromStatus = currentRow.rows[0]?.status_key ?? null;
+    const normalizedStatusKey = (statusKey ?? '').trim() || null;
+
+    // GUARD: Never change an inactive patient's status via this endpoint — inactive is a
+    // deliberate clinical decision; only direct DB access by an admin can reverse it.
+    if (fromStatus === 'inactive' && normalizedStatusKey && normalizedStatusKey !== 'inactive') {
+      throw new Error('Cannot change status of an inactive patient. Inactive status can only be reversed by an admin via direct database access.');
+    }
+
+    if (normalizedStatusKey && normalizedStatusKey !== fromStatus) {
+      const t = await transitionStatus({
+        patientId: payload.patientId,
+        toStatus: normalizedStatusKey as StatusKey,
+        source: 'admin_api',
+        actor: payload.addedBy ?? 'dashboard',
+        reason: 'Patient edit form',
+        metadata: { fn: 'updatePatient' },
+        client,
+      });
+      if (t.blocked) {
+        throw new Error(t.blockReason || 'Status transition blocked');
       }
     }
 
     await client.query(
       `UPDATE patients
           SET full_name = $2,
-              status_key = NULLIF($3::text, ''),
-              alert_status = (
-                SELECT display_name FROM patient_status_lookup WHERE status_key = NULLIF($3::text, '')
-              ),
-              payment_method_key = NULLIF($4::text, ''),
+              payment_method_key = NULLIF($3::text, ''),
               payment_method = (
-                SELECT display_name FROM payment_method_lookup WHERE method_key = NULLIF($4::text, '')
+                SELECT display_name FROM payment_method_lookup WHERE method_key = NULLIF($3::text, '')
               ),
-              client_type_key = NULLIF($5::text, ''),
+              client_type_key = NULLIF($4::text, ''),
               client_type = (
-                SELECT display_name FROM client_type_lookup WHERE type_key = NULLIF($5::text, '')
+                SELECT display_name FROM client_type_lookup WHERE type_key = NULLIF($4::text, '')
               ),
-              regimen = $6,
-              notes = $7,
-              lab_status = $8,
-              service_start_date = $9,
-              contract_end_date = $10,
-              dob = $11,
-              phone_primary = $12,
-              address_line1 = $13,
-              city = $14,
-              state = $15,
-              postal_code = $16,
-              added_by = $17,
-              date_added = $18,
-              last_modified = $19,
-              email = $20,
-              regular_client = $21,
-              is_verified = $22,
-              membership_owes = $23,
-              patient_type = COALESCE(NULLIF($24::text, ''), patient_type),
+              regimen = $5,
+              notes = $6,
+              lab_status = $7,
+              service_start_date = $8,
+              contract_end_date = $9,
+              dob = $10,
+              phone_primary = $11,
+              address_line1 = $12,
+              city = $13,
+              state = $14,
+              postal_code = $15,
+              added_by = $16,
+              date_added = $17,
+              last_modified = $18,
+              email = $19,
+              regular_client = $20,
+              is_verified = $21,
+              membership_owes = $22,
+              patient_type = COALESCE(NULLIF($23::text, ''), patient_type),
               updated_at = NOW()
         WHERE patient_id = $1`,
       [
         payload.patientId,
         cleanedName || payload.patientName.trim(),
-        statusKey,
         payload.paymentMethodKey,
         payload.clientTypeKey,
         payload.regimen ?? null,
