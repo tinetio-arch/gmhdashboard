@@ -1,5 +1,6 @@
 import { query } from './db';
 import { healthieGraphQL } from './healthieApi';
+import { transitionStatus } from './status-transitions';
 
 const HEALTHIE_PAYMENT_METHOD_KEY = 'healthie';
 const HEALTHIE_PAYMENT_METHOD_LABEL = 'Healthie';
@@ -303,34 +304,45 @@ const ACTIVATABLE_STATUSES = ['hold_payment_research'];
 
 async function activatePatientBilling(patientId: string, clientType: ClientTypeTarget): Promise<void> {
   await ensureLookupValues();
-  const result = await query<{ patient_id: string }>(
-    `
-      UPDATE patients
-         SET payment_method_key = $2,
-             payment_method = $3,
-             client_type_key = $4,
-             client_type = $5,
-             status_key = 'active',
-             alert_status = 'Active',
-             updated_at = NOW()
-       WHERE patient_id = $1
-         AND status_key = ANY($6::text[])
-      RETURNING patient_id
-    `,
-    [patientId, HEALTHIE_PAYMENT_METHOD_KEY, HEALTHIE_PAYMENT_METHOD_LABEL, clientType.key, clientType.label, ACTIVATABLE_STATUSES]
-  );
 
-  if (result.length === 0) {
-    const current = await query<{ status_key: string }>(
-      'SELECT status_key FROM patients WHERE patient_id = $1',
-      [patientId]
-    );
+  // Preserve atomic guard: only activate if currently on hold_payment_research
+  const current = await query<{ status_key: string }>(
+    'SELECT status_key FROM patients WHERE patient_id = $1',
+    [patientId]
+  );
+  if (current.length === 0 || !ACTIVATABLE_STATUSES.includes(current[0].status_key)) {
     console.warn('[healthie-webhook] Skipped activation — patient status not activatable', {
       patientId, currentStatus: current[0]?.status_key ?? 'not_found',
       activatableStatuses: ACTIVATABLE_STATUSES,
     });
     return;
   }
+
+  const t = await transitionStatus({
+    patientId,
+    toStatus: 'active',
+    source: 'webhook_processor',
+    actor: 'healthie_payment_automation',
+    reason: 'Payment marked paid — auto-activated',
+    metadata: { fn: 'activatePatientBilling', clientType: clientType.key },
+  });
+  if (!t.applied) {
+    console.warn('[healthie-webhook] activation blocked', { patientId, blockReason: t.blockReason });
+    return;
+  }
+
+  await query(
+    `
+      UPDATE patients
+         SET payment_method_key = $2,
+             payment_method = $3,
+             client_type_key = $4,
+             client_type = $5,
+             updated_at = NOW()
+       WHERE patient_id = $1::uuid
+    `,
+    [patientId, HEALTHIE_PAYMENT_METHOD_KEY, HEALTHIE_PAYMENT_METHOD_LABEL, clientType.key, clientType.label]
+  );
 
   try {
     await query(
@@ -348,29 +360,42 @@ async function activatePatientBilling(patientId: string, clientType: ClientTypeT
 const DEACTIVATABLE_STATUSES = ['active'];
 
 async function deactivatePatientBilling(patientId: string, status: string): Promise<void> {
-  const result = await query<{ patient_id: string }>(
-    `
-      UPDATE patients
-         SET status_key = 'hold_payment_research',
-             alert_status = 'Payment Failed',
-             updated_at = NOW()
-       WHERE patient_id = $1
-         AND status_key = ANY($2::text[])
-      RETURNING patient_id
-    `,
-    [patientId, DEACTIVATABLE_STATUSES]
+  // Preserve atomic guard: only deactivate if currently active
+  const current = await query<{ status_key: string }>(
+    'SELECT status_key FROM patients WHERE patient_id = $1',
+    [patientId]
   );
-
-  if (result.length === 0) {
-    const current = await query<{ status_key: string }>(
-      'SELECT status_key FROM patients WHERE patient_id = $1',
-      [patientId]
-    );
+  if (current.length === 0 || !DEACTIVATABLE_STATUSES.includes(current[0].status_key)) {
     console.warn('[healthie-webhook] Skipped deactivation — patient not in deactivatable status', {
       patientId, currentStatus: current[0]?.status_key ?? 'not_found',
     });
     return;
   }
+
+  const t = await transitionStatus({
+    patientId,
+    toStatus: 'hold_payment_research',
+    source: 'webhook_processor',
+    actor: 'healthie_payment_automation',
+    reason: `Payment failed — Healthie status: ${status}`,
+    metadata: { fn: 'deactivatePatientBilling', healthieStatus: status },
+  });
+  if (!t.applied) {
+    console.warn('[healthie-webhook] deactivation blocked', { patientId, blockReason: t.blockReason });
+    return;
+  }
+
+  // Custom alert_status override + updated_at (helper sets default 'Hold - Payment Research'
+  // from lookup, but this function intentionally uses 'Payment Failed' for visibility)
+  await query(
+    `
+      UPDATE patients
+         SET alert_status = 'Payment Failed',
+             updated_at = NOW()
+       WHERE patient_id = $1::uuid
+    `,
+    [patientId]
+  );
 
   try {
     await query(

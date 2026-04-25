@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { transitionStatus } from '@/lib/status-transitions';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,33 +55,33 @@ export async function POST(req: NextRequest) {
 
           if (shouldUpdateStatus) {
             const previousStatus = patient.status_key;
-            await query(
-              `UPDATE patients 
-               SET status_key = 'active',
-                   alert_status = (
-                     SELECT display_name FROM patient_status_lookup WHERE status_key = 'active'
-                   ),
-                   updated_at = NOW()
-               WHERE patient_id = $1`,
-              [issue.patient_id]
-            );
-
-            // Log the status change (table may not exist, so wrap in try-catch)
             const changeReason = resolutionNote || (
-              isContractIssue 
-                ? 'Contract expiration issue resolved - new contract active' 
+              isContractIssue
+                ? 'Contract expiration issue resolved - new contract active'
                 : 'Payment issue resolved - charge cleared in financial system'
             );
-            
-            try {
-              await query(
-                `INSERT INTO patient_status_activity_log
-                 (patient_id, previous_status, new_status, changed_by_user_id, change_source, change_reason, created_at)
-                 VALUES ($1, $2, 'active', $3, 'admin_resolve_payment', $4, NOW())`,
-                [issue.patient_id, previousStatus, user.user_id, changeReason]
-              );
-            } catch (logError: any) {
-              console.error('[Resolve Payment Issue] Failed to write audit log', logError);
+
+            const t = await transitionStatus({
+              patientId: issue.patient_id,
+              toStatus: 'active',
+              source: 'admin_api',
+              actor: user.email || 'system',
+              reason: changeReason,
+              metadata: { fn: 'resolve-payment-issue', issueId, issueType: patient.issue_type },
+            });
+            if (t.applied) {
+              await query(`UPDATE patients SET updated_at = NOW() WHERE patient_id = $1::uuid`, [issue.patient_id]);
+
+              try {
+                await query(
+                  `INSERT INTO patient_status_activity_log
+                   (patient_id, previous_status, new_status, changed_by_user_id, change_source, change_reason, created_at)
+                   VALUES ($1, $2, 'active', $3, 'admin_resolve_payment', $4, NOW())`,
+                  [issue.patient_id, previousStatus, user.user_id, changeReason]
+                );
+              } catch (logError: any) {
+                console.error('[Resolve Payment Issue] Failed to write audit log', logError);
+              }
             }
           }
         }
@@ -125,27 +126,28 @@ export async function POST(req: NextRequest) {
       if (currentPatient.length > 0) {
         const previousStatus = currentPatient[0].status_key;
 
-        await query(
-          `UPDATE patients
-           SET status_key = 'active',
-               alert_status = (
-                 SELECT display_name FROM patient_status_lookup WHERE status_key = 'active'
-               ),
-               updated_at = NOW()
-           WHERE patient_id = $1
-           AND status_key IN ('hold_payment_research', 'hold_contract_renewal')`,
-          [patientId]
-        );
+        const t = await transitionStatus({
+          patientId,
+          toStatus: 'active',
+          source: 'admin_api',
+          actor: user.email || 'system',
+          reason: 'Payment issues manually resolved',
+          metadata: { fn: 'resolve-payment-issue-bulk', previousStatus },
+        });
 
-        try {
-          await query(
-            `INSERT INTO patient_status_activity_log
-             (patient_id, previous_status, new_status, changed_by_user_id, change_source, change_reason, created_at)
-             VALUES ($1, $2, 'active', $3, 'admin_resolve_payment', 'Payment issues manually resolved', NOW())`,
-            [patientId, previousStatus, user.user_id]
-          );
-        } catch (logError: any) {
-          console.error('[Resolve Payment Issue] Failed to write audit log', logError);
+        if (t.applied) {
+          await query(`UPDATE patients SET updated_at = NOW() WHERE patient_id = $1::uuid`, [patientId]);
+
+          try {
+            await query(
+              `INSERT INTO patient_status_activity_log
+               (patient_id, previous_status, new_status, changed_by_user_id, change_source, change_reason, created_at)
+               VALUES ($1, $2, 'active', $3, 'admin_resolve_payment', 'Payment issues manually resolved', NOW())`,
+              [patientId, previousStatus, user.user_id]
+            );
+          } catch (logError: any) {
+            console.error('[Resolve Payment Issue] Failed to write audit log', logError);
+          }
         }
       }
       
