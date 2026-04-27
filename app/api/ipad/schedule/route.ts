@@ -487,12 +487,72 @@ export async function POST(request: NextRequest) {
         }
 
         if (action === 'create') {
-            const { patient_id, provider_id, appointment_type_id, datetime, length, location, contact_type } = body;
+            const { patient_id, provider_id, appointment_type_id, datetime, length, location, contact_type, staff_override } = body;
 
             if (!patient_id || !provider_id || !appointment_type_id || !datetime) {
                 return NextResponse.json({
                     error: 'patient_id, provider_id, appointment_type_id, and datetime are required'
                 }, { status: 400 });
+            }
+
+            // Idempotency: if an identical booking was made in the last 60s, return its ID
+            // instead of creating a duplicate (Clint Shafer double-tap incident 2026-04-21).
+            try {
+                const recentDup = await healthieGraphQL<{
+                    appointments: Array<{
+                        id: string; date: string;
+                        appointment_type: { id: string } | null;
+                        user: { id: string } | null;
+                    }>;
+                }>(`
+                    query RecentAppts($userId: ID!, $pid: ID!) {
+                        appointments(user_id: $userId, provider_id: $pid, filter: "upcoming", should_paginate: false) {
+                            id date appointment_type { id } user { id }
+                        }
+                    }
+                `, { userId: patient_id, pid: provider_id });
+                const targetDate = new Date(String(datetime).replace(/Z$/, ''));
+                const recent = (recentDup.appointments || []).find(a => {
+                    if (a.appointment_type?.id !== String(appointment_type_id)) return false;
+                    const aDate = new Date(a.date);
+                    return Math.abs(aDate.getTime() - targetDate.getTime()) < 60 * 1000;
+                });
+                if (recent) {
+                    console.log(`[Schedule] Idempotency hit — returning existing appt ${recent.id} for patient=${patient_id} type=${appointment_type_id} at ${datetime}`);
+                    return NextResponse.json({
+                        success: true,
+                        replayed: true,
+                        appointment_id: recent.id,
+                        message: 'An identical appointment was created moments ago — returning existing booking.'
+                    });
+                }
+            } catch (idErr) {
+                // Idempotency check is advisory; don't block booking if check fails
+                console.warn('[Schedule] Idempotency check failed (continuing):', (idErr as Error).message);
+            }
+
+            // Routing guardrail: enforce MensHealth → Whitten, Pelleting → Longevity location,
+            // unless staff explicitly opted out via staff_override flag. Public surfaces
+            // (ABXTAC website, chatbot) use the same lib with staffOverride=false.
+            const { resolveBookingAssignment } = await import('@/lib/appointmentRouting');
+            const routing = await resolveBookingAssignment({
+                patientHealthieId: patient_id,
+                appointmentTypeId: appointment_type_id,
+                requestedProviderId: provider_id,
+                staffOverride: staff_override === true
+            });
+            if (routing.rerouted) {
+                console.log(`[Schedule] Routing applied (${routing.rule}): provider ${provider_id}→${routing.providerId}, type ${appointment_type_id}, patient ${patient_id}`);
+            }
+            const resolvedProviderId = routing.providerId;
+
+            // Custom duration: hard-block 5–120 min. Empty/null → use appointment-type default.
+            let lengthMin: number | null = null;
+            if (length !== undefined && length !== null && length !== '') {
+                lengthMin = parseInt(String(length), 10);
+                if (isNaN(lengthMin) || lengthMin < 5 || lengthMin > 120) {
+                    return NextResponse.json({ error: 'length must be between 5 and 120 minutes' }, { status: 400 });
+                }
             }
 
             // FIX(2026-04-09): Appointments booked at wrong times — 3 issues:
@@ -508,12 +568,51 @@ export async function POST(request: NextRequest) {
                 fixedDatetime = `${datetime}${ARIZONA_OFFSET}`;
             }
 
-            // Map provider to Healthie location ID
-            const LOCATION_MAP: Record<string, string> = {
-                '12093125': '13029260',  // Dr. Whitten → NowMensHealth.Care
-                '12088269': '13023235',  // Phil Schafer NP → NowPrimary.Care
+            // Compute end_time when length override provided.
+            // Healthie createAppointmentInput has no `length` — duration is implied by end_time.
+            let endTime: string | null = null;
+            if (lengthMin !== null) {
+                const startMs = Date.parse(fixedDatetime);
+                if (!isNaN(startMs)) {
+                    const endMs = startMs + lengthMin * 60_000;
+                    // Format end_time as Arizona local wall-clock: YYYY-MM-DDTHH:mm:ss-07:00
+                    const d = new Date(endMs);
+                    const az = new Intl.DateTimeFormat('en-CA', {
+                        timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+                        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+                    }).formatToParts(d).reduce((o: Record<string,string>, p) => { o[p.type] = p.value; return o; }, {});
+                    endTime = `${az.year}-${az.month}-${az.day}T${az.hour === '24' ? '00' : az.hour}:${az.minute}:${az.second}${ARIZONA_OFFSET}`;
+                }
+            }
+
+            // FIX(2026-04-21): location was being derived from PROVIDER, which
+            // meant a TRT refill booked with Phil Schafer NP always landed at
+            // NowPrimary.Care (wrong brand). The iPad already passes an explicit
+            // `location` string from the dropdown — use THAT as the primary source,
+            // fall back to provider default only if unknown.
+            //
+            // Location IDs verified 2026-04-21 from live appointment data in Healthie:
+            //   27565 = NowPrimary.Care (404 S. Montezuma — also where Longevity happens)
+            //   27566 = NowMensHealth.Care (215 N. McCormick)
+            // (The prior map had 13023235 / 13029260 — 13029260 is a generic "In Person"
+            // virtual location in Healthie; 13023235 doesn't match any active location.)
+            const LOCATION_STRING_TO_ID: Record<string, string> = {
+                'NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1': '27565',
+                'NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 2': '27565',
+                'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301': '27566',
+                // Longevity shares the 404 S. Montezuma office (same Healthie location as Primary Care).
+                // Clinical distinction lives in the appointment_type_id (pelleting types), not location.
+                'NowLongevity.Care - 404 S. Montezuma, Prescott, AZ 86303': '27565',
             };
-            const locationId = LOCATION_MAP[provider_id] || null;
+            const LOCATION_PROVIDER_FALLBACK: Record<string, string> = {
+                '12093125': '27566',  // Dr. Whitten → NowMensHealth.Care (fallback)
+                '12088269': '27565',  // Phil Schafer NP → NowPrimary.Care (fallback)
+            };
+            // Routing lib has authoritative locationId for routed cases; otherwise use UI choice or provider fallback.
+            const locationFromString = location ? LOCATION_STRING_TO_ID[location] : null;
+            const locationId = routing.rerouted
+                ? routing.locationId
+                : (locationFromString || LOCATION_PROVIDER_FALLBACK[resolvedProviderId] || null);
 
             const data = await healthieGraphQL<{
                 createAppointment: {
@@ -531,6 +630,7 @@ export async function POST(request: NextRequest) {
                     $providerId: String!,
                     $typeId: String!,
                     $datetime: String!,
+                    $endTime: String,
                     $timezone: String,
                     $locationId: String,
                     $location: String,
@@ -542,13 +642,14 @@ export async function POST(request: NextRequest) {
                         providers: $providerId,
                         appointment_type_id: $typeId,
                         datetime: $datetime,
+                        end_time: $endTime,
                         timezone: $timezone,
                         appointment_location_id: $locationId,
                         location: $location,
                         contact_type: $contactType
                     }) {
                         appointment {
-                            id date
+                            id date length
                             appointment_type { name }
                             provider { full_name }
                         }
@@ -557,9 +658,10 @@ export async function POST(request: NextRequest) {
                 }
             `, {
                 patientId: patient_id,
-                providerId: provider_id,
+                providerId: resolvedProviderId,
                 typeId: appointment_type_id,
                 datetime: fixedDatetime,
+                endTime,
                 timezone: TIMEZONE,
                 locationId,
                 location: location || null,
@@ -583,6 +685,51 @@ export async function POST(request: NextRequest) {
                     provider: appt.provider?.full_name || '',
                 } : null,
             });
+        }
+
+        if (action === 'update_length') {
+            const { appointment_id, length } = body;
+            if (!appointment_id || length === undefined || length === null) {
+                return NextResponse.json({ error: 'appointment_id and length are required' }, { status: 400 });
+            }
+            const lengthMin = parseInt(String(length), 10);
+            if (isNaN(lengthMin) || lengthMin < 5 || lengthMin > 120) {
+                return NextResponse.json({ error: 'length must be between 5 and 120 minutes' }, { status: 400 });
+            }
+
+            // Fetch current appointment to compute new end_time from its existing start.
+            const cur = await healthieGraphQL<{ appointment: { date: string; length: number } | null }>(
+                `query GetAppt($id: ID) { appointment(id: $id) { date length } }`,
+                { id: appointment_id }
+            );
+            const startStr = cur?.appointment?.date;
+            if (!startStr) return NextResponse.json({ error: 'Appointment not found' }, { status: 404 });
+
+            const startMs = Date.parse(startStr);
+            if (isNaN(startMs)) return NextResponse.json({ error: 'Invalid appointment date' }, { status: 500 });
+
+            const endMs = startMs + lengthMin * 60_000;
+            const d = new Date(endMs);
+            const az = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+            }).formatToParts(d).reduce((o: Record<string,string>, p) => { o[p.type] = p.value; return o; }, {});
+            const newEnd = `${az.year}-${az.month}-${az.day}T${az.hour === '24' ? '00' : az.hour}:${az.minute}:${az.second}-07:00`;
+
+            const upd = await healthieGraphQL<{ updateAppointment: { appointment: { id: string; length: number } | null; messages: Array<{ field: string; message: string }> } }>(
+                `mutation U($id: ID, $endTime: String, $tz: String) {
+                    updateAppointment(input: { id: $id, end_time: $endTime, timezone: $tz }) {
+                        appointment { id length date }
+                        messages { field message }
+                    }
+                }`,
+                { id: appointment_id, endTime: newEnd, tz: 'America/Phoenix' }
+            );
+
+            if (upd.updateAppointment?.messages?.length) {
+                return NextResponse.json({ error: upd.updateAppointment.messages.map(m => m.message).join(', ') }, { status: 400 });
+            }
+            return NextResponse.json({ success: true, appointment: upd.updateAppointment?.appointment });
         }
 
         return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
