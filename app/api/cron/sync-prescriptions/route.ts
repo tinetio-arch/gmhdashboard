@@ -31,8 +31,9 @@ const PRESCRIPTIONS_QUERY = `
       date_inactive last_fill_date prescriber_name prescriber_id
       comment pharmacy_notes no_substitutions is_rx_renewal is_urgent
       error_ignored formulary otc route type rx_reference_number
-      pharmacy { name address city state zip phone fax }
-      first_prescription_diagnosis second_prescription_diagnosis
+      pharmacy { name line1 line2 city state zip phone_number }
+      first_prescription_diagnosis { diagnosis_code diagnosis_description is_primary }
+      second_prescription_diagnosis { diagnosis_code diagnosis_description is_primary }
     }
   }
 `;
@@ -56,15 +57,30 @@ export async function GET(request: NextRequest) {
   const errorPatients: string[] = [];
 
   try {
-    // E5: column is healthie_client_id, not healthie_id
-    // E4: query<T>() returns T[] directly — no .rows
     const patients = await query<PatientRow>(
-      `SELECT patient_id, healthie_client_id, full_name
-       FROM patients
-       WHERE healthie_client_id IS NOT NULL
-         AND healthie_client_id != ''
-       ORDER BY full_name`
-    );
+      `SELECT p.patient_id, p.healthie_client_id, p.full_name
+       FROM patients p
+       WHERE p.healthie_client_id IS NOT NULL
+         AND p.healthie_client_id != ''
+         AND LOWER(p.status_key) = 'active'
+         AND p.patient_id NOT IN (
+           SELECT SPLIT_PART(details->>'patient_id', '', 1)::uuid
+           FROM agent_action_log
+           WHERE agent_name = 'prescription_sync'
+             AND action_type = 'skip'
+             AND created_at >= NOW() - INTERVAL '7 days'
+         )
+       ORDER BY p.full_name`
+    ).catch(async () => {
+      // Fallback if agent_action_log query fails (skip filter)
+      return query<PatientRow>(
+        `SELECT patient_id, healthie_client_id, full_name
+         FROM patients
+         WHERE healthie_client_id IS NOT NULL AND healthie_client_id != ''
+           AND LOWER(status_key) = 'active'
+         ORDER BY full_name`
+      );
+    });
 
     // Process in batches to avoid Healthie rate limits
     for (let i = 0; i < patients.length; i += BATCH_SIZE) {
@@ -97,7 +113,7 @@ export async function GET(request: NextRequest) {
               ) VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
-                $39,$40,$41,$42,NOW()
+                $39,$40,$41,$42,$43,NOW()
               )
               ON CONFLICT (healthie_patient_id, prescription_id)
               DO UPDATE SET
@@ -160,7 +176,18 @@ export async function GET(request: NextRequest) {
           synced++;
         } catch (patientError) {
           errors++;
+          const errMsg = patientError instanceof Error ? patientError.message : String(patientError);
           console.error(`[CRON] Failed to sync prescriptions for patient ${patient.patient_id}:`, patientError);
+          if (errMsg.includes('Internal server error')) {
+            query(
+              `INSERT INTO agent_action_log (agent_name, action_type, category, summary, details, status)
+               VALUES ('prescription_sync', 'skip', 'patient_sync', $1, $2, 'completed')`,
+              [
+                `Skipping ${patient.full_name} — Healthie returns 500 for prescriptions`,
+                JSON.stringify({ patient_id: patient.patient_id, healthie_id: patient.healthie_client_id, error: errMsg.slice(0, 200) }),
+              ]
+            ).catch(() => {});
+          }
         }
       }
 

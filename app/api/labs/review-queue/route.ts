@@ -161,20 +161,23 @@ async function updatePatientLabDates(
             return;
         }
 
-        // Determine the patient UUID — prefer item.patient_id, fall back to lookup by healthie_client_id
-        let patientUuid = item.patient_id;
-        if (!patientUuid && healthieId) {
+        // Determine the patient UUID — prefer item.patient_id, fall back to lookup by healthie_client_id.
+        // FIX: item.patient_id is sometimes a numeric Healthie ID, not a UUID — only trust it if it's a UUID.
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        let patientUuid = item.patient_id && UUID_RE.test(item.patient_id) ? item.patient_id : undefined;
+        const lookupId = healthieId || (item.patient_id && !UUID_RE.test(item.patient_id) ? item.patient_id : null);
+        if (!patientUuid && lookupId) {
             // Try patients table first
             const [row] = await query<{ patient_id: string }>(
                 `SELECT patient_id FROM patients WHERE healthie_client_id = $1 LIMIT 1`,
-                [healthieId]
+                [lookupId]
             );
             patientUuid = row?.patient_id;
             // Fall back to healthie_clients mapping table
             if (!patientUuid) {
                 const [mapping] = await query<{ patient_id: string }>(
                     `SELECT patient_id FROM healthie_clients WHERE healthie_client_id = $1 LIMIT 1`,
-                    [healthieId]
+                    [lookupId]
                 );
                 patientUuid = mapping?.patient_id;
             }
@@ -191,10 +194,10 @@ async function updatePatientLabDates(
                     );
                     patientUuid = nameMatch?.patient_id;
                     // Also set healthie_client_id for future lookups
-                    if (patientUuid && healthieId) {
+                    if (patientUuid && lookupId) {
                         await query(
                             `UPDATE patients SET healthie_client_id = $2 WHERE patient_id = $1 AND healthie_client_id IS NULL`,
-                            [patientUuid, healthieId]
+                            [patientUuid, lookupId]
                         );
                     }
                 }
@@ -533,7 +536,8 @@ export async function POST(request: NextRequest): Promise<Response> {
     let currentUser: { name: string } | null = null;
     try {
         const user = await requireApiUser(request, 'write');
-        currentUser = { name: user.name || user.email || 'Unknown' };
+        // FIX(2026-04-22): PublicUser has `display_name`, not `name`.
+        currentUser = { name: user.display_name || user.email || 'Unknown' };
     } catch (error) {
         if (error instanceof UnauthorizedError) {
             return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
