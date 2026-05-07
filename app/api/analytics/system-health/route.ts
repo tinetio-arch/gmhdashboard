@@ -490,6 +490,7 @@ async function checkWebhookHealth(): Promise<{
     pending: number;
     recentProcessed: number;
     recentErrors: number;
+    recentErrorDetails: Array<{ eventType: string; errorMessage: string | undefined; receivedAt: string | null; processedAt: string | null }>;
     message: string;
 }> {
     try {
@@ -522,9 +523,13 @@ async function checkWebhookHealth(): Promise<{
             LIMIT 5
         `);
 
-        const lastReceivedAt = lastReceived[0]?.received_at;
-        const hoursAgo = lastReceivedAt
-            ? Math.round((Date.now() - new Date(lastReceivedAt).getTime()) / 3600000 * 10) / 10
+        // FIX(2026-04-15): the SELECT returns `timestamp without time zone` (UTC stored).
+        // Use pgTimestampToUTCMs so MST-host Node doesn't mis-parse, otherwise hoursAgo
+        // is off by 7 hours (always either negative or way too large).
+        const { pgTimestampToUTCMs, pgTimestampToUTCISO } = await import('@/lib/db');
+        const lastReceivedMs = pgTimestampToUTCMs(lastReceived[0]?.received_at);
+        const hoursAgo = lastReceivedMs
+            ? Math.round((Date.now() - lastReceivedMs) / 3600000 * 10) / 10
             : -1;
 
         const pending = parseInt(stats[0]?.pending || '0');
@@ -536,8 +541,8 @@ async function checkWebhookHealth(): Promise<{
         const recentErrorDetails = errorDetails.map((e: any) => ({
             eventType: e.event_type,
             errorMessage: e.error?.substring(0, 200), // Truncate long messages
-            receivedAt: e.received_at,
-            processedAt: e.processed_at
+            receivedAt: pgTimestampToUTCISO(e.received_at),
+            processedAt: pgTimestampToUTCISO(e.processed_at),
         }));
 
         // Determine status
@@ -565,7 +570,7 @@ async function checkWebhookHealth(): Promise<{
 
         return {
             status,
-            lastReceived: lastReceivedAt ? new Date(lastReceivedAt).toISOString() : null,
+            lastReceived: lastReceivedMs ? new Date(lastReceivedMs).toISOString() : null,
             hoursAgo,
             pending,
             recentProcessed,

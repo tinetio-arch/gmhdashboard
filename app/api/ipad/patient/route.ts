@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireApiUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
+import { query as dbQuery } from '@/lib/db';
 
 const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
 const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
 
-async function healthieGraphQL(query: string, variables: Record<string, any> = {}) {
+async function healthieGraphQL<T = any>(query: string, variables: Record<string, any> = {}): Promise<T> {
     const response = await fetch(HEALTHIE_API_URL, {
         method: 'POST',
         headers: {
@@ -111,6 +112,9 @@ export async function GET(request: NextRequest) {
 
         return NextResponse.json({ error: 'Missing action parameter' }, { status: 400 });
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('[API] iPad patient GET error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
     }
@@ -151,6 +155,14 @@ export async function PATCH(request: NextRequest) {
             if (result.messages && result.messages.length > 0) {
                 console.error('[API] iPad change_group messages:', result.messages);
             }
+
+            await dbQuery(
+                `UPDATE patients
+                    SET healthie_group_id = $1,
+                        healthie_group_name = $2
+                  WHERE healthie_client_id = $3`,
+                [group_id, result.user?.user_group?.name ?? null, healthie_id]
+            );
 
             return NextResponse.json({
                 success: true,
@@ -269,6 +281,9 @@ export async function PATCH(request: NextRequest) {
 
         return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
     } catch (error: any) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         const msg = error instanceof Error ? error.message : String(error);
         console.error('[API] iPad patient PATCH error:', msg);
         return NextResponse.json({ error: msg || 'Internal server error' }, { status: 500 });

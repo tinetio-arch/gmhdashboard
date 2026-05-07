@@ -13742,26 +13742,6 @@ function validateSchedDuration() {
     return true;
 }
 
-// Make the appointment-type default-length lookup available to the calendar
-// renderers. Previously this was only populated when the "Add to Schedule"
-// modal opened, so the custom-duration indicator never showed on first paint.
-async function ensureAppointmentTypeDefaults() {
-    if (window._apptTypeDefaultLen && Object.keys(window._apptTypeDefaultLen).length) return;
-    try {
-        var data = await apiFetch('/ops/api/ipad/schedule/', {
-            method: 'POST',
-            body: JSON.stringify({ action: 'get_appointment_types' })
-        });
-        if (data && Array.isArray(data.appointment_types)) {
-            scheduleAppointmentTypes = data.appointment_types;
-            window._apptTypeDefaultLen = {};
-            scheduleAppointmentTypes.forEach(function(t) { window._apptTypeDefaultLen[t.name] = t.length || 30; });
-        }
-    } catch (e) {
-        console.warn('[Schedule] Failed to preload appointment-type defaults:', e);
-    }
-}
-
 // Edit duration of an existing appointment (Hannah-flow item).
 async function editApptDuration(apptId, currentLen, defaultLen, patientName) {
     var cur = currentLen || defaultLen || 30;
@@ -15133,9 +15113,6 @@ async function loadScheduleData(forceRefresh) {
         var provMap = new Map();
         scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
         renderProviderTabs([...provMap.values()]);
-        // Make sure the per-type default-length lookup is loaded so the
-        // calendar can flag custom-duration appts even when reusing cached data.
-        await ensureAppointmentTypeDefaults();
         renderScheduleContent(contentEl);
         return;
     }
@@ -15167,10 +15144,6 @@ async function loadScheduleData(forceRefresh) {
 
         scheduleAllData = data.patients || [];
         console.log('[Schedule] scheduleAllData set to', scheduleAllData.length, 'appointments');
-
-        // Make sure the per-type default-length lookup is loaded so the
-        // calendar can flag custom-duration appts on the very first render.
-        await ensureAppointmentTypeDefaults();
 
         // Also update the global so Today tab stays in sync
         if (scheduleAllData.length > 0) {
@@ -15354,37 +15327,6 @@ function renderScheduleDayGrid(contentEl) {
         return map;
     }
 
-    // Build a set of "covered" slot keys per provider — slots that an earlier
-    // appointment visually extends into based on its length. Lets the renderer
-    // grow the tile to span its true duration and suppress the empty "+" cell
-    // beneath it. Default 30 min when length is missing.
-    function buildCoveredSet(appts) {
-        var covered = new Set();
-        appts.forEach(function(p) {
-            if (!p.date) return;
-            var d = parseHealthieDate(p.date);
-            if (isNaN(d.getTime())) return;
-            var len = parseInt(p.length, 10) || 30;
-            var spans = Math.max(1, Math.ceil(len / 30));
-            if (spans <= 1) return;
-            var startH = d.getHours();
-            var startBucket = d.getMinutes() < 30 ? 0 : 30;
-            for (var i = 1; i < spans; i++) {
-                var totalMin = startH * 60 + startBucket + i * 30;
-                var nh = Math.floor(totalMin / 60);
-                var nm = totalMin % 60;
-                covered.add(padTwo(nh) + ':' + padTwo(nm));
-            }
-        });
-        return covered;
-    }
-
-    // How many 30-min slots an appointment should visually occupy.
-    function apptSlotsSpan(p) {
-        var len = parseInt(p && p.length, 10) || 30;
-        return Math.max(1, Math.ceil(len / 30));
-    }
-
     var now = new Date();
     var nowHr = now.getHours(), nowMn = now.getMinutes();
     var dateStr = getPhoenixDateStr(scheduleSelectedDate);
@@ -15417,7 +15359,7 @@ function renderScheduleDayGrid(contentEl) {
         // ─── SPLIT VIEW: two provider columns ───
         var provData = PROVIDERS.map(function(prov) {
             var appts = allFiltered.filter(function(p) { return (p.provider_id || '') === prov.id; });
-            return { prov: prov, appts: appts, slotMap: buildSlotMap(appts), coveredSet: buildCoveredSet(appts) };
+            return { prov: prov, appts: appts, slotMap: buildSlotMap(appts) };
         });
 
         html += '<div style="display:flex; gap:0; border:1px solid var(--border-light); border-radius:10px;">';
@@ -15451,7 +15393,6 @@ function renderScheduleDayGrid(contentEl) {
                 var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
                 var isPast = isToday && (slot.hour < nowHr || (slot.hour === nowHr && slot.min + 30 <= nowMn));
                 var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
-                var isCovered = pd.coveredSet && pd.coveredSet.has(key) && appts.length === 0;
                 var blockCell = getSlotBlock(slot.hour, slot.min, pd.prov.id);
                 // Detect the first slot of the block (show label only once)
                 var blockIsFirst = false;
