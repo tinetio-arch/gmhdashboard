@@ -1104,6 +1104,11 @@ async function loadHealthieAppointments() {
                 appointment_status: p.appointment_status || 'scheduled',
                 time: p.time || '',
                 provider: p.provider || '',
+                provider_id: p.provider_id || '',
+                date: p.date || '',
+                length: p.length || null,
+                location: p.location || '',
+                contact_type: p.contact_type || '',
                 has_staged_dose: p.has_staged_dose || false,
                 has_payment_issue: p.has_payment_issue || false,
                 has_pending_lab: p.has_pending_lab || false,
@@ -13378,11 +13383,20 @@ function renderScheduleWeekView(contentEl) {
             dayAppts.forEach(function(p) {
                 var st = getApptStatusStyle(p.appointment_status || 'Pending');
                 var pid = p.patient_id || p.healthie_id || '';
-                html += '<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-top:1px solid rgba(255,255,255,0.04);">';
+                var _wkDefLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+                var _wkIsCustomDur = !!(p.length && _wkDefLen && p.length !== _wkDefLen);
+                html += '<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-top:1px solid rgba(255,255,255,0.04);' + (_wkIsCustomDur ? ' border-left:2px solid #fbbf24; padding-left:6px;' : '') + '">';
                 html += '<div style="display:flex; align-items:center; gap:8px; min-width:0; flex:1;">';
                 html += '<span style="font-size:12px; font-weight:500; color:var(--text-primary); min-width:52px;">' + (p.time || 'TBD') + '</span>';
                 html += '<span style="font-size:13px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.full_name || 'Unknown') + '</span>';
                 html += '<span style="font-size:11px; color:var(--text-tertiary);">' + (p.appointment_type || '') + '</span>';
+                if (p.length) {
+                    if (_wkIsCustomDur) {
+                        html += '<span style="font-size:10px; padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.18); color:#fbbf24; border:1px solid rgba(251,191,36,0.4); font-weight:600; white-space:nowrap;" title="Duration changed from default ' + _wkDefLen + 'm">⏱ ' + p.length + 'm · default ' + _wkDefLen + 'm</span>';
+                    } else {
+                        html += '<span style="font-size:10px; color:var(--text-tertiary);">' + p.length + 'm</span>';
+                    }
+                }
                 html += '</div>';
                 html += '<div style="display:flex; align-items:center; gap:4px; flex-shrink:0;">';
                 if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\'' + pid + '\', \'' + (p.full_name || '').replace(/'/g, '') + '\')" style="padding:3px 8px; border-radius:5px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:10px; cursor:pointer;">📋</button>';
@@ -15468,7 +15482,24 @@ function renderScheduleDayGrid(contentEl) {
                 var blockBg = blockCell && !hasAppt ? ' background:rgba(234,179,8,0.18);' : '';
                 var blockBorder = blockCell ? ' border-left:3px solid #eab308;' : '';
 
-                html += '<div style="min-height:56px; padding:3px 5px; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + '; display:flex; flex-direction:column; justify-content:center; gap:2px;' + (isCur ? ' background:rgba(0,212,255,0.04);' : blockBg) + blockBorder + (isPast ? ' opacity:0.45;' : '') + '">';
+                // Slot wrapper is fixed at 56px so the parallel time column
+                // stays aligned. Tiles that span multiple slots overflow visually
+                // (overflow:visible) and the covered slots below render quiet so
+                // the tile reads as one continuous block.
+                if (isCovered && !blockCell) {
+                    html += '<div style="height:56px; padding:0 5px;' + (isCur ? ' background:rgba(0,212,255,0.04);' : '') + (isPast ? ' opacity:0.45;' : '') + '"></div>';
+                    return;
+                }
+
+                // Hide the cell's bottom border when an appointment in this
+                // slot spans into the next slots — otherwise the line cuts
+                // through the multi-slot tile.
+                var _slotHasMultiSpan = appts.some(function(_p) { return apptSlotsSpan(_p) > 1; });
+                var _slotBorderBottom = _slotHasMultiSpan
+                    ? 'transparent'
+                    : (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)');
+
+                html += '<div style="height:56px; padding:3px 5px; border-bottom:1px solid ' + _slotBorderBottom + '; display:flex; flex-direction:column; justify-content:center; gap:2px; overflow:visible; position:relative;' + (isCur ? ' background:rgba(0,212,255,0.04);' : blockBg) + blockBorder + (isPast ? ' opacity:0.45;' : '') + '">';
 
                 if (blockCell && blockIsFirst) {
                     var lbl = (blockCell.notes && blockCell.notes !== 'Blocked time') ? blockCell.notes : 'Blocked';
@@ -15502,8 +15533,16 @@ function renderScheduleDayGrid(contentEl) {
                         var lc = getLocationColor(p.location, p.appointment_type);
                         var isNew = isNewPatientAppt(p.appointment_type);
                         var isTele = isTelehealthAppt(p.location, p.contact_type);
+                        var _defLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+                        var _isCustomDur = !!(p.length && _defLen && p.length !== _defLen);
+                        // Visual span: 30-min slot = 56px row. Tile grows so the
+                        // calendar reflects the real appointment duration.
+                        var _spans = apptSlotsSpan(p);
+                        var _tileMinH = (_spans * 56 - 6);
+                        var _leftBorderColor = _isCustomDur ? '#fbbf24'
+                            : (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : lc.border));
 
-                        html += '<div style="display:flex; align-items:center; gap:4px; padding:3px 6px; border-radius:6px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border-left:3px solid ' + (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : lc.border)) + '; min-width:0; cursor:default;' + (isFinal ? ' opacity:0.6;' : '') + '">';
+                        html += '<div style="display:flex; align-items:flex-start; gap:4px; padding:3px 6px; border-radius:6px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border-left:3px solid ' + _leftBorderColor + ';' + (_isCustomDur ? ' box-shadow:inset 0 0 0 1px rgba(251,191,36,0.45);' : '') + ' min-width:0; cursor:default; min-height:' + _tileMinH + 'px; position:relative; z-index:2;' + (isFinal ? ' opacity:0.6;' : '') + '">';
                         // Name + badges
                         html += '<div style="flex:1; min-width:0; overflow:hidden;">';
                         html += '<div style="display:flex; align-items:center; gap:4px;">';
@@ -15511,9 +15550,10 @@ function renderScheduleDayGrid(contentEl) {
                         if (isTele) html += '<span style="font-size:8px; flex-shrink:0;">📹</span>';
                         html += '<span style="font-size:12px; font-weight:600; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + sanitize(p.full_name || '?') + '</span>';
                         html += '</div>';
-                        var _defLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
-                        var _isCustomDur = p.length && _defLen && p.length !== _defLen;
-                        html += '<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.time || '') + ' · ' + abbreviateType(p.appointment_type) + (p.length ? ' · ' + p.length + 'm' : '') + (_isCustomDur ? ' <span title="Custom duration (default ' + _defLen + 'm)" style="color:#fbbf24;">⏱</span>' : '') + '</div>';
+                        html += '<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.time || '') + ' · ' + abbreviateType(p.appointment_type) + (p.length ? ' · ' + p.length + 'm' : '') + '</div>';
+                        if (_isCustomDur) {
+                            html += '<div style="display:inline-block; margin-top:2px; font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.18); color:#fbbf24; border:1px solid rgba(251,191,36,0.4);" title="Duration changed from default ' + _defLen + 'm">⏱ ' + p.length + 'm · default ' + _defLen + 'm</div>';
+                        }
                         html += '</div>';
                         // Action buttons
                         html += '<div style="display:flex; gap:3px; flex-shrink:0;">';
@@ -15564,6 +15604,7 @@ function renderScheduleDayGrid(contentEl) {
     } else {
         // ─── SINGLE PROVIDER VIEW ───
         var slotMap = buildSlotMap(allFiltered);
+        var coveredSet = buildCoveredSet(allFiltered);
         html += '<div style="border:1px solid var(--border-light); border-radius:10px;">';
         slots.forEach(function(slot) {
             var key = padTwo(slot.hour) + ':' + padTwo(slot.min);
@@ -15572,6 +15613,7 @@ function renderScheduleDayGrid(contentEl) {
             var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
             var isPast = isToday && (slot.hour < nowHr || (slot.hour === nowHr && slot.min + 30 <= nowMn));
             var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
+            var isCovered = coveredSet.has(key) && appts.length === 0;
             var blockCell = getSlotBlock(slot.hour, slot.min, scheduleProviderFilter);
             var blockIsFirst = false;
             if (blockCell) {
@@ -15586,6 +15628,16 @@ function renderScheduleDayGrid(contentEl) {
             var rowBg = isCur ? ' background:rgba(0,212,255,0.06);'
                       : (blockCell && !hasApptsInSlot) ? ' background:rgba(234,179,8,0.15);'
                       : '';
+
+            // Covered tail of a longer appointment: keep the time gutter aligned
+            // but render an empty body so the tile above visually extends down.
+            if (isCovered && !blockCell) {
+                html += '<div style="display:flex;' + rowBg + (isPast ? ' opacity:0.5;' : '') + '">';
+                html += '<div style="width:60px; padding:6px 8px; font-size:11px; font-weight:' + (isHalf ? '400' : '600') + '; color:' + (isCur ? 'var(--cyan)' : 'var(--text-tertiary)') + '; border-right:1px solid var(--border-light); display:flex; align-items:center;">' + (isHalf ? '' : slot.label) + '</div>';
+                html += '<div style="flex:1; min-height:44px;"></div>';
+                html += '</div>';
+                return;
+            }
 
             html += '<div style="display:flex; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + ';' + rowBg + (blockCell ? ' border-left:3px solid #eab308;' : '') + (isPast ? ' opacity:0.5;' : '') + '">';
             html += '<div style="width:60px; padding:6px 8px; font-size:11px; font-weight:' + (isHalf ? '400' : '600') + '; color:' + (isCur ? 'var(--cyan)' : 'var(--text-tertiary)') + '; border-right:1px solid var(--border-light); display:flex; align-items:center;">' + (isHalf ? '' : slot.label) + '</div>';
@@ -15610,15 +15662,23 @@ function renderScheduleDayGrid(contentEl) {
                     var lc = getLocationColor(p.location, p.appointment_type);
                     var isNew = isNewPatientAppt(p.appointment_type);
                     var isTele = isTelehealthAppt(p.location, p.contact_type);
+                    var _defLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+                    var _isCustomDur = !!(p.length && _defLen && p.length !== _defLen);
+                    // Visual span: each 30-min slot is ~56px tall; subtract a
+                    // little so consecutive tiles don't crowd the seam.
+                    var _spans = apptSlotsSpan(p);
+                    var _tileMinH = (_spans * 56 - 14);
+                    var _leftBorder = _isCustomDur ? '#fbbf24' : (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : pc.border));
 
-                    html += '<div style="display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:8px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border:1px solid ' + (isFinal ? 'rgba(255,255,255,0.06)' : (isTele ? 'rgba(59,130,246,0.3)' : lc.border)) + '; border-left:3px solid ' + (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : pc.border)) + ';">';
+                    html += '<div style="display:flex; align-items:flex-start; gap:6px; padding:5px 8px; border-radius:8px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border:1px solid ' + (_isCustomDur ? 'rgba(251,191,36,0.5)' : (isFinal ? 'rgba(255,255,255,0.06)' : (isTele ? 'rgba(59,130,246,0.3)' : lc.border))) + '; border-left:3px solid ' + _leftBorder + '; min-height:' + _tileMinH + 'px;">';
                     html += '<div style="flex:1; min-width:0;">';
-                    html += '<div style="display:flex; align-items:center; gap:4px;">';
+                    html += '<div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">';
                     if (isNew) html += '<span style="font-size:8px; font-weight:700; padding:1px 4px; border-radius:3px; background:rgba(251,191,36,0.2); color:#fbbf24;">NEW</span>';
                     if (isTele) html += '<span style="font-size:9px;">📹</span>';
                     html += '<span style="font-size:13px; font-weight:600; color:var(--text-primary);">' + sanitize(p.full_name || '?') + '</span>';
+                    if (_isCustomDur) html += '<span style="font-size:9px; font-weight:700; padding:1px 6px; border-radius:3px; background:rgba(251,191,36,0.18); color:#fbbf24; border:1px solid rgba(251,191,36,0.4);" title="Duration changed from default ' + _defLen + 'm">⏱ ' + p.length + 'm · default ' + _defLen + 'm</span>';
                     html += '</div>';
-                    html += '<div style="font-size:10px; color:var(--text-tertiary);">' + (p.time || '') + ' · ' + (p.appointment_type || '') + '</div>';
+                    html += '<div style="font-size:10px; color:var(--text-tertiary);">' + (p.time || '') + ' · ' + (p.appointment_type || '') + (p.length && !_isCustomDur ? ' · ' + p.length + 'm' : '') + '</div>';
                     html += '</div>';
                     html += '<div style="display:flex; gap:4px; flex-shrink:0;">';
                     if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:10px; cursor:pointer;" title="Message patient">💬</button>';
@@ -15765,13 +15825,22 @@ function renderScheduleList(contentEl) {
         html += '<div style="display:flex; align-items:center; gap:12px; flex:1; min-width:0;">';
         html += '<div style="width:42px; height:42px; border-radius:10px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--text-primary); flex-shrink:0;">' + getInitials(p.full_name) + '</div>';
         html += '<div style="min-width:0; flex:1;">';
+        var _listDefLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+        var _listIsCustomDur = !!(p.length && _listDefLen && p.length !== _listDefLen);
         html += '<div style="font-size:15px; font-weight:600; color:var(--text-primary);">' + (p.full_name || 'Unknown') + '</div>';
         html += '<div style="font-size:12px; color:var(--text-tertiary);"><span style="color:var(--text-primary); font-weight:500;">' + (p.time || 'TBD') + '</span>';
-        if (p.length) html += ' &middot; ' + p.length + 'min';
+        if (p.length) {
+            if (_listIsCustomDur) {
+                html += ' &middot; <span style="color:#fbbf24; font-weight:600;" title="Duration changed from default ' + _listDefLen + 'm">⏱ ' + p.length + 'min · default ' + _listDefLen + 'm</span>';
+            } else {
+                html += ' &middot; ' + p.length + 'min';
+            }
+        }
         html += ' &middot; ' + (p.appointment_type || 'Appt');
         if (showProv && p.provider) html += ' &middot; <span style="color:var(--text-secondary);">' + p.provider + '</span>';
         html += '</div></div></div>';
         html += '<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">';
+        if (!isFinalStatus && apptId) html += '<button onclick="event.stopPropagation(); editApptDuration(\x27' + apptId + '\x27, ' + (p.length || 'null') + ', ' + (_listDefLen || 'null') + ', \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:' + (_listIsCustomDur ? 'rgba(251,191,36,0.2)' : 'rgba(255,255,255,0.04)') + '; border:1px solid ' + (_listIsCustomDur ? 'rgba(251,191,36,0.45)' : 'var(--border-light)') + '; color:' + (_listIsCustomDur ? '#fbbf24' : 'var(--text-secondary)') + '; font-size:11px; font-weight:600; cursor:pointer;" title="Edit duration">⏱ ' + (p.length || _listDefLen || '?') + 'm</button>';
         if (!isFinalStatus && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + getPhoenixDateStr(scheduleSelectedDate) + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:11px; font-weight:600; cursor:pointer;" title="Move/reschedule">↔ Move</button>';
         if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:11px; font-weight:600; cursor:pointer;" title="Message patient">💬 Msg</button>';
         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Open chart">📋 Chart</button>';
