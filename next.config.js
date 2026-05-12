@@ -12,6 +12,9 @@ const nextConfig = {
   },
   // Exclude backup directories from build
   typescript: {
+    // TODO: flip to false once the ~38 pre-existing type errors in app/
+    // are cleaned up — Phil's directive, deferred from 2026-05-12 session
+    // because doing it inline blocked the critical bug deploy.
     ignoreBuildErrors: true,
   },
   eslint: {
