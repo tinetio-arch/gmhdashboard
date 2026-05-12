@@ -1,0 +1,54 @@
+From: admin@granitemountainhealth.com
+To: apisupport@mckesson.com
+Subject: API detail endpoints return 404 for invoices/orders that list endpoints confirm exist
+Date: Tue, 12 May 2026 22:35:00 -0700
+Content-Type: text/plain; charset=utf-8
+
+Hi,
+
+Bill-To 62477188. The API user is correctly subscribed: list endpoints work,
+availability works with ship-to 62477191. The problem is that
+GET /v1/invoices/{accountId}/{orderId}/{invoiceId} returns 404 NOT_FOUND for
+invoices that GET /v1/invoices confirms exist on the same account.
+
+Reproducible 5 times in a row with orderIds I pulled directly from your web
+portal (the View Invoice screen):
+
+  GET https://api-gateway.mms.mckesson.com/v1/invoices?accountId=62477188&startDate=2026-04-14&endDate=2026-05-12
+    -> 200 [ "88127028", "88023302", "87851040", "87748978" ]
+
+  GET https://api-gateway.mms.mckesson.com/v1/invoices/62477188/86634517/88127028
+    -> 404 NOT_FOUND
+       "The requested resource could not be found."
+       ^ but the list endpoint just said this invoice IS on this account
+
+  GET https://api-gateway.mms.mckesson.com/v1/orders/62477188/86634517
+    -> 404 NOT_FOUND
+
+  GET https://api-gateway.mms.mckesson.com/v1/orders/62477188/fulfillment?startDate=2026-04-14&endDate=2026-05-12
+    -> 200 { totalCount: 3, orderStatusList: [] }
+       ^ counter says 3 orders, list is empty
+
+Same 404 across all 5 known invoice/orderId pairs (88127028/86634517,
+88023302/73814928, 87851040/74111554, 87748978/73814928, 87371282/72879514).
+
+Same 404 across header variations (Auth-only, Accept */*, Accept JSON,
+User-Agent set, etc.). URL with trailing slash returns 500, confirming the
+router parses paths correctly.
+
+Either:
+  (a) your detail endpoints use a stricter access check than your list endpoints,
+  (b) the user grant only covers list access despite the prior credential
+      modification we received (May 6), or
+  (c) the data plane is desync'd from the access plane.
+
+Could you escalate to engineering and let us know what's happening? We have
+the full API integration built and waiting on this; once detail endpoints
+return 200, our automatic invoice/pricing/reorder flows light up immediately.
+
+Originally reported 2026-05-06; first email 2026-05-07; 5 days no movement.
+
+Thanks,
+Phil
+Granite Mountain Health / Now Optimal
+admin@granitemountainhealth.com
