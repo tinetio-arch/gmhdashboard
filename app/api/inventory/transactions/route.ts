@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
       // Fire-and-forget so we don't slow down the UI
       (async () => {
         try {
-          const patientRes = await query<any>(`SELECT full_name, date_of_birth, regimen, healthie_client_id FROM patients WHERE patient_id = $1`, [body.patientId]);
+          const patientRes = await query<any>(`SELECT full_name, dob, regimen, healthie_client_id FROM patients WHERE patient_id = $1`, [body.patientId]);
           const patientData = patientRes[0];
 
           const vialRes = await query<any>(`SELECT lot_number, expiration_date FROM inventory_vials WHERE external_id = $1`, [body.vialExternalId]);
@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
             const pdfBuffer = await generateLabelPdf({
               type: 'testosterone',
               patientName: patientNameStr,
-              patientDob: patientData.date_of_birth || '',
+              patientDob: patientData.dob || '',
               medication: body.deaDrugName || 'Testosterone Cypionate 200mg/ml',
               dosage: dosageString,
               lotNumber: vialData.lot_number || 'Unknown',

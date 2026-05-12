@@ -159,7 +159,7 @@ export function createDatabaseMCPServer(config?: DatabaseMCPServerConfig) {
                 full_name AS name,
                 email,
                 phone_primary AS phone,
-                date_of_birth AS dob,
+                dob,
                 address_line1 AS address,
                 city,
                 state,
