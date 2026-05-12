@@ -157,12 +157,12 @@ tmux Claude session
   → ~/.claude/coord/registry.json (live session table)
   → ~/.claude/coord/sessions/<tmux>.md (per-session activity log)
   → auto-creates feature branch: claude/<tmux>/<slug>
-  ⤴ MCP exposure: dispatch-mcp (PM2 service, port 3003 localhost) — same state files
+  ⤴ MCP exposure: dispatch-mcp (PM2 service, port 3010 localhost) — same state files
   ⤴ Cron: */5 * * * * claude-coord reap (auto-cleans dead tmux sessions)
   ⤴ tmux hook: session-closed → reaps immediately
 ```
 **If you change**: `claude-coord` script, `~/.claude/coord/` state schema, or dispatch-mcp tool definitions  
-**Also verify**: registry.json roundtrip (checkin → list → checkout), the cron reaper still runs, `cs` launcher preflight, dispatch-mcp HTTP/SSE on 127.0.0.1:3003
+**Also verify**: registry.json roundtrip (checkin → list → checkout), the cron reaper still runs, `cs` launcher preflight, dispatch-mcp HTTP/SSE on 127.0.0.1:3010
 
 ### 13. Pre-Deploy Gatekeeper + Agents Dashboard (NEW May 2026)
 ```
@@ -235,12 +235,13 @@ ANY code path that writes patients.status_key
 |------|---------|-------|
 | 3001 | upload-receiver | Scribe audio uploads |
 | 3002 | jessica-mcp | MCP server (Python) |
-| 3003 | ghl-webhooks **OR** dispatch-mcp (localhost-only HTTP/SSE) | ⚠️ Two PM2 services historically use 3003 — `ghl-webhooks` is the bound listener on 0.0.0.0; `dispatch-mcp` is bound to `127.0.0.1` only. Confirm before any rebind. |
+| 3003 | ghl-webhooks | `ghl-webhooks` is the bound listener on 0.0.0.0. |
 | 3003 | nowmentalhealth-website (per ecosystem registry) | Verify with `pm2 describe` if conflicts appear |
 | 3004 | nowprimary-website / nowmenshealth-website | Confirm via `pm2 describe` — historical drift in this assignment |
 | 3007 | nowmenshealth-website (per app dir) | |
 | 3008 | nowoptimal-website | |
 | 3009 | abxtac-website | ABX TAC peptides |
+| 3010 | dispatch-mcp | MCP server for `claude-coord` multi-session dispatch (HTTP/SSE on `127.0.0.1`; stdio fallback). Moved off 3003 in May 2026. |
 | 3011 | gmh-dashboard | Main dashboard |
 
 > **RULE**: If two services try the same port, BOTH crash in an infinite restart loop. Always check `pm2 describe <service> \| grep -E 'PORT\|port'` before adding services. The 3003 / 3004 lines above show real-world ambiguity in our registry — verify against `ecosystem.config.js` AND running PM2 state, not the doc.

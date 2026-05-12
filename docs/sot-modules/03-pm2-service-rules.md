@@ -57,11 +57,11 @@ pm2 reset <service>     # Reset restart counter after fixing
 | gmh-dashboard | node (npm) | 3011 | Next.js Admin Panel |
 | telegram-ai-bot-v2 | npx tsx | - | AI Query Bot |
 | jessica-mcp | python3.11 | 3002 | MCP Server for Jessica/Max (Postgres, Healthie, GHL, Snowflake, Bedrock) |
-| **dispatch-mcp** | python3 (venv) | 3003 (localhost) | **NEW** MCP server for `claude-coord` multi-session dispatch (HTTP/SSE on 127.0.0.1; stdio fallback) |
+| **dispatch-mcp** | python3 (venv) | 3010 (localhost) | **NEW** MCP server for `claude-coord` multi-session dispatch (HTTP/SSE on 127.0.0.1; stdio fallback) |
 | upload-receiver | node | 3001 | AI Scribe Audio Receiver |
 | email-triage | python3 | - | Email Processing |
 | fax-processor | python3 | - | Incoming Fax Processor |
-| ghl-webhooks | node | 3003 | GoHighLevel Integration (verify port collision vs dispatch-mcp — different bind addresses) |
+| ghl-webhooks | node | 3003 | GoHighLevel Integration |
 | nowprimary-website | node | per ecosystem | Primary Care Website |
 | nowmenshealth-website | node | per ecosystem | Men's Health Website |
 | nowmentalhealth-website | node | per ecosystem | Mental Health Website |
