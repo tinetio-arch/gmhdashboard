@@ -316,7 +316,7 @@ appointment-status, dashboard, icd10-search, me, messages, patient-chart, patien
 
 ### Dispatch MCP Server (NEW — added Apr/May 2026)
 **PM2**: dispatch-mcp | **Status**: ONLINE (35 restarts, 4 days uptime)
-- MCP server exposing the `claude-coord` dispatch system over HTTP/SSE on `127.0.0.1:3003` (localhost; drive via SSH tunnel)
+- MCP server exposing the `claude-coord` dispatch system over HTTP/SSE on `127.0.0.1:3010` (localhost; drive via SSH tunnel)
 - Stdio fallback via `--stdio`
 - State files live in `~/.claude/coord/` (registry, sessions, inbox, decisions)
 - Tools: coord (checkin/checkout/log/claim/conflicts/status), lifecycle, gitops, inbox, system, integrations
@@ -513,7 +513,7 @@ Threshold     = ±2.0mL (auto-documented as waste if within threshold)
 | Component | Location |
 |---|---|
 | CLI tool | `~/.claude/bin/claude-coord` |
-| MCP server (Cowork integration) | `~/dispatch-mcp/` (PM2 service `dispatch-mcp`, port 3003 localhost) |
+| MCP server (Cowork integration) | `~/dispatch-mcp/` (PM2 service `dispatch-mcp`, port 3010 localhost) |
 | State files | `~/.claude/coord/` (registry.json, sessions/, sessions/archive/, decisions.md, inbox/, antigravity-queue) |
 | Auto-cleanup | Cron `*/5 * * * * claude-coord reap` + tmux `session-closed` hook |
 | Smart launcher | `cs` alias → `claude-start.sh` (auto-checkin + tmux + Claude) |
