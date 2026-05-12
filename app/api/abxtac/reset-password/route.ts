@@ -206,31 +206,66 @@ async function sendBrandedResetEmail(email: string, firstName: string, tempPassw
     }
 
     const html = brandedPasswordEmailHtml({ firstName, tempPassword });
-    const resp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Version': '2021-07-28',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        type: 'Email',
-        contactId,
-        emailTo: email,
-        subject: 'Your new ABXTAC password',
-        html,
-      }),
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      console.error(`[abxtac/reset-password] GHL send email HTTP ${resp.status}: ${text}`);
-      return false;
+    // Retry GHL send 3x with exponential backoff. Without this, a single
+    // transient GHL failure leaves the patient locked out — their Healthie
+    // password was already changed but they never receive the new one.
+    let lastErr = '';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const resp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Version': '2021-07-28',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          type: 'Email',
+          contactId,
+          emailTo: email,
+          subject: 'Your new ABXTAC password',
+          html,
+        }),
+      });
+      if (resp.ok) {
+        if (attempt > 1) console.log(`[abxtac/reset-password] GHL email succeeded on attempt ${attempt}`);
+        return true;
+      }
+      lastErr = await resp.text().catch(() => `HTTP ${resp.status}`);
+      console.warn(`[abxtac/reset-password] GHL email attempt ${attempt}/3 failed: ${resp.status} ${lastErr.slice(0, 200)}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 1000));
     }
-    return true;
+    console.error(`[abxtac/reset-password] GHL email FAILED after 3 attempts: ${lastErr.slice(0, 300)}`);
+    return false;
   } catch (err) {
     console.error('[abxtac/reset-password] GHL email send failed:', err);
     return false;
+  }
+}
+
+async function alertAdminLockout(detail: {
+  email: string;
+  healthieId: string;
+  firstName: string;
+  tempPassword: string;
+}) {
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!chatId) {
+    console.warn('[abxtac/reset-password] TELEGRAM_CHAT_ID not set — admin not alerted to lockout');
+    return;
+  }
+  try {
+    const { sendMessage } = await import('@/lib/telegram-client');
+    const text =
+      `🔐 ABXTAC PASSWORD LOCKOUT\n\n` +
+      `Patient: ${detail.firstName} <${detail.email}>\n` +
+      `Healthie ID: ${detail.healthieId}\n\n` +
+      `Their Healthie password WAS changed, but the email send to GHL failed after 3 retries. ` +
+      `They cannot log in until you contact them.\n\n` +
+      `Temp password (give to patient):\n${detail.tempPassword}`;
+    await sendMessage(chatId, text);
+  } catch (err) {
+    console.error('[abxtac/reset-password] Telegram lockout alert failed:', err);
   }
 }
 
@@ -271,6 +306,14 @@ export async function POST(request: NextRequest) {
         firstName: patient.firstName,
         tempPassword,
         stage: 'send_email',
+      });
+      // Surface the lockout to Phil immediately — agent_action_log alone
+      // is too quiet (no one checks it in real time).
+      await alertAdminLockout({
+        email,
+        healthieId: patient.id,
+        firstName: patient.firstName,
+        tempPassword,
       });
     } else {
       console.log(`[abxtac/reset-password] reset complete for ${email} (${patient.id})`);
