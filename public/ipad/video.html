@@ -406,6 +406,13 @@
         // Previously, stopScribe() queued async work but window.close() ran immediately,
         // destroying the page context before handleScribeComplete() could upload the audio.
         // This caused at least 2 lost transcriptions.
+        // FIX(2026-05-12): also await _scribeUploadComplete when the user pressed Stop
+        // BEFORE End. stopScribe() flips scribeRecording=false synchronously while the
+        // upload promise is still pending — the previous `if (scribeRecording)` guard
+        // skipped the await in that case, killing the page mid-upload. The IDB backup
+        // then survived and got re-uploaded on next iPad load, creating duplicate
+        // scribe_sessions with identical transcripts (e.g. Daniel Palm 2026-05-11:
+        // c73a393c at 17:46 UTC + 00df61fb at 20:06 UTC, both 7720 chars).
         var _scribeUploadComplete = null; // Promise that resolves when upload finishes
 
         async function endCall() {
@@ -416,10 +423,15 @@
             if (scribeRecording) {
                 setStatus('Saving recording — please wait...');
                 stopScribe();
-                // Wait for handleScribeComplete to finish uploading
-                if (_scribeUploadComplete) {
-                    try { await _scribeUploadComplete; } catch(e) { console.error('[Video] Scribe upload error during endCall:', e); }
-                }
+            }
+
+            // Always await any pending scribe upload — covers both Stop→End and End-while-recording.
+            // If the promise already resolved (upload finished before End was pressed), await
+            // returns immediately; if it rejected, we swallow and continue to showCallEnded so
+            // the call still closes.
+            if (_scribeUploadComplete) {
+                setStatus('Saving recording — please wait...');
+                try { await _scribeUploadComplete; } catch(e) { console.error('[Video] Scribe upload error during endCall:', e); }
                 // Extra safety: wait for any pending fetch
                 await new Promise(function(r) { setTimeout(r, 1500); });
             }
