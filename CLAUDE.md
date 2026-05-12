@@ -471,3 +471,26 @@ After ANY work:
 - **Feb 24, 2026**: Gemini Flash incident caused production bugs and data corruption (referenced in SOT).
 
 These rules exist because AI assistants have caused production incidents. Follow them without exception.
+
+## MANDATORY DEPLOY GATEKEEPER (Added May 12, 2026)
+
+### BEFORE ANY pm2 restart gmh-dashboard:
+1. **Run the pre-deploy check**: `bash ~/gmhdashboard/scripts/pre-deploy-check.sh`
+2. If it returns **BLOCKED** (exit code 1), DO NOT deploy. Fix the failures first.
+3. If it returns **PASSED**, proceed with `pm2 restart gmh-dashboard && pm2 save`
+4. After deploy, run `bash ~/gmhdashboard/scripts/health-check.sh` to verify no regression.
+
+### BRANCH DISCIPLINE (MANDATORY):
+1. **All work must be merged to master before the session ends.** No orphan branches.
+2. **Never deploy from a feature branch.** Merge to master first, then deploy from master.
+3. If your changes aren't ready to merge, commit them as WIP but DO NOT pm2 restart with unmerged code.
+4. Before starting work, verify you're on master: `git branch --show-current` — if not, switch to master first.
+5. **Delete your branch after merging**: `git branch -d <branch-name>`
+
+### FILE COUNT GUARDRAIL:
+- If you've modified more than **20 files** in a single session, STOP and commit a checkpoint.
+- If you've modified more than **50 files**, run the pre-deploy check before continuing.
+- **NEVER accumulate 100+ modified files** without committing. This is how 362-file refactors happen.
+
+### WHY THIS EXISTS:
+On May 12, 2026, we discovered 16 orphan Claude Code branches with overlapping changes, a 362-file uncommitted refactor running on production, and cascading bugs caused by sessions not merging to master. ignoreBuildErrors was true, so TypeScript errors passed silently. This must never happen again.
