@@ -568,13 +568,13 @@ These rules use only **verified `claude-coord` subcommands**: `checkin, checkout
 | Branch discipline | `claude-coord checkin` auto-creates the feature branch and refuses to run if `pwd` isn't a git repo. No way to "accidentally" be on master if you use the standard launcher. |
 | File count guardrail | Soft — relies on you watching `git status` line count. The pre-deploy check **does** grep for dangerous patterns across the diff, so a 100-file refactor with a SQL injection or hardcoded secret will fail the gate. |
 | Auto-cleanup of dead sessions | Cron `*/5 * * * * claude-coord reap` + tmux `session-closed` hook. Verified live: `crontab -l \| grep claude-coord` shows the reap line. |
-| Daily tracker refresh | Cron `0 6 * * * /home/ec2-user/gmhdashboard/scripts/refresh-project-tracker.sh` (to be added — see "Cron entries you should add" below). |
+| Daily tracker refresh | Cron `0 6 * * * /home/ec2-user/scripts/cron-alert.sh "Refresh Project Tracker" "bash /home/ec2-user/gmhdashboard/scripts/refresh-project-tracker.sh"` — installed 2026-05-12. Verify with `crontab -l \| grep refresh-project-tracker`. |
 
-### Cron entries you should add (run `crontab -e` once)
+### Cron entries (installed)
 
 ```cron
-# Daily project-tracker live snapshot — runs alongside morning intelligence at 6am MST
+# Daily project-tracker live snapshot (added 2026-05-12) — runs alongside morning intelligence at 6am MST
 0 6 * * * /home/ec2-user/scripts/cron-alert.sh "Refresh Project Tracker" "bash /home/ec2-user/gmhdashboard/scripts/refresh-project-tracker.sh"
 ```
 
-Confirm with `crontab -l | grep refresh-project-tracker`.
+Verify with `crontab -l | grep refresh-project-tracker`. Backed up daily at 2am by `scripts/backup-crontab.sh` (existing job — protects against the Apr 10 wipe incident).

@@ -12,40 +12,40 @@
 <!-- AUTOGEN:START — do not edit between these markers; overwritten by scripts/refresh-project-tracker.sh -->
 ## LIVE SYSTEM SNAPSHOT (verified 2026-05-12)
 
-_Auto-regenerated 2026-05-12 12:38:41 MST by `scripts/refresh-project-tracker.sh`._
+_Auto-regenerated 2026-05-12 14:09:34 MST by `scripts/refresh-project-tracker.sh`._
 
 | Metric | Value | Source |
 |---|---|---|
-| Total patients | **491** | `SELECT COUNT(*) FROM patients` |
-| ↳ active | 379 | `status_key='active'` |
-| ↳ active_pending | 30 | `status_key='active_pending'` |
+| Total patients | **493** | `SELECT COUNT(*) FROM patients` |
+| ↳ active | 378 | `status_key='active'` |
+| ↳ active_pending | 33 | `status_key='active_pending'` |
 | ↳ inactive | 74 | `status_key='inactive'` |
 | ↳ hold_payment_research | 7 | `status_key='hold_payment_research'` |
 | ↳ inactive_payment_research | 1 | `status_key='inactive_payment_research'` |
-| healthie_clients rows | 503 | (>patients because legacy duplicate links exist) |
+| healthie_clients rows | 505 | (>patients because legacy duplicate links exist) |
 | patient_qb_mapping rows | 192 | QuickBooks mappings |
 | patient_ghl_mapping rows | 0 | GHL contact mappings |
 | memberships (active) | 32 | `status='active'` |
 | lab_orders (total) | 164 | — |
 | lab_review_queue (pending) | 0 | — |
-| dispenses (total) | 767 | — |
-| dea_transactions | 809 | — |
-| staged_doses (staged) | 3 | — |
+| dispenses (total) | 769 | — |
+| dea_transactions | 814 | — |
+| staged_doses (staged) | 6 | — |
 | payment_issues (open) | 0 | `resolved_at IS NULL` |
 | bioscope_authorized (active) | 1 | `revoked_at IS NULL` |
 | Postgres tables (public) | **118** | `information_schema.tables` |
 | PM2 services | **15** total, **15** online | `pm2 jlist` |
-| Cron jobs (active) | **33** | `crontab -l` (non-comment, non-blank) |
+| Cron jobs (active) | **34** | `crontab -l` (non-comment, non-blank) |
 | Disk used | **49%** (52G free of 100G) | `df -h /` |
-| Git branch | `claude/claude3/sot-refresh-read-the-current-antigravity` @ `d87a91b` (8 dirty file(s)) | `git status --porcelain` |
-| Orphan Claude branches | 2 | `git branch --list 'claude/*'` |
-| Active coordinator sessions | 11 | `~/.claude/coord/registry.json` |
+| Git branch | `claude/claude3/add-refresh-project-tracker-cron-entry-f` @ `ccf9ab6` (3 dirty file(s)) | `git status --porcelain` |
+| Orphan Claude branches | 3 | `git branch --list 'claude/*'` |
+| Active coordinator sessions | 10 | `~/.claude/coord/registry.json` |
 
 ### Patient distribution by `client_type_key`
 | Type | Count |
 |---|---|
-| nowmenshealth | 316 |
-| nowlongevity | 42 |
+| nowmenshealth | 317 |
+| nowlongevity | 43 |
 | sick_visit | 27 |
 | nowprimarycare | 26 |
 | primecare_premier_50_month | 20 |
@@ -60,6 +60,7 @@ _Auto-regenerated 2026-05-12 12:38:41 MST by `scripts/refresh-project-tracker.sh
 | ins_supp_60_month | 2 |
 
 <!-- AUTOGEN:END -->
+
 
 
 ---

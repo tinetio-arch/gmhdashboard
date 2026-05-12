@@ -5,7 +5,8 @@
 # Manual "Active Projects" sections beneath are left untouched.
 #
 # Usage:  bash ~/gmhdashboard/scripts/refresh-project-tracker.sh
-# Cron:   0 6 * * * /home/ec2-user/gmhdashboard/scripts/refresh-project-tracker.sh  (alongside morning intelligence)
+# Cron:   wired live at 0 6 * * * via cron-alert.sh "Refresh Project Tracker" (installed 2026-05-12,
+#         alongside morning intelligence). Confirm: crontab -l | grep refresh-project-tracker
 #
 # Designed to be idempotent and safe to run as often as desired.
 
