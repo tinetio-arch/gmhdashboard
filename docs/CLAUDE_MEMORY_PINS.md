@@ -103,7 +103,7 @@ The `claude-coord` tool (at `~/.claude/bin/claude-coord`) coordinates 5–15 par
 - Tmux `session-closed` hook reaps immediately
 - `claude-start.sh` runs reap preflight before launching new sessions
 
-**MCP exposure**: `dispatch-mcp` (PM2 service) makes every `claude-coord` action callable from Cowork via HTTP/SSE on `127.0.0.1:3003` (drive via SSH tunnel; `--stdio` fallback also supported).
+**MCP exposure**: `dispatch-mcp` (PM2 service) makes every `claude-coord` action callable from Cowork via HTTP/SSE on `127.0.0.1:3010` (drive via SSH tunnel; `--stdio` fallback also supported).
 
 ## Deployment Rules (3-Layer Architecture)
 
