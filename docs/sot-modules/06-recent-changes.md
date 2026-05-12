@@ -55,6 +55,75 @@ pm2 save
 
 ---
 
+## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - MAY 12, 2026)
+
+> **Module 06 freshness note (2026-05-12)**: This file's per-change detail is current through April 1, 2026. For Apr 15 / Apr 19 / Apr 22 / Apr 25 / Apr 28 / Apr 29 / May 12 see the canonical SOT (`ANTIGRAVITY_SOURCE_OF_TRUTH.md` lines 405–582) and the active-projects sections of `docs/PROJECT_TRACKER.md`. Highlights below.
+
+### May 12, 2026: SOT Refresh + Pre-Deploy Gatekeeper + Branch Discipline Rules
+- Discovered 16 orphan Claude Code branches + a 362-file uncommitted refactor running in prod with `ignoreBuildErrors=true`. Cleanup + new safety rules:
+- Added `scripts/pre-deploy-check.sh` — MANDATORY gatekeeper before any `pm2 restart gmh-dashboard` (commit `11f0e58`, fixed in `8eac0d2`).
+- Added `scripts/health-check.sh` — post-deploy KPI scoreboard (writes `docs/KPI_CHECK.md`).
+- Removed duplicate `/ops/agents` page; retained `app/api/code/agent-health/` infrastructure for existing `/agents` dashboard (commit `d87a91b`).
+- New rules in `CLAUDE.md`: branch discipline, file count guardrails (20/50/100 thresholds), session coordinator usage.
+- Doc refresh: PROJECT_TRACKER.md, DEPENDENCIES.md, CLAUDE_MEMORY_PINS.md, INDEX.md, modules 01/03/06 updated against live state (491 patients, 14 PM2 + module, 33 cron jobs, 118 tables, 49% disk).
+
+### April 29, 2026: BioSCOPE Third-Party API — Phase 1 Infrastructure
+- Goal: BioSCOPE calls our API with patient-scoped access (Healthie keys can't be patient-scoped; we proxy).
+- Components: `migrations/20260429_bioscope_authorized_patients.sql`, `lib/bioscope-auth.ts`, `lib/bioscope-healthie.ts`, `app/admin/bioscope/page.tsx`, `app/api/admin/bioscope/route.ts`, `app/api/bioscope/patient/[id]/route.ts` + `…/notes/route.ts`.
+- Auth: `BIOSCOPE_API_SECRET` bearer (`bsk_live_...`), dedicated `BIOSCOPE_HEALTHIE_API_KEY`. Allowlist table with revoke (preserves audit history). Every call audited to `agent_action_log`.
+- Initial seed: Doug Dolan (Healthie 12743455). Phase 2 (read endpoints) gated on BioSCOPE confirming operations.
+- Module: `docs/sot-modules/29-bioscope-integration.md`.
+
+### April 28, 2026: Patient Classification Engine
+- `migrations/20260428_client_type_classification.sql` — schema for Member/Intermittent/Visit classification.
+- `scripts/generate-classification-audit.js` + v3 variant — read-only audit (output in `docs/sot-modules/26-classification-audit.md`, regenerable).
+- `scripts/apply-classification-batch.js` — idempotent applier.
+- Nightly cron `0 3 * * *` — `scripts/refresh-intake-signals.js` populates `patient_signals_cache` for iPad badges.
+- Modules: 25 (spec), 26 (audit), 27 (patient flow map).
+
+### April 25, 2026: Patient Status Chokepoint — Hardening Plan v3
+- Single chokepoint helper `lib/status-transitions.ts` for every `patients.status_key` write. DB trigger `trg_patient_status_audit` is a bypass-proof backstop (writes `patient_status_audit`).
+- ESLint `no-restricted-syntax` rule blocks raw `UPDATE patients SET ... status_key` outside the helper (severity: error).
+- iPad widget: `app/api/dashboard/status-activity/route.ts` + `renderStatusActivityCard()` in `public/ipad/app.js`.
+- Acceptance tests: `scripts/test-status-chokepoint.ts` — 17/17 passing. 24 writers migrated (plan said 16).
+- Phase 1.5 soak: monitor audit-gap query and `patient_status_audit WHERE source = 'unknown'`.
+- Module: `docs/sot-modules/28-hardening-plan-v3.md`.
+
+### April 22, 2026: iPad / Mobile Staff Dashboard — Full System Audit (NO CODE CHANGES YET)
+- Deep audit only — diagnosis, no code changes. Found 12 prioritized issues.
+- **P0 SECURITY**: `app/api/ipad/upload/[filename]/route.ts` GET has no auth — patient PDFs in `public/uploads/` enumerable unauthenticated. Add `requireApiUser(request, 'read')`.
+- **P0 WRONG AUTH HELPER in 13 API routes**: They call `requireUser()` (server-component helper, throws `NEXT_REDIRECT`) instead of `requireApiUser(request, …)`. Routes: `inventory/controlled-check`, `peptides`, `staged-doses`, `staged-doses/use`, `specialty-orders/{upload,farmakaio,tirzepatide}`, `patients/[id]/ghl-sync`, `admin/fix-peptide-schema`, `debug/outstanding-balances`, `admin/ghl/{tags,sync,status,investigate-financials,history,debug-contact}`.
+- **P0 SCRIBE CHART SIGNING broken silently**: `signFormAnswerGroup` mutation deprecated in Healthie; `submit-to-healthie/route.ts:268–290` swallows error. Notes locked but not signed (`healthie_status='locked'` instead of `'signed'`). Audit/legal risk.
+- **P1 DEA discrepancy**: `controlled-check` logged `discrepancyMlCb: -3, discrepancyMlTopRx: -34.8` on 2026-04-22. ~35 mL off TopRX.
+- Mobile sync drift: `public/mobile/` is 22h + 12 lines behind iPad — `scripts/sync-mobile.sh` not run after Apr 22 iPad edits. Mobile would crash if DEA check modal opened without all 4 vial inputs present.
+- Full plan and remaining items: SOT lines 405–442.
+
+### April 19, 2026: Telehealth Consolidation, Auto-Remediation Agent, Full Debug Suite
+- **Talk with Doc** (Healthie ID 523731): single appointment type replacing 14 separate telehealth types. 15 min, both providers, all groups. Mandatory visit reason picker. 14 old telehealth types hidden (`clients_can_book: false`).
+- **Auto-Remediation Agent**: cron daily 7am MST, only launches Claude if `agent_action_log` has errors OR PM2 has crashes. Safety: max 10 fixes, never deletes patient data, never modifies billing.
+- **Full system debug**: `scripts/agents/debug-all-systems.sh` — 26 tests across 8 categories (PM2, DB, 5 APIs, gender filter, date formatting, wholesale pricing security, 6 Lambda actions, 4 marketing sites).
+- **Mobile booking UX**: 14 days → 60 days scheduling, patient notes input, visit reason dropdown.
+- **Lambda fixes**: gender filter uses `unlockedAppointmentTypeIds` (was re-resolving via `TAG_APPOINTMENT_MAP` — ungendered). Booking Lambda config bumped to 30s/256MB.
+- **Push notifications cron added**: `/api/cron/appointment-reminders` + `/api/cron/push-receipts` every 15 min.
+- Data: 129 of 131 null-gender patients backfilled.
+
+### April 15, 2026: Pelleting Tag System — Gender-Aware Unlocks + Healthie-Local Sync
+- Three stacked bugs fixed for Brandy Campbell (and others). `service_tag_config` was gender-blind; `/api/headless/patient-services/` didn't filter by gender; `patient_service_tags` was empty.
+- Migration `20260415_pelleting_gender_and_groups.sql` — 4 gender-split `pelleting` rows replacing legacy `evexipel`.
+- New columns on `service_tag_config`: `gender CHECK ('M','F')`, `healthie_tag_id`, `healthie_group_id`.
+- Lambda config overhaul deployed via `aws lambda update-function-code` (manual override; CDK stack still drifts at 15s/128MB — patch before any future `cdk deploy`).
+- 131 patients still have null gender in Healthie — backfill pending.
+
+### April 16, 2026: ABX TAC BioBox Integration (Phase 1 — IN PROGRESS)
+- Healthie offerings: Heal=246743, Optimize=246744, Thrive=246745. Consult fee $99/visit.
+- Membership discounts (peptides): Heal 10% / Optimize 20% / Thrive 30%. BioBox labs: Heal 10% / Optimize 15% / Thrive 25% + 1 panel ≤$149 included annually for Thrive.
+- 14 BioBox panels (B001–B007, B009–B011, B013–B015, B017). Ordering provider: Dr. Whitten NMD (NPI 1366037806), clinic 22937.
+- `migrations/20260416_biobox_lab_orders.sql` (created, not yet run). New routes: `/api/jarvis/lab-eligibility`, `/api/webhooks/woo-biobox-order`.
+- Phase 1 pre-deploy: run migration, set `WOO_BIOBOX_WEBHOOK_SECRET`, restart, configure WC webhook, test with `philschafer7@gmail.com`.
+- Tier discount alignment (20/30/40 → 10/20/30) BLOCKED awaiting Phil's decision (live coupon impact).
+
+---
+
 ## 🔥 RECENT MAJOR CHANGES (DEC 25, 2025 - APR 1, 2026)
 
 ### April 1, 2026: iPad Billing Standardization, Receipt System & ABX TAC Brand Separation

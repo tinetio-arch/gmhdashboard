@@ -135,6 +135,98 @@ Postgres tables (patients, vials, dispenses, memberships, etc.)
 **If you change**: Postgres table schemas  
 **Also verify**: Snowflake sync script column mappings, Jarvis queries, mobile app data
 
+### 11. BioSCOPE Third-Party API (NEW Apr 29, 2026)
+```
+BioSCOPE
+  → POST/GET /api/bioscope/* with x-bioscope-secret + patient_id
+  → lib/bioscope-auth.ts (verifyBioscopeSecret + isPatientAuthorized + auditBioscopeCall)
+  → bioscope_authorized_patients (allowlist — active row WHERE revoked_at IS NULL)
+  → lib/bioscope-healthie.ts (dedicated client using BIOSCOPE_HEALTHIE_API_KEY)
+  → Healthie API
+  → agent_action_log (audit row, agent_name='bioscope')
+Admin UI: /ops/admin/bioscope → app/api/admin/bioscope/route.ts (GET/POST/DELETE)
+```
+**If you change**: Bioscope routes or allowlist logic  
+**Also verify**: `bioscope_authorized_patients` allowlist behaviour, `BIOSCOPE_API_SECRET` + `BIOSCOPE_HEALTHIE_API_KEY` env vars set, audit row written for every call (success and rejection), admin UI shows active vs. revoked correctly
+**Module**: `docs/sot-modules/29-bioscope-integration.md`
+
+### 12. Dispatch Session Coordinator (NEW Apr–May 2026)
+```
+tmux Claude session
+  → claude-coord checkin --task "..."
+  → ~/.claude/coord/registry.json (live session table)
+  → ~/.claude/coord/sessions/<tmux>.md (per-session activity log)
+  → auto-creates feature branch: claude/<tmux>/<slug>
+  ⤴ MCP exposure: dispatch-mcp (PM2 service, port 3003 localhost) — same state files
+  ⤴ Cron: */5 * * * * claude-coord reap (auto-cleans dead tmux sessions)
+  ⤴ tmux hook: session-closed → reaps immediately
+```
+**If you change**: `claude-coord` script, `~/.claude/coord/` state schema, or dispatch-mcp tool definitions  
+**Also verify**: registry.json roundtrip (checkin → list → checkout), the cron reaper still runs, `cs` launcher preflight, dispatch-mcp HTTP/SSE on 127.0.0.1:3003
+
+### 13. Pre-Deploy Gatekeeper + Agents Dashboard (NEW May 2026)
+```
+Code change in gmhdashboard
+  → bash scripts/pre-deploy-check.sh  (MANDATORY)
+      ├─ typecheck, build, dangerous-grep, env var sanity, branch hygiene
+      └─ writes docs/DEPLOY_CHECK.md report
+  → exit 0 = safe; non-zero = BLOCKED (DO NOT deploy)
+  → pm2 restart gmh-dashboard && pm2 save
+  → bash scripts/health-check.sh (post-deploy sanity, writes docs/KPI_CHECK.md)
+
+Agent telemetry surface:
+  /ops/ops-center (page) ─┐
+  /ops/agents (existing)  ├──→ app/api/code/agent-health/route.ts
+                          ├──→ app/api/code/sessions/route.ts
+                          ├──→ app/api/code/kill-session/route.ts
+                          ├──→ app/api/code/launch-task/route.ts
+                          └──→ app/api/code/health-check/route.ts
+
+Agent scripts (cron-driven):
+  scripts/agents/morning-intelligence.sh  (daily 6:47am MST)
+  scripts/agents/system-monitor.sh        (hourly :13)
+  scripts/agents/auto-remediation.sh      (daily 7am MST)
+  scripts/agents/data-integrity.sh        (on-demand)
+  scripts/agents/debug-all-systems.sh     (debug protocol, 26 tests)
+```
+**If you change**: pre-deploy-check.sh, health-check.sh, or any `scripts/agents/*.sh`  
+**Also verify**: `claude-coord checkout` still re-runs debug as gate, `docs/DEPLOY_CHECK.md` and `docs/KPI_CHECK.md` write paths still valid, agents dashboard pages still render, cron lines for the agent scripts in `crontab -l` still exist
+**Note**: Duplicate `/ops/agents` page was removed (commit `d87a91b`) — API infrastructure retained for existing `/agents` dashboard. Do not re-create the page.
+
+### 14. Patient Classification Engine (NEW Apr 28, 2026)
+```
+Healthie patient data + GHL signals + intake completions
+  → migrations/20260428_client_type_classification.sql (schema)
+  → scripts/generate-classification-audit.js  (read-only dry-run, all 491 patients)
+  → docs/sot-modules/26-classification-audit.md  (audit snapshot — regenerate any time)
+  → scripts/apply-classification-batch.js  (idempotent apply when ready)
+  → Nightly cron 3am MST: scripts/refresh-intake-signals.js
+     → patient_signals_cache table (badge data for dashboard)
+     → /api/dashboard/status-activity (iPad widget)
+```
+**If you change**: classification logic, signals schema, or audit generator  
+**Also verify**: audit output committed under `docs/sot-modules/26-classification-audit.md`, signals cache populates without errors, iPad badge display
+**Modules**: 25 (spec), 26 (audit), 27 (patient flow map)
+
+### 15. Patient Status Chokepoint — Hardening Plan v3
+```
+ANY code path that writes patients.status_key
+  → MUST call lib/status-transitions.ts:transitionStatus()
+      ├─ Pre-flight rule check (no webhook → inactive; no inactive-out except admin/script)
+      ├─ SET LOCAL session GUCs (source, actor, reason)
+      └─ Single UPDATE
+  → DB trigger trg_patient_status_audit (BEFORE UPDATE OF status_key)
+      ├─ Re-applies rules from session GUCs (bypass-proof backstop)
+      ├─ Writes patient_status_audit row
+      └─ Sets status_key_updated_at
+
+  ESLint guard: eslint.config.mjs `no-restricted-syntax` blocks raw
+  `UPDATE patients SET ... status_key` outside lib/status-transitions.ts (severity: error)
+```
+**If you change**: any code that touches `patients.status_key`  
+**Also verify**: route uses `transitionStatus()`, ESLint passes (`npm run lint`), audit-gap query returns 0 net new gaps, acceptance tests still 17/17 (`scripts/test-status-chokepoint.ts`)
+**Module**: `docs/sot-modules/28-hardening-plan-v3.md`
+
 ---
 
 ## Port Registry (Conflict = Cascading Failure)
@@ -143,14 +235,15 @@ Postgres tables (patients, vials, dispenses, memberships, etc.)
 |------|---------|-------|
 | 3001 | upload-receiver | Scribe audio uploads |
 | 3002 | jessica-mcp | MCP server (Python) |
-| 3003 | ghl-webhooks | GHL integration |
-| 3004 | nowmenshealth-website | Men's Health site |
-| 3007 | nowoptimal-website | NOW Optimal hub |
-| 3008 | nowprimary-website | Primary Care site |
+| 3003 | ghl-webhooks **OR** dispatch-mcp (localhost-only HTTP/SSE) | ⚠️ Two PM2 services historically use 3003 — `ghl-webhooks` is the bound listener on 0.0.0.0; `dispatch-mcp` is bound to `127.0.0.1` only. Confirm before any rebind. |
+| 3003 | nowmentalhealth-website (per ecosystem registry) | Verify with `pm2 describe` if conflicts appear |
+| 3004 | nowprimary-website / nowmenshealth-website | Confirm via `pm2 describe` — historical drift in this assignment |
+| 3007 | nowmenshealth-website (per app dir) | |
+| 3008 | nowoptimal-website | |
 | 3009 | abxtac-website | ABX TAC peptides |
 | 3011 | gmh-dashboard | Main dashboard |
 
-> **RULE**: If two services try the same port, BOTH crash in an infinite restart loop. Always check ports before adding services.
+> **RULE**: If two services try the same port, BOTH crash in an infinite restart loop. Always check `pm2 describe <service> \| grep -E 'PORT\|port'` before adding services. The 3003 / 3004 lines above show real-world ambiguity in our registry — verify against `ecosystem.config.js` AND running PM2 state, not the doc.
 
 ---
 
@@ -158,18 +251,37 @@ Postgres tables (patients, vials, dispenses, memberships, etc.)
 
 ### Patient Core
 `patients` ← `healthie_clients` ← `patient_ghl_mapping` ← `patient_qb_mapping`
++ NEW: `patient_signals_cache` (badge cache populated nightly by `scripts/refresh-intake-signals.js`)
+
+### Classification & Status (Hardening v3, Apr 2026)
+`patients` (status_key) → trigger `trg_patient_status_audit` → `patient_status_audit`
+`patient_status_activity_log` (iPad status-activity widget)
+`client_type_lookup`, `payment_method_lookup`, `patient_status_lookup` (FK targets)
+`client_type_audit`, `client_type_overrides` (classification audit trail)
 
 ### Billing
 `payment_transactions` ← `payment_issues` ← `patient_billing_cart` ← `quickbooks_payments`
+`healthie_invoices`, `quickbooks_payment_transactions`, `quickbooks_sales_receipts`
 
 ### Inventory (DEA)
 `vials` ← `dea_transactions` ← `staged_doses` ← `controlled_substance_checks` ← `dispenses`
+`weekly_inventory_audits` (added Apr 2026)
 
 ### Labs
 `lab_review_queue` ← `lab_orders` ← `lab_processed_accessions` ← `critical_lab_alerts`
++ BioBox: `lab_orders` (BioBox columns added in `migrations/20260416_biobox_lab_orders.sql`)
 
 ### Integrations
 `ghl_sync_history` ← `ghl_messages` ← `healthie_webhook_events` ← `sync_logs`
+
+### Third-party APIs (NEW)
+`bioscope_authorized_patients` ← `agent_action_log` (audit row per call, `agent_name='bioscope'`)
+`abxtac_customer_access` (BioBox consult eligibility — `provider_verified=true AND tier_expires_at > NOW()`)
+
+### Mobile / Push (NEW)
+`patient_push_tokens` ← `push_send_log` (Apr 19 push notification system)
+`app_access_controls` (mobile app access gating)
+`kiosk_form_sessions` (iPad onboarding forms)
 
 ---
 
@@ -182,6 +294,12 @@ Postgres tables (patients, vials, dispenses, memberships, etc.)
 | `lib/auth.ts` | **ALL authenticated pages** | Session cookie `gmh_session_v2` — break = locked out |
 | `lib/healthie.ts` | **ALL Healthie integrations** | GraphQL client — break = no patient data |
 | `lib/ghl.ts` | **ALL GHL operations** | GHL API client + patient routing logic |
+| `lib/status-transitions.ts` | **ALL patient.status_key writes** | Chokepoint helper — every status mutation must route here. Bypass = ESLint error + DB trigger backstop |
+| `lib/bioscope-auth.ts` | **ALL BioSCOPE API access** | Allowlist check + audit logger. Break = third-party integration locked out or unaudited |
+| `~/.claude/bin/claude-coord` | **ALL session coordination** | Multi-session dispatch CLI. Break = session collisions return |
+| `~/dispatch-mcp/server.py` | **Cowork MCP integration** | Surfaces claude-coord to MCP clients. Break = remote tooling stops working |
+| `scripts/pre-deploy-check.sh` | **ALL deploys** | Mandatory gatekeeper. Bypassing = unsafe deploys |
+| `scripts/agents/debug-all-systems.sh` | **`done` quick-command + `claude-coord debug`** | 26-test debug suite. Break = false confidence on checkout |
 | `.env.local` | **EVERYTHING** | All credentials — wrong edit = total system failure |
 | `ecosystem.config.js` | **ALL PM2 services** | Service definitions — break = no services start |
 | `next.config.js` | **Build + routing** | trailingSlash, basePath — break = broken builds |

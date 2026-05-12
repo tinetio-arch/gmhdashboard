@@ -1,32 +1,110 @@
 # NOW Optimal — Master Project Tracker v2
 
-> **Last Updated**: April 29, 2026 — BioSCOPE third-party API Phase 1 complete
+> **Last Updated**: May 12, 2026 — Live refresh (DB, PM2, crontab verified)
 > **Rule**: Every Claude Code session must update this file after completing work.
+>
+> **Auto-generated section below** — regenerated daily by `scripts/refresh-project-tracker.sh` (cron 6am MST). Manual edits between the AUTOGEN markers will be overwritten. The "Active Projects" sections beneath stay manual.
+>
+> **Archive convention**: when a project/task is DONE, move its section to `docs/archive/completed-YYYY-MM.md` (grouped by month). The main tracker only shows active work. See `docs/archive/README.md` for the rule.
+
+---
+
+<!-- AUTOGEN:START — do not edit between these markers; overwritten by scripts/refresh-project-tracker.sh -->
+## LIVE SYSTEM SNAPSHOT (verified 2026-05-12)
+
+_Auto-regenerated 2026-05-12 12:38:41 MST by `scripts/refresh-project-tracker.sh`._
+
+| Metric | Value | Source |
+|---|---|---|
+| Total patients | **491** | `SELECT COUNT(*) FROM patients` |
+| ↳ active | 379 | `status_key='active'` |
+| ↳ active_pending | 30 | `status_key='active_pending'` |
+| ↳ inactive | 74 | `status_key='inactive'` |
+| ↳ hold_payment_research | 7 | `status_key='hold_payment_research'` |
+| ↳ inactive_payment_research | 1 | `status_key='inactive_payment_research'` |
+| healthie_clients rows | 503 | (>patients because legacy duplicate links exist) |
+| patient_qb_mapping rows | 192 | QuickBooks mappings |
+| patient_ghl_mapping rows | 0 | GHL contact mappings |
+| memberships (active) | 32 | `status='active'` |
+| lab_orders (total) | 164 | — |
+| lab_review_queue (pending) | 0 | — |
+| dispenses (total) | 767 | — |
+| dea_transactions | 809 | — |
+| staged_doses (staged) | 3 | — |
+| payment_issues (open) | 0 | `resolved_at IS NULL` |
+| bioscope_authorized (active) | 1 | `revoked_at IS NULL` |
+| Postgres tables (public) | **118** | `information_schema.tables` |
+| PM2 services | **15** total, **15** online | `pm2 jlist` |
+| Cron jobs (active) | **33** | `crontab -l` (non-comment, non-blank) |
+| Disk used | **49%** (52G free of 100G) | `df -h /` |
+| Git branch | `claude/claude3/sot-refresh-read-the-current-antigravity` @ `d87a91b` (8 dirty file(s)) | `git status --porcelain` |
+| Orphan Claude branches | 2 | `git branch --list 'claude/*'` |
+| Active coordinator sessions | 11 | `~/.claude/coord/registry.json` |
+
+### Patient distribution by `client_type_key`
+| Type | Count |
+|---|---|
+| nowmenshealth | 316 |
+| nowlongevity | 42 |
+| sick_visit | 27 |
+| nowprimarycare | 26 |
+| primecare_premier_50_month | 20 |
+| qbo_tcmh_180_month | 13 |
+| approved_disc_pro_bono_pt | 13 |
+| primecare_elite_100_month | 10 |
+| qbo_f_f_fr_veteran_140_month | 6 |
+| jane_f_f_fr_veteran_140_month | 5 |
+| (null) | 4 |
+| other | 4 |
+| jane_tcmh_180_month | 3 |
+| ins_supp_60_month | 2 |
+
+<!-- AUTOGEN:END -->
+
+
+---
+
+## Archive — completed work
+
+Completed projects/phases live in `docs/archive/completed-YYYY-MM.md` (one file per calendar month). See `docs/archive/README.md` for the rule. **Keep this main tracker focused on active work only.**
+
+When you finish a project section, cut it out of this file, append it to the month's archive, and commit both edits together (`docs(archive): YYYY-MM <section name>`).
 
 ---
 
 ## PROJECT 1: GMH Dashboard (Operations Hub)
 **URL**: https://nowoptimal.com/ops/
-**PM2**: gmh-dashboard (port 3011) | **Restarts**: 275 | **Status**: ONLINE but UNSTABLE
-**Tech**: Next.js 14 + Postgres + Healthie + Snowflake + GHL
+**PM2**: gmh-dashboard (port 3011) | **Restarts**: 69 (uptime ~30m at snapshot — post pre-deploy gatekeeper deploy) | **Status**: ONLINE
+**Tech**: Next.js 14 + Postgres (118 tables) + Healthie + Snowflake + GHL
 
-### Dashboard Pages (30 routes)
-patients, labs, scribe, faxes, supplies, peptides, finance-audit, inventory, transactions, dea, pharmacy (5 sub-pages), provider/signatures, admin (users, shipments, app-control), executive-dashboard, business-intelligence, analytics, system-health, code (Command Center), patient-hub, ops-center, menshealth
+### Dashboard Pages (30+ routes)
+patients, labs, scribe, faxes, supplies, peptides, finance-audit, inventory, transactions, dea, pharmacy (5 sub-pages), provider/signatures, admin (users, shipments, app-control, **bioscope**), executive-dashboard, business-intelligence, analytics, system-health, code (Command Center — sessions, agent-health, kill-session, launch-task, health-check), patient-hub, ops-center, menshealth
 
-### API Routes (36 endpoints)
-abxtac, admin, analytics, app-access, auth, checks, code (4 sub-routes), cron, debug, dispense-override, dispenses, export, faxes, finance-audit, headless (7 mobile APIs), healthie, heidi, integrations, inventory, ipad (14 kiosk APIs), jane-membership-revenue, jane-revenue, jarvis, labels, labs, patients, peptides, pharmacy, prescriptions, receipts, scribe, smart-dispense, specialty-orders, staged-doses, supplies, ups, webhooks
+### API Routes (40+ endpoints — additions vs April)
+abxtac, admin (now incl. `/admin/bioscope`), analytics, app-access, auth, **bioscope** (`/bioscope/patient/[id]`, `/bioscope/patient/[id]/notes`), checks, code (5 sub-routes incl. `agent-health`), cron (now 14+ cron endpoints incl. push-receipts, push-log-retention, appointment-reminders, timezone-audit, peptide-pipeline-sync, payment-reconcile, missing-recurring-payments, patient-reconciliation), debug, dispense-override, dispenses, export, faxes, finance-audit, headless (7 mobile APIs), healthie, heidi, integrations, inventory, ipad (14 kiosk APIs), jane-membership-revenue, jane-revenue, jarvis (lab-eligibility for BioBox), labels, labs, patients, peptides, pharmacy, prescriptions, receipts, scribe, smart-dispense, specialty-orders, staged-doses, supplies, ups, webhooks (incl. `woo-biobox-order`)
 
-### Cron Jobs (18 scheduled)
-Heartbeat (5min), Morning Report (8am), Infrastructure Monitor (8:30am), Snowflake Sync (4hr), QuickBooks Sync (3hr), Revenue Cache (6hr), Failed Payments (6hr), Webhook Processing (5min), Lab Fetch (30min), Lab Status Refresh (daily 5am), Peptide Sync (6hr), Website Monitor (5min), Stale Terminal Cleanup (1hr), Snowflake Freshness (2hr), Stale Process Cleanup (30min), Git Auto-backup (6hr), Prescription Sync (4hr), GHL Sync (2hr), YPB Availability Sync (2hr), Healthie ID Audit (6am)
+### Cron Jobs (33 active — verified `crontab -l`)
+**Every 5 min**: Heartbeat, Process Healthie Webhooks, Website Monitor, claude-coord reap
+**Every 15 min**: Appointment reminders push, Push receipts, Peptide pipeline sync
+**Every 30 min**: Lab Results Fetch, Cleanup Stale Processes, Payment reconcile
+**Hourly**: Kill stale terminals, System Monitor agent (:13)
+**Every 2 hr**: Snowflake Freshness (:10), GHL Sync (:30)
+**Every 3 hr**: QuickBooks Sync
+**Every 4 hr**: Snowflake Sync, Prescription Sync (:20)
+**Every 6 hr**: Healthie Revenue Cache (:40), Healthie Failed Payments, Peptide Sync (:50), YPB WC Sync, Missing recurring payments (:10)
+**Daily**: Infrastructure Monitor (8:30am), Healthie ID Audit (6am), Morning Intelligence agent (6:47am), Auto-Remediation Agent (7am), Intake-signals refresh (3am), Push-log retention (3:30am), Timezone Audit (3:05am), Crontab Backup (2am), Scheduled Patient Sync (2am), Lab Status Refresh (5am UTC)
+**Twice daily**: YPB Availability Sync (6am, 6pm)
+**Note**: Git Auto-backup is DISABLED 2026-04-15 (commented out in crontab — pending untested feature review)
 
-### Critical Issues
+### Critical Issues (live verified)
 | Issue | Severity | Status |
 |---|---|---|
-| 275 restarts (memory leak suspected) | CRITICAL | NOT FIXED |
-| Disk 95% full | CRITICAL | NOT FIXED |
-| QuickBooks integration failing | HIGH | NOT VERIFIED |
+| Disk previously claimed 95% full | (RESOLVED) | Now 49% — 52GB free |
+| 275-restart memory leak claim | (STALE) | Current uptime ~30m, 69 restarts (post-deploy) — re-verify |
+| QuickBooks integration | HIGH | NOT VERIFIED (sync cron still running every 3hr) |
 | Stripe disconnected | HIGH | KEYS EXIST — VERIFY |
-| 50 unresolved payment issues | HIGH | NOT STARTED |
+| Open payment_issues | LOW | **2** open (was 50 in stale tracker) |
+| patient_ghl_mapping table empty | HIGH | 0 rows — GHL sync writes elsewhere, verify before any GHL dedupe |
 
 ---
 
@@ -216,24 +294,32 @@ appointment-status, dashboard, icd10-search, me, messages, patient-chart, patien
 
 ---
 
-## PROJECT 9: AI Services
+## PROJECT 9: AI Services (live `pm2 list` 2026-05-12)
 
 ### AI Scribe (upload-receiver)
-**PM2**: upload-receiver | **Status**: ONLINE (5 restarts, 25 days uptime)
+**PM2**: upload-receiver | **Status**: ONLINE (5 restarts, 57 days uptime)
 - Audio upload → Telegram approval → Healthie document injection
 - PDF generation for clinical notes
 - Pharmacy search/favorites integration
 
 ### Telegram AI Bot v2
-**PM2**: telegram-ai-bot-v2 | **Status**: ONLINE (1 restart)
+**PM2**: telegram-ai-bot-v2 | **Status**: ONLINE (1 restart, 22 days uptime)
 - Patient data queries via Telegram
 - Morning report delivery
 - Alert notifications
 
 ### Jessica MCP Server
-**PM2**: jessica-mcp | **Status**: ONLINE (0 restarts, 25 days uptime)
+**PM2**: jessica-mcp | **Status**: ONLINE (0 restarts, 2 months uptime)
 - Connects Snowflake, Healthie, GHL, Postgres, Gemini
 - Used by Claude Code sessions for data access
+
+### Dispatch MCP Server (NEW — added Apr/May 2026)
+**PM2**: dispatch-mcp | **Status**: ONLINE (35 restarts, 4 days uptime)
+- MCP server exposing the `claude-coord` dispatch system over HTTP/SSE on `127.0.0.1:3003` (localhost; drive via SSH tunnel)
+- Stdio fallback via `--stdio`
+- State files live in `~/.claude/coord/` (registry, sessions, inbox, decisions)
+- Tools: coord (checkin/checkout/log/claim/conflicts/status), lifecycle, gitops, inbox, system, integrations
+- Source: `/home/ec2-user/dispatch-mcp/` (server.py, tools/, venv)
 
 ### GHL AI Agents (Jessica & Max)
 - Jessica: Patient-facing SMS chatbot for Men's Health
@@ -242,7 +328,7 @@ appointment-status, dashboard, icd10-search, me, messages, patient-chart, patien
 - Knowledge base docs extensive (20+ config files)
 
 ### Email Triage
-**PM2**: email-triage | **Status**: ONLINE (0 restarts)
+**PM2**: email-triage | **Status**: ONLINE (0 restarts, 2 months uptime)
 - Email classification, Access Labs processing, fax PDF processing
 - Lab review queue management, Google Chat posting
 
@@ -251,15 +337,18 @@ appointment-status, dashboard, icd10-search, me, messages, patient-chart, patien
 ## PROJECT 10: Infrastructure Services
 
 ### Uptime Monitor
-**PM2**: uptime-monitor | **Status**: ONLINE (0 restarts)
+**PM2**: uptime-monitor | **Status**: ONLINE (0 restarts, 2 months uptime)
 - Checks all 5 websites every 5 minutes
 
 ### GHL Webhooks
-**PM2**: ghl-webhooks | **Status**: ONLINE (0 restarts)
+**PM2**: ghl-webhooks | **Status**: ONLINE (0 restarts, 2 months uptime)
 - Receives GHL webhook events
 
 ### Fax Processor
-**PM2**: fax-processor | **Status**: ONLINE (0 restarts)
+**PM2**: fax-processor | **Status**: ONLINE (3 restarts, 13 days uptime)
+
+### pm2-logrotate (module)
+**PM2 module** | **Status**: ONLINE | Rotates `~/.pm2/logs/*` to prevent disk fill
 
 ---
 
@@ -412,6 +501,83 @@ Threshold     = ±2.0mL (auto-documented as waste if within threshold)
 - All timestamps use `America/Phoenix` (MST, UTC-7, no DST)
 - `CLINIC_TIMEZONE = 'America/Phoenix'` constant at line 67 of iPad app.js
 - Postgres `timestamp without timezone` columns store UTC; displayed via `toLocaleString('en-US', {timeZone: 'America/Phoenix'})`
+
+---
+
+## PROJECT: Dispatch Session Coordinator (Apr–May 2026 — IN USE)
+
+**Goal**: Coordinate 5–15 parallel tmux Claude Code sessions so they stop colliding on the same files and trampling each other's branches.
+
+**Components**:
+| Component | Location |
+|---|---|
+| CLI tool | `~/.claude/bin/claude-coord` |
+| MCP server (Cowork integration) | `~/dispatch-mcp/` (PM2 service `dispatch-mcp`, port 3003 localhost) |
+| State files | `~/.claude/coord/` (registry.json, sessions/, sessions/archive/, decisions.md, inbox/, antigravity-queue) |
+| Auto-cleanup | Cron `*/5 * * * * claude-coord reap` + tmux `session-closed` hook |
+| Smart launcher | `cs` alias → `claude-start.sh` (auto-checkin + tmux + Claude) |
+
+**Workflow**:
+1. `claude-coord checkin --task "<one-liner>"` registers tmux session + auto-creates feature branch `claude/<tmux>/<slug>`
+2. `claude-coord conflicts <paths>` before editing (advisory check against other sessions' claims)
+3. `claude-coord claim <paths>` reserves files (advisory, not a lock)
+4. `claude-coord log "<msg>"` keeps a per-session activity log
+5. `claude-coord checkout` releases claims, archives log, **re-runs `claude-coord debug` as safety gate**
+
+**Rules (enforced via CLAUDE.md)**:
+- Every session uses its own branch (no direct edits to master)
+- Branch discipline: merge to master before session end — no orphan branches
+- File count guardrail: stop and checkpoint at 20 modified files, run pre-deploy at 50, never accumulate 100+
+
+**Why this exists**: On May 12, 2026, we found 16 orphan Claude Code branches with overlapping changes and a 362-file uncommitted refactor running on production.
+
+---
+
+## PROJECT: Pre-Deploy Gatekeeper + Agents Dashboard (May 2026)
+
+**Pre-deploy gatekeeper** (`~/gmhdashboard/scripts/pre-deploy-check.sh`):
+- MANDATORY before any `pm2 restart gmh-dashboard`
+- Exit code 0 = safe; non-zero = BLOCKED
+- Writes report to `docs/DEPLOY_CHECK.md`
+- Wired into `claude-coord checkout` as a re-run safety gate (override with `--skip-debug` only when Phil explicitly says so)
+- Self-excluded from dangerous-grep check (commit `8eac0d2`)
+
+**Health check** (`~/gmhdashboard/scripts/health-check.sh`):
+- Writes scoreboard to `docs/KPI_CHECK.md`
+- Based on NOW_120M_Playbook KPI scoreboard targets
+- Uses `.env.local` DB creds, runs SQL probes
+
+**Agents dashboard** (existing `/agents` page driven by:):
+- API: `app/api/code/agent-health/route.ts` — health endpoint for the ops/agents view
+- API: `app/api/code/sessions/route.ts`, `kill-session/route.ts`, `launch-task/route.ts`, `health-check/route.ts`
+- Page: `/ops/ops-center/page.tsx` (Operations Center client component)
+- Duplicate `/ops/agents` page was removed (commit `d87a91b`) — API infrastructure retained for existing `/agents` dashboard
+
+**Agent scripts** (`scripts/agents/`):
+- `morning-intelligence.sh` — daily 6:47am MST CEO brief
+- `system-monitor.sh` — hourly :13 minute
+- `auto-remediation.sh` — daily 7am MST (after morning intel)
+- `data-integrity.sh` — on-demand
+- `debug-all-systems.sh` — 26-test debug suite (PM2, DB, 5 APIs, gender filter, dates, wholesale pricing security, 6 Lambda actions, 4 marketing sites)
+
+---
+
+## PROJECT: Patient Classification Engine (Apr 28+ 2026)
+
+**Goal**: Replace ad-hoc `client_type` strings with structured classification (Member / Intermittent / Visit) + signal badges + intake defaults + dedup.
+
+**Components**:
+| File | Purpose |
+|---|---|
+| `migrations/20260428_client_type_classification.sql` | Schema migration for classification columns |
+| `scripts/generate-classification-audit.js`, `…-v3.js` | Read-only dry-run audit over all 491 patients (duplicates, orphan links, proposed classifications) |
+| `scripts/apply-classification-batch.js` | Idempotent batch applier |
+| `scripts/refresh-intake-signals.js` | Nightly 3am MST refresh — populates `patient_signals_cache` (badge data) |
+| `docs/sot-modules/25-patient-classification-and-dashboard.md` | Spec (draft) — Member/Intermittent/Visit, signal badges, intake defaults, dedup |
+| `docs/sot-modules/26-classification-audit.md` | Audit snapshot (regenerate via `node scripts/generate-classification-audit.js`) |
+| `docs/sot-modules/27-patient-flow-map.md` | Stage-oriented lifecycle (Lead→Booked→Intake→Evaluated→Onboarded→Active→At-risk→Off-service) |
+
+**Status**: Spec + audit modules live. Migration created. Nightly refresh cron live since 2026-04-19.
 
 ---
 

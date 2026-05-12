@@ -2,7 +2,8 @@
 
 > **Purpose**: Load ONLY the module(s) relevant to your current task. This keeps AI context windows lean and prevents hallucination from information overload.
 >
-> **Original file**: `~/gmhdashboard/ANTIGRAVITY_SOURCE_OF_TRUTH.md` (5,350 lines) — DO NOT MODIFY.
+> **Original file**: `~/gmhdashboard/ANTIGRAVITY_SOURCE_OF_TRUTH.md` (5,733 lines as of 2026-04-22) — DO NOT MODIFY.
+> **Index last refreshed**: 2026-05-12 — added 28 variants (v2 / v2-audit / v3) and confirmed 29 BioSCOPE module.
 
 ## Always-Read Modules (< 100 lines each)
 
@@ -38,14 +39,17 @@
 | `23-ghl-ai-agents.md` | Jessica/Max AI agents, webhook actions, SMS chatbot, Jarvis | Working on AI agents or GHL integration |
 | `24-system-access-credentials.md` | Login URLs, credential references, UPS shipping | Looking up access credentials or UPS integration |
 | `25-patient-classification-and-dashboard.md` | **DRAFT** Patient classification policy + dashboard redesign (Member/Intermittent/Visit, signal badges, intake defaults, dedup) | Adding patients, dashboard UX changes, classification rules, dedup work |
-| `26-classification-audit.md` | **AUDIT** Read-only dry-run of all 401 patients — duplicates, orphan links, proposed classifications. Regenerate via `node scripts/generate-classification-audit.js` | Reviewing the one-time classification backlog before applying changes |
+| `26-classification-audit.md` | **AUDIT** Read-only dry-run of all 491 patients — duplicates, orphan links, proposed classifications. Regenerate via `node scripts/generate-classification-audit.js` (or v3 variant) | Reviewing the one-time classification backlog before applying changes |
 | `27-patient-flow-map.md` | **DRAFT** Stage-oriented patient lifecycle (Lead→Booked→Intake→Evaluated→Onboarded→Active→At-risk→Off-service); per-stage SOT/GHL/dashboard/staff roles | Designing new automations, crons, or webhooks; deciding which system owns what |
-| `29-bioscope-integration.md` | **NEW** BioSCOPE third-party API: patient allowlist, dedicated Healthie key, auth model, audit, phased rollout | Working on BioSCOPE integration, adding/revoking BioSCOPE patients, building patient-scoped third-party APIs |
+| `28-hardening-plan-v2.md` | **SUPERSEDED** Phase 2 hardening plan (3,162 lines) — kept for historical context | Reading why v3 chose the chokepoint approach |
+| `28-hardening-plan-v2-audit.md` | **AUDIT** Post-v2 audit of writers found in the wild (366 lines) — inputs that informed v3 | Auditing patient_status writers; understanding the migration backlog v3 closed |
+| `28-hardening-plan-v3.md` | **ACTIVE** Patient status chokepoint v3 (2,544 lines) — `lib/status-transitions.ts`, DB trigger, ESLint rule, 17/17 acceptance tests | Any change that touches `patients.status_key`. Phase 1.0–1.4 ✅ complete; 1.5 soak window |
+| `29-bioscope-integration.md` | **NEW (Apr 29 2026)** BioSCOPE third-party API: allowlist (`bioscope_authorized_patients`), `BIOSCOPE_API_SECRET` + dedicated `BIOSCOPE_HEALTHIE_API_KEY`, admin UI at `/ops/admin/bioscope`, audit to `agent_action_log` | Working on BioSCOPE integration, adding/revoking BioSCOPE patients, building patient-scoped third-party APIs |
 
 ## Quick Decision Tree
 
 **"I need to fix a bug"** → Read: 01, 02, 10, 11  
-**"I need to deploy"** → Read: 01, 09, 14  
+**"I need to deploy"** → Read: 01, 09, 14 + run `scripts/pre-deploy-check.sh`  
 **"I need to add a feature"** → Read: 01, 02, 05, 10, 13  
 **"I need to work on integrations"** → Read: 01, 05, 15, 08  
 **"I need to work on the mobile app"** → Read: 01, 20, 10  
@@ -53,8 +57,19 @@
 **"I need to work on AI agents"** → Read: 01, 23, 05  
 **"PM2 is broken"** → Read: 01, 03, 11, 14  
 **"I need to understand the data model"** → Read: 01, 05, 18  
+**"I need to change patient.status_key"** → Read: 28-hardening-plan-v3 (FIRST), 10, 18  
+**"I need to add/revoke a BioSCOPE patient"** → Read: 29  
+**"I need to dedupe / classify patients"** → Read: 25, 26, 27  
+**"I need to coordinate with other Claude sessions"** → Read top-level `~/.claude/CLAUDE.md` DISPATCH section + `claude-coord --help`  
 
 ## Module Sizes
 
-Total: 5,350 lines across 24 modules. Loading 01 + 02 = ~75 lines (fits any context window).
-Loading all task-relevant modules for a typical task = 200-500 lines (vs. 5,350 for the full SOT).
+Total: ~12,750 lines across 30 module files (01–29 + variants + INDEX) as of 2026-05-12.
+Loading 01 + 02 = ~75 lines (fits any context window).
+Loading all task-relevant modules for a typical task = 200-500 lines (vs. 5,733 for the full SOT).
+**Largest modules** to be careful of:
+- `28-hardening-plan-v2.md` — 3,162 lines (SUPERSEDED; read v3 unless doing v2 archaeology)
+- `28-hardening-plan-v3.md` — 2,544 lines (ACTIVE)
+- `06-recent-changes.md` — 1,059 lines (Feb–Apr 2026 history)
+- `25-patient-classification-and-dashboard.md` — 843 lines (DRAFT spec)
+- `07-previous-changes.md` — 699 lines (Dec 2025 foundations)

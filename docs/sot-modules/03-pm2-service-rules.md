@@ -50,17 +50,24 @@ pm2 logs <service>      # Check the error
 pm2 reset <service>     # Reset restart counter after fixing
 ```
 
-### Current PM2 Services
+### Current PM2 Services (verified live 2026-05-12 — 14 apps + 1 module)
 
 | Service | Interpreter | Port | Purpose |
 |---------|-------------|------|---------|
 | gmh-dashboard | node (npm) | 3011 | Next.js Admin Panel |
 | telegram-ai-bot-v2 | npx tsx | - | AI Query Bot |
-| jessica-mcp | python3.11 | 3002 | MCP Server for GHL |
+| jessica-mcp | python3.11 | 3002 | MCP Server for Jessica/Max (Postgres, Healthie, GHL, Snowflake, Bedrock) |
+| **dispatch-mcp** | python3 (venv) | 3003 (localhost) | **NEW** MCP server for `claude-coord` multi-session dispatch (HTTP/SSE on 127.0.0.1; stdio fallback) |
 | upload-receiver | node | 3001 | AI Scribe Audio Receiver |
 | email-triage | python3 | - | Email Processing |
 | fax-processor | python3 | - | Incoming Fax Processor |
-| ghl-webhooks | node | 3003 | GoHighLevel Integration |
-| nowprimary-website | node | 3004 | Primary Care Website |
-| nowmenshealth-website | node | 3005 | Men's Health Website |
+| ghl-webhooks | node | 3003 | GoHighLevel Integration (verify port collision vs dispatch-mcp — different bind addresses) |
+| nowprimary-website | node | per ecosystem | Primary Care Website |
+| nowmenshealth-website | node | per ecosystem | Men's Health Website |
+| nowmentalhealth-website | node | per ecosystem | Mental Health Website |
 | nowoptimal-website | node | 3008 | NOW Optimal Parent Website |
+| abxtac-website | node | 3009 | ABX TAC peptides e-commerce |
+| uptime-monitor | python3 | - | Real-time PM2/Website Monitoring + crash-loop auto-stop |
+| pm2-logrotate (module) | - | - | Rotates `~/.pm2/logs/*` |
+
+> Always confirm ports against `pm2 describe <service>` and `ecosystem.config.js` — the registry drifts.
