@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
-import { query as dbQuery } from '@/lib/db';
+import { query as dbQuery, pgTimestampToUTCISO } from '@/lib/db';
 
 const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
 const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
@@ -92,7 +92,7 @@ export async function GET(request: NextRequest) {
                 success: true,
                 session: {
                     appointmentId: appt.id,
-                    date: appt.date,
+                    date: pgTimestampToUTCISO(appt.date),
                     status: appt.pm_status,
                     contactType: appt.contact_type,
                     provider: appt.provider ? `${appt.provider.first_name} ${appt.provider.last_name}` : null,

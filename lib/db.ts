@@ -76,6 +76,11 @@ export async function query<T extends QueryResultRow = QueryResultRow>(text: str
  *
  * Use any time you SELECT a `timestamp without time zone` column and ship it
  * to the client. Date columns are fine as-is (db.ts string override below).
+ *
+ * Also safe for Healthie appointment.date strings like "2026-05-12 04:30:00 -0700":
+ * the offset is detected, parsed, and re-emitted as strict ISO 8601 ("...Z").
+ * This protects iOS/JSC/Hermes clients that don't parse the space-separated,
+ * non-T-prefixed format that Healthie returns.
  */
 export function pgTimestampToUTCISO(v: unknown): string | null {
   if (!v) return null;

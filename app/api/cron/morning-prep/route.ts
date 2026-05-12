@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { query } from '@/lib/db';
+import { query, pgTimestampToUTCISO } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
 import { sendMessage } from '@/lib/telegram-client';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
@@ -54,7 +54,7 @@ async function fetchTodayAppointments(): Promise<HealthieAppointment[]> {
                 const attendee = a.attendees?.[0];
                 allAppts.push({
                     id: a.id,
-                    date: a.date,
+                    date: pgTimestampToUTCISO(a.date) || a.date,
                     appointment_type: a.appointment_type,
                     provider: a.provider,
                     status: a.pm_status || null,

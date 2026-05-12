@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
-import { query } from '@/lib/db';
+import { query, pgTimestampToUTCISO } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
 
 export const dynamic = 'force-dynamic';
@@ -173,7 +173,7 @@ export async function GET(request: NextRequest) {
                     id: a.id,
                     provider_id: blockProviderId,
                     provider_name: a.provider?.full_name || '',
-                    date: a.date || null,
+                    date: pgTimestampToUTCISO(a.date),
                     length: a.length || 0,
                     notes: visibleNotes,
                     private: !canSeeNotes,   // flag so UI can style differently if desired
@@ -232,7 +232,7 @@ export async function GET(request: NextRequest) {
                 time: appt.date ? new Date(appt.date).toLocaleTimeString('en-US', {
                     hour: 'numeric', minute: '2-digit', timeZone: 'America/Phoenix'
                 }) : '',
-                date: appt.date || '',
+                date: pgTimestampToUTCISO(appt.date) || '',
                 length: appt.length || null,
                 location: appt.location || '',
                 contact_type: appt.contact_type || 'In Person',
@@ -680,7 +680,7 @@ export async function POST(request: NextRequest) {
                 success: true,
                 appointment: appt ? {
                     id: appt.id,
-                    date: appt.date,
+                    date: pgTimestampToUTCISO(appt.date),
                     type: appt.appointment_type?.name || 'Appointment',
                     provider: appt.provider?.full_name || '',
                 } : null,
