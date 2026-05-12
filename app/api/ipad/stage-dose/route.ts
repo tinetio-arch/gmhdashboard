@@ -23,8 +23,27 @@ export async function POST(request: NextRequest) {
         const body = await request.json();
 
         // Accept both snake_case (iPad frontend) and camelCase field names
-        const patientId = body.patient_id || body.patientId;
+        let patientId = body.patient_id || body.patientId;
         const patientName = body.patient_name || body.patientName;
+
+        // FIX(2026-04-22): iPad sends Healthie ID (numeric), but staged_doses.patient_id
+        // has a FK to patients.patient_id (UUID). Resolve Healthie ID → UUID.
+        if (patientId && !/^[0-9a-f]{8}-/.test(patientId)) {
+            const resolved = await client.query(
+                `SELECT p.patient_id FROM patients p
+                 LEFT JOIN healthie_clients hc ON p.patient_id = hc.patient_id
+                 WHERE p.healthie_client_id = $1 OR hc.healthie_client_id = $1
+                 LIMIT 1`,
+                [patientId]
+            );
+            if (resolved.rows.length > 0) {
+                patientId = resolved.rows[0].patient_id;
+            } else {
+                // Patient not in dashboard DB — allow staging without patient link
+                console.warn(`[iPad StageDose] Healthie ID ${patientId} not found in patients table — staging without patient link`);
+                patientId = null;
+            }
+        }
         const doseMl = parseFloat(body.dose_ml || body.doseMl || 0);
         const wasteMl = parseFloat(body.waste_ml || body.wasteMl || 0.1);
         const syringeCount = parseInt(body.syringe_count || body.syringeCount || 1, 10);

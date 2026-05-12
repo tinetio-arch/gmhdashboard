@@ -1,0 +1,44 @@
+[
+  {
+    "slug": "booking-confirmation",
+    "name": "ABXTAC \u2014 Booking Confirmation (New Patient)",
+    "subject": "Your ABXTAC Consultation is Booked \u2014 Here's Your Login",
+    "id": "69e57d2c59494a5c1830b759",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57d2c59494a5c1830b759%2Findex.html?alt=media&token=15c456b2-d9de-4688-850e-6ea13b0d88aa"
+  },
+  {
+    "slug": "booking-confirmation-existing",
+    "name": "ABXTAC \u2014 Booking Confirmation (Returning Patient)",
+    "subject": "You're Booked \u2014 See You in the Now Optimal App",
+    "id": "69e58c09b62dfb7be98fc529",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e58c09b62dfb7be98fc529%2Findex.html?alt=media&token=a5d8049b-c5d9-49e9-9b9e-faffe322bdcd"
+  },
+  {
+    "slug": "appointment-reminder",
+    "name": "ABXTAC \u2014 Appointment Reminder (24h)",
+    "subject": "Tomorrow: Your ABXTAC Consultation",
+    "id": "69e57d2d2f23970484618bb3",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57d2d2f23970484618bb3%2Findex.html?alt=media&token=3221a20f-3ee1-4371-b95d-c12f43c7d363"
+  },
+  {
+    "slug": "cancellation",
+    "name": "ABXTAC \u2014 Cancellation",
+    "subject": "Your ABXTAC Consultation Has Been Cancelled",
+    "id": "69e57d2eac092f535c1e3976",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57d2eac092f535c1e3976%2Findex.html?alt=media&token=19353646-ad02-4e18-80f9-5bc438808d00"
+  },
+  {
+    "slug": "reschedule",
+    "name": "ABXTAC \u2014 Reschedule",
+    "subject": "New Time: Your ABXTAC Consultation",
+    "id": "69e57d2ffd652128d6efc29e",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57d2ffd652128d6efc29e%2Findex.html?alt=media&token=a5d1650a-05ca-48ff-b4c3-4198f09efc75"
+  },
+  {
+    "slug": "post-visit",
+    "name": "ABXTAC \u2014 Post-Visit",
+    "subject": "Thanks \u2014 Your ABXTAC Plan is on the Way",
+    "id": "69e57d304824c0ef8ec39811",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57d304824c0ef8ec39811%2Findex.html?alt=media&token=4ab623a5-ca76-4873-a1b2-54312b1f3656"
+  }
+]

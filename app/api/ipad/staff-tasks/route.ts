@@ -82,7 +82,7 @@ export async function PATCH(request: NextRequest) {
   try {
     const user = await requireApiUser(request, 'write');
     const body = await request.json();
-    const { task_id, status, staff_notes, priority, assigned_to, assigned_to_name } = body;
+    const { task_id, status, staff_notes, priority, assigned_to, assigned_to_name, title, description, due_date } = body;
 
     if (!task_id) {
       return NextResponse.json({ error: 'task_id required' }, { status: 400 });
@@ -105,6 +105,9 @@ export async function PATCH(request: NextRequest) {
       updates.push(`assigned_to = $${idx++}`); params.push(assigned_to);
       if (assigned_to_name) { updates.push(`assigned_to_name = $${idx++}`); params.push(assigned_to_name); }
     }
+    if (title !== undefined) { updates.push(`title = $${idx++}`); params.push(title); }
+    if (description !== undefined) { updates.push(`description = $${idx++}`); params.push(description); }
+    if (due_date !== undefined) { updates.push(`due_date = $${idx++}`); params.push(due_date || null); }
 
     params.push(task_id);
     await query(`UPDATE staff_tasks SET ${updates.join(', ')} WHERE id = $${idx}`, params);

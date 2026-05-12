@@ -1,13 +1,13 @@
-import { NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   const pool = getPool();
   const client = await pool.connect();
 
   try {
-    const user = await requireUser('write');
+    const user = await requireApiUser(req, 'write');
     const body = await req.json();
     const { stagedDoseId, patientId, patientName } = body;
 
@@ -97,7 +97,8 @@ export async function POST(req: Request) {
         totalAmount,
         staged.vendor || 'Unknown',
         dispenseDate.toISOString(),
-        user.name || 'System',
+        // FIX(2026-04-22): PublicUser has `display_name`, not `name`.
+        user.display_name || user.email || 'System',
         notes,
         'Dispense'
       ]
@@ -143,6 +144,9 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     await client.query('ROLLBACK');
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     console.error('Error using staged dose:', error);
     return NextResponse.json(
       { error: 'Failed to use staged dose' },

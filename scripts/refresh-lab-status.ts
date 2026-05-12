@@ -61,6 +61,25 @@ async function refreshLabStatus() {
 
     console.log(`📋 Updated ${patientUpdate.length} patients with no lab records\n`);
 
+    // Auto-promote active_pending → active when labs are current
+    const promoted = await query(`
+        UPDATE patients p
+        SET status_key = 'active', updated_at = NOW(), last_modified = NOW()
+        WHERE p.status_key = 'active_pending'
+          AND EXISTS (
+            SELECT 1 FROM labs l
+            WHERE l.patient_id = p.patient_id
+              AND l.lab_status LIKE 'Current%'
+          )
+        RETURNING patient_id, full_name
+    `);
+
+    if (promoted.length > 0) {
+        console.log(`🔄 Promoted ${promoted.length} patients from active_pending → active:`);
+        promoted.forEach((r: any) => console.log(`   ${r.full_name}`));
+    }
+    console.log('');
+
     // Show summary
     const summary = await query(`
         SELECT 

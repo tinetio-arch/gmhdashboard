@@ -86,28 +86,41 @@ function rankSubAccounts(
     const order: SubAccount[] = [];
     const push = (s: SubAccount) => { if (!order.includes(s)) order.push(s); };
 
-    // ─── Appointment type hints (strongest — reflects current intent) ───
-    if (/\b(hrt|trt|mhm|men['’]?s|male hrt|testosterone|evexipel.*male)\b/i.test(atype)) push('mens_health');
-    if (/\b(primary\s*care|primary_care|evexipel|female)\b/i.test(atype)) push('primary_care');
-    if (/\b(longevity|peptide|iv\s*therapy)\b/i.test(atype)) push('longevity');
-    if (/\b(abxtac|research peptide)\b/i.test(atype)) push('abxtac');
-    if (/\b(mental|psych|therapy|counsel)\b/i.test(atype)) push('primary_care');
+    // FIX(2026-04-16): client_type_key is now the AUTHORITATIVE signal — patient type
+    // determines routing, not whichever GHL sub-account happens to have a historical
+    // duplicate of the contact. Previously everybody was silently falling back to
+    // Men's Health because GHL has legacy dupes of many patients there.
 
-    // ─── Patient group (client_type_key) ───
+    // ─── 1. Patient group (client_type_key) — authoritative ───
     if (ctype === 'nowmenshealth') push('mens_health');
-    if (ctype === 'nowprimarycare') push('primary_care');
-    if (ctype === 'nowlongevity') push('longevity');
-    if (ctype === 'nowmentalhealth') push('primary_care');
-    if (ctype === 'abxtac') push('abxtac');
+    else if (ctype === 'nowprimarycare') push('primary_care');
+    else if (ctype === 'nowlongevity') push('longevity');
+    else if (ctype === 'nowmentalhealth') push('primary_care');
+    else if (ctype === 'abxtac') push('abxtac');
 
-    // ─── Clinic field ───
+    // ─── 2. Clinic field — second-strongest signal ───
     if (clin.includes('menshealth')) push('mens_health');
     if (clin.includes('primarycare') || clin.includes('primary_care')) push('primary_care');
     if (clin.includes('longevity')) push('longevity');
 
-    // ─── Default tail — probe all remaining so we never miss a contact ───
-    push('mens_health');
+    // ─── 3. Appointment-type hints (weakest — only used if client_type_key/clinic missing) ───
+    // FIX(2026-04-16): the prior `evexipel.*male` pattern false-positived on
+    // "EvexiPel ... FEmale" because .*male\b matches the end of "female".
+    // Require explicit male/men word boundaries and explicitly exclude "female".
+    if (/\bfemale\b/i.test(atype)) push('primary_care');
+    else if (/\b(hrt|trt|mhm|men['’]?s|male hrt|testosterone)\b/i.test(atype)
+             || /evexipel\s+[a-z ]*\bmale\b/i.test(atype)) push('mens_health');
+    if (/\b(primary\s*care|primary_care)\b/i.test(atype)) push('primary_care');
+    if (/\bevexipel\b/i.test(atype) && !/\bmale\b/i.test(atype)) push('primary_care');
+    if (/\b(longevity|peptide|iv\s*therapy)\b/i.test(atype)) push('longevity');
+    if (/\b(abxtac|research peptide)\b/i.test(atype)) push('abxtac');
+    if (/\b(mental|psych|therapy|counsel)\b/i.test(atype)) push('primary_care');
+
+    // ─── 4. Default tail — probe remaining accounts only so we can still locate
+    // the patient IF they have no client_type_key/clinic AND no appointment hint.
+    // Order chosen so Men's Health is NOT first by default any more.
     push('primary_care');
+    push('mens_health');
     push('longevity');
     push('abxtac');
 
@@ -125,7 +138,7 @@ async function resolveChannel(
 }> {
     const [patient] = await query<any>(
         `SELECT p.patient_id, p.full_name, p.email, p.phone_primary,
-                p.client_type_key, p.clinic
+                p.client_type_key, p.clinic, p.messaging_account_override
          FROM patients p WHERE p.patient_id = $1`,
         [patientId]
     );
@@ -134,11 +147,30 @@ async function resolveChannel(
         return { info: { channel: 'unavailable', label: 'No patient record', brand: '', reason: 'Patient not found in local DB' }, patient: null };
     }
 
-    if (!patient.email) {
-        return { info: { channel: 'unavailable', label: 'No contact email', brand: '', reason: 'Patient has no email on file — cannot look up GHL contact' }, patient };
+    // Healthie often stores placeholder emails like `<hash>@gethealthie.com` when the
+    // patient record was created without an email. GHL has the REAL email / phone,
+    // so we must fall back to phone lookup when the email is a placeholder.
+    const isPlaceholderEmail = /@gethealthie\.com$/i.test(patient.email || '');
+    const canEmailLookup = !!patient.email && !isPlaceholderEmail;
+    const canPhoneLookup = !!patient.phone_primary;
+
+    if (!canEmailLookup && !canPhoneLookup) {
+        return { info: { channel: 'unavailable', label: 'No contact info', brand: '', reason: 'Patient has no usable email or phone on file' }, patient };
     }
 
-    const ordered = rankSubAccounts(appointmentTypeHint, patient.client_type_key, patient.clinic);
+    // FIX(2026-04-16): respect per-patient override — Linda Hargrave case where
+    // `clinic` says nowmenshealth.care but she's actually a Longevity patient.
+    // Override takes absolute precedence and short-circuits the probe loop.
+    const override: SubAccount | null = (
+        patient.messaging_account_override === 'mens_health' ||
+        patient.messaging_account_override === 'primary_care' ||
+        patient.messaging_account_override === 'longevity' ||
+        patient.messaging_account_override === 'abxtac'
+    ) ? patient.messaging_account_override : null;
+
+    const ordered: SubAccount[] = override
+        ? [override]
+        : rankSubAccounts(appointmentTypeHint, patient.client_type_key, patient.clinic);
     const tried: string[] = [];
 
     for (const sub of ordered) {
@@ -147,7 +179,13 @@ async function resolveChannel(
         if (!ghl) continue;    // sub-account not configured (no token in env)
         tried.push(sub);
         try {
-            const contact = await ghl.findContactByEmail(patient.email);
+            let contact = null;
+            if (canEmailLookup) {
+                contact = await ghl.findContactByEmail(patient.email);
+            }
+            if (!contact && canPhoneLookup) {
+                contact = await ghl.findContactByPhone(patient.phone_primary);
+            }
             if (contact?.id) {
                 return {
                     info: {
@@ -156,7 +194,8 @@ async function resolveChannel(
                         brand: SUB_ACCOUNT_LABEL[sub],
                         phone: patient.phone_primary || null,
                         tried,
-                    },
+                        override_active: !!override,
+                    } as any,
                     patient,
                     ghlContactId: contact.id,
                     sub,
@@ -179,6 +218,41 @@ async function resolveChannel(
     };
 }
 
+// One-off channel resolution that probes ONE specific sub-account only. Used when
+// staff picks an account in the dropdown without checking "Remember".
+async function resolveChannelForcedAccount(
+    patientId: string,
+    sub: SubAccount,
+): Promise<{ info: ChannelInfo; patient: any; ghlContactId?: string; sub?: SubAccount }> {
+    const [patient] = await query<any>(
+        `SELECT p.patient_id, p.full_name, p.email, p.phone_primary
+         FROM patients p WHERE p.patient_id = $1`,
+        [patientId]
+    );
+    if (!patient) return { info: { channel: 'unavailable', label: 'No patient', brand: '', reason: 'Patient not found' }, patient: null };
+    const ghl = factoryFor(sub)();
+    if (!ghl) return { info: { channel: 'unavailable', label: 'Account unavailable', brand: '', reason: `Sub-account ${sub} not configured` }, patient };
+    const isPlaceholderEmail = /@gethealthie\.com$/i.test(patient.email || '');
+    const canEmailLookup = !!patient.email && !isPlaceholderEmail;
+    try {
+        let contact = null;
+        if (canEmailLookup) contact = await ghl.findContactByEmail(patient.email);
+        if (!contact && patient.phone_primary) contact = await ghl.findContactByPhone(patient.phone_primary);
+        if (contact?.id) {
+            return {
+                info: { channel: sub, label: `SMS via ${SUB_ACCOUNT_LABEL[sub]}`, brand: SUB_ACCOUNT_LABEL[sub], phone: patient.phone_primary || null, tried: [sub] },
+                patient, ghlContactId: contact.id, sub,
+            };
+        }
+    } catch (err: any) {
+        console.warn(`[ipad-message] Forced lookup in ${sub} failed:`, err.message);
+    }
+    return {
+        info: { channel: 'unavailable', label: 'No contact in ' + SUB_ACCOUNT_LABEL[sub], brand: SUB_ACCOUNT_LABEL[sub], reason: `No contact in ${SUB_ACCOUNT_LABEL[sub]} for ${patient.email || patient.phone_primary}`, tried: [sub] },
+        patient,
+    };
+}
+
 export async function GET(request: NextRequest) {
     try {
         await requireApiUser(request, 'read');
@@ -193,8 +267,21 @@ export async function GET(request: NextRequest) {
         const { info, patient } = await resolveChannel(resolved, apptType);
         return NextResponse.json({
             success: true,
-            patient: patient ? { full_name: patient.full_name, email: patient.email } : null,
+            patient: patient ? {
+                full_name: patient.full_name,
+                email: patient.email,
+                messaging_account_override: patient.messaging_account_override || null,
+                client_type_key: patient.client_type_key || null,
+                clinic: patient.clinic || null,
+            } : null,
             channel: info,
+            // All sub-account options staff can pick from in the override dropdown.
+            available_accounts: [
+                { key: 'mens_health', label: "Men's Health" },
+                { key: 'primary_care', label: 'Primary Care' },
+                { key: 'longevity', label: 'Longevity' },
+                { key: 'abxtac', label: 'ABX TAC' },
+            ],
         });
     } catch (error: any) {
         if (error instanceof UnauthorizedError || error?.status === 401) {
@@ -213,10 +300,32 @@ export async function POST(request: NextRequest) {
             body: string;
             appointment_type?: string;
             dry_run?: boolean;
+            save_account_override?: string | null; // 'mens_health' | 'primary_care' | 'longevity' | 'abxtac' | null
+            use_account_for_send?: string;         // one-shot: force this send to route through account X without saving
         };
 
         if (!body.patient_id || typeof body.body !== 'string' || !body.body.trim()) {
             return NextResponse.json({ error: 'patient_id and non-empty body required' }, { status: 400 });
+        }
+
+        // Optional: save an override BEFORE resolving the channel, so the resolution
+        // immediately uses the new value. Passing null clears the override.
+        if (body.save_account_override !== undefined) {
+            const override = body.save_account_override;
+            const valid = override === null ||
+                override === 'mens_health' || override === 'primary_care' ||
+                override === 'longevity' || override === 'abxtac';
+            if (!valid) {
+                return NextResponse.json({ error: 'Invalid save_account_override' }, { status: 400 });
+            }
+            const resolvedForSave = await resolvePatientId(body.patient_id);
+            if (resolvedForSave) {
+                await query(
+                    `UPDATE patients SET messaging_account_override = $1, updated_at = NOW() WHERE patient_id = $2::uuid`,
+                    [override, resolvedForSave]
+                );
+                console.log(`[ipad-message] Saved messaging override for patient ${resolvedForSave}: ${override || 'CLEARED'}`);
+            }
         }
 
         const messageBody = body.body.trim().slice(0, SMS_MAX_LEN);
@@ -224,7 +333,17 @@ export async function POST(request: NextRequest) {
         const resolved = await resolvePatientId(body.patient_id);
         if (!resolved) return NextResponse.json({ error: 'Patient not found' }, { status: 404 });
 
-        const { info, patient, ghlContactId, sub } = await resolveChannel(resolved, body.appointment_type);
+        // One-shot send override: if staff picked an account in the dropdown without saving,
+        // still route THIS send through it by temporarily setting the override for this call.
+        let channelResult = await resolveChannel(resolved, body.appointment_type);
+        if (body.use_account_for_send && !body.save_account_override) {
+            const validKeys = ['mens_health', 'primary_care', 'longevity', 'abxtac'];
+            if (validKeys.includes(body.use_account_for_send)) {
+                const forced = await resolveChannelForcedAccount(resolved, body.use_account_for_send as SubAccount);
+                if (forced.ghlContactId) channelResult = forced;
+            }
+        }
+        const { info, patient, ghlContactId, sub } = channelResult;
 
         if (info.channel === 'unavailable' || !ghlContactId || !sub) {
             return NextResponse.json({

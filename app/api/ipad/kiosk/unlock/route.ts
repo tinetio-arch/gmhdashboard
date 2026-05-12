@@ -55,7 +55,9 @@ export async function POST(request: NextRequest) {
                 await query(
                     `UPDATE kiosk_form_sessions SET unlocked_by = $1
                      WHERE session_id = $2 AND unlocked_by IS NULL`,
-                    [user.userId, sid]
+                    // FIX(2026-04-22): PublicUser uses `user_id`, not `userId`. Previous
+                    // code wrote NULL to unlocked_by column (audit trail corruption).
+                    [user.user_id, sid]
                 );
             }
             // Mark any in_progress sessions as abandoned

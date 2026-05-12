@@ -187,19 +187,24 @@ export async function GET(request: NextRequest) {
 
         // 2. Fetch from Healthie in parallel (each query fails gracefully)
         // All variable types validated against actual Healthie API error responses
-        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, billingItems, pendingForms] = await Promise.all([
+        const [chartNotes, medications, appointments, entries, allergies, documents, userProfile, paymentMethods, billingItems, pendingForms, onboardingItems] = await Promise.all([
             // Chart notes (form answer groups) - NOTE: sort_by is NOT supported by Healthie API
+            // FIX(2026-04-15): added should_paginate:false + page_size:100 so we don't lose
+            // forms past the default page boundary (Brandy Campbell case — 8 forms total).
             safeHealthieQuery<any>('chartNotes', `
                 query GetChartNotes($userId: String) {
                     formAnswerGroups(
                         user_id: $userId,
-                        offset: 0
+                        offset: 0,
+                        page_size: 100,
+                        should_paginate: false
                     ) {
                         id
                         name
                         created_at
                         updated_at
                         finished
+                        custom_module_form { id name }
                         form_answers {
                             id
                             label
@@ -293,7 +298,7 @@ export async function GET(request: NextRequest) {
             // "shared" field indicates if document is visible to patient (true) or provider-only (false).
             safeHealthieQuery<any>('documents', `
                 query GetDocuments($consolidatedUserId: String) {
-                    documents(consolidated_user_id: $consolidatedUserId, offset: 0, page_size: 30, should_paginate: false) {
+                    documents(consolidated_user_id: $consolidatedUserId, offset: 0, should_paginate: false) {
                         id
                         display_name
                         file_content_type
@@ -414,6 +419,35 @@ export async function GET(request: NextRequest) {
                         form_answer_group {
                             id
                             finished
+                        }
+                    }
+                }
+            `, { userId: healthieId }),
+
+            // FIX(2026-04-15): Healthie's "Default" onboarding flow items (Welcome, HIPAA,
+            // Consent to Treat, AI Scribe Consent, etc.) are NOT in requestedFormCompletions.
+            // They live on the user's onboarding flow. Brandy Campbell case: 5 onboarding
+            // step-forms were invisible in the iPad. We hop in via next_onboarding_step,
+            // walk to the flow, and enumerate all items.
+            safeHealthieQuery<any>('onboardingItems', `
+                query GetOnboarding($userId: ID!) {
+                    user(id: $userId) {
+                        any_incomplete_onboarding_steps
+                        next_onboarding_step {
+                            id
+                            onboarding_flow {
+                                id
+                                name
+                                onboarding_items {
+                                    id
+                                    display_name
+                                    item_type
+                                    item_id
+                                    incomplete_form_id
+                                    completed_form_id
+                                    is_skippable
+                                }
+                            }
                         }
                     }
                 }
@@ -718,7 +752,13 @@ export async function GET(request: NextRequest) {
                 if (hp.phone_number) { updates.push(`phone_primary = $${idx++}`); vals.push(hp.phone_number); }
                 if (hp.email) { updates.push(`email = $${idx++}`); vals.push(hp.email); }
                 if (hp.gender) { updates.push(`gender = $${idx++}`); vals.push(hp.gender); }
+                // FIX(2026-04-22): Sync full address from Healthie, not just line1.
+                // Missing city/state/postal_code caused local DB to go stale after Healthie address changes.
                 if (hp.location?.line1) { updates.push(`address_line1 = $${idx++}`); vals.push(hp.location.line1); }
+                if (hp.location?.line2 !== undefined) { updates.push(`address_line2 = $${idx++}`); vals.push(hp.location.line2 || null); }
+                if (hp.location?.city) { updates.push(`city = $${idx++}`); vals.push(hp.location.city); }
+                if (hp.location?.state) { updates.push(`state = $${idx++}`); vals.push(hp.location.state); }
+                if (hp.location?.zip) { updates.push(`postal_code = $${idx++}`); vals.push(hp.location.zip); }
                 if (updates.length > 0) {
                     vals.push(patient.patient_id);
                     query(`UPDATE patients SET ${updates.join(', ')} WHERE patient_id = $${idx}`, vals).catch(() => {});
@@ -733,26 +773,62 @@ export async function GET(request: NextRequest) {
                 healthie_id: healthieId,
                 healthie_profile: hp || null,
                 chart_notes: chartNotes?.formAnswerGroups || [],
-                pending_forms: (pendingForms?.requestedFormCompletions || []).map((f: any) => ({
-                    // `id` is the customModuleForm id (form schema) — used by
-                    // the kiosk form-structure query and createFormAnswerGroup.
-                    // Earlier versions of this mapping returned
-                    // requestedFormCompletion.id here, which broke the
-                    // "Hand iPad to Patient" flow — Healthie couldn't find the
-                    // form because it was being looked up by the wrong id.
-                    id: f.custom_module_form?.id || f.id,
-                    request_id: f.id,
-                    name: f.custom_module_form?.name || 'Unknown Form',
-                    status: f.form_answer_group?.finished ? 'completed' : (f.form_answer_group ? 'in_progress' : 'not_started'),
-                    date: f.date_to_show || null,
-                })),
+                pending_forms: (() => {
+                    // FIX(2026-04-15): Build a set of completed form IDs from actual filled
+                    // formAnswerGroups. Healthie's onboarding_items.completed_form_id often
+                    // stays null even after patient signs — so cross-reference the two.
+                    const completedFormIds = new Set<string>();
+                    for (const fag of (chartNotes?.formAnswerGroups || [])) {
+                        if (fag?.finished && fag?.custom_module_form?.id) {
+                            completedFormIds.add(String(fag.custom_module_form.id));
+                        }
+                    }
+
+                    return [
+                        ...(pendingForms?.requestedFormCompletions || []).map((f: any) => {
+                            const formId = String(f.custom_module_form?.id || f.id);
+                            const actuallyCompleted = completedFormIds.has(formId) || f.form_answer_group?.finished;
+                            return {
+                                id: f.custom_module_form?.id || f.id,
+                                request_id: f.id,
+                                name: f.custom_module_form?.name || 'Unknown Form',
+                                status: actuallyCompleted ? 'completed' : (f.form_answer_group ? 'in_progress' : 'not_started'),
+                                date: f.date_to_show || null,
+                                source: 'request',
+                            };
+                        }),
+                        ...(((onboardingItems?.user?.next_onboarding_step?.onboarding_flow?.onboarding_items) || [])
+                            .filter((it: any) => it.item_id && it.item_type === 'Modular Form')
+                            .map((it: any) => {
+                                const formId = String(it.item_id);
+                                const actuallyCompleted = !!it.completed_form_id || completedFormIds.has(formId);
+                                return {
+                                    id: it.item_id,
+                                    request_id: null,
+                                    onboarding_item_id: it.id,
+                                    name: it.display_name || 'Onboarding Form',
+                                    status: actuallyCompleted ? 'completed' : (it.incomplete_form_id ? 'in_progress' : 'not_started'),
+                                    date: null,
+                                    source: 'onboarding',
+                                    flow_name: onboardingItems?.user?.next_onboarding_step?.onboarding_flow?.name || 'Default',
+                                    is_skippable: !!it.is_skippable,
+                                };
+                            })),
+                    ];
+                })(),
                 medications: medications?.medications || [],
                 allergies: await mergeAllergies(allergies?.user?.allergy_sensitivities || [], localPatientId),
                 appointments: appointments?.appointments || [],
-                documents: documents?.documents || [],
+                documents: (documents?.documents || []).sort((a: any, b: any) => {
+                    // Sort newest first so recent uploads appear at the top
+                    const da = new Date(a.created_at || 0).getTime();
+                    const db = new Date(b.created_at || 0).getTime();
+                    return db - da;
+                }),
                 vitals: mergeVitals(localVitals, entries?.entries || []),
                 scribe_history: scribeHistory || [],
                 removed_diagnoses: patient?.removed_diagnoses || [],
+                confirmed_diagnoses: patient?.confirmed_diagnoses || [],
                 avatar_url: hp?.avatar_url || null,
                 // Financial & dispense data
                 last_payments: lastPayments || [],

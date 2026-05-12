@@ -239,12 +239,15 @@ export async function migratePatientToHealthie(
 
       if (existingClient) {
         healthieClientId = existingClient.id;
-        
-        // Store mapping
+
+        // Store mapping.
+        // FIX(2026-04-22): ON CONFLICT was on the compound (patient_id, healthie_client_id)
+        // but the unique index `idx_healthie_clients_unique` is on healthie_client_id alone,
+        // which raised code 23505 when the same Healthie ID was reused for a different local patient.
         await query(
-          `INSERT INTO healthie_clients (patient_id, healthie_client_id, match_method)
-           VALUES ($1, $2, 'existing')
-           ON CONFLICT (patient_id, healthie_client_id) DO UPDATE SET is_active = TRUE`,
+          `INSERT INTO healthie_clients (patient_id, healthie_client_id, match_method, is_active)
+           VALUES ($1, $2, 'existing', TRUE)
+           ON CONFLICT (healthie_client_id) DO UPDATE SET patient_id = EXCLUDED.patient_id, is_active = TRUE, updated_at = NOW()`,
           [patientId, healthieClientId]
         );
       } else {
@@ -268,10 +271,13 @@ export async function migratePatientToHealthie(
         const newClient = await healthieClient.createClient(clientInput);
         healthieClientId = newClient.id;
 
-        // Store mapping
+        // Store mapping.
+        // FIX(2026-04-22): was a plain INSERT and raised 23505 when a newly-created
+        // Healthie client ID collided with an existing row (rare but possible).
         await query(
-          `INSERT INTO healthie_clients (patient_id, healthie_client_id, match_method)
-           VALUES ($1, $2, 'migration')`,
+          `INSERT INTO healthie_clients (patient_id, healthie_client_id, match_method, is_active)
+           VALUES ($1, $2, 'migration', TRUE)
+           ON CONFLICT (healthie_client_id) DO UPDATE SET patient_id = EXCLUDED.patient_id, is_active = TRUE, updated_at = NOW()`,
           [patientId, healthieClientId]
         );
 

@@ -78,14 +78,40 @@ export async function PUT(
         let healthieSynced = false;
         let healthieError: string | null = null;
         try {
-            const patientRows = await query(
+            // FIX(2026-04-21): Check healthie_clients first, then fall back to patients.healthie_client_id.
+            // Older patients created before the healthie_clients INSERT fix may only have the ID on the patients row.
+            let healthieClientId: string | null = null;
+            const hcRows = await query<{ healthie_client_id: string }>(
                 `SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1`,
                 [patientId]
             );
-            const healthieClientId = (patientRows as any[])[0]?.healthie_client_id;
+            healthieClientId = (hcRows as any[])[0]?.healthie_client_id ?? null;
+
+            if (!healthieClientId) {
+                const pRows = await query<{ healthie_client_id: string }>(
+                    `SELECT healthie_client_id FROM patients WHERE patient_id = $1 AND healthie_client_id IS NOT NULL`,
+                    [patientId]
+                );
+                healthieClientId = (pRows as any[])[0]?.healthie_client_id ?? null;
+
+                // Back-fill the missing healthie_clients row so future calls take the fast path
+                if (healthieClientId) {
+                    await query(
+                        `INSERT INTO healthie_clients (patient_id, healthie_client_id, is_active, match_method, created_at, updated_at)
+                         VALUES ($1, $2, TRUE, 'backfill_demographics', NOW(), NOW())
+                         ON CONFLICT (healthie_client_id) DO UPDATE SET
+                           patient_id = EXCLUDED.patient_id, is_active = TRUE, updated_at = NOW()`,
+                        [patientId, healthieClientId]
+                    );
+                    console.log(`[demographics] Back-filled healthie_clients row for patient ${patientId} → ${healthieClientId}`);
+                }
+            }
 
             if (healthieClientId) {
-                // FIX(2026-03-19): updateClient mutation — check response messages for Healthie validation errors
+                // FIX(2026-04-10): Removed height, weight, preferred_name from Healthie mutation.
+                // These are NOT valid fields on updateClientInput and caused the entire mutation to fail,
+                // which is why demographics were saving to local DB but never syncing to Healthie.
+                // Height/weight/preferred_name are stored in local GMH DB only.
                 const updateResult = await healthieGraphQL<{
                     updateClient: {
                         user: { id: string; first_name: string; last_name: string } | null;
@@ -94,8 +120,7 @@ export async function PUT(
                 }>(`
                     mutation UpdateClient(
                         $id: ID, $first_name: String, $last_name: String, $dob: String,
-                        $gender: String, $phone_number: String, $email: String,
-                        $height: String, $weight: String, $preferred_name: String
+                        $gender: String, $phone_number: String, $email: String
                     ) {
                         updateClient(input: {
                             id: $id,
@@ -104,10 +129,7 @@ export async function PUT(
                             dob: $dob,
                             gender: $gender,
                             phone_number: $phone_number,
-                            email: $email,
-                            height: $height,
-                            weight: $weight,
-                            preferred_name: $preferred_name
+                            email: $email
                         }) {
                             user { id first_name last_name }
                             messages { field message }
@@ -120,9 +142,6 @@ export async function PUT(
                     gender: gender || undefined,
                     phone_number: phone_primary || undefined,
                     email: email || undefined,
-                    height: height || undefined,
-                    weight: weight || undefined,
-                    preferred_name: preferred_name || undefined,
                 });
 
                 // Check for Healthie validation messages

@@ -534,7 +534,7 @@ export default function AppControlClient() {
                 )}
             </div>
 
-            {/* Search & Filter */}}
+            {/* Search & Filter */}
             <div style={{ ...cardStyle, marginBottom: '1.5rem' }}>
                 <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     <div style={{ flex: 1, minWidth: '200px' }}>

@@ -77,6 +77,25 @@ export default async function PatientDetailPage({ params }: PageProps) {
   const ghlClient = createGHLClient();
   const ghlLocationId = ghlClient?.getLocationId() || process.env.GHL_LOCATION_ID || '';
 
+  // Family connections
+  const familyRows = await query<{
+    patient_id: string;
+    full_name: string;
+    healthie_client_id: string | null;
+    relationship_type: string;
+  }>(`
+    SELECT p.patient_id::text, p.full_name, p.healthie_client_id,
+      CASE
+        WHEN p.patient_id = (SELECT parent_patient_id FROM patients WHERE patient_id = $1) THEN 'Parent'
+        WHEN p.parent_patient_id = $1::uuid THEN 'Dependent'
+        WHEN p.patient_id = (SELECT spouse_patient_id FROM patients WHERE patient_id = $1) THEN 'Spouse'
+      END as relationship_type
+    FROM patients p
+    WHERE p.patient_id = (SELECT parent_patient_id FROM patients WHERE patient_id = $1)
+       OR p.parent_patient_id = $1::uuid
+       OR p.patient_id = (SELECT spouse_patient_id FROM patients WHERE patient_id = $1)
+  `, [params.id]);
+
   const financials = await fetchPatientFinancialData(params.id);
   const dispenses = await fetchDispensesForPatient(params.id, 200);
   const healthie = await fetchHealthiePatientProfile(params.id);
@@ -402,6 +421,58 @@ export default async function PatientDetailPage({ params }: PageProps) {
           </div>
         )}
       </div>
+
+      {familyRows.length > 0 && (
+        <div
+          style={{
+            borderRadius: '0.9rem',
+            border: '1px solid rgba(139, 92, 246, 0.2)',
+            backgroundColor: '#ffffff',
+            boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)',
+            padding: '1.5rem',
+          }}
+        >
+          <h2 style={{ margin: '0 0 1rem', fontSize: '1.25rem', color: '#0f172a' }}>Family Connections</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {familyRows.map((fm: any) => (
+              <Link
+                key={fm.patient_id}
+                href={`/patients/${fm.patient_id}`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '0.5rem',
+                  border: '1px solid rgba(148, 163, 184, 0.15)',
+                  backgroundColor: 'rgba(139, 92, 246, 0.04)',
+                  textDecoration: 'none',
+                }}
+              >
+                <div>
+                  <span style={{ fontWeight: 600, color: '#0f172a', fontSize: '0.95rem' }}>
+                    {fm.full_name}
+                  </span>
+                  <span style={{
+                    marginLeft: '0.5rem',
+                    fontSize: '0.75rem',
+                    padding: '0.1rem 0.4rem',
+                    borderRadius: '3px',
+                    background: fm.relationship_type === 'Parent' ? 'rgba(139, 92, 246, 0.12)' :
+                      fm.relationship_type === 'Spouse' ? 'rgba(14, 165, 233, 0.12)' :
+                        'rgba(34, 197, 94, 0.12)',
+                    color: fm.relationship_type === 'Parent' ? '#7c3aed' :
+                      fm.relationship_type === 'Spouse' ? '#0369a1' : '#15803d',
+                  }}>
+                    {fm.relationship_type}
+                  </span>
+                </div>
+                <span style={{ color: '#0284c7', fontSize: '0.85rem' }}>View →</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div
         style={{

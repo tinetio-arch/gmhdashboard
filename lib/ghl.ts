@@ -1,7 +1,17 @@
 /**
  * Go-High-Level (GHL) API Client
- * Handles authentication and data operations with Go-High-Level API
+ * Types imported from lib/ghl/types.ts (single source of truth)
  */
+
+export type {
+  GHLConfig, GHLContact, GHLTag, GHLOpportunity, GHLConversation,
+  GHLContactFilter, GHLContactSearchResponse,
+} from './ghl/types';
+
+import type {
+  GHLConfig, GHLContact, GHLTag, GHLOpportunity, GHLConversation,
+  GHLContactFilter, GHLContactSearchResponse,
+} from './ghl/types';
 
 const GHL_DEBUG_ENABLED = process.env.GHL_DEBUG === 'true';
 
@@ -38,89 +48,7 @@ function contactSummary(contact: Partial<GHLContact> | null | undefined): string
   return `id=${id}; email=${anonymizeEmail(contact.email)}`;
 }
 
-export type GHLConfig = {
-  apiKey: string;
-  locationId?: string;
-  baseUrl?: string;
-};
-
-export type GHLContact = {
-  id: string;
-  firstName?: string;
-  lastName?: string;
-  name?: string;
-  locationId?: string;
-  email?: string;
-  phone?: string;
-  address1?: string;
-  city?: string;
-  state?: string;
-  postalCode?: string;
-  country?: string;
-  tags?: string[];
-  source?: string;
-  assignedTo?: string;
-  status?: string;
-  customFields?: Array<{
-    key?: string;
-    id?: string;
-    field?: string;
-    value: string;
-  }>;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-export type GHLTag = {
-  id: string;
-  name: string;
-  color?: string;
-};
-
-export type GHLOpportunity = {
-  id: string;
-  title: string;
-  pipelineId?: string;
-  pipelineStageId?: string;
-  status?: string;
-  monetaryValue?: number;
-  assignedTo?: string;
-  contactId?: string;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-type GHLContactFilter = {
-  field: string;
-  operator:
-  | 'eq'
-  | 'not_eq'
-  | 'contains'
-  | 'not_contains'
-  | 'wildcard'
-  | 'not_wildcard'
-  | 'match'
-  | 'not_match'
-  | 'exists'
-  | 'not_exists'
-  | 'range'
-  | 'contains_set'
-  | 'contains_not_set'
-  | 'gt'
-  | 'gte'
-  | 'lt'
-  | 'lte'
-  | 'nested'
-  | 'nested_not'
-  | 'has_child'
-  | 'has_parent';
-  value?: unknown;
-};
-
-type GHLContactSearchResponse = {
-  contacts?: GHLContact[];
-  total?: number;
-};
+// Types imported from ./ghl/types.ts above
 
 export class GHLClient {
   private config: GHLConfig;
@@ -548,22 +476,56 @@ export class GHLClient {
   }
 
   /**
-   * Send an SMS message within Conversations.
+   * Send an SMS/MMS message within Conversations.
+   * Pass attachments array of public URLs to send MMS with images.
    */
-  async sendSms(contactId: string, body: string): Promise<{ id: string }> {
-    if (!body || !body.trim()) {
-      throw new Error('SMS body is required.');
+  async sendSms(contactId: string, body: string, attachments?: string[]): Promise<{ id: string }> {
+    if (!body?.trim() && (!attachments || attachments.length === 0)) {
+      throw new Error('SMS body or attachments required.');
+    }
+    // GHL requires a non-empty body even for MMS with attachments
+    const messageBody = body?.trim() || (attachments?.length ? ' ' : '');
+    const payload: Record<string, unknown> = {
+      contactId,
+      type: 'SMS',
+      message: messageBody,
+      body: messageBody,
+    };
+    if (attachments && attachments.length > 0) {
+      payload.attachments = attachments;
     }
     return this.request<{ id: string }>(
       'POST',
       this.withLocationPath('/conversations/messages'),
-      {
-        contactId,
-        type: 'SMS',
-        message: body,
-        body,
-      }
+      payload
     );
+  }
+
+  /**
+   * Get recent conversations (last message per contact thread).
+   * Note: Individual message history is blocked by HIPAA on this account,
+   * but conversation search returns the last message body per thread.
+   */
+  async getRecentConversations(options?: {
+    limit?: number;
+  }): Promise<GHLConversation[]> {
+    const locationId = this.requireLocationId('get conversations');
+    if (!locationId) {
+      throw new Error('Location ID required to search conversations');
+    }
+
+    const params = new URLSearchParams();
+    params.append('locationId', locationId);
+    params.append('limit', String(options?.limit ?? 10));
+    params.append('sort', 'desc');
+    params.append('sortBy', 'last_message_date');
+
+    const response = await this.request<{ conversations?: GHLConversation[]; total?: number }>(
+      'GET',
+      `/conversations/search?${params.toString()}`
+    );
+
+    return response.conversations || [];
   }
 
   /**
@@ -892,6 +854,27 @@ export function createGHLClientForABXTAC(): GHLClient | null {
 
   if (!apiKey) {
     console.warn('GHL ABXTAC API key not configured (GHL_ABXTAC_API_KEY)');
+    return null;
+  }
+
+  return new GHLClient({
+    apiKey,
+    locationId,
+    baseUrl,
+  });
+}
+
+/**
+ * Create a GHL client for Longevity location
+ * Uses the Longevity specific API token
+ */
+export function createGHLClientForLongevity(): GHLClient | null {
+  const apiKey = process.env.GHL_LONGEVITY_API_KEY;
+  const locationId = process.env.GHL_LONGEVITY_LOCATION_ID;
+  const baseUrl = process.env.GHL_BASE_URL;
+
+  if (!apiKey) {
+    console.warn('GHL Longevity API key not configured (GHL_LONGEVITY_API_KEY)');
     return null;
   }
 

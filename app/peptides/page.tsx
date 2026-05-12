@@ -10,6 +10,7 @@ import ReceiveShipmentForm from './ReceiveShipmentForm';
 import OrderHistory from './OrderHistory';
 import InStockList from './InStockList';
 import SpecialtyOrderTabs from './SpecialtyOrderTabs';
+import PeptidePipelinePanel from './PeptidePipelinePanel';
 
 export default async function PeptidesPage() {
     const user = await requireUser('read');
@@ -96,6 +97,9 @@ export default async function PeptidesPage() {
             <div style={{ marginTop: '2rem' }}>
                 <PeptideTable inventory={inventory} />
             </div>
+
+            {/* Pipeline tracking — WC + In-House (admin/CEO only; renders nothing for others) */}
+            <PeptidePipelinePanel />
 
             {/* Order History */}
             <OrderHistory orders={orders} />

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
-    const user = await requireUser('admin');
+    await requireApiUser(request, 'admin');
     
     const searchParams = request.nextUrl.searchParams;
     const patientId = searchParams.get('id');
@@ -291,6 +291,9 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error: any) {
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     console.error('[Debug] Outstanding balances error:', error);
     return NextResponse.json(
       { error: error.message || 'Unknown error' },

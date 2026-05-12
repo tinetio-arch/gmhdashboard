@@ -93,6 +93,23 @@
     </div>
 
     <script>
+        // FIX(2026-04-10): Restrict debug page to admin users only
+        (async function checkAdminAccess() {
+            try {
+                const resp = await fetch('/ops/api/ipad/me/', { credentials: 'include' });
+                if (!resp.ok) { document.body.innerHTML = '<h1 style="color:#ef4444;text-align:center;margin-top:100px">🔒 Not logged in</h1>'; return; }
+                const data = await resp.json();
+                const email = data?.data?.email || data?.email || '';
+                if (!email.includes('admin@') && email !== 'admin@nowoptimal.com' && email !== 'admin@granitemountainhealth.com') {
+                    document.body.innerHTML = '<h1 style="color:#ef4444;text-align:center;margin-top:100px">🔒 Admin access required</h1>';
+                    return;
+                }
+            } catch (e) {
+                document.body.innerHTML = '<h1 style="color:#ef4444;text-align:center;margin-top:100px">🔒 Auth check failed</h1>';
+                return;
+            }
+        })();
+
         function formatJSON(obj) {
             return JSON.stringify(obj, null, 2);
         }

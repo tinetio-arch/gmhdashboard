@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHealthieClient } from '@/lib/healthie';
+import { query } from '@/lib/db';
 
 // POST: Change a patient's Healthie group
 export async function POST(req: NextRequest) {
@@ -27,6 +28,14 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Healthie not configured' }, { status: 500 });
         }
         await healthie.updateClient(healthie_user_id, { user_group_id: group_id });
+
+        await query(
+            `UPDATE patients
+                SET healthie_group_id = $1,
+                    healthie_group_name = $2
+              WHERE healthie_client_id = $3`,
+            [group_id, VALID_GROUPS[group_id], healthie_user_id]
+        );
 
         return NextResponse.json({
             success: true,

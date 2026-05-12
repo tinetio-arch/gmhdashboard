@@ -1,14 +1,16 @@
-import { NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+
+export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/admin/ghl/tags
  * Get all tag mappings
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    await requireUser('read');
+    await requireApiUser(request, 'read');
 
     const mappings = await query(`
       SELECT * FROM ghl_tag_mappings
@@ -29,6 +31,9 @@ export async function GET() {
     });
 
   } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     console.error('GHL tags error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },

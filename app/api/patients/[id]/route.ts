@@ -43,7 +43,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       lastChargeDate: body.lastChargeDate ?? null,
       lastSupplyDate: body.lastSupplyDate ?? null,
       lastControlledDispenseAt: body.lastControlledDispenseAt ?? null,
-      lastDeaDrug: body.lastDeaDrug ?? null
+      lastDeaDrug: body.lastDeaDrug ?? null,
+      patientType: body.patientType ?? null
     });
 
     // Sync the updated patient to GHL asynchronously (don't block response)

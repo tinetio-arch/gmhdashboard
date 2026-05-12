@@ -54,15 +54,15 @@ export async function POST(request: NextRequest) {
       // Fire-and-forget so we don't slow down the UI
       (async () => {
         try {
-          const patientRes = await query(`SELECT patient_name, date_of_birth, regimen, healthie_client_id FROM patients WHERE patient_id = $1`, [body.patientId]);
-          const patientData = patientRes.rows[0];
+          const patientRes = await query<any>(`SELECT full_name, date_of_birth, regimen, healthie_client_id FROM patients WHERE patient_id = $1`, [body.patientId]);
+          const patientData = patientRes[0];
 
-          const vialRes = await query(`SELECT lot_number, expiration_date FROM inventory_vials WHERE external_id = $1`, [body.vialExternalId]);
-          const vialData = vialRes.rows[0];
+          const vialRes = await query<any>(`SELECT lot_number, expiration_date FROM inventory_vials WHERE external_id = $1`, [body.vialExternalId]);
+          const vialData = vialRes[0];
 
           if (patientData && vialData && patientData.healthie_client_id) {
             const dosageString = patientData.regimen || `${body.totalDispensedMl}ml SUBQ Weekly`;
-            const patientNameStr = body.patientName || patientData.patient_name;
+            const patientNameStr = body.patientName || patientData.full_name;
             const expDateStr = vialData.expiration_date ? new Date(vialData.expiration_date).toISOString().split('T')[0] : '';
 
             const pdfBuffer = await generateLabelPdf({

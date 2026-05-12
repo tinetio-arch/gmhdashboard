@@ -1,6 +1,6 @@
 # NOW Optimal — Master Project Tracker v2
 
-> **Last Updated**: April 6, 2026 — Deep System Audit
+> **Last Updated**: April 29, 2026 — BioSCOPE third-party API Phase 1 complete
 > **Rule**: Every Claude Code session must update this file after completing work.
 
 ---
@@ -322,6 +322,50 @@ appointment-status, dashboard, icd10-search, me, messages, patient-chart, patien
 3. **WC webhook defense-in-depth** — if an ineligible customer somehow pays, `status='held_ineligible'` halts submission + alerts staff (no silent fail, no silent refund)
 4. **No new Python script** — `order_lab.py --from-json` pattern from existing `/api/labs/orders/route.ts:313` reused
 5. **Native app uses EAS OTA** — JS-only BioBox screen deploys without App Store/Google Play review
+
+---
+
+## PROJECT: BioSCOPE Third-Party API (Apr 29, 2026 — PHASE 1 COMPLETE)
+
+**Goal**: Allow BioSCOPE to call our API with patient-scoped access. Healthie keys can't be patient-scoped, so we proxy: BioSCOPE → us → dedicated Healthie key. Token leak is bounded to allowlisted patients only.
+
+**Direction (current)**: Inbound (BioSCOPE → us). Future bidirectional planned.
+**SOT module**: `docs/sot-modules/29-bioscope-integration.md`
+
+### Phase 1 status (Apr 29, 2026 — INFRASTRUCTURE COMPLETE)
+| Item | Status | File |
+|------|--------|------|
+| Migration: `bioscope_authorized_patients` allowlist + Doug Dolan seed | ✅ Created (not yet run) | `migrations/20260429_bioscope_authorized_patients.sql` |
+| Auth middleware: secret check, allowlist check, audit logger | ✅ Created | `lib/bioscope-auth.ts` |
+| Dedicated Healthie client (separate API key) | ✅ Created | `lib/bioscope-healthie.ts` |
+| Admin page: add/revoke patients | ✅ Created | `app/admin/bioscope/page.tsx`, `app/admin/BioscopeAdminClient.tsx` |
+| Admin API: GET/POST/DELETE allowlist | ✅ Created | `app/api/admin/bioscope/route.ts` |
+| Build verification | ✅ `npx next build` passes — both routes registered | — |
+
+### Phase 1 — NOT YET DONE (pre-deployment steps)
+- [ ] Configure env vars in `.env.local`: `BIOSCOPE_API_SECRET=bsk_live_<token>` and `BIOSCOPE_HEALTHIE_API_KEY=gh_live_<key>`
+- [ ] Run migration against production DB: `psql $DATABASE_URL -f migrations/20260429_bioscope_authorized_patients.sql`
+- [ ] PM2 restart `gmh-dashboard` after env + migration
+- [ ] Smoke-test admin UI at `/ops/admin/bioscope` (verify Doug Dolan appears in active list)
+- [ ] Email bearer token to BioSCOPE (no live endpoints to use yet — they get the token now, endpoints come in Phase 2)
+
+### Pending phases
+- **Phase 2**: Read endpoints — `/api/bioscope/patient/[id]` (demographics, labs, notes). Curated set, NOT generic GraphQL passthrough. Gated on BioSCOPE confirming the operation list.
+- **Phase 3**: Write endpoints — push lab results, push chart notes. Higher review bar since these mutate the chart.
+- **Phase 4 (future)**: Outbound — `lib/bioscope-client.ts` for *us* calling *them*. Their auth in `.env.local`.
+
+### Key architectural decisions (locked)
+1. **We are the gatekeeper** — BioSCOPE never gets a Healthie key directly (Healthie keys are tenant-wide, can't be patient-scoped). All requests proxy through `/api/bioscope/*` so we can enforce the allowlist server-side.
+2. **Bearer token = `bsk_live_<32 bytes base64url>`** — Stripe/GitHub-style prefix for grep/leak detection. Compared with `crypto.timingSafeEqual`.
+3. **Dedicated Healthie key** (`BIOSCOPE_HEALTHIE_API_KEY`) — segregates BioSCOPE-driven Healthie audit-log activity, rotatable independently from main `HEALTHIE_API_KEY`.
+4. **Allowlist as DB table** (not Healthie tag) — fast at request time, explicit toggle in admin UI, revoked rows preserved for audit.
+5. **Curated endpoints, not generic passthrough** — GraphQL passthrough makes scope-validation brittle (queries can fan out). Each endpoint takes an explicit `patient_id` and validates it.
+6. **Audit every call** to `agent_action_log` with `agent_name='bioscope'` — single pane for spotting abuse/anomalies.
+
+### Current allowlist seed
+| Healthie ID | Patient | Added | Notes |
+|---|---|---|---|
+| 12743455 | Doug Dolan | 2026-04-29 | Initial seed — BioSCOPE pilot patient |
 
 ---
 

@@ -1313,12 +1313,21 @@
             if (typeof OT === 'undefined') { showError('SDK Error', 'Vonage SDK failed to load.'); return; }
             session = OT.initSession(apiKey, sessionId);
 
+            // FIX(2026-04-28): Connection timeout — don't spin forever
+            var connectTimeout = setTimeout(function() {
+                showError('Connection Timeout', 'Could not connect to video session. Please close and try again.');
+            }, 15000);
+
+            session.on('exception', function(event) {
+                console.error('[Video] OT exception:', event.code, event.message);
+            });
+
             publisher = OT.initPublisher('publisher', {
                 insertMode: 'append', width: '100%', height: '100%',
-                resolution: '640x480', frameRate: 30, mirror: true,
+                mirror: true,
                 style: { buttonDisplayMode: 'off' }
             }, function(err) {
-                if (err) { showError('Camera Error', 'Check permissions. ' + err.message); return; }
+                if (err) { clearTimeout(connectTimeout); showError('Camera Error', 'Check permissions. ' + err.message); return; }
             });
 
             session.on('streamCreated', function(event) {
@@ -1331,10 +1340,25 @@
             });
 
             session.on('streamDestroyed', function() { setStatus('Patient disconnected'); if (timerInterval) clearInterval(timerInterval); });
-            session.on('sessionDisconnected', function() { setStatus('Disconnected'); if (timerInterval) clearInterval(timerInterval); });
+            session.on('sessionDisconnected', function(event) {
+                if (timerInterval) clearInterval(timerInterval);
+                if (event.reason === 'networkDisconnected') {
+                    showError('Connection Lost', 'Internet connection lost. Check your network and try again.');
+                } else {
+                    setStatus('Disconnected');
+                }
+            });
 
             session.connect(token, function(err) {
-                if (err) { showError('Connection Failed', err.message); return; }
+                clearTimeout(connectTimeout);
+                if (err) {
+                    var msg = err.message || 'Connection failed';
+                    if (err.name === 'OT_AUTHENTICATION_ERROR' || err.code === 1004) {
+                        msg = 'Video session expired or invalid. Close this window and try again from the schedule.';
+                    }
+                    showError('Connection Failed', msg);
+                    return;
+                }
                 session.publish(publisher, function(err) {
                     if (err) { showError('Publish Error', err.message); return; }
                     showVideo();

@@ -11,10 +11,13 @@
  *   3. If verified, assigns tier + discount in WooCommerce customer meta
  *   4. WooCommerce Memberships plugin applies discount at checkout
  *
- * Discount structure:
- *   Heal:     40% off (entry tier, drives initial conversion)
- *   Optimize: 30% off (performance tier, rewards commitment)
- *   Thrive:   20% off (premium tier, patients already committed)
+ * Discount structure (ABXTAC peptide store):
+ *   Heal:     10% off (entry tier — provider-verified only)
+ *   Optimize: 20% off (default for NOW brand members; mid tier)
+ *   Thrive:   30% off (premium tier, monthly async review + 1 included BioBox lab/yr)
+ *
+ * NOW brand members (NowMensHealth, NowPrimary, NowLongevity) default to Optimize (20%).
+ * Provider-verified patients may be at Heal (10%), Optimize (20%), or Thrive (30%).
  */
 
 import { query } from '@/lib/db';
@@ -49,10 +52,10 @@ export interface ABXTacCustomerAccess {
 }
 
 export const TIER_DISCOUNTS: Record<ABXTacTier, number> = {
-  heal: 20,
-  optimize: 30,
-  thrive: 40,
-  full: 40,  // Full access gets same discount as Thrive + unlocks entire catalog
+  heal: 10,
+  optimize: 20,
+  thrive: 30,
+  full: 30,  // Full access gets same discount as Thrive + unlocks entire catalog
 };
 
 const TIER_RANK: Record<ABXTacTier, number> = {

@@ -55,44 +55,46 @@ function parseRawResult(item: any): any {
     const raw = typeof item.raw_result === 'string' ? JSON.parse(item.raw_result) : item.raw_result;
     const orderedCodes = raw?.['Ordered Codes'] || [];
 
-    // Extract flat key-value results from nested structure
+    // FIX(2026-05-05): Access Labs returns two structures in Ordered Codes:
+    // 1. Panels with Components array (e.g. MALE PRE REQUIRED → CBC → HEMATOCRIT)
+    // 2. Standalone tests at the panel level (e.g. HEMOGLOBIN A1C with Result/Range directly on the object, empty Components)
+    // Previously only structure 1 was parsed, dropping standalone tests like HBA1C, PSA, Testosterone Total, etc.
+
     const results: Record<string, string> = {};
     const flagged: string[] = [];
 
-    for (const panel of orderedCodes) {
-        const components = panel?.Components || [];
+    function addResult(name: string, val: string, flag: string, units: string, range: string) {
+        const flagMarker = (flag === 'H' || flag === 'HH') ? ' HIGH' : (flag === 'L' || flag === 'LL') ? ' LOW' : '';
+        results[name] = `${val} ${units}${flagMarker}${range ? ` (${range})` : ''}`.trim();
+        if (flag && flag !== 'N') flagged.push(`${name}: ${val} ${units} [${flag}]`);
+    }
+
+    function extractComponents(components: any[]) {
         for (const comp of components) {
-            // Handle nested sub-panels (e.g. CBC within MALE PRE REQUIRED)
-            if (comp.Components && Array.isArray(comp.Components)) {
-                for (const sub of comp.Components) {
-                    const name = sub['Test Name'];
-                    const val = sub['Result'];
-                    if (name && val) {
-                        const flag = sub['Abnormal Flag'] || '';
-                        const units = sub['Test Units'] || '';
-                        const range = sub['Range'] || '';
-                        const flagMarker = (flag === 'H' || flag === 'HH') ? ' HIGH' : (flag === 'L' || flag === 'LL') ? ' LOW' : '';
-                        results[name] = `${val} ${units}${flagMarker}${range ? ` (${range})` : ''}`.trim();
-                        if (flag && flag !== 'N') flagged.push(`${name}: ${val} ${units} [${flag}]`);
-                    }
-                }
-            } else {
-                const name = comp['Test Name'];
-                const val = comp['Result'];
-                if (name && val) {
-                    const flag = comp['Abnormal Flag'] || '';
-                    const units = comp['Test Units'] || '';
-                    const range = comp['Range'] || '';
-                    const flagMarker = (flag === 'H' || flag === 'HH') ? ' HIGH' : (flag === 'L' || flag === 'LL') ? ' LOW' : '';
-                    results[name] = `${val} ${units}${flagMarker}${range ? ` (${range})` : ''}`.trim();
-                    if (flag && flag !== 'N') flagged.push(`${name}: ${val} ${units} [${flag}]`);
-                }
+            if (comp.Components && Array.isArray(comp.Components) && comp.Components.length > 0) {
+                extractComponents(comp.Components);
+            } else if (comp['Test Name'] && comp['Result']) {
+                addResult(comp['Test Name'], comp['Result'], comp['Abnormal Flag'] || '', comp['Test Units'] || '', comp['Range'] || '');
             }
         }
     }
 
-    // Build summary
-    const panelNames = orderedCodes.map((p: any) => p['Profile Name']).filter(Boolean).join(', ');
+    for (const panel of orderedCodes) {
+        const components = panel?.Components || [];
+        if (components.length > 0) {
+            // Structure 1: Panel with nested components
+            extractComponents(components);
+        } else if (panel['Test Name'] && panel['Result']) {
+            // Structure 2: Standalone test at panel level (no Components)
+            addResult(panel['Test Name'], panel['Result'], panel['Abnormal Flag'] || '', panel['Test Units'] || '', panel['Range'] || '');
+        }
+    }
+
+    // Build summary — include standalone test names alongside panel names
+    const panelNames = orderedCodes
+        .map((p: any) => p['Profile Name'] || p['Test Name'])
+        .filter(Boolean)
+        .join(', ');
     const totalTests = Object.keys(results).length;
     let summary = `${panelNames || 'Lab Panel'} — ${totalTests} results.`;
     if (flagged.length > 0) {
@@ -106,7 +108,7 @@ function parseRawResult(item: any): any {
         ...item,
         summary,
         results_json: results,
-        tests_found: item.tests_found || orderedCodes.map((p: any) => p['Profile Name']).filter(Boolean),
+        tests_found: item.tests_found || orderedCodes.map((p: any) => p['Profile Name'] || p['Test Name']).filter(Boolean),
     };
 }
 
@@ -208,11 +210,25 @@ async function updatePatientLabDates(
             return;
         }
 
-        const lastLabDate = item.collection_date || new Date().toISOString().slice(0, 10);
+        // Normalize collection_date (MM/DD/YYYY or YYYY-MM-DD) to ISO YYYY-MM-DD for PostgreSQL
+        // SOT rule: store as YYYY-MM-DD, use UTC functions to avoid Phoenix timezone day-shift
+        // Regex-based parsing avoids Date object timezone issues entirely
+        const rawDate = (item.collection_date || '').trim();
+        let lastLabDate: string;
+        const mmddMatch = rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        const isoMatch = rawDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (mmddMatch) {
+            lastLabDate = `${mmddMatch[3]}-${mmddMatch[1].padStart(2, '0')}-${mmddMatch[2].padStart(2, '0')}`;
+        } else if (isoMatch) {
+            lastLabDate = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+        } else {
+            lastLabDate = new Date().toISOString().slice(0, 10); // UTC today
+        }
         // Next lab = +1 year from collection date
-        const nextDate = new Date(lastLabDate);
-        nextDate.setFullYear(nextDate.getFullYear() + 1);
-        const nextLabDate = nextDate.toISOString().slice(0, 10);
+        // SOT: parse as noon UTC to avoid day-boundary shift, use getUTC* for storage
+        const nextDate = new Date(lastLabDate + 'T12:00:00Z');
+        nextDate.setUTCFullYear(nextDate.getUTCFullYear() + 1);
+        const nextLabDate = `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, '0')}-${String(nextDate.getUTCDate()).padStart(2, '0')}`;
 
         // Compute lab status label
         const labStatusInfo = computeLabStatus(lastLabDate, nextLabDate);
@@ -233,10 +249,21 @@ async function updatePatientLabDates(
         }
 
         // Also update patients.lab_status
-        await query(
-            `UPDATE patients SET lab_status = $2, updated_at = NOW() WHERE patient_id = $1`,
-            [patientUuid, labStatusInfo.label]
-        );
+        // If labs are now current and patient is active_pending, promote to active
+        if (labStatusInfo.state === 'current') {
+            await query(
+                `UPDATE patients SET lab_status = $2,
+                    status_key = CASE WHEN status_key = 'active_pending' THEN 'active' ELSE status_key END,
+                    updated_at = NOW()
+                 WHERE patient_id = $1`,
+                [patientUuid, labStatusInfo.label]
+            );
+        } else {
+            await query(
+                `UPDATE patients SET lab_status = $2, updated_at = NOW() WHERE patient_id = $1`,
+                [patientUuid, labStatusInfo.label]
+            );
+        }
 
         console.log(`✅ Updated lab dates for patient ${patientUuid}: last=${lastLabDate}, next=${nextLabDate}, status=${labStatusInfo.label}`);
     } catch (error) {

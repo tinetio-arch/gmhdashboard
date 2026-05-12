@@ -25,6 +25,7 @@ export async function GET(request: NextRequest) {
                 pt.amount,
                 pt.description,
                 pt.stripe_account,
+                pt.charged_to,
                 pt.healthie_billing_item_id,
                 pt.stripe_charge_id,
                 pt.status,
@@ -33,10 +34,9 @@ export async function GET(request: NextRequest) {
                 pt.created_at,
                 p.full_name as patient_name,
                 p.email as patient_email,
-                hc.healthie_client_id
+                p.healthie_client_id
             FROM payment_transactions pt
             LEFT JOIN patients p ON pt.patient_id = p.patient_id
-            LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id
             WHERE pt.status NOT IN ('consent_signed', 'consent_sent')
               AND pt.amount != 0
         `;
@@ -99,6 +99,7 @@ export async function GET(request: NextRequest) {
             amount: parseFloat(row.amount),
             description: row.description,
             stripeAccount: row.stripe_account,
+            chargedTo: row.charged_to,
             healthieBillingItemId: row.healthie_billing_item_id,
             stripeChargeId: row.stripe_charge_id,
             status: row.status,

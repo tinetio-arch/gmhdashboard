@@ -140,7 +140,14 @@ Documentation Standards:
 
 2. The assistant should write the History of Present Illness (HPI) as a detailed narrative, but MUST use paragraph breaks to separate distinct topics (e.g., presenting complaint vs. social history). Use bullet points for lists of symptoms or multiple complaints to improve readability. Avoid long, dense blocks of text.
 
-3. The assistant should include ICD-10 codes for every diagnosis listed in the Assessment and Plan section.
+3. ICD-10 CODING RULES (CRITICAL — patient safety):
+   a. Include an ICD-10 code for every diagnosis in the Assessment and Plan section.
+   b. Format each diagnosis as: "Diagnosis description (CODE - Official ICD-10 description)" e.g. "Type 2 Diabetes (E11.9 - Type 2 diabetes mellitus, unspecified)"
+   c. ONLY use ICD-10 codes you are CERTAIN are correct. If unsure of the exact code, write the diagnosis description WITHOUT a code — do NOT guess.
+   d. Do NOT code social history items (tobacco history, alcohol history, exercise habits) as visit diagnoses unless they are the PRIMARY reason for the visit.
+   e. Z-codes for personal history (Z87.xxx) should ONLY be used when the historical condition is clinically relevant to the current visit's assessment.
+   f. For pediatric patients, ensure codes are age-appropriate. Do NOT assign adult-only diagnoses to children.
+   g. Common code errors to avoid: Z87.891 is Personal History of Nicotine Dependence (NOT viral infection). J06.9 is URI (NOT pharyngitis). Verify the code matches the condition.
 
 4. The assistant should specify exact medication details including: drug name, dosage, route, frequency, quantity dispensed, number of refills, and specific administration instructions when applicable.
 
@@ -608,11 +615,26 @@ export async function POST(request: NextRequest) {
         const sections = enriched;
 
         // Extract ICD-10 codes from assessment section
-        const icd10Regex = /\(([A-Z]\d{2}(?:\.\d{1,4})?)\)/g;
-        const icd10Codes: Array<{ code: string; description: string }> = [];
+        // Captures: "Diagnosis text (CODE - description)" or just "(CODE)"
+        const icd10Regex = /\(([A-Z]\d{2}(?:\.\d{1,4})?)\s*(?:-\s*([^)]+))?\)/g;
+        const rawCodes: Array<{ code: string; description: string }> = [];
+        const seenCodes = new Set<string>();
         let match;
-        while ((match = icd10Regex.exec(sections.assessment + '\n' + sections.plan)) !== null) {
-            icd10Codes.push({ code: match[1], description: '' });
+        const searchText = (sections.assessment || '') + '\n' + (sections.plan || '');
+        while ((match = icd10Regex.exec(searchText)) !== null) {
+            const code = match[1];
+            if (!seenCodes.has(code)) {
+                seenCodes.add(code);
+                rawCodes.push({ code, description: (match[2] || '').trim() });
+            }
+        }
+
+        // Validate codes against the ICD-10 database (S3-backed)
+        const { validateCodeBatch } = await import('@/lib/icd10-lookup');
+        const icd10Codes = await validateCodeBatch(rawCodes);
+        const unverifiedCount = icd10Codes.filter(c => !c.verified).length;
+        if (unverifiedCount > 0) {
+            console.warn(`[Scribe] ${unverifiedCount} ICD-10 codes not in verified database:`, icd10Codes.filter(c => !c.verified).map(c => c.code));
         }
 
         const subjective = sections.subjective;

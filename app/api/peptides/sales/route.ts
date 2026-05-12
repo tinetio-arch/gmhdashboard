@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchPeptideSales, createPeptideSale } from '@/lib/peptideQueries';
-import { requireApiUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 
 export async function GET(request: NextRequest) {
     try {
@@ -14,6 +14,9 @@ export async function GET(request: NextRequest) {
         const sales = await fetchPeptideSales();
         return NextResponse.json(sales);
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error fetching peptide sales:', error);
         return NextResponse.json(
             { error: 'Failed to fetch peptide sales' },
@@ -43,11 +46,14 @@ export async function POST(request: NextRequest) {
             healthie_client_id: body.healthie_client_id,
             healthie_billing_item_id: body.healthie_billing_item_id,
             paid: body.paid !== false, // Default to true
-            notes: body.notes || `Manual entry by ${user.name || user.email}`,
+            notes: body.notes || `Manual entry by ${user.display_name || user.email}`,
         });
 
         return NextResponse.json(sale);
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error creating peptide sale:', error);
         return NextResponse.json(
             { error: 'Failed to create peptide sale' },

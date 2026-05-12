@@ -5,7 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchPeptideInventory, fetchPeptideInventorySummary, fetchPeptideProductOptions, createPeptideProduct, deactivatePeptideProduct, reactivatePeptideProduct, updatePeptideProduct } from '@/lib/peptideQueries';
-import { requireApiUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 
 export async function GET(request: NextRequest) {
     try {
@@ -30,6 +30,9 @@ export async function GET(request: NextRequest) {
         return NextResponse.json(inventory);
 
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         const errMsg = error instanceof Error ? error.message : String(error);
         console.error('Error fetching peptide inventory:', errMsg);
         return NextResponse.json(
@@ -65,6 +68,9 @@ export async function POST(request: NextRequest) {
 
         return NextResponse.json(product);
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         const errMsg = error instanceof Error ? error.message : String(error);
         console.error('Error creating peptide product:', {
             error: errMsg,
@@ -78,9 +84,9 @@ export async function POST(request: NextRequest) {
     }
 }
 
-export async function DELETE(request: Request) {
+export async function DELETE(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const url = new URL(request.url);
         const productId = url.searchParams.get('id');
 
@@ -91,6 +97,9 @@ export async function DELETE(request: Request) {
         const result = await deactivatePeptideProduct(productId);
         return NextResponse.json({ deactivated: true, name: result.name });
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         const errMsg = error instanceof Error ? error.message : String(error);
         console.error('Error deleting peptide product:', errMsg);
         return NextResponse.json(
@@ -100,9 +109,9 @@ export async function DELETE(request: Request) {
     }
 }
 
-export async function PATCH(request: Request) {
+export async function PATCH(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const body = await request.json();
         const { product_id, ...updates } = body;
 
@@ -118,6 +127,9 @@ export async function PATCH(request: Request) {
         await updatePeptideProduct(product_id, updates);
         return NextResponse.json({ success: true });
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         const errMsg = error instanceof Error ? error.message : String(error);
         console.error('Error updating peptide product:', errMsg);
         return NextResponse.json({ error: errMsg }, { status: 400 });

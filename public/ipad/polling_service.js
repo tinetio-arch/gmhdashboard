@@ -1,28 +1,54 @@
 // ─── BACKGROUND TRANSCRIPTION POLLING SERVICE ───────────────
 // Survives tab navigation, page visibility changes, and user actions
-let activePolls = new Map(); // sessionId → { sessionId, attempts, maxAttempts, interval }
+// FIX(2026-04-22): Added exponential backoff, document.hidden skip, and circuit breaker
+let activePolls = new Map(); // sessionId → { sessionId, attempts, maxAttempts, interval, consecutiveErrors, currentDelay }
+
+const POLL_INITIAL_DELAY = 5000;   // 5s — first 6 polls
+const POLL_MID_DELAY = 15000;      // 15s — after 30s
+const POLL_MAX_DELAY = 30000;      // 30s — after 2 min
+const POLL_MAX_ATTEMPTS = 40;      // ~5 min total with backoff
+const POLL_MAX_CONSECUTIVE_ERRORS = 3; // stop after 3 network failures in a row
+
+function _getPollDelay(attempts) {
+    if (attempts < 6) return POLL_INITIAL_DELAY;      // first 30s: every 5s
+    if (attempts < 14) return POLL_MID_DELAY;          // next 2 min: every 15s
+    return POLL_MAX_DELAY;                              // rest: every 30s
+}
 
 function startBackgroundTranscriptionPoll(sessionId) {
     if (activePolls.has(sessionId)) {
-        console.log(`[Background Poll] Already polling session ${sessionId}`);
         return; // already polling
     }
 
     const pollInfo = {
         sessionId,
         attempts: 0,
-        maxAttempts: 60, // 5 minutes (60 × 5 seconds)
+        maxAttempts: POLL_MAX_ATTEMPTS,
         interval: null,
+        consecutiveErrors: 0,
+        currentDelay: POLL_INITIAL_DELAY,
     };
 
     activePolls.set(sessionId, pollInfo);
 
-    // Use setInterval for persistent polling that survives tab changes
-    pollInfo.interval = setInterval(async () => {
+    function scheduleNext() {
+        const delay = _getPollDelay(pollInfo.attempts);
+        pollInfo.currentDelay = delay;
+        pollInfo.interval = setTimeout(pollOnce, delay);
+    }
+
+    async function pollOnce() {
         pollInfo.attempts++;
+
+        // Skip poll when app is backgrounded — saves battery on mobile
+        if (document.hidden) {
+            scheduleNext();
+            return;
+        }
 
         try {
             const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+            pollInfo.consecutiveErrors = 0; // reset on success
 
             if (data?.success && data.data?.status === 'transcribed') {
                 stopBackgroundPoll(sessionId);
@@ -42,6 +68,7 @@ function startBackgroundTranscriptionPoll(sessionId) {
                 if (currentTab === 'scribe') {
                     renderCurrentTab();
                 }
+                return; // done
             } else if (data?.data?.status === 'error') {
                 stopBackgroundPoll(sessionId);
                 showToast(`❌ Transcription failed`, 'error');
@@ -49,28 +76,42 @@ function startBackgroundTranscriptionPoll(sessionId) {
                 scribeLoaded = false;
                 await loadScribeSessions();
                 if (currentTab === 'scribe') renderCurrentTab();
+                return; // done
             } else if (pollInfo.attempts >= pollInfo.maxAttempts) {
                 stopBackgroundPoll(sessionId);
                 showToast(`⏱ Transcription timed out - check back later`, 'warning');
+                return; // done
             }
+
+            // Still transcribing — schedule next poll
+            scheduleNext();
         } catch (err) {
             if (err.message === 'AUTH_EXPIRED') {
                 stopBackgroundPoll(sessionId);
                 throw err;
             }
-            console.warn(`[Background Poll] Error for ${sessionId}:`, err);
-        }
-    }, 5000); // Poll every 5 seconds
 
-    console.log(`[Background Poll] Started for session ${sessionId}`);
+            pollInfo.consecutiveErrors++;
+            if (pollInfo.consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) {
+                stopBackgroundPoll(sessionId);
+                showToast('Transcription polling stopped — network issues. Tap retry later.', 'warning');
+                return;
+            }
+
+            // Schedule next despite error (with backoff)
+            scheduleNext();
+        }
+    }
+
+    // Start first poll
+    scheduleNext();
 }
 
 function stopBackgroundPoll(sessionId) {
     const pollInfo = activePolls.get(sessionId);
     if (pollInfo?.interval) {
-        clearInterval(pollInfo.interval);
+        clearTimeout(pollInfo.interval);
         activePolls.delete(sessionId);
-        console.log(`[Background Poll] Stopped for session ${sessionId}`);
     }
 }
 
@@ -88,26 +129,22 @@ async function checkForPendingTranscriptions() {
 
         if (sessions.length === 0) return;
 
-        console.log(`[Scribe Recovery] Found ${sessions.length} sessions in 'transcribing' status`);
-
         for (const session of sessions) {
             // Check if AWS job completed but DB not updated
             const check = await apiFetch(`/ops/api/scribe/transcribe?session_id=${session.session_id}`);
 
             if (check?.success && check.data?.status === 'transcribed') {
                 // Fixed! Reload sessions
-                console.log(`[Scribe Recovery] ✅ Recovered completed transcription for ${session.patient_name}`);
                 scribeLoaded = false;
                 await loadScribeSessions();
                 showToast(`✅ Recovered completed transcription for ${session.patient_name}`, 'success');
             } else if (check?.data?.status === 'transcribing') {
                 // Still processing - start background poll
-                console.log(`[Scribe Recovery] Session ${session.session_id} still processing - starting background poll`);
                 startBackgroundTranscriptionPoll(session.session_id);
             }
         }
     } catch (err) {
-        console.warn('[Scribe Recovery] Check failed:', err);
+        console.error('[Scribe Recovery] Check failed:', err);
     }
 }
 

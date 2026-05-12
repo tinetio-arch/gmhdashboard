@@ -28,22 +28,42 @@ interface FaxQueueItem {
     healthie_patient_id: string | null;
     status: string;
     approved_at: string | null;
+    rejection_reason: string | null;
 }
 
 async function loadFaxQueue(): Promise<FaxQueueItem[]> {
     try {
         const pool = getPool();
+        // Load ALL pending faxes + the 100 most recent actioned (approved/rejected) faxes.
+        // A flat LIMIT 100 ordered by received_at hid older pending items behind newer
+        // actioned ones, so the Pending tab could under-report what's actually unactioned.
         const result = await pool.query(`
-            SELECT 
-                id, s3_key, from_address, subject, 
-                LEFT(body_text, 500) as body_text,
-                pdf_s3_key, received_at,
-                ai_summary, ai_fax_type, ai_patient_name, 
-                ai_sending_facility, ai_urgency, ai_key_findings,
-                healthie_patient_id, status, approved_at
-            FROM fax_queue
+            (
+                SELECT
+                    id, s3_key, from_address, subject,
+                    LEFT(body_text, 500) as body_text,
+                    pdf_s3_key, received_at,
+                    ai_summary, ai_fax_type, ai_patient_name,
+                    ai_sending_facility, ai_urgency, ai_key_findings,
+                    healthie_patient_id, status, approved_at, rejection_reason
+                FROM fax_queue
+                WHERE status = 'pending_review'
+            )
+            UNION ALL
+            (
+                SELECT
+                    id, s3_key, from_address, subject,
+                    LEFT(body_text, 500) as body_text,
+                    pdf_s3_key, received_at,
+                    ai_summary, ai_fax_type, ai_patient_name,
+                    ai_sending_facility, ai_urgency, ai_key_findings,
+                    healthie_patient_id, status, approved_at, rejection_reason
+                FROM fax_queue
+                WHERE status <> 'pending_review'
+                ORDER BY received_at DESC
+                LIMIT 100
+            )
             ORDER BY received_at DESC
-            LIMIT 100
         `);
 
         return result.rows.map(row => ({

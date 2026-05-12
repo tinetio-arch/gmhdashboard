@@ -24,6 +24,29 @@ export interface SupplyItem {
     active: boolean;
     created_at: string;
     updated_at: string;
+    // McKesson catalog mapping
+    mckesson_item_id: string | null;
+    mckesson_unit_of_measure: string | null;        // SELL UOM from xls catalog
+    mckesson_buy_unit_of_measure: string | null;    // BUY UOM from availability sync
+    mckesson_buy_eaches: number | null;
+    mckesson_sell_eaches: number | null;
+    mckesson_weight_lb: string | null;
+    mckesson_purchasable: boolean | null;
+    mckesson_replacement_id: string | null;
+    mckesson_storage_requirement: string | null;
+    mckesson_last_synced_at: string | null;
+    manufacturer: string | null;
+    manufacturer_part_number: string | null;
+    minor_category: string | null;
+    stock_status: string | null;
+    // Supplier + pricing (vendor-agnostic — McKesson auto-set on map, others manual)
+    supplier_name: string | null;
+    unit_cost: string | null;       // NUMERIC comes back as string
+    unit_cost_uom: string | null;
+    unit_cost_source: string | null;
+    unit_cost_updated_at: string | null;
+    supplier_part_number: string | null;
+    supplier_url: string | null;
     // Joined from supply_counts
     qty_on_hand: number;
     location: string;
@@ -222,7 +245,13 @@ export async function createSupplyItem(
 
 export async function updateSupplyItem(
     id: number,
-    updates: Partial<{ name: string; category: string; unit: string; par_level: number | null; reorder_qty: number | null; notes: string | null; active: boolean }>
+    updates: Partial<{
+        name: string; category: string; unit: string;
+        par_level: number | null; reorder_qty: number | null;
+        notes: string | null; active: boolean;
+        supplier_name: string | null; unit_cost: number | null; unit_cost_uom: string | null;
+        unit_cost_source: string | null; supplier_part_number: string | null; supplier_url: string | null;
+    }>
 ): Promise<void> {
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -235,6 +264,11 @@ export async function updateSupplyItem(
     }
 
     if (fields.length === 0) return;
+
+    // Bump unit_cost_updated_at when unit_cost is being edited
+    if ('unit_cost' in updates) {
+        fields.push(`unit_cost_updated_at = NOW()`);
+    }
 
     fields.push(`updated_at = NOW()`);
     values.push(id);

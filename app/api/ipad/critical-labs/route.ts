@@ -16,7 +16,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
-import { query } from '@/lib/db';
+import { query, pgTimestampToUTCISO } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,33 +31,46 @@ const CRITICAL_THRESHOLDS = [
   { pattern: /testosterone.*total/i, threshold: 1500, op: '>', severity: 'moderate', criticalAt: 2000 },
 ];
 
+// FIX(2026-05-05): Handle standalone tests at panel level (no Components array).
+// Access Labs returns individual tests like PSA, HBA1C, Testosterone Total directly
+// on the Ordered Codes entry with empty Components — these were previously invisible
+// to critical lab detection.
 function extractLabValues(rawResult: any): Array<{ testName: string; value: number; valueStr: string; units: string; range: string; flag: string }> {
   const results: Array<{ testName: string; value: number; valueStr: string; units: string; range: string; flag: string }> = [];
   if (!rawResult?.['Ordered Codes']) return results;
 
+  function addIfNumeric(obj: any) {
+    if (obj['Test Name'] && obj['Result']) {
+      const val = parseFloat(obj['Result']);
+      if (!isNaN(val)) {
+        results.push({
+          testName: obj['Test Name'],
+          value: val,
+          valueStr: obj['Result'],
+          units: obj['Test Units'] || '',
+          range: obj['Range'] || '',
+          flag: obj['Abnormal Flag'] || '',
+        });
+      }
+    }
+  }
+
   function extractFromComponents(components: any[]) {
     if (!Array.isArray(components)) return;
     for (const comp of components) {
-      if (comp['Test Name'] && comp['Result']) {
-        const val = parseFloat(comp['Result']);
-        if (!isNaN(val)) {
-          results.push({
-            testName: comp['Test Name'],
-            value: val,
-            valueStr: comp['Result'],
-            units: comp['Test Units'] || '',
-            range: comp['Range'] || '',
-            flag: comp['Abnormal Flag'] || '',
-          });
-        }
-      }
-      // Recurse into nested Components
+      addIfNumeric(comp);
       if (comp['Components']) extractFromComponents(comp['Components']);
     }
   }
 
   for (const code of rawResult['Ordered Codes']) {
-    if (code['Components']) extractFromComponents(code['Components']);
+    const components = code['Components'] || [];
+    if (Array.isArray(components) && components.length > 0) {
+      extractFromComponents(components);
+    } else {
+      // Standalone test at panel level
+      addIfNumeric(code);
+    }
   }
   return results;
 }
@@ -66,17 +79,36 @@ export async function GET(request: NextRequest) {
   try {
     await requireApiUser(request, 'read');
     const status = request.nextUrl.searchParams.get('status') || 'pending';
+    const severity = request.nextUrl.searchParams.get('severity'); // optional: 'critical', 'high', 'moderate'
 
-    const alerts = await query<any>(
-      `SELECT * FROM critical_lab_alerts
-       WHERE status = $1
-       ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 ELSE 3 END,
-                created_at DESC
-       LIMIT 50`,
-      [status]
-    );
+    // FIX(2026-05-05): Support severity filter so Today page can show only critical-level alerts
+    const alerts = severity
+      ? await query<any>(
+          `SELECT * FROM critical_lab_alerts
+           WHERE status = $1 AND severity = $2
+           ORDER BY created_at DESC
+           LIMIT 50`,
+          [status, severity]
+        )
+      : await query<any>(
+          `SELECT * FROM critical_lab_alerts
+           WHERE status = $1
+           ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
+                    created_at DESC
+           LIMIT 50`,
+          [status]
+        );
 
-    return NextResponse.json({ success: true, alerts });
+    return NextResponse.json({
+      success: true,
+      alerts: (alerts || []).map((a: any) => ({
+        ...a,
+        // FIX(2026-04-15): pgTimestampToUTCISO so iPad renders Arizona time correctly.
+        created_at: pgTimestampToUTCISO(a.created_at),
+        result_received_at: pgTimestampToUTCISO(a.result_received_at),
+        approved_at: pgTimestampToUTCISO(a.approved_at),
+      })),
+    });
   } catch (error: any) {
     if (error?.status === 401) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     console.error('[Critical Labs] GET error:', error);
@@ -91,10 +123,10 @@ export async function POST(request: NextRequest) {
 
     // Get recently approved labs that haven't been scanned yet
     const recentLabs = await query<any>(
-      `SELECT lrq.id, lrq.patient_name, lrq.raw_result, lrq.healthie_patient_id,
+      `SELECT lrq.id, lrq.patient_name, lrq.raw_result, lrq.healthie_id,
               p.patient_id
        FROM lab_review_queue lrq
-       LEFT JOIN patients p ON p.healthie_client_id = lrq.healthie_patient_id
+       LEFT JOIN patients p ON p.healthie_client_id = lrq.healthie_id
        WHERE lrq.status = 'approved'
          AND lrq.approved_at >= NOW() - INTERVAL '7 days'
          AND lrq.id NOT IN (SELECT DISTINCT lab_queue_id FROM critical_lab_alerts WHERE lab_queue_id IS NOT NULL)
@@ -121,7 +153,7 @@ export async function POST(request: NextRequest) {
             `INSERT INTO critical_lab_alerts
              (lab_queue_id, patient_id, patient_name, test_name, test_value, test_units, reference_range, abnormal_flag, severity)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             ON CONFLICT DO NOTHING`,
+             ON CONFLICT (lab_queue_id, test_name) DO NOTHING`,
             [lab.id, lab.patient_id || null, lab.patient_name, val.testName, val.valueStr, val.units, val.range, val.flag, severity]
           );
           alertsCreated++;

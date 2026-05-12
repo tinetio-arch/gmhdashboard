@@ -24,6 +24,7 @@ import { requireApiUser } from '@/lib/auth';
 import { query, getPool } from '@/lib/db';
 import Stripe from 'stripe';
 import { resolvePatientId } from '@/lib/ipad-patient-resolver';
+import { SUPPLY_KIT_SKU } from '@/lib/peptideCategories';
 
 export const maxDuration = 30;
 
@@ -134,14 +135,44 @@ export async function POST(request: NextRequest) {
   try {
     const user = await requireApiUser(request, 'write');
     const body = await request.json();
-    const { patient_id, items, shipping_method = 'priority' } = body as {
+    const { patient_id, items, shipping_method = 'priority', idempotency_key } = body as {
       patient_id: string;
       items: ShipOrderItem[];
       shipping_method?: 'priority' | 'express';
+      idempotency_key?: string;
     };
 
     if (!patient_id || !items?.length) {
       return NextResponse.json({ error: 'patient_id and items are required' }, { status: 400 });
+    }
+
+    // FIX(2026-04-15): idempotency — if the iPad retried with the same key, return the
+    // prior result instead of charging again. Coby Cook case: response was lost in transit
+    // last time and the cart didn't clear; staff retry would have double-charged.
+    if (idempotency_key) {
+      const [prior] = await query<any>(
+        `SELECT transaction_id, amount, stripe_charge_id, stripe_customer_id, status,
+                receipt_number, healthie_document_id, description, created_at
+         FROM payment_transactions WHERE idempotency_key = $1 LIMIT 1`,
+        [idempotency_key]
+      );
+      if (prior && prior.status === 'succeeded') {
+        console.log(`[Ship Order] Idempotency replay: returning prior transaction ${prior.transaction_id} for key ${idempotency_key}`);
+        return NextResponse.json({
+          success: true,
+          replayed: true,
+          charge: {
+            id: prior.stripe_charge_id,
+            amount: parseFloat(prior.amount),
+            status: 'succeeded',
+            card: { brand: null, last4: null },
+          },
+          woocommerce_order: null,
+          shipping: null,
+          dispense_ids: [],
+          message: 'This order was already processed (idempotent replay).',
+        });
+      }
     }
 
     // FIX(2026-04-07): Resolve patient_id — may be UUID or Healthie numeric ID
@@ -204,13 +235,14 @@ export async function POST(request: NextRequest) {
     // Step 4: Charge via Direct Stripe
     const description = items.map(i => `${i.name} x${i.quantity}`).join(', ');
 
-    const paymentIntent = await stripe.paymentIntents.create({
+    // Pass idempotency_key to Stripe ONLY when provided — empty {} trips SDK "Unknown arguments"
+    const shipPaymentParams = {
       amount: totalCents,
-      currency: 'usd',
+      currency: 'usd' as const,
       customer: patient.stripe_customer_id,
       payment_method: paymentMethod.id,
       confirm: true,
-      automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
+      automatic_payment_methods: { enabled: true, allow_redirects: 'never' as const },
       description: 'NOWOptimal Service', // Sanitized for Stripe receipt
       metadata: {
         patient_id: resolvedId,
@@ -218,7 +250,10 @@ export async function POST(request: NextRequest) {
         source: 'ipad_ship_to_patient',
         items: description,
       },
-    });
+    };
+    const paymentIntent = idempotency_key
+      ? await stripe.paymentIntents.create(shipPaymentParams, { idempotencyKey: `ship-order:${idempotency_key}` })
+      : await stripe.paymentIntents.create(shipPaymentParams);
 
     if (paymentIntent.status !== 'succeeded') {
       return NextResponse.json({
@@ -264,13 +299,27 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Step 5b: Log payment transaction
+    // Step 5b: Log payment transaction (with idempotency_key for replay safety)
     await query(
       `INSERT INTO payment_transactions
-       (patient_id, amount, description, stripe_account, stripe_charge_id, stripe_customer_id, status, created_at, receipt_number, healthie_document_id)
-       VALUES ($1, $2, $3, 'direct', $4, $5, 'succeeded', NOW(), $6, $7)`,
-      [resolvedId, total, `Ship-to-patient: ${description}`, paymentIntent.id, patient.stripe_customer_id, receiptNumber, healthieDocumentId]
+       (patient_id, amount, description, stripe_account, stripe_charge_id, stripe_customer_id, status, created_at, receipt_number, healthie_document_id, idempotency_key)
+       VALUES ($1, $2, $3, 'direct', $4, $5, 'succeeded', NOW(), $6, $7, $8)
+       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
+      [resolvedId, total, `Ship-to-patient: ${description}`, paymentIntent.id, patient.stripe_customer_id, receiptNumber, healthieDocumentId, idempotency_key || null]
     );
+
+    // FIX(2026-04-22): Clear billing cart SERVER-SIDE after successful charge.
+    // The ship flow uses an in-memory _shipCart, but there may also be items in the
+    // DB-backed billing cart for the same patient. Clear both to prevent confusion.
+    try {
+        await query(
+            'DELETE FROM patient_billing_cart WHERE patient_id = $1 OR patient_id = $2',
+            [resolvedId, patient_id]
+        );
+        console.log(`[Ship Order] Cleared billing cart for patient ${resolvedId} after successful charge`);
+    } catch (cartClearErr) {
+        console.error('[Ship Order] Failed to clear billing cart (non-blocking):', cartClearErr);
+    }
 
     // Step 6: Create WooCommerce order (for ShipStation pickup)
     const nameParts = (patient.full_name || '').split(' ');
@@ -293,21 +342,55 @@ export async function POST(request: NextRequest) {
       paymentIntent.id,
     );
 
+    // FIX(2026-04-22): Store WC order ID in payment_transactions so refunds can cancel it.
+    // Previously the WC order ID was only returned to the iPad UI and never persisted.
+    if (wooOrder?.orderId) {
+        await query(
+            `UPDATE payment_transactions SET woocommerce_order_id = $1
+             WHERE stripe_charge_id = $2 AND woocommerce_order_id IS NULL`,
+            [wooOrder.orderId, paymentIntent.id]
+        ).catch((err: any) => console.error('[Ship Order] Failed to store WC order ID:', err.message));
+    }
+
     // Step 7: Create peptide dispenses
-    const dispenseIds: number[] = [];
+    // FIX(2026-04-21): column is `sale_id` (UUID) not `dispense_id` — the wrong
+    // name here caused the INSERT to throw AFTER Stripe charged, which made
+    // the iPad show an error and staff retry → duplicate charge (Diane Anderson
+    // incident 2026-04-20: two $549 charges 17s apart with different
+    // client-generated idempotency keys).
+    const dispenseIds: string[] = [];
     const pool = getPool();
     for (const item of items) {
       for (let i = 0; i < item.quantity; i++) {
-        const result = await pool.query(
+        const result = await pool.query<{ sale_id: string }>(
           `INSERT INTO peptide_dispenses
            (patient_name, sale_date, status, paid, amount_charged, stripe_payment_intent_id, notes)
            VALUES ($1, CURRENT_DATE, 'Shipped', true, $2, $3, $4)
-           RETURNING dispense_id`,
+           RETURNING sale_id`,
           [patient.full_name, item.price, paymentIntent.id, `Shipped via ABX TAC - ${item.name} (${item.sku})`]
         );
         if (result.rows[0]) {
-          dispenseIds.push(result.rows[0].dispense_id);
+          dispenseIds.push(result.rows[0].sale_id);
         }
+      }
+    }
+
+    // If cart contains Supply Kit, create staff task for assembly
+    if (items.some((i: any) => i.sku === SUPPLY_KIT_SKU)) {
+      try {
+        const addr = patient.address_line1 ? `${patient.address_line1}, ${patient.city}, ${patient.state} ${patient.postal_code}` : 'See patient chart';
+        await query(
+          `INSERT INTO staff_tasks (title, description, priority, assigned_to, assigned_to_name, created_by, created_by_name)
+           VALUES ($1, $2, 'high', 'all', 'All Staff', $3, $4)`,
+          [
+            `Assemble Supply Kit for ${patient.full_name}`,
+            `Ship to: ${addr}\nOrder: ${wooOrder?.orderNumber || 'pending'}\nStripe: ${paymentIntent.id}`,
+            (user as any).email || 'staff',
+            (user as any).display_name || 'iPad Staff',
+          ]
+        );
+      } catch (taskErr) {
+        console.error('[Ship Order] Supply Kit task creation failed:', taskErr);
       }
     }
 
@@ -346,6 +429,6 @@ export async function POST(request: NextRequest) {
       }, { status: 402 });
     }
 
-    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

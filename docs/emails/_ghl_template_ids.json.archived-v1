@@ -1,0 +1,37 @@
+[
+  {
+    "slug": "booking-confirmation",
+    "name": "ABXTAC \u2014 Booking Confirmation",
+    "subject": "Your ABX TAC Consultation is Confirmed",
+    "id": "69e57b10fd6521a9fbefac96",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57b10fd6521a9fbefac96%2Findex.html?alt=media&token=2418a3c9-b44e-4a7d-a3c8-423e54f7bde7"
+  },
+  {
+    "slug": "appointment-reminder",
+    "name": "ABXTAC \u2014 Appointment Reminder (24h)",
+    "subject": "Your ABX TAC Consultation is Tomorrow",
+    "id": "69e57b11f595312d3333f28e",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57b11f595312d3333f28e%2Findex.html?alt=media&token=e52237c4-c536-43ce-8116-a327093afda2"
+  },
+  {
+    "slug": "cancellation",
+    "name": "ABXTAC \u2014 Cancellation",
+    "subject": "Your ABX TAC Appointment Has Been Cancelled",
+    "id": "69e57b122f2397505161740e",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57b122f2397505161740e%2Findex.html?alt=media&token=063404c6-360f-4548-93e5-f80ab0295063"
+  },
+  {
+    "slug": "reschedule",
+    "name": "ABXTAC \u2014 Reschedule",
+    "subject": "Your ABX TAC Appointment Has Been Rescheduled",
+    "id": "69e57b155bda09cbe702e5f3",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57b155bda09cbe702e5f3%2Findex.html?alt=media&token=85f29d4f-5d41-4966-ab54-d230f4e71cd3"
+  },
+  {
+    "slug": "post-visit",
+    "name": "ABXTAC \u2014 Post-Visit Welcome",
+    "subject": "Welcome to ABX TAC \u2014 Your Next Steps",
+    "id": "69e57b1659494aabd330a2e3",
+    "previewUrl": "https://firebasestorage.googleapis.com/v0/b/highlevel-backend.appspot.com/o/location%2FOyC2MESFDP3Pxm10tECz%2Femails%2F69e57b1659494aabd330a2e3%2Findex.html?alt=media&token=69a3bec3-159f-4fd0-a505-6ec9989aaa48"
+  }
+]

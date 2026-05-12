@@ -412,10 +412,10 @@ export async function createPeptideDispense(data: {
 }): Promise<PeptideDispense> {
   const [dispense] = await query<PeptideDispense>(`
     INSERT INTO peptide_dispenses (
-      product_id, quantity, patient_name, patient_dob, sale_date, order_date, received_date, 
+      product_id, quantity, patient_name, patient_dob, sale_date, order_date, received_date,
       status, education_complete, notes, paid
     )
-    VALUES ($1, $2, $3, $4, CURRENT_DATE, $5, $6, $7, $8, $9, $10)
+    VALUES ($1, $2, $3, $4, (NOW() AT TIME ZONE 'America/Phoenix')::date, $5, $6, $7, $8, $9, $10)
     RETURNING 
       sale_id as dispense_id,
       product_id,

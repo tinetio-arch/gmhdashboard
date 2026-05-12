@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { healthieGraphQL } from '@/lib/healthieApi';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
@@ -40,7 +41,7 @@ export async function GET(
             }
         };
 
-        const [recentDispenses, recentPeptides, paymentIssues, stagedDoses] = await Promise.all([
+        const [recentDispenses, recentPeptides, paymentIssues, stagedDoses, familyRelationships, familyReverseDependents] = await Promise.all([
             // Recent TRT dispenses (last 5)
             safeQuery('dispenses', `
         SELECT
@@ -106,6 +107,26 @@ export async function GET(
         WHERE patient_id = $1 AND status IN ('staged', 'pending')
         ORDER BY staged_for_date ASC
       `, [patientId]),
+
+            // Family: all relationships from junction table
+            safeQuery('family_relationships', `
+        SELECT r.relationship_type,
+               rp.patient_id::text, rp.full_name, rp.healthie_client_id, rp.dob::text
+        FROM patient_relationships r
+        JOIN patients rp ON rp.patient_id = r.related_patient_id
+        WHERE r.patient_id = $1
+        ORDER BY r.relationship_type, rp.full_name
+      `, [patientId]),
+
+            // Family: also find anyone who lists THIS patient as a parent (reverse lookup for dependents)
+            safeQuery('family_reverse_dependents', `
+        SELECT r.relationship_type,
+               rp.patient_id::text, rp.full_name, rp.healthie_client_id, rp.dob::text
+        FROM patient_relationships r
+        JOIN patients rp ON rp.patient_id = r.patient_id
+        WHERE r.related_patient_id = $1 AND r.relationship_type = 'parent'
+        ORDER BY rp.full_name
+      `, [patientId]),
         ]);
 
         // Avatar removed from this route — fetched by patient-chart if needed (saves 1-5s per request)
@@ -135,10 +156,15 @@ export async function GET(
                     gender: patient.gender,
                     phone_primary: patient.phone_primary,
                     email: patient.email,
-                    address_line_1: patient.address_line_1,
+                    // FIX(2026-04-22): Column names are address_line1/postal_code, not address_line_1/zip
+                    address_line_1: patient.address_line1,
+                    address_line1: patient.address_line1,
+                    address_line_2: patient.address_line2,
+                    address_line2: patient.address_line2,
                     city: patient.city,
                     state: patient.state,
-                    zip: patient.zip,
+                    zip: patient.postal_code,
+                    postal_code: patient.postal_code,
                     status_key: patient.status_key,
                     regimen: patient.regimen,
                     client_type_key: patient.client_type_key,
@@ -157,6 +183,38 @@ export async function GET(
                 recent_peptides: recentPeptides,
                 payment_issues: paymentIssues,
                 staged_doses: stagedDoses,
+                family: await (async () => {
+                    // Build family from junction table relationships
+                    const toMember = (r: any) => ({ patient_id: r.patient_id, full_name: r.full_name, healthie_client_id: r.healthie_client_id, dob: r.dob?.slice(0, 10) || null, avatar_url: null as string | null });
+                    const parents = (familyRelationships as any[]).filter((r: any) => r.relationship_type === 'parent').map(toMember);
+                    const spouses = (familyRelationships as any[]).filter((r: any) => r.relationship_type === 'spouse').map(toMember);
+                    const dependents = (familyReverseDependents as any[]).map(toMember);
+                    const others = (familyRelationships as any[]).filter((r: any) => !['parent', 'spouse'].includes(r.relationship_type)).map((r: any) => ({ ...toMember(r), relationship_type: r.relationship_type }));
+                    const allMembers = [...parents, ...spouses, ...dependents, ...others];
+                    // Fetch avatars from Healthie (best-effort)
+                    if (allMembers.length > 0) {
+                        try {
+                            const uniqueHids = [...new Set(allMembers.filter(m => m.healthie_client_id).map(m => m.healthie_client_id))];
+                            const avatarResults = await Promise.allSettled(
+                                uniqueHids.map(hid => healthieGraphQL<{ user: { avatar_url: string | null } }>(`query($id:ID){user(id:$id){avatar_url}}`, { id: hid }))
+                            );
+                            const avatarMap = new Map<string, string>();
+                            avatarResults.forEach((r, i) => {
+                                if (r.status === 'fulfilled' && r.value?.user?.avatar_url) {
+                                    avatarMap.set(uniqueHids[i], r.value.user.avatar_url);
+                                }
+                            });
+                            allMembers.forEach(m => {
+                                if (m.healthie_client_id && avatarMap.has(m.healthie_client_id)) {
+                                    const url = avatarMap.get(m.healthie_client_id)!;
+                                    // Filter out Healthie's default placeholder
+                                    if (url && !url.includes('missing.png')) m.avatar_url = url;
+                                }
+                            });
+                        } catch { /* best-effort */ }
+                    }
+                    return { parents, spouses, dependents, others };
+                })(),
                 summary: {
                     has_payment_issues: paymentIssues.length > 0,
                     total_outstanding: paymentIssues.reduce(

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { generateDocPdf } from '@/lib/pdf/docPdfGenerator';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 export const dynamic = 'force-dynamic';
 
@@ -96,7 +97,7 @@ export async function GET(request: NextRequest) {
 
         const pdfBuffer = await generateDocPdf({
             patientName,
-            patientDob: patientDob ? new Date(patientDob).toLocaleDateString() : null,
+            patientDob: patientDob ? formatDateUTC(patientDob) : null,
             visitDate,
             provider: row.provider_name || 'Phil Schafer, NP',
             docType: docType as any,

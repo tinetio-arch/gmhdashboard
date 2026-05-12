@@ -49,13 +49,32 @@ export async function GET(request: NextRequest) {
       LIMIT 1
     `, [healthieId]);
 
+    // FIX(2026-04-15): Also check if patient has ANY signed consent (for CartScreen gate).
+    // Previously only returned pending status — mobile cart couldn't tell if consent
+    // was signed via iPad staff flow.
+    const signed = await query<{ id: number; signed_at: string; document_id: string }>(`
+      SELECT pc.id, pc.signed_at, pc.document_id
+      FROM pending_peptide_consents pc
+      WHERE pc.status = 'signed'
+        AND (pc.healthie_id = $1
+             OR pc.patient_id = (SELECT patient_id FROM patients WHERE healthie_client_id = $1 LIMIT 1))
+      ORDER BY pc.signed_at DESC
+      LIMIT 1
+    `, [healthieId]);
+
     if (consents.length === 0) {
-      return NextResponse.json({ pending: false });
+      return NextResponse.json({
+        pending: false,
+        signed: signed.length > 0,
+        signed_at: signed[0]?.signed_at || null,
+      });
     }
 
     const consent = consents[0];
     return NextResponse.json({
       pending: true,
+      signed: signed.length > 0,
+      signed_at: signed[0]?.signed_at || null,
       consent_id: consent.id,
       items: consent.items,
       created_at: consent.created_at,
@@ -80,13 +99,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'consent_id required' }, { status: 400 });
     }
 
-    // Mark consent as signed
+    // Mark consent as signed — scoped to patient to prevent cross-patient tampering
     const updated = await query<{ id: number }>(
       `UPDATE pending_peptide_consents
        SET status = 'signed', signed_at = NOW(), document_id = $1
        WHERE id = $2 AND status = 'pending'
+         AND (healthie_id = $3 OR patient_id = (SELECT patient_id FROM patients WHERE healthie_client_id = $3 LIMIT 1))
        RETURNING id`,
-      [document_id || null, consent_id]
+      [document_id || null, consent_id, healthie_id]
     );
 
     if (updated.length === 0) {

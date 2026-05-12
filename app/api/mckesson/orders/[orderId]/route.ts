@@ -3,6 +3,7 @@ import {
   fetchMcKessonOrderById,
   refreshOrderStatus,
   getMcKessonEnvironment,
+  getMcKessonAccountId,
 } from '@/lib/mckesson';
 
 export const dynamic = 'force-dynamic';
@@ -24,7 +25,7 @@ export async function GET(
 
     const url = new URL(request.url);
     const shouldRefresh = url.searchParams.get('refresh') === 'true';
-    const accountId = url.searchParams.get('accountId');
+    const accountId = url.searchParams.get('accountId') || getMcKessonAccountId();
 
     let order = await fetchMcKessonOrderById(dbId);
     if (!order) {

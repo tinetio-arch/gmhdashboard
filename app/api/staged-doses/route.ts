@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query, getPool } from '@/lib/db';
 import {
     DEFAULT_TESTOSTERONE_PRESCRIBER,
@@ -7,9 +7,9 @@ import {
     DEFAULT_TESTOSTERONE_DEA_SCHEDULE
 } from '@/lib/testosterone';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
-        const user = await requireUser('read');
+        await requireApiUser(request, 'read');
 
         // Get all staged doses that haven't been dispensed yet
         const stagedDoses = await query<{
@@ -50,6 +50,9 @@ export async function GET() {
 
         return NextResponse.json({ stagedDoses });
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error fetching staged doses:', error);
         return NextResponse.json(
             { error: 'Failed to fetch staged doses' },
@@ -58,12 +61,12 @@ export async function GET() {
     }
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
     const pool = getPool();
     const client = await pool.connect();
 
     try {
-        const user = await requireUser('write');
+        const user = await requireApiUser(req, 'write');
         const body = await req.json();
 
         const {
@@ -83,7 +86,9 @@ export async function POST(req: Request) {
         // Calculate total ml needed
         const totalMl = (parseFloat(doseMl) + parseFloat(wasteMl || 0.1)) * parseInt(syringeCount);
 
-        // Find a vial with enough volume (30ml vials for Carrie Boyd)
+        // FIX(2026-04-22): Was hardcoded to LIKE '%30%' (Carrie Boyd only).
+        // Now finds ANY active controlled substance vial with enough volume (FEFO order).
+        // Works with both Carrie Boyd 30mL and TopRx 10mL vials.
         const vials = await client.query<{
             vial_id: string;
             external_id: string;
@@ -93,7 +98,7 @@ export async function POST(req: Request) {
         }>(`
       SELECT vial_id, external_id, remaining_volume_ml, dea_drug_name, dea_drug_code
       FROM vials
-      WHERE dea_drug_name LIKE '%30%'
+      WHERE controlled_substance = true
         AND status = 'Active'
         AND remaining_volume_ml::numeric >= $1
       ORDER BY expiration_date ASC NULLS LAST, external_id ASC
@@ -191,11 +196,15 @@ export async function POST(req: Request) {
             vial.external_id,
             stagedDate || new Date().toISOString().split('T')[0],
             stagedForDate,
-            user.userId,
-            user.name,
+            // FIX(2026-04-22): PublicUser shape is { user_id, email, role, display_name, ... }
+            // — not { userId, name }. Previously both columns wrote NULL, breaking the DEA
+            // audit trail for staged testosterone doses (Schedule III controlled substance).
+            user.user_id,
+            user.display_name || user.email || 'Unknown',
             notes || null,
             deaTx.rows[0].dea_tx_id
         ]);
+        // (user identity was written above — see FIX note on staged_by_user_id/_name params)
 
         await client.query('COMMIT');
 
@@ -208,6 +217,9 @@ export async function POST(req: Request) {
         });
     } catch (error) {
         await client.query('ROLLBACK');
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error creating staged dose:', error);
         return NextResponse.json(
             { error: 'Failed to create staged dose' },
@@ -218,12 +230,12 @@ export async function POST(req: Request) {
     }
 }
 
-export async function DELETE(req: Request) {
+export async function DELETE(req: NextRequest) {
     const pool = getPool();
     const client = await pool.connect();
 
     try {
-        await requireUser('write');
+        await requireApiUser(req, 'write');
         const { searchParams } = new URL(req.url);
         const stagedDoseId = searchParams.get('id');
 
@@ -313,6 +325,9 @@ export async function DELETE(req: Request) {
         return NextResponse.json({ success: true });
     } catch (error) {
         await client.query('ROLLBACK');
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error deleting staged dose:', error);
         return NextResponse.json(
             { error: 'Failed to delete staged dose' },

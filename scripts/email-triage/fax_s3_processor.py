@@ -55,7 +55,7 @@ FAX_TYPE_ROUTING = {
 
 # Gemini API for summarization
 GEMINI_API_KEY = os.environ.get('GOOGLE_AI_API_KEY', '')
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
 # Database config
 DB_CONFIG = {
@@ -93,19 +93,17 @@ class FaxS3Processor:
     
     def list_new_faxes(self) -> List[str]:
         """List unprocessed fax emails in S3"""
+        # FIX(2026-04-09): Was using MaxKeys=50 which missed faxes when bucket grew past 50+processed.
+        # Now paginates through ALL objects to find unprocessed ones.
         try:
-            response = self.s3.list_objects_v2(
-                Bucket=S3_BUCKET,
-                Prefix=S3_PREFIX,
-                MaxKeys=50
-            )
-            
             keys = []
-            for obj in response.get('Contents', []):
-                key = obj['Key']
-                if key not in self.processed_keys and not key.endswith('/'):
-                    keys.append(key)
-            
+            paginator = self.s3.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=S3_PREFIX):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    if key not in self.processed_keys and not key.endswith('/'):
+                        keys.append(key)
+
             return keys
         except Exception as e:
             print(f"❌ Error listing S3 objects: {e}")
@@ -475,9 +473,25 @@ Date: {email_data['date']}
             pdf_s3_key=pdf_s3_key
         )
         
-        # Post to Google Chat with full content and audio link
-        success = self.post_to_google_chat(ai_result, email_data, attachment_url, all_text, audio_url)
-        
+        # FIX(2026-04-09): Skip Google Chat for backlog processing to avoid alert spam.
+        # Only alert for faxes received in the last 2 hours (fresh faxes).
+        from datetime import datetime, timedelta
+        is_fresh = True
+        try:
+            received_str = email_data.get('date', '')
+            if received_str:
+                from email.utils import parsedate_to_datetime
+                received_dt = parsedate_to_datetime(received_str)
+                is_fresh = (datetime.now(received_dt.tzinfo) - received_dt) < timedelta(hours=2)
+        except:
+            is_fresh = True  # If we can't parse, alert anyway (safer)
+
+        if is_fresh:
+            success = self.post_to_google_chat(ai_result, email_data, attachment_url, all_text, audio_url)
+        else:
+            print(f"   ⏭️ Skipping Google Chat alert (backlog fax)")
+            success = True
+
         return success
     
     def insert_into_fax_queue(self, s3_key: str, email_data: Dict, ai_result: Dict, full_content: str, pdf_s3_key: Optional[str] = None):

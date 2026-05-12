@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireApiUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import {
   placeAndRecordOrder,
   fetchMcKessonOrders,
   isMcKessonConfigured,
   getMcKessonEnvironment,
+  getMcKessonAccountId,
+  getMcKessonShipToAccountId,
 } from '@/lib/mckesson';
 
 export const dynamic = 'force-dynamic';
@@ -37,19 +39,25 @@ export async function GET(request: NextRequest) {
  * }
  */
 export async function POST(request: NextRequest) {
+  try { await requireApiUser(request, 'write'); }
+  catch (error) {
+    if (error instanceof UnauthorizedError)
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    throw error;
+  }
   try {
-    await requireApiUser(request, 'write');
-
     if (!isMcKessonConfigured()) {
       return NextResponse.json({ error: 'McKesson not configured' }, { status: 503 });
     }
 
     const body = await request.json();
-    const { accountId, shipToAccountId, poNumber, items } = body;
+    const accountId = body.accountId || getMcKessonAccountId();
+    const shipToAccountId = body.shipToAccountId || getMcKessonShipToAccountId();
+    const { poNumber, items } = body;
 
     if (!accountId || !shipToAccountId || !Array.isArray(items) || items.length === 0) {
       return NextResponse.json(
-        { error: 'accountId, shipToAccountId, and items[] are required' },
+        { error: 'accountId, shipToAccountId (or env defaults), and items[] are required' },
         { status: 400 }
       );
     }

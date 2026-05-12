@@ -17,6 +17,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { getPatientAccessStatus } from '@/lib/appAccessControl';
 import PDFDocument from 'pdfkit';
 
 export const maxDuration = 30;
@@ -269,6 +270,18 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({
                 error: 'healthie_id, patient_name, peptides, and signature_text are required',
             }, { status: 400 });
+        }
+
+        // FIX(2026-04-22): Block consent for deactivated/revoked patients
+        const [consentPatient] = await query<any>(
+            `SELECT patient_id FROM patients WHERE healthie_client_id = $1 LIMIT 1`,
+            [healthie_id]
+        );
+        if (consentPatient) {
+            const accessCheck = await getPatientAccessStatus(consentPatient.patient_id);
+            if (accessCheck.status === 'revoked' || accessCheck.status === 'suspended') {
+                return NextResponse.json({ error: 'Account access restricted. Contact the clinic.' }, { status: 403 });
+            }
         }
 
         // 1. Generate the consent PDF with logo and signature

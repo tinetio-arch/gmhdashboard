@@ -100,6 +100,24 @@ export async function sendMessage(
         const data = await response.json();
 
         if (!response.ok || !data.ok) {
+            // FIX(2026-04-22): Markdown parse failures on patient names containing
+            // `_` or `*` were filling the error log. Auto-retry once with parse_mode
+            // stripped so the message still lands (unformatted) instead of being lost.
+            const desc = String(data?.description || '');
+            if (options?.parseMode === 'Markdown' && /parse entities|byte offset/i.test(desc)) {
+                console.warn('[Telegram] Markdown parse failed, retrying as plain text:', desc);
+                const plainBody = { ...body };
+                delete plainBody.parse_mode;
+                const retryResp = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(plainBody),
+                });
+                const retryData = await retryResp.json();
+                if (retryResp.ok && retryData.ok) return { ok: true, result: retryData.result };
+                console.error('[Telegram] Plain-text retry also failed:', retryData);
+                return { ok: false, error: retryData.description || 'Unknown error' };
+            }
             console.error('[Telegram] Failed to send message:', data);
             return { ok: false, error: data.description || 'Unknown error' };
         }

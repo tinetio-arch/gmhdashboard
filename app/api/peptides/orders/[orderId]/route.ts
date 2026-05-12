@@ -36,7 +36,7 @@ export async function PATCH(
             return NextResponse.json({ error: 'Order not found' }, { status: 404 });
         }
 
-        console.log(`[peptides] Order ${params.orderId} edited by ${user.name || user.email}:`, patch);
+        console.log(`[peptides] Order ${params.orderId} edited by ${user.display_name || user.email}:`, patch);
         return NextResponse.json(updated);
     } catch (error: any) {
         if (error?.name === 'UnauthorizedError') {

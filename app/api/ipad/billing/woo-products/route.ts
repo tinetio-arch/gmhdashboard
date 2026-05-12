@@ -3,8 +3,8 @@
  *
  * Fetches live product catalog from ABXTac WooCommerce store.
  * Applies tier-based discounts based on patient's Healthie group:
- *   - NOWMensHealth.Care, NOWPrimary.Care, NOWLongevity.Care → 20% off
- *   - ABXTAC with package → tier-based discount (20/30/40%)
+ *   - NOWMensHealth.Care, NOWPrimary.Care, NOWLongevity.Care → 20% off (optimize tier)
+ *   - ABXTAC with provider-verified tier → 10/20/30% (heal/optimize/thrive)
  *   - All others → retail price
  *
  * GET /api/ipad/billing/woo-products?patient_id=xxx&q=bpc
@@ -13,8 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
-import { resolvePatientId } from '@/lib/ipad-patient-resolver';
-
+import { THERAPEUTIC_CATEGORIES, BIOBOX_SLUG, resolveTherapeuticCategory } from '@/lib/peptideCategories';
 export const dynamic = 'force-dynamic';
 
 const WC_URL = process.env.ABXTAC_WC_URL || 'https://abxtac.com';
@@ -40,29 +39,39 @@ interface WooProduct {
   categories: Array<{ id: number; name: string; slug: string }>;
 }
 
-/**
- * Get patient's discount rate based on their client type
- *
- * Discount rules:
- *   - NOWMensHealth.Care, NOWPrimary.Care, NOWLongevity.Care → 20% off
- *   - ABXTAC → 20% off (TODO: tier-based when patient-to-package schema supports it)
- *   - All others → retail price
- */
-async function getPatientDiscount(patientId: string): Promise<{ rate: number; reason: string }> {
-  const [patient] = await query<{
-    client_type_key: string | null;
-  }>('SELECT client_type_key FROM patients WHERE patient_id = $1', [patientId]);
+const ADMIN_EMAILS = new Set(['admin@nowoptimal.com', 'admin@granitemountainhealth.com', 'philschafer7@gmail.com']);
+const AT_COST_HANDLING_FEE = 10; // $10 flat handling on top of wholesale
 
-  if (!patient) return { rate: 0, reason: 'retail' };
+async function getWholesalePrices(): Promise<Record<string, number>> {
+  try {
+    const rows = await query<{ sku: string; wholesale_cost: number }>(
+      `SELECT sku, wholesale_cost FROM ypb_available_products WHERE wholesale_cost IS NOT NULL`
+    );
+    const map: Record<string, number> = {};
+    for (const r of rows) {
+      map[r.sku] = Number(r.wholesale_cost) + AT_COST_HANDLING_FEE;
+    }
+    return map;
+  } catch { return {}; }
+}
 
-  const clientType = patient.client_type_key?.toLowerCase() || '';
-
-  // NOW brand members + ABXTAC get 20% off
-  if (['nowmenshealth', 'nowprimarycare', 'nowlongevity', 'abxtac'].includes(clientType)) {
-    return { rate: 0.20, reason: 'member_discount' };
+function extractBiomarkers(html: string): string[] {
+  const markers: string[] = [];
+  const liRegex = /<li>(.*?)<\/li>/gi;
+  let match;
+  let inBiomarkers = false;
+  const lines = html.split('\n');
+  for (const line of lines) {
+    if (line.includes('Biomarkers Included')) inBiomarkers = true;
+    if (inBiomarkers && line.includes('How BioBox Works')) break;
+    if (inBiomarkers) {
+      while ((match = liRegex.exec(line)) !== null) {
+        const text = match[1].replace(/<[^>]*>/g, '').trim();
+        if (text) markers.push(text);
+      }
+    }
   }
-
-  return { rate: 0, reason: 'retail' };
+  return markers;
 }
 
 /**
@@ -84,13 +93,8 @@ async function fetchWooProducts(): Promise<WooProduct[]> {
   // Paginate through all products
   while (true) {
     const response = await fetch(
-      `${WC_URL}/wp-json/wc/v3/products?per_page=${perPage}&page=${page}&status=publish`,
-      {
-        headers: {
-          'Authorization': 'Basic ' + Buffer.from(`${WC_KEY}:${WC_SECRET}`).toString('base64'),
-        },
-        cache: 'no-store',
-      }
+      `${WC_URL}/wp-json/wc/v3/products?per_page=${perPage}&page=${page}&status=publish&consumer_key=${WC_KEY}&consumer_secret=${WC_SECRET}`,
+      { cache: 'no-store' }
     );
 
     if (!response.ok) {
@@ -101,7 +105,7 @@ async function fetchWooProducts(): Promise<WooProduct[]> {
     allProducts.push(...products);
 
     const totalPages = parseInt(response.headers.get('x-wp-totalpages') || '1');
-    if (page >= totalPages) break;
+    if (page >= totalPages || page >= 10) break;
     page++;
   }
 
@@ -114,13 +118,22 @@ async function fetchWooProducts(): Promise<WooProduct[]> {
 
 export async function GET(request: NextRequest) {
   try {
-    await requireApiUser(request, 'read');
+    const user = await requireApiUser(request, 'read');
+    const isAdmin = ADMIN_EMAILS.has(user.email?.toLowerCase() || '');
 
     const searchQuery = (request.nextUrl.searchParams.get('q') || '').toLowerCase().trim();
     const rawPatientId = request.nextUrl.searchParams.get('patient_id');
 
     // Fetch products from WooCommerce
-    const products = await fetchWooProducts();
+    const allProducts = await fetchWooProducts();
+
+    // New products (YPB.250+) are admin-only until approved for general use
+    const products = allProducts.filter(p => {
+      if (!p.sku?.startsWith('YPB.')) return true; // non-YPB (e.g. BioBox) always visible
+      const skuNum = parseInt(p.sku.split('.')[1] || '0');
+      if (skuNum >= 250) return isAdmin;
+      return true;
+    });
 
     // Filter by search query if provided
     let filtered = products;
@@ -133,48 +146,66 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Get patient discount if patient_id provided
-    let discount = { rate: 0, reason: 'retail' };
-    if (rawPatientId) {
-      const resolvedId = await resolvePatientId(rawPatientId);
-      if (resolvedId) {
-        discount = await getPatientDiscount(resolvedId);
-      }
-    }
+    // Admin defaults to at-cost; other staff default to retail with tier dropdown
+    const discount = isAdmin
+      ? { rate: 0, reason: 'at_cost' }
+      : { rate: 0, reason: 'retail' };
+
+    // Fetch wholesale prices for at-cost tier calculations
+    const wholesalePrices = await getWholesalePrices();
 
     // Map to response format with pricing
     const result = filtered.map(p => {
       const retailPrice = parseFloat(p.price) || 0;
-      const discountedPrice = discount.rate > 0
-        ? Math.round(retailPrice * (1 - discount.rate) * 100) / 100
-        : retailPrice;
+
+      const categorySlugs = (p.categories || []).map((c: any) => c.slug);
+      const isBioBox = categorySlugs.includes(BIOBOX_SLUG) || p.sku?.startsWith('B0');
+      const section = isBioBox ? 'BioBox Labs' : 'Peptides';
+      const therapeuticCat = isBioBox ? null : resolveTherapeuticCategory(categorySlugs);
+
+      const atCostPrice = wholesalePrices[p.sku] || null;
+      const displayPrice = (isAdmin && atCostPrice != null) ? atCostPrice : retailPrice;
 
       return {
         id: p.id,
         name: p.name,
         sku: p.sku,
         retail_price: retailPrice,
-        price: discountedPrice,
-        discount_rate: discount.rate,
-        discount_reason: discount.reason,
+        price: displayPrice,
         stock_quantity: p.stock_quantity,
         stock_status: p.stock_status,
         image_url: p.images?.[0]?.src || null,
-        // Use 3D vial mockup if available
-        vial_image_url: p.sku ? `https://abxtac.com/3d-vials/${p.sku}_mockup.png` : null,
-        category: p.categories?.[0]?.name || 'Uncategorized',
+        vial_image_url: (!isBioBox && p.sku) ? `https://abxtac.com/3d-vials/${p.sku}_mockup.png` : null,
+        category: therapeuticCat?.label || p.categories?.[0]?.name || 'Uncategorized',
+        therapeutic_category: therapeuticCat ? { slug: therapeuticCat.slug, label: therapeuticCat.label, shortLabel: therapeuticCat.shortLabel, color: therapeuticCat.color } : null,
+        section,
         description: p.short_description?.replace(/<[^>]*>/g, '').trim() || '',
+        biomarkers: isBioBox ? extractBiomarkers(p.description || '') : null,
+        at_cost_price: wholesalePrices[p.sku] || null,
       };
     });
+
+    // Build list of categories that have products (for filter tabs)
+    const catCounts = new Map<string, number>();
+    for (const p of result) {
+      const slug = p.therapeutic_category?.slug || (p.section === 'BioBox Labs' ? 'biobox' : null);
+      if (slug) catCounts.set(slug, (catCounts.get(slug) || 0) + 1);
+    }
+    const categories_available = THERAPEUTIC_CATEGORIES
+      .filter(c => catCounts.has(c.slug))
+      .map(c => ({ slug: c.slug, label: c.shortLabel, color: c.color, count: catCounts.get(c.slug) || 0 }));
+    // Add BioBox if present
+    if (catCounts.has('biobox')) {
+      categories_available.push({ slug: 'biobox', label: 'BioBox', color: '#10b981', count: catCounts.get('biobox') || 0 });
+    }
 
     return NextResponse.json({
       success: true,
       products: result,
-      discount: {
-        rate: discount.rate,
-        reason: discount.reason,
-        label: discount.rate > 0 ? `${Math.round(discount.rate * 100)}% off` : 'Retail',
-      },
+      categories_available,
+      discount: isAdmin
+        ? { rate: 0, reason: 'at_cost', label: 'At Cost (wholesale + $10)' }
+        : { rate: 0, reason: 'retail', label: 'Retail' },
       shipping: {
         flat_rate: 20,
         free_threshold: 400,

@@ -85,13 +85,39 @@ export async function GET(
     return NextResponse.json({ error: 'No PDF available' }, { status: 404 });
 }
 
+// FIX(2026-05-05): Handle both panel-with-components AND standalone tests at panel level
+function renderComponentRows(components: any[]): string {
+    let html = '';
+    for (const comp of components) {
+        if (comp.Components && Array.isArray(comp.Components) && comp.Components.length > 0) {
+            // Sub-panel (e.g. CBC within MALE PRE REQUIRED) — recurse
+            html += renderComponentRows(comp.Components);
+        } else if (comp['Test Name'] && comp['Result']) {
+            const flag = comp['Abnormal Flag'] || 'N';
+            const flagColor = flag === 'H' || flag === 'HH' ? '#dc2626' :
+                flag === 'L' || flag === 'LL' ? '#2563eb' : '#059669';
+            html += `<tr>
+                <td style="border:1px solid #ddd;padding:8px;">${comp['Test Name'] || ''}</td>
+                <td style="border:1px solid #ddd;padding:8px;font-weight:bold;">${comp['Result'] || ''}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${comp['Test Units'] || ''}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${comp['Range'] || ''}</td>
+                <td style="border:1px solid #ddd;padding:8px;color:${flagColor};font-weight:bold;">${flag}</td>
+            </tr>`;
+        }
+    }
+    return html;
+}
+
 function generateLabSummary(item: any): string {
     const raw = item.raw_result || {};
     const orderedCodes = raw['Ordered Codes'] || [];
 
     let testsHtml = '';
     for (const panel of orderedCodes) {
-        testsHtml += `<h3>${panel['Profile Name'] || 'Unknown Panel'}</h3>`;
+        const components = panel['Components'] || [];
+        const panelName = panel['Profile Name'] || panel['Test Name'] || 'Unknown Panel';
+
+        testsHtml += `<h3>${panelName}</h3>`;
         testsHtml += '<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;">';
         testsHtml += '<tr><th style="border:1px solid #ddd;padding:8px;text-align:left;">Test</th>';
         testsHtml += '<th style="border:1px solid #ddd;padding:8px;text-align:left;">Result</th>';
@@ -99,15 +125,19 @@ function generateLabSummary(item: any): string {
         testsHtml += '<th style="border:1px solid #ddd;padding:8px;text-align:left;">Range</th>';
         testsHtml += '<th style="border:1px solid #ddd;padding:8px;text-align:left;">Flag</th></tr>';
 
-        for (const comp of (panel['Components'] || [])) {
-            const flag = comp['Abnormal Flag'] || 'N';
+        if (components.length > 0) {
+            // Structure 1: Panel with nested components
+            testsHtml += renderComponentRows(components);
+        } else if (panel['Test Name'] && panel['Result']) {
+            // Structure 2: Standalone test at panel level (no Components array)
+            const flag = panel['Abnormal Flag'] || 'N';
             const flagColor = flag === 'H' || flag === 'HH' ? '#dc2626' :
                 flag === 'L' || flag === 'LL' ? '#2563eb' : '#059669';
             testsHtml += `<tr>
-                <td style="border:1px solid #ddd;padding:8px;">${comp['Test Name'] || ''}</td>
-                <td style="border:1px solid #ddd;padding:8px;font-weight:bold;">${comp['Result'] || ''}</td>
-                <td style="border:1px solid #ddd;padding:8px;">${comp['Test Units'] || ''}</td>
-                <td style="border:1px solid #ddd;padding:8px;">${comp['Range'] || ''}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${panel['Test Name']}</td>
+                <td style="border:1px solid #ddd;padding:8px;font-weight:bold;">${panel['Result']}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${panel['Test Units'] || ''}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${panel['Range'] || ''}</td>
                 <td style="border:1px solid #ddd;padding:8px;color:${flagColor};font-weight:bold;">${flag}</td>
             </tr>`;
         }

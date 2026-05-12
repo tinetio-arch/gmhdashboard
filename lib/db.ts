@@ -63,3 +63,32 @@ export async function query<T extends QueryResultRow = QueryResultRow>(text: str
     client.release();
   }
 }
+
+/**
+ * Convert a Postgres `timestamp without time zone` value (which webhook code
+ * stores as UTC wall-clock) into an unambiguous UTC ISO string.
+ *
+ * Why: bare strings like "2026-04-15 15:57:18" are parsed by browsers as LOCAL
+ * time. On an Arizona iPad that means UTC values render shifted +7h
+ * (e.g. 8:57 AM AZ rendered as 3:57 PM AZ — Apr 15 2026 incident with
+ * Luke McCarthy's text). pg-node also misparses these (using the Node process
+ * TZ — EC2 is MST). This helper handles both runtime shapes (string and Date).
+ *
+ * Use any time you SELECT a `timestamp without time zone` column and ship it
+ * to the client. Date columns are fine as-is (db.ts string override below).
+ */
+export function pgTimestampToUTCISO(v: unknown): string | null {
+  if (!v) return null;
+  if (v instanceof Date) {
+    return new Date(v.getTime() - v.getTimezoneOffset() * 60_000).toISOString();
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+  const hasTz = /(Z|[+-]\d{2}:?\d{2})$/.test(s);
+  return new Date(hasTz ? s : s.replace(' ', 'T') + 'Z').toISOString();
+}
+
+export function pgTimestampToUTCMs(v: unknown): number | null {
+  const iso = pgTimestampToUTCISO(v);
+  return iso ? Date.parse(iso) : null;
+}

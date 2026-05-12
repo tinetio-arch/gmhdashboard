@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>Your ABXTAC Consultation is Booked — Here's Your Login</title>
+<style type="text/css">
+  body, table, td, a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+  table, td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+  img { -ms-interpolation-mode:bicubic; border:0; outline:none; text-decoration:none; display:block; }
+  body { margin:0 !important; padding:0 !important; width:100% !important; background:#0a0a0a; font-family:'Inter',-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif; color:#1f2937; }
+  a { color:#22c55e; text-decoration:none; }
+  h1, h2, h3 { margin:0; font-weight:700; color:#0a0a0a; letter-spacing:-0.01em; }
+  p { margin:0 0 14px 0; font-size:16px; line-height:1.6; color:#1f2937; }
+  .eyebrow { font-family:'Rajdhani','Inter',sans-serif; font-weight:700; letter-spacing:0.28em; text-transform:uppercase; }
+  @media only screen and (max-width:620px) {
+    .container { width:100% !important; max-width:100% !important; border-radius:0 !important; }
+    .px-32 { padding-left:22px !important; padding-right:22px !important; }
+    .hero-pad { padding:36px 22px !important; }
+    .app-pad { padding:36px 22px !important; }
+    .app-icon { width:108px !important; height:108px !important; }
+    .badge-td { display:inline-block !important; padding:6px 4px !important; text-align:center !important; }
+    .feature-cell-dark { display:block !important; width:100% !important; padding:10px 0 !important; }
+    h1 { font-size:26px !important; line-height:1.2 !important; }
+    h2 { font-size:22px !important; }
+    .open-app-btn a { font-size:16px !important; padding:16px 28px !important; }
+  }
+</style>
+</head>
+<body style="margin:0; padding:0; background:#f4f4f4;">
+<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">Four steps to get ready — download, log in, join the call, shop in the app.</div>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f4f4f4;">
+  <tr>
+    <td align="center" style="padding:20px 0;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="container" style="width:600px; max-width:600px; background:#ffffff; border-radius:4px; overflow:hidden;">
+
+        <tr>
+          <td align="center" style="background:#0a0a0a; padding:40px 24px;">
+            <img src="https://abxtac.com/abxtac-logo-white.png" alt="ABXTAC" width="260" style="max-width:260px; height:auto; margin:0 auto;">
+            <div style="color:#22c55e; font-size:12px; letter-spacing:0.28em; margin-top:14px; text-transform:uppercase; font-weight:700;">
+              Peptide Therapy
+            </div>
+          </td>
+        </tr>
+        <tr><td style="background:#22c55e; height:4px; line-height:4px; font-size:0;">&nbsp;</td></tr>
+    
+
+        <tr>
+          <td class="px-32" style="padding:40px 48px 12px 48px;">
+            <h1 style="font-size:30px; line-height:1.2; color:#0a0a0a; margin:0 0 18px 0; letter-spacing:-0.02em; font-weight:700;">
+              Your Consultation is Booked
+            </h1>
+            
+      <p>Hi {{contact.first_name}}, your ABXTAC consultation is booked. Everything — your video visit, your provider messages, your peptide shop — lives inside the <strong>Now Optimal</strong> app. Here's how to get set up.</p>
+    
+          </td>
+        </tr>
+    
+        <tr>
+          <td class="px-32" style="padding:8px 48px 24px 48px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                   style="background:#F4FBF6; border-left:4px solid #22c55e; border-radius:4px;">
+              <tr>
+                <td style="padding:20px 24px;">
+                  <div style="font-size:12px; font-weight:700; color:#22c55e; letter-spacing:0.14em; text-transform:uppercase; margin-bottom:10px;">
+                    Appointment Details
+                  </div>
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                    <tr><td style="padding:6px 0; font-size:13px; color:#4b5563; width:90px;">Date</td><td style="padding:6px 0; font-size:15px; font-weight:700; color:#0a0a0a;">{{contact.appointment_date}}</td></tr><tr><td style="padding:6px 0; font-size:13px; color:#4b5563; width:90px;">Time</td><td style="padding:6px 0; font-size:15px; font-weight:700; color:#0a0a0a;">{{contact.appointment_time}} (Arizona Time)</td></tr><tr><td style="padding:6px 0; font-size:13px; color:#4b5563; width:90px;">Type</td><td style="padding:6px 0; font-size:15px; font-weight:700; color:#0a0a0a;">{{contact.appointment_type}}</td></tr><tr><td style="padding:6px 0; font-size:13px; color:#4b5563; width:90px;">Paid</td><td style="padding:6px 0; font-size:15px; font-weight:700; color:#0a0a0a;">${{contact.amount_paid}}</td></tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+    
+        <tr>
+          <td class="px-32" style="padding:30px 48px 10px 48px;">
+            <h2 style="text-align:center; font-size:22px; line-height:1.3; color:#0a0a0a; margin:0 0 26px 0;">
+              Get Ready in Four Steps
+            </h2>
+            
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+              <tr>
+                <td width="60" valign="top">
+                  <div style="width:44px; height:44px; background:#22c55e; color:#ffffff; border-radius:50%; line-height:44px; text-align:center; font-weight:700; font-size:18px; font-family:Arial,sans-serif;">1</div>
+                </td>
+                <td valign="top" style="padding-left:8px;">
+                  <div style="font-size:17px; font-weight:700; color:#0a0a0a; margin-bottom:4px;">Download the Now Optimal app</div>
+                  <div style="font-size:15px; color:#4b5563; line-height:1.55;">Grab the app on iPhone or Android — badges are below. Your consultation happens inside the app.</div>
+                  
+                </td>
+              </tr>
+            </table>
+    
+            
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+              <tr>
+                <td width="60" valign="top">
+                  <div style="width:44px; height:44px; background:#22c55e; color:#ffffff; border-radius:50%; line-height:44px; text-align:center; font-weight:700; font-size:18px; font-family:Arial,sans-serif;">2</div>
+                </td>
+                <td valign="top" style="padding-left:8px;">
+                  <div style="font-size:17px; font-weight:700; color:#0a0a0a; margin-bottom:4px;">Change your password &amp; add a photo</div>
+                  <div style="font-size:15px; color:#4b5563; line-height:1.55;">
+      <p style="margin:0 0 14px 0; font-size:15px; color:#4b5563; line-height:1.55;">
+        Log in with the email and temporary password below. Keep this email safe until you're logged in.
+      </p>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F4FBF6; border-left:3px solid #22c55e; border-radius:4px; margin:0 0 14px 0;">
+        <tr>
+          <td style="padding:14px 18px;">
+            <div style="font-size:11px; font-weight:700; color:#22c55e; letter-spacing:0.14em; text-transform:uppercase; margin-bottom:6px;">
+              Your Login
+            </div>
+            <div style="font-size:13px; color:#4b5563; margin-bottom:2px;">
+              Email: <strong style="color:#0a0a0a; word-break:break-all;">{{contact.email}}</strong>
+            </div>
+            <div style="font-size:13px; color:#4b5563;">
+              Temp Password:
+              <span style="font-family:'SFMono-Regular',Menlo,monospace; font-size:16px; font-weight:700; color:#0a0a0a; letter-spacing:0.04em;">{{contact.temp_password}}</span>
+            </div>
+          </td>
+        </tr>
+      </table>
+      <p style="margin:0; font-size:14px; color:#4b5563; line-height:1.55;">
+        Once you're in, please <strong style="color:#0a0a0a;">add a profile photo</strong> under your profile — it helps your provider recognize you on video. Need a new password? Reset it any time at
+        <a href="https://abxtac.com/reset-password?email={{contact.email}}" style="color:#22c55e; font-weight:700;">abxtac.com/reset-password</a>.
+      </p>
+    </div>
+                  
+                </td>
+              </tr>
+            </table>
+    
+            
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+              <tr>
+                <td width="60" valign="top">
+                  <div style="width:44px; height:44px; background:#22c55e; color:#ffffff; border-radius:50%; line-height:44px; text-align:center; font-weight:700; font-size:18px; font-family:Arial,sans-serif;">3</div>
+                </td>
+                <td valign="top" style="padding-left:8px;">
+                  <div style="font-size:17px; font-weight:700; color:#0a0a0a; margin-bottom:4px;">Do your video consultation</div>
+                  <div style="font-size:15px; color:#4b5563; line-height:1.55;">At your scheduled time, open the app and tap your booking to start the secure video call with your provider.</div>
+                  
+                </td>
+              </tr>
+            </table>
+    
+            
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:10px;">
+              <tr>
+                <td width="60" valign="top">
+                  <div style="width:44px; height:44px; background:#22c55e; color:#ffffff; border-radius:50%; line-height:44px; text-align:center; font-weight:700; font-size:18px; font-family:Arial,sans-serif;">4</div>
+                </td>
+                <td valign="top" style="padding-left:8px;">
+                  <div style="font-size:17px; font-weight:700; color:#0a0a0a; margin-bottom:4px;">Shop inside the app</div>
+                  <div style="font-size:15px; color:#4b5563; line-height:1.55;">
+      After your consultation, your provider designs a protocol and recommends a membership tier —
+      <strong>Heal</strong> (10% off peptides), <strong>Optimize</strong> (20% off), or <strong>Thrive</strong> (30% off).
+      Your peptides then ship directly to your door, ordered right from the <strong>Shop</strong> tab inside the Now Optimal app.
+    </div>
+                  
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:10px;">
+                    <tr>
+                      <td bgcolor="#22c55e" style="border-radius:6px;">
+                        <a href="https://abxtac.com/open-app" style="background:#22c55e; color:#ffffff; font-weight:700; font-size:15px; padding:12px 26px; border-radius:6px; display:inline-block; text-decoration:none;">
+                          Open the Now Optimal App →
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+    
+          </td>
+        </tr>
+    
+        <tr>
+          <td style="background:#0a0a0a; padding:0;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+              <tr>
+                <td class="app-pad" align="center" style="padding:44px 48px;">
+                  
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto 22px auto;">
+                    <tr>
+                      <td align="center" style="padding:0; border-radius:28px;">
+                        <img src="https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/84/ec/22/84ec2226-394d-82e1-8255-d91319d8245e/AppIcon-0-0-1x_U007epad-0-1-85-220.png/512x512bb.jpg" alt="Now Optimal" width="96" height="96" class="app-icon" style="width:96px; height:96px; border-radius:22px; display:block; border:1px solid #1f2937;">
+                      </td>
+                    </tr>
+                  </table>
+                  <div class="eyebrow" style="color:#22c55e; font-size:11px; letter-spacing:0.28em; margin-bottom:10px;">
+                    Step 1 — Install the App
+                  </div>
+                  <h2 style="color:#ffffff; font-size:26px; line-height:1.25; margin:0 0 14px 0; font-weight:700; letter-spacing:-0.01em;">
+                    Get the Now Optimal app
+                  </h2>
+                  <p style="color:#cbd5e1; font-size:16px; line-height:1.6; margin:0 auto 26px auto; max-width:440px; text-align:center;">Download it now so it's ready when your appointment time comes around.</p>
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" class="open-app-btn">
+                    <tr>
+                      <td align="center" bgcolor="#22c55e" style="border-radius:999px;">
+                        <a href="https://abxtac.com/open-app" style="background:#22c55e; color:#0a0a0a !important; font-weight:700; font-size:17px; padding:16px 38px; border-radius:999px; display:inline-block; text-decoration:none; letter-spacing:0.02em; font-family:'Inter',-apple-system,BlinkMacSystemFont,Arial,sans-serif;">
+                          Open the Now Optimal App →
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+                  
+                  <div style="color:#64748b; font-size:12px; margin:22px 0 14px 0; letter-spacing:0.18em; text-transform:uppercase; font-weight:700;">
+                    Don't have the app yet?
+                  </div>
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
+                    <tr>
+                      <td class="badge-td" align="center" valign="middle" style="padding:6px 6px;">
+                        <a href="https://apps.apple.com/us/app/now-optimal/id6759345635" style="display:inline-block; line-height:0; text-decoration:none;">
+                          <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" width="162" height="54" style="width:162px; height:54px; display:block; border:0; outline:none;">
+                        </a>
+                      </td>
+                      <td class="badge-td" align="center" valign="middle" style="padding:6px 6px;">
+                        <a href="https://play.google.com/store/apps/details?id=com.nowoptimal.patient" style="display:inline-block; line-height:0; text-decoration:none;">
+                          <img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" width="182" height="54" style="width:182px; height:54px; display:block; border:0; outline:none;">
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+    
+
+        <tr>
+          <td class="px-32" style="padding:30px 48px 34px 48px; background:#ffffff;">
+            <h2 style="font-size:18px; line-height:1.3; color:#0a0a0a; margin:0 0 8px 0;">Need a hand?</h2>
+            <p style="margin:0; font-size:15px; color:#4b5563;">
+              Reply to this email — it goes straight to our care team. Or call <a href="tel:9282122772" style="font-weight:700; color:#22c55e;">928-212-2772</a>.
+            </p>
+          </td>
+        </tr>
+    
+
+        <tr>
+          <td align="center" style="background:#0a0a0a; padding:36px 24px;">
+            <img src="https://abxtac.com/abxtac-logo-white.png" alt="ABXTAC" width="200" style="max-width:200px; height:auto; margin:0 auto 16px auto;">
+            <div style="color:#22c55e; font-size:11px; letter-spacing:0.28em; font-weight:700; text-transform:uppercase; margin-bottom:20px;">
+              Heal · Optimize · Thrive
+            </div>
+            <div style="color:#94a3b8; font-size:11px; letter-spacing:0.2em; text-transform:uppercase; margin-bottom:8px;">Part of the</div><div style="color:#ffffff; font-size:20px; font-weight:300; letter-spacing:0.24em;">NOW<span style="font-weight:700;">OPTIMAL</span></div><div style="color:#22c55e; font-size:10px; letter-spacing:0.3em; font-weight:700; text-transform:uppercase; margin-top:4px;">Network</div>
+            <div style="border-top:1px solid #1f2937; margin:26px auto 18px auto; max-width:320px;"></div>
+            <div style="color:#9ca3af; font-size:12px; line-height:1.7;">
+              <a href="https://abxtac.com" style="color:#4ADE80;">abxtac.com</a> &nbsp;&middot;&nbsp; <a href="tel:9282122772" style="color:#4ADE80;">928-212-2772</a> &nbsp;&middot;&nbsp; <a href="https://abxtac.com/shop" style="color:#4ADE80;">Shop</a>
+            </div>
+            <div style="color:#6b7280; font-size:10px; margin-top:18px; line-height:1.6;">
+              You're receiving this because you're a patient or contact of ABXTAC.<br>
+              {{unsubscribe_link}}
+            </div>
+          </td>
+        </tr>
+    
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

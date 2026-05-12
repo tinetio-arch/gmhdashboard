@@ -6,13 +6,15 @@
  * This widens all narrow VARCHAR columns to prevent "value too long" errors.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 
-export async function POST() {
+export const dynamic = 'force-dynamic';
+
+export async function POST(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
 
         const results: string[] = [];
 
@@ -84,6 +86,9 @@ export async function POST() {
 
         return NextResponse.json({ success: true, results });
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Schema fix error:', error);
         return NextResponse.json(
             { error: error instanceof Error ? error.message : 'Unknown error', stack: error instanceof Error ? error.stack : undefined },

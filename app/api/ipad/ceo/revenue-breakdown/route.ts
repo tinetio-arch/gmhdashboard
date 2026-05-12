@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
   try {
     const user = await requireApiUser(request, 'read');
     // CEO only
-    if ((user as any).email !== 'admin@nowoptimal.com') {
+    if (user.role !== 'admin') {
       return NextResponse.json({ error: 'CEO access only' }, { status: 403 });
     }
 
@@ -171,7 +171,10 @@ export async function GET(request: NextRequest) {
     try {
       const fs = require('fs');
       const cache = JSON.parse(fs.readFileSync('/tmp/healthie-revenue-cache.json', 'utf8'));
-      if (period === 'today') {
+      if (specificDate) {
+        const entry = (cache.daily || []).find((d: any) => d.day === specificDate);
+        healthieRecurring = entry?.amount || 0;
+      } else if (period === 'today') {
         const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
         const entry = (cache.daily || []).find((d: any) => d.day === today);
         healthieRecurring = entry?.amount || 0;

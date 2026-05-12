@@ -37,6 +37,10 @@
 | `22-brand-group-architecture.md` | Brand/group restructure, appointment types, telehealth plan | **CRITICAL** — brand/group changes, telehealth, forms |
 | `23-ghl-ai-agents.md` | Jessica/Max AI agents, webhook actions, SMS chatbot, Jarvis | Working on AI agents or GHL integration |
 | `24-system-access-credentials.md` | Login URLs, credential references, UPS shipping | Looking up access credentials or UPS integration |
+| `25-patient-classification-and-dashboard.md` | **DRAFT** Patient classification policy + dashboard redesign (Member/Intermittent/Visit, signal badges, intake defaults, dedup) | Adding patients, dashboard UX changes, classification rules, dedup work |
+| `26-classification-audit.md` | **AUDIT** Read-only dry-run of all 401 patients — duplicates, orphan links, proposed classifications. Regenerate via `node scripts/generate-classification-audit.js` | Reviewing the one-time classification backlog before applying changes |
+| `27-patient-flow-map.md` | **DRAFT** Stage-oriented patient lifecycle (Lead→Booked→Intake→Evaluated→Onboarded→Active→At-risk→Off-service); per-stage SOT/GHL/dashboard/staff roles | Designing new automations, crons, or webhooks; deciding which system owns what |
+| `29-bioscope-integration.md` | **NEW** BioSCOPE third-party API: patient allowlist, dedicated Healthie key, auth model, audit, phased rollout | Working on BioSCOPE integration, adding/revoking BioSCOPE patients, building patient-scoped third-party APIs |
 
 ## Quick Decision Tree
 

@@ -13,6 +13,7 @@ export interface SimpleReceiptUploadParams {
     providerName?: string;
     isMensHealth?: boolean;  // Determines which clinic address to use
     isTestReceipt?: boolean;  // If true, receipt is NOT visible to patient (for testing)
+    internalOnly?: boolean;   // If true, receipt is NOT visible to patient (company-paid orders)
 }
 
 /**
@@ -40,6 +41,9 @@ export async function uploadSimpleReceiptToHealthie(params: SimpleReceiptUploadP
         if (params.isTestReceipt) {
             console.log(`[Simple Receipt Upload] ⚠️ TEST RECEIPT - Will NOT be visible to patient`);
         }
+        if (params.internalOnly) {
+            console.log(`[Simple Receipt Upload] 🔒 INTERNAL RECEIPT - Will NOT be visible to patient (company-paid)`);
+        }
 
         // Generate the simple single-page receipt PDF
         const receiptParams: SimpleReceiptParams = {
@@ -63,10 +67,14 @@ export async function uploadSimpleReceiptToHealthie(params: SimpleReceiptUploadP
         // Format filename
         const dateStr = params.date.toISOString().split('T')[0];
         const patientNameSafe = params.patientName.replace(/[^a-zA-Z0-9]/g, '_');
-        const testPrefix = params.isTestReceipt ? 'TEST_' : '';
-        const filename = `${testPrefix}Receipt_${params.receiptNumber}_${patientNameSafe}_${dateStr}.pdf`;
+        const prefix = params.isTestReceipt ? 'TEST_' : (params.internalOnly ? 'INTERNAL_' : '');
+        const filename = `${prefix}Receipt_${params.receiptNumber}_${patientNameSafe}_${dateStr}.pdf`;
 
-        // Upload to Healthie - TEST receipts are NOT visible to patients
+        // Upload to Healthie - TEST and INTERNAL receipts are NOT visible to patients
+        const hideFromPatient = !!(params.isTestReceipt || params.internalOnly);
+        const descriptionPrefix = params.isTestReceipt
+            ? 'TEST - '
+            : (params.internalOnly ? '[COMPANY-PAID — INTERNAL] ' : '');
         const result = await healthieGraphQL(`
             mutation CreateDocument($input: createDocumentInput!) {
                 createDocument(input: $input) {
@@ -86,8 +94,8 @@ export async function uploadSimpleReceiptToHealthie(params: SimpleReceiptUploadP
                 display_name: filename,
                 file_string: dataUrl,
                 include_in_charting: true,
-                share_with_rel: !params.isTestReceipt,  // TEST receipts NOT visible to patient
-                description: `${params.isTestReceipt ? 'TEST - ' : ''}Payment Receipt - ${params.date.toLocaleDateString('en-US')} - Total: $${params.amount.toFixed(2)}`
+                share_with_rel: !hideFromPatient,
+                description: `${descriptionPrefix}Payment Receipt - ${params.date.toLocaleDateString('en-US')} - Total: $${params.amount.toFixed(2)}`
             }
         });
 

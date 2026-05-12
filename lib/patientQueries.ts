@@ -608,10 +608,9 @@ export async function updatePatient(payload: PatientDataEntryPayload): Promise<P
     const fromStatus = currentRow.rows[0]?.status_key ?? null;
     const normalizedStatusKey = (statusKey ?? '').trim() || null;
 
-    // GUARD: Never change an inactive patient's status via this endpoint — inactive is a
-    // deliberate clinical decision; only direct DB access by an admin can reverse it.
+    // LOG: Track when an inactive patient is reactivated (admin action via dashboard)
     if (fromStatus === 'inactive' && normalizedStatusKey && normalizedStatusKey !== 'inactive') {
-      throw new Error('Cannot change status of an inactive patient. Inactive status can only be reversed by an admin via direct database access.');
+      console.log(`[PatientUpdate] ⚠️ Reactivating inactive patient ${payload.patientId}: inactive → ${normalizedStatusKey} (by ${payload.addedBy || 'unknown'})`);
     }
 
     if (normalizedStatusKey && normalizedStatusKey !== fromStatus) {

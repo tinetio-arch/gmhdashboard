@@ -57,7 +57,7 @@ export async function POST(
             [s3Url, params.orderId]
         );
 
-        console.log(`[peptides] Packing sheet uploaded for order ${params.orderId} by ${user.name || user.email}: ${s3Key}`);
+        console.log(`[peptides] Packing sheet uploaded for order ${params.orderId} by ${user.display_name || user.email}: ${s3Key}`);
         return NextResponse.json({ success: true, key: s3Key });
     } catch (error: any) {
         if (error?.name === 'UnauthorizedError') {

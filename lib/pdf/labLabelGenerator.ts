@@ -8,30 +8,26 @@ export interface LabLabelParams {
 }
 
 /**
- * Generate 3 specimen labels for Dymo 30252 printing.
- * Each label: 3.5" x 1.125" (252pt x 81pt)
+ * Generate 3 specimen entries on ONE Zebra 3"x2" label (216pt x 144pt).
+ * All 3 fit on a single sticker — staff cuts along dashed lines.
  *
- * FIX(2026-04-09): Each label is now a SEPARATE PDF PAGE so the Dymo
- * feeds one label per page. Previously all 3 were on a single canvas
- * which the Dymo couldn't print correctly.
- *
- * Each label contains:
- *   - Patient full name (large, bold)
- *   - Date of Birth
- *   - Date and time of draw
- *   - Order ID (if available)
+ * Layout: 3 compact rows (~42pt each) with scissors-cut dashed lines.
+ * Each row: Name + DOB on line 1, Draw + Order# on line 2.
  */
 export async function generateLabLabels(params: LabLabelParams): Promise<Buffer> {
     const { patientName, patientDob, drawDateTime, orderId } = params;
 
-    // Dymo 30252 label: 3.5" x 1.125" = 252pt x 81pt
-    const labelWidth = 252;
-    const labelHeight = 81;
+    // Zebra GK420d: 3" x 2" = 216pt x 144pt (same stock as peptide labels)
+    const W = 216;
+    const H = 144;
+    const L = 8;  // left margin
+    const R = 8;  // right margin
+    const PW = W - L - R; // printable width = 200pt
 
     const doc = new PDFDocument({
-        size: [labelWidth, labelHeight],
-        margins: { top: 4, left: 6, right: 6, bottom: 4 },
-        autoFirstPage: false,
+        size: [W, H],
+        margins: { top: 0, left: 0, right: 0, bottom: 0 },
+        autoFirstPage: true,
     });
 
     const buffers: Buffer[] = [];
@@ -40,10 +36,8 @@ export async function generateLabLabels(params: LabLabelParams): Promise<Buffer>
         doc.on('end', () => resolve(Buffer.concat(buffers)));
     });
 
-    // Format DOB
     const dob = formatDate(patientDob);
 
-    // Format draw date/time in Arizona timezone
     const drawDate = new Date(drawDateTime);
     const drawStr = drawDate.toLocaleDateString('en-US', {
         month: '2-digit', day: '2-digit', year: 'numeric', timeZone: 'America/Phoenix'
@@ -51,55 +45,42 @@ export async function generateLabLabels(params: LabLabelParams): Promise<Buffer>
         hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/Phoenix'
     });
 
-    const printableWidth = labelWidth - 12;
+    const rowH = 44;  // 3 rows × 44pt = 132pt, fits in 144pt
 
-    // 3 identical labels — each on its own page
     for (let i = 0; i < 3; i++) {
-        doc.addPage({ size: [labelWidth, labelHeight], margins: { top: 4, left: 6, right: 6, bottom: 4 } });
+        const y = 6 + (i * rowH);
 
-        // Patient name — large and bold
-        doc.fontSize(13).font('Helvetica-Bold')
-           .fillColor('#000000')
-           .text(patientName.toUpperCase(), 6, 4, {
-               width: printableWidth,
-               align: 'left',
-               lineBreak: false,
-           });
+        // Line 1: Name (left) + DOB (right)
+        doc.fontSize(11).font('Helvetica-Bold').fillColor('#000000')
+           .text(patientName.toUpperCase(), L, y, {
+               width: PW * 0.6, align: 'left', lineBreak: false });
 
-        // DOB
-        doc.fontSize(9).font('Helvetica')
-           .fillColor('#000000')
-           .text(`DOB: ${dob}`, 6, 22, {
-               width: printableWidth,
-           });
+        doc.fontSize(8).font('Helvetica').fillColor('#000000')
+           .text(`DOB: ${dob}`, L + PW * 0.6, y + 2, {
+               width: PW * 0.4, align: 'right', lineBreak: false });
 
-        // Draw date/time
-        doc.fontSize(9).font('Helvetica-Bold')
-           .fillColor('#000000')
-           .text(`Draw: ${drawStr}`, 6, 36, {
-               width: printableWidth,
-           });
-
-        // Bottom row: clinic name left, order ID right
-        doc.fontSize(6.5).font('Helvetica')
-           .fillColor('#666666')
-           .text('NOW Optimal Health', 6, 52, {
-               width: printableWidth / 2,
-               align: 'left',
-           });
+        // Line 2: Draw date (left) + Order# (right)
+        doc.fontSize(8).font('Helvetica-Bold').fillColor('#000000')
+           .text(`Draw: ${drawStr}`, L, y + 16, {
+               width: PW * 0.65, align: 'left', lineBreak: false });
 
         if (orderId) {
-            doc.fontSize(6.5).font('Helvetica')
-               .fillColor('#666666')
-               .text(`#${orderId}`, labelWidth / 2, 52, {
-                   width: printableWidth / 2,
-                   align: 'right',
-               });
+            doc.fontSize(7).font('Helvetica').fillColor('#555555')
+               .text(`${orderId}  |  NOW Optimal`, L + PW * 0.5, y + 17, {
+                   width: PW * 0.5, align: 'right', lineBreak: false });
         }
 
-        // Thin separator line at bottom
-        doc.moveTo(6, 64).lineTo(labelWidth - 6, 64)
-           .strokeColor('#CCCCCC').lineWidth(0.5).stroke();
+        // Dashed cut line (scissors) between rows
+        if (i < 2) {
+            const lineY = y + rowH - 8;
+            doc.save();
+            doc.strokeColor('#AAAAAA').lineWidth(0.4).dash(4, { space: 3 });
+            doc.moveTo(L, lineY).lineTo(W - R, lineY).stroke();
+            doc.restore();
+            // Tiny scissors icon hint
+            doc.fontSize(5).font('Helvetica').fillColor('#BBBBBB')
+               .text('✂', 1, lineY - 3);
+        }
     }
 
     doc.end();

@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "bash scripts/sync-mobile.sh",
+    "sync:mobile": "bash scripts/sync-mobile.sh",
     "start": "next start",
     "lint": "eslint .",
     "clinicsync:sync": "tsx scripts/clinicsync-sync.ts",
@@ -49,6 +51,8 @@
     "playwright": "^1.57.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "rxjs": "^7.8.2",
     "snowflake-sdk": "^1.13.3",
     "stripe": "^20.4.1",

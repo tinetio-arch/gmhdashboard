@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 
 /**
@@ -7,11 +7,11 @@ import { query } from '@/lib/db';
  * Get GHL sync status and history for a specific patient
  */
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    await requireUser('read');
+    await requireApiUser(request, 'read');
     const patientId = params.id;
 
     // Get patient's GHL sync status from patients table
@@ -121,6 +121,9 @@ export async function GET(
       }),
     });
   } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     console.error('GHL sync status error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },

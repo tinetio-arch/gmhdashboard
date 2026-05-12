@@ -1,0 +1,61 @@
+
+=== Phase 1 — 2026-04-16T18:08:45.833Z ===
+
+Fetched 5433 active Healthie IDs (1 API call).
+
+--- Step 1: Re-link Bruce French ---
+BEFORE: {
+  "patient_id": "5d0bdecf-ca25-409a-a8e4-e0480f947e84",
+  "full_name": "Bruce French",
+  "email": null,
+  "patients_hid": "12765861",
+  "links": [
+    {
+      "id": 314,
+      "patient_id": "5d0bdecf-ca25-409a-a8e4-e0480f947e84",
+      "healthie_client_id": "12765861",
+      "match_method": "created",
+      "is_active": true,
+      "created_at": "2026-01-15T17:33:56.13464+00:00",
+      "updated_at": "2026-01-15T17:33:56.13464+00:00"
+    }
+  ]
+}
+AFTER:  {
+  "patient_id": "5d0bdecf-ca25-409a-a8e4-e0480f947e84",
+  "full_name": "Bruce French",
+  "email": "brucefrench1@hotmail.com",
+  "patients_hid": "12745786",
+  "links": [
+    {
+      "id": 314,
+      "patient_id": "5d0bdecf-ca25-409a-a8e4-e0480f947e84",
+      "healthie_client_id": "12765861",
+      "match_method": "created",
+      "is_active": false,
+      "created_at": "2026-01-15T17:33:56.13464+00:00",
+      "updated_at": "2026-04-16T18:08:47.326208+00:00"
+    },
+    {
+      "id": 455,
+      "patient_id": "5d0bdecf-ca25-409a-a8e4-e0480f947e84",
+      "healthie_client_id": "12745786",
+      "match_method": "audit_relink_real_email",
+      "is_active": true,
+      "created_at": "2026-04-16T18:08:47.326208+00:00",
+      "updated_at": "2026-04-16T18:08:47.326208+00:00"
+    }
+  ]
+}
+
+--- Step 2: Deactivate stale healthie_clients links (C + H) ---
+Active healthie_clients rows: 397
+Pointing at non-active Healthie IDs: 42
+Deactivated: 42 rows
+Sample IDs deactivated: 12165065, 12165194, 12165213, 12177291, 12208205, 12176783, 12182608, 12179436, 12177472, 12179555 ... +32 more
+
+✅ Transaction committed.
+
+--- Step 3: Generate Healthie merge worksheet ---
+Found 12 name+DOB duplicates in Healthie
+Worksheet written to /home/ec2-user/gmhdashboard/.tmp/healthie-merge-worksheet.md

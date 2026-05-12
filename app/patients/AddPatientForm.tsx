@@ -295,6 +295,7 @@ export default function AddPatientForm({ lookups, currentUserRole, currentUserEm
             disabled={isDisabled}
           >
             <option value="member">Member (Recurring)</option>
+            <option value="intermittent">Intermittent</option>
             <option value="visit">Visit (One-time)</option>
           </select>
         </div>

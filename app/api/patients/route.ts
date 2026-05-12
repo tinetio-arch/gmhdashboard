@@ -37,11 +37,22 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const timestamp = new Date().toISOString();
 
+    // Explicit link request — caller has already seen duplicate warnings and chose
+    // to map the new GMH patient to an existing Healthie record.
+    const requestedLinkHealthieId: string | null =
+      typeof body.linkToHealthieId === 'string' && body.linkToHealthieId.trim()
+        ? body.linkToHealthieId.trim()
+        : null;
+
     // ============================================
     // DUPLICATE PREVENTION: Check before creating
     // ============================================
     let duplicateWarnings: string[] = [];
     let existingHealthieId: string | null = null;
+    const duplicateMatches: Array<
+      | { source: 'healthie'; healthieClientId: string; fullName: string }
+      | { source: 'gmh'; patientId: string; fullName: string; email: string | null; phone: string | null; healthieClientId: string | null }
+    > = [];
 
     // 1. Check Healthie for existing patient by email/name (for cases like "von Larson" already in Healthie)
     if (body.clinic && (body.clinic === 'nowprimary.care' || body.clinic === 'nowmenshealth.care')) {
@@ -54,6 +65,9 @@ export async function POST(request: NextRequest) {
         });
 
         if (healthieMatches.length > 0) {
+          for (const m of healthieMatches) {
+            duplicateMatches.push({ source: 'healthie', healthieClientId: m.id, fullName: m.full_name });
+          }
           const bestMatch = healthieMatches[0];
           duplicateWarnings.push(`Found existing Healthie patient: ${bestMatch.full_name} (ID: ${bestMatch.id})`);
           existingHealthieId = bestMatch.id;
@@ -65,9 +79,9 @@ export async function POST(request: NextRequest) {
     }
 
     // 2. Check GMH database for potential duplicates
-    const gmhDuplicates = await query(`
+    const gmhDuplicates = await query<{ patient_id: string; full_name: string; email: string | null; phone_primary: string | null; healthie_client_id: string | null }>(`
       SELECT patient_id, full_name, email, phone_primary, healthie_client_id
-      FROM patients 
+      FROM patients
       WHERE (
         LOWER(full_name) = LOWER($1::text)
         OR ($2::text IS NOT NULL AND LOWER(email) = LOWER($2::text))
@@ -80,18 +94,29 @@ export async function POST(request: NextRequest) {
     if (gmhDuplicates.length > 0) {
       for (const dup of gmhDuplicates) {
         duplicateWarnings.push(`Potential GMH duplicate: ${dup.full_name} (Email: ${dup.email || 'N/A'}, Phone: ${dup.phone_primary || 'N/A'})`);
+        duplicateMatches.push({
+          source: 'gmh',
+          patientId: dup.patient_id,
+          fullName: dup.full_name,
+          email: dup.email,
+          phone: dup.phone_primary,
+          healthieClientId: dup.healthie_client_id
+        });
       }
       console.log(`[API] ⚠️  Found ${gmhDuplicates.length} potential GMH duplicates`);
     }
 
-    // If duplicates found and NOT force-creating, return early with warnings
-    if (duplicateWarnings.length > 0 && !body.forceCreate) {
-      console.log(`[API] 🚫 Blocking patient creation due to potential duplicates. Use forceCreate: true to override.`);
+    // If duplicates found and caller has not opted into a resolution path, return 409 with options.
+    // linkToHealthieId = "I saw the warning, link to this existing Healthie patient instead of creating a new one."
+    // forceCreate     = "I saw the warning, create everything fresh anyway (different person)."
+    if (duplicateWarnings.length > 0 && !body.forceCreate && !requestedLinkHealthieId) {
+      console.log(`[API] 🚫 Blocking patient creation due to potential duplicates. Caller must pass linkToHealthieId or forceCreate: true.`);
       return NextResponse.json({
         error: 'Potential duplicate detected',
         duplicateWarnings,
+        duplicateMatches,
         existingHealthieId,
-        hint: 'Set forceCreate: true to create anyway, or link to existing patient'
+        hint: 'Pass linkToHealthieId to map this new GMH patient to an existing Healthie record, or forceCreate: true to create a fresh duplicate.'
       }, { status: 409 }); // 409 Conflict
     }
 
@@ -135,26 +160,41 @@ export async function POST(request: NextRequest) {
 
     console.log(`[API] ✅ Created patient in GMH database: ${created.patient_name} (${created.patient_id})`);
 
-    // If we found an existing Healthie patient, link it instead of creating new
-    if (existingHealthieId) {
-      await query(
-        `INSERT INTO healthie_clients (patient_id, healthie_client_id, is_active, match_method, created_at, updated_at)
-         VALUES ($1, $2, TRUE, 'auto_link_on_create', NOW(), NOW())
-         ON CONFLICT (healthie_client_id)
-         DO UPDATE SET
-           patient_id = EXCLUDED.patient_id,
-           match_method = EXCLUDED.match_method,
-           is_active = TRUE,
-           updated_at = NOW()`,
-        [created.patient_id, existingHealthieId]
-      );
-      console.log(`[API] ✅ Auto-linked to existing Healthie patient: ${existingHealthieId}`);
-    }
-
-    // === Sync to Healthie (synchronous - wait for completion) ===
-    // Client type drives Healthie group assignment; clinic is fallback for location
+    // Decide which Healthie path to take:
+    //   1. Explicit linkToHealthieId from caller → link only, skip create.
+    //   2. forceCreate + auto-detected existingHealthieId → link only, skip create (avoids the previous
+    //      bug where forceCreate produced a duplicate Healthie record AND linked to the existing one).
+    //   3. Otherwise → create new Healthie patient (preserved behavior).
+    const healthieIdToLink: string | null = requestedLinkHealthieId || existingHealthieId;
     let healthieClientId: string | null = null;
-    if (body.clinic && (body.clinic === 'nowprimary.care' || body.clinic === 'nowmenshealth.care')) {
+    let healthieIntegrationStatus: 'linked' | 'created' | 'skipped' | 'error' = 'skipped';
+
+    if (healthieIdToLink) {
+      try {
+        const matchMethod = requestedLinkHealthieId ? 'user_link_on_create' : 'auto_link_on_create';
+        await query(
+          `INSERT INTO healthie_clients (patient_id, healthie_client_id, is_active, match_method, created_at, updated_at)
+           VALUES ($1, $2, TRUE, $3, NOW(), NOW())
+           ON CONFLICT (healthie_client_id)
+           DO UPDATE SET
+             patient_id = EXCLUDED.patient_id,
+             match_method = EXCLUDED.match_method,
+             is_active = TRUE,
+             updated_at = NOW()`,
+          [created.patient_id, healthieIdToLink, matchMethod]
+        );
+        await query(
+          `UPDATE patients SET healthie_client_id = $1 WHERE patient_id = $2`,
+          [healthieIdToLink, created.patient_id]
+        );
+        healthieClientId = healthieIdToLink;
+        healthieIntegrationStatus = 'linked';
+        console.log(`[API] ✅ Linked new GMH patient ${created.patient_id} to existing Healthie ${healthieIdToLink} (${matchMethod})`);
+      } catch (linkError) {
+        healthieIntegrationStatus = 'error';
+        console.error('[API] ❌ Failed to link to existing Healthie patient:', linkError);
+      }
+    } else if (body.clinic && (body.clinic === 'nowprimary.care' || body.clinic === 'nowmenshealth.care')) {
       try {
         console.log(`[API] 🏥 Creating patient in Healthie — clientType: ${body.clientTypeKey || 'none'}, clinic: ${body.clinic}`);
 
@@ -173,6 +213,7 @@ export async function POST(request: NextRequest) {
 
         if (healthieResult.success && healthieResult.healthieClientId) {
           healthieClientId = healthieResult.healthieClientId;
+          healthieIntegrationStatus = 'created';
           console.log(`[API] ✅ Created Healthie patient: ${healthieClientId}`);
 
           // Update patient record with Healthie ID
@@ -180,12 +221,29 @@ export async function POST(request: NextRequest) {
             `UPDATE patients SET healthie_client_id = $1 WHERE patient_id = $2`,
             [healthieClientId, created.patient_id]
           );
-          console.log(`[API] ✅ Updated GMH patient with Healthie client ID`);
+
+          // FIX(2026-04-21): Also insert into healthie_clients table.
+          // Demographics, chart data, and iPad all look at healthie_clients (not patients.healthie_client_id).
+          // Missing this INSERT caused Healthie sync to silently fail for all newly created patients.
+          await query(
+            `INSERT INTO healthie_clients (patient_id, healthie_client_id, is_active, match_method, created_at, updated_at)
+             VALUES ($1, $2, TRUE, 'created_on_patient_add', NOW(), NOW())
+             ON CONFLICT (healthie_client_id)
+             DO UPDATE SET
+               patient_id = EXCLUDED.patient_id,
+               match_method = EXCLUDED.match_method,
+               is_active = TRUE,
+               updated_at = NOW()`,
+            [created.patient_id, healthieClientId]
+          );
+          console.log(`[API] ✅ Linked Healthie client ${healthieClientId} in healthie_clients table`);
         } else {
+          healthieIntegrationStatus = 'error';
           console.error(`[API] ❌ Healthie sync failed: ${healthieResult.error}`);
           // Don't block patient creation - log and continue
         }
       } catch (healthieError) {
+        healthieIntegrationStatus = 'error';
         const errorMsg = healthieError instanceof Error ? healthieError.message : String(healthieError);
         console.error('[API] ❌ Healthie sync exception:', errorMsg);
         // Patient is still created successfully, Healthie sync can be retried later
@@ -251,8 +309,9 @@ export async function POST(request: NextRequest) {
     // Return immediately without waiting for GHL sync
     return NextResponse.json({
       data: created,
+      healthieClientId,
       integrations: {
-        healthie: healthieClientId ? 'success' : 'skipped',
+        healthie: healthieIntegrationStatus,
         ghl: 'processing'
       }
     });

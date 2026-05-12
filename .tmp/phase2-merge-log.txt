@@ -1,0 +1,50 @@
+
+=== Phase 2 Merges — 2026-04-16T18:29:09.782Z ===
+
+--- Profiling all 20 users (direct queries, paced) ---
+
+--- Safety classification ---
+  ✅ Steve Benjamin: SAFE — merge 12743724 → 12182852; no recurring on keep
+  ✅ Jeffrey Chamblee: SAFE — merge 12746108 → 12177838; no recurring on keep
+  ✅ Matthew Fisher: SAFE — merge 12179965 → 12745295; keep has $140.0/cycle recurring (preserved)
+  ✅ Rich Freeman: SAFE — merge 12183013 → 12745768; keep has $180.0/cycle recurring (preserved)
+  ❌ Bruce French: SKIP (DROP has active recurring payment ($140.0))
+  ✅ Joe Hugill: SAFE — merge 12875775 → 12690358; keep has $140.0/cycle recurring (preserved)
+  ✅ Michael McCartney: SAFE — merge 12742218 → 12182822; keep has $140.0/cycle recurring (preserved)
+  ✅ Marianna Warner: SAFE — merge 14050273 → 12742313; no recurring on keep
+  ✅ John Winn: SAFE — merge 12182229 → 12743211; no recurring on keep
+  ✅ James Womble: SAFE — merge 12743400 → 12179578; keep has $140.0/cycle recurring (preserved)
+
+--- Executing 9 safe merges ---
+
+  Merging: Steve Benjamin   DROP 12743724 → KEEP 12182852
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+  Merging: Jeffrey Chamblee   DROP 12746108 → KEEP 12177838
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+  Merging: Matthew Fisher   DROP 12179965 → KEEP 12745295
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+  Merging: Rich Freeman   DROP 12183013 → KEEP 12745768
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+  Merging: Joe Hugill   DROP 12875775 → KEEP 12690358
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+  Merging: Michael McCartney   DROP 12742218 → KEEP 12182822
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+  Merging: Marianna Warner   DROP 14050273 → KEEP 12742313
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+  Merging: John Winn   DROP 12182229 → KEEP 12743211
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+  Merging: James Womble   DROP 12743400 → KEEP 12179578
+    ❌ Merge failed: Healthie GraphQL error: Object not found
+
+--- Summary ---
+Merged: 9 pairs
+Skipped: 1 pairs
+  Bruce French: DROP has active recurring payment ($140.0)

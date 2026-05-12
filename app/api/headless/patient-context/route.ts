@@ -54,17 +54,31 @@ export async function GET(request: NextRequest) {
 
         const patientId = patient.patient_id;
 
-        // Calculate derived fields
+        // FIX(2026-04-19): Calculate derived fields BEFORE formatting dates to MM-DD-YYYY.
+        // Previously formatted first → new Date('05-12-1985T12:00:00-07:00') produced NaN.
         if (patient.CONTRACT_END_DATE) {
-            const endDate = new Date(patient.CONTRACT_END_DATE + 'T12:00:00-07:00');
+            const endDate = new Date(String(patient.CONTRACT_END_DATE).slice(0, 10) + 'T12:00:00-07:00');
             patient.DAYS_UNTIL_CONTRACT_ENDS = Math.ceil((endDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
         }
         if (patient.NEXT_LAB_DATE) {
-            const labDate = new Date(patient.NEXT_LAB_DATE + 'T12:00:00-07:00');
+            const labDate = new Date(String(patient.NEXT_LAB_DATE).slice(0, 10) + 'T12:00:00-07:00');
             patient.DAYS_UNTIL_NEXT_LAB = Math.ceil((labDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
             patient.LAB_ALERT_STATUS = patient.DAYS_UNTIL_NEXT_LAB < 0 ? 'OVERDUE'
                 : patient.DAYS_UNTIL_NEXT_LAB <= 7 ? 'DUE_SOON' : 'CURRENT';
         }
+
+        // Now format dates for display
+        const formatDate = (d: any) => {
+            if (!d) return null;
+            const s = String(d).slice(0, 10);
+            const [y, m, dd] = s.split('-');
+            return y && m && dd ? `${m}-${dd}-${y}` : s;
+        };
+        patient.DATE_OF_BIRTH = formatDate(patient.DATE_OF_BIRTH);
+        patient.SERVICE_START_DATE = formatDate(patient.SERVICE_START_DATE);
+        patient.CONTRACT_END_DATE = formatDate(patient.CONTRACT_END_DATE);
+        patient.LAST_LAB_DATE = formatDate(patient.LAST_LAB_DATE);
+        patient.NEXT_LAB_DATE = formatDate(patient.NEXT_LAB_DATE);
 
         // 2. Dispense data
         const dispenseData = await query<any>(`

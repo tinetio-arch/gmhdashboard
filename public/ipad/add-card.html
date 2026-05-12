@@ -246,8 +246,9 @@
         document.getElementById('patientName').textContent = patientName;
         document.getElementById('patientEmail').textContent = patientEmail;
 
-        // Initialize Stripe with your publishable key
-        const stripe = Stripe('pk_live_51SVHOPPB2L4QIAwdvZjRY4k69EatIrhEpCD6nUatP8JGgYm6RTt6fjcXifQNp62qqdz56zSZhSPQ2IDgWW4LWHVS00BhY73GMD');
+        // FIX(2026-04-10): Accept Stripe key from parent or use default
+        const stripePk = urlParams.get('stripe_pk') || 'pk_live_51SVHOPPB2L4QIAwdvZjRY4k69EatIrhEpCD6nUatP8JGgYm6RTt6fjcXifQNp62qqdz56zSZhSPQ2IDgWW4LWHVS00BhY73GMD';
+        const stripe = Stripe(stripePk);
 
         // Create card element
         const elements = stripe.elements();

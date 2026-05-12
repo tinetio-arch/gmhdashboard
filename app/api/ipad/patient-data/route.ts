@@ -45,6 +45,8 @@ export async function POST(request: NextRequest) {
                 return await addDiagnosis(healthie_id, body);
             case 'remove_diagnosis':
                 return await removeDiagnosis(healthie_id, body);
+            case 'confirm_diagnosis':
+                return await confirmDiagnosis(healthie_id, body);
             default:
                 return NextResponse.json({ success: false, error: `Unknown action: ${action}` }, { status: 400 });
         }
@@ -109,10 +111,11 @@ async function addVital(healthieId: string, body: any) {
 }
 
 // ==================== ADD ALLERGY ====================
-// FIX(2026-03-19): Healthie allergy API requires org-level category configuration
-// which isn't set up. Store allergies locally with NKDA support.
+// FIX(2026-04-09): Now syncs to Healthie via createAllergySensitivity mutation.
+// Categories: allergy, intolerance, sensitivity, preference
+// Category types: drug, environmental, food (food assumed for food-based categories)
 async function addAllergy(healthieId: string, body: any) {
-    const { name, severity, reaction, category, is_nkda, entered_by } = body;
+    const { name, severity, reaction, category, category_type, is_nkda, entered_by } = body;
 
     // FIX(2026-04-07): Use unified resolver — auto-creates patient if only in Healthie
     const patientId = await resolvePatientId(healthieId);
@@ -120,9 +123,11 @@ async function addAllergy(healthieId: string, body: any) {
         return NextResponse.json({ success: false, error: 'Patient not found in local DB or Healthie' }, { status: 404 });
     }
 
+    const resolvedHealthieId = await resolveHealthieId(healthieId);
+
     // NKDA: mark patient as having no known allergies
     if (is_nkda) {
-        // Remove any existing allergies and add NKDA marker
+        // Remove any existing allergies and add NKDA marker locally
         await query('DELETE FROM patient_allergies WHERE patient_id = $1', [patientId]);
         const [nkda] = await query<any>(
             `INSERT INTO patient_allergies (patient_id, name, is_nkda, status, entered_by, created_at)
@@ -141,15 +146,98 @@ async function addAllergy(healthieId: string, body: any) {
     // Remove NKDA marker if adding a real allergy
     await query('DELETE FROM patient_allergies WHERE patient_id = $1 AND is_nkda = TRUE', [patientId]);
 
+    // 1. Sync to Healthie via createAllergySensitivity
+    // Map our category field to Healthie's expected values:
+    //   allergy → "allergy", intolerance → "intolerance",
+    //   sensitivity → "sensitivity", preference → "preference"
+    // Map our category to Healthie's category_type:
+    //   Drug → "drug", Environmental → "environmental", Food → (omit, implied by food categories)
+    const healthieCategory = (category || 'allergy').toLowerCase();
+    const validCategories = ['allergy', 'intolerance', 'sensitivity', 'preference'];
+    const allergyCategory = validCategories.includes(healthieCategory) ? healthieCategory : 'allergy';
+
+    // Determine category_type: drug, environmental, food, etc.
+    const allergyCategoryType = (category_type || 'drug').toLowerCase();
+
+    let healthieAllergyId: string | null = null;
+    try {
+        const allergyResult = await healthieGraphQL<any>(`
+            mutation CreateAllergySensitivity(
+                $user_id: String,
+                $category: String,
+                $category_type: String,
+                $status: String,
+                $name: String,
+                $custom_name: String,
+                $reaction: String,
+                $reaction_type: String,
+                $onset_date: String,
+                $severity: String
+            ) {
+                createAllergySensitivity(input: {
+                    user_id: $user_id,
+                    category: $category,
+                    category_type: $category_type,
+                    status: $status,
+                    name: $name,
+                    custom_name: $custom_name,
+                    reaction: $reaction,
+                    reaction_type: $reaction_type,
+                    onset_date: $onset_date,
+                    severity: $severity
+                }) {
+                    allergy_sensitivity {
+                        id
+                        name
+                        category
+                        category_type
+                        severity
+                        reaction
+                        status
+                        created_at
+                    }
+                    messages {
+                        field
+                        message
+                    }
+                }
+            }
+        `, {
+            user_id: resolvedHealthieId,
+            category: allergyCategory,
+            category_type: allergyCategoryType,
+            status: 'active',
+            name: name,
+            custom_name: '',
+            reaction: reaction || '',
+            reaction_type: 'allergy',
+            onset_date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+            severity: (severity || 'unknown').toLowerCase(),
+        });
+
+        if (allergyResult?.createAllergySensitivity?.messages?.length > 0) {
+            const msgs = allergyResult.createAllergySensitivity.messages.map((m: any) => m.message).join(', ');
+            console.warn(`[iPad:PatientData] Healthie allergy creation warning: ${msgs}`);
+            // Don't fail — still save locally even if Healthie has issues
+        } else {
+            healthieAllergyId = allergyResult?.createAllergySensitivity?.allergy_sensitivity?.id || null;
+            console.log(`[iPad:PatientData] Synced allergy "${name}" to Healthie (ID: ${healthieAllergyId})`);
+        }
+    } catch (healthieErr: any) {
+        // Non-fatal — still save locally if Healthie sync fails
+        console.error(`[iPad:PatientData] Healthie allergy sync failed (non-fatal): ${healthieErr?.message}`);
+    }
+
+    // 2. Also store locally for quick retrieval
     const [allergy] = await query<any>(
-        `INSERT INTO patient_allergies (patient_id, name, severity, reaction, category, status, entered_by, created_at)
-         VALUES ($1, $2, $3, $4, $5, 'Active', $6, NOW())
+        `INSERT INTO patient_allergies (patient_id, name, severity, reaction, category, status, entered_by, healthie_allergy_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, 'Active', $6, $7, NOW())
          RETURNING *`,
-        [patientId, name, severity || null, reaction || null, category || 'Drug', entered_by || 'Staff']
+        [patientId, name, severity || null, reaction || null, category || 'Drug', entered_by || 'Staff', healthieAllergyId]
     );
 
-    console.log(`[iPad:PatientData] Added allergy "${name}" for patient ${patientId} by ${entered_by}`);
-    return NextResponse.json({ success: true, data: allergy });
+    console.log(`[iPad:PatientData] Added allergy "${name}" for patient ${patientId} by ${entered_by} (Healthie sync: ${healthieAllergyId ? 'OK' : 'failed'})`);
+    return NextResponse.json({ success: true, data: { ...allergy, healthie_synced: !!healthieAllergyId } });
 }
 
 // ==================== ADD MEDICATION ====================
@@ -235,7 +323,7 @@ async function updateMedication(body: any) {
     if (directions !== undefined) input.directions = directions;
     if (route !== undefined) input.route = route;
 
-    const result = await healthieGraphQL<any>(`
+    const gqlMutation = `
         mutation UpdateMedication($input: updateMedicationInput!) {
             updateMedication(input: $input) {
                 medication {
@@ -244,11 +332,66 @@ async function updateMedication(body: any) {
                 messages { field message }
             }
         }
-    `, { input });
+    `;
 
-    if (result.updateMedication?.messages?.length > 0) {
+    // FIX(2026-04-23): Healthie locks name, dosage, AND route on DoseSpot-mirrored medications.
+    // - name/dosage return a "mirrored medication" validation message
+    // - route causes a Healthie "Internal server error" (their bug, not ours)
+    // Both cases need to fall through to a retry with only frequency + directions.
+    const hasLockedFields = input.name || input.dosage || input.route;
+    let result: any;
+    let firstAttemptError: string | null = null;
+
+    try {
+        result = await healthieGraphQL<any>(gqlMutation, { input });
+    } catch (err: any) {
+        // Healthie throws "Internal server error" when route is sent for mirrored meds.
+        // If we have locked fields, this might be the cause — try the safe retry.
+        if (hasLockedFields && err.message?.includes('Internal server error')) {
+            console.log(`[iPad:PatientData] Healthie internal error with locked fields — likely mirrored medication ${medication_id}`);
+            firstAttemptError = 'mirrored';
+        } else {
+            throw err; // Not a mirrored med issue — let the outer catch handle it
+        }
+    }
+
+    // Check for mirrored medication validation message (non-throwing path)
+    if (!firstAttemptError && result?.updateMedication?.messages?.length > 0) {
         const msg = result.updateMedication.messages.map((m: any) => m.message).join(', ');
-        return NextResponse.json({ success: false, error: msg }, { status: 400 });
+        if (msg.toLowerCase().includes('mirrored') && hasLockedFields) {
+            firstAttemptError = 'mirrored';
+        } else {
+            return NextResponse.json({ success: false, error: msg }, { status: 400 });
+        }
+    }
+
+    // Retry without name/dosage/route for mirrored medications
+    if (firstAttemptError === 'mirrored') {
+        const retryInput: Record<string, any> = { id: medication_id };
+        if (frequency !== undefined) retryInput.frequency = frequency;
+        if (directions !== undefined) retryInput.directions = directions;
+
+        if (Object.keys(retryInput).length <= 1) {
+            return NextResponse.json({
+                success: false,
+                error: 'This medication is linked to DoseSpot. Name, dosage, and route can only be changed by deleting and re-creating the medication.',
+            }, { status: 400 });
+        }
+
+        console.log(`[iPad:PatientData] Retrying medication ${medication_id} with only frequency/directions`);
+        const retryResult = await healthieGraphQL<any>(gqlMutation, { input: retryInput });
+
+        if (retryResult.updateMedication?.messages?.length > 0) {
+            const retryMsg = retryResult.updateMedication.messages.map((m: any) => m.message).join(', ');
+            return NextResponse.json({ success: false, error: retryMsg }, { status: 400 });
+        }
+
+        console.log(`[iPad:PatientData] Updated medication ${medication_id} (name/dosage/route locked — frequency/directions updated)`);
+        return NextResponse.json({
+            success: true,
+            data: retryResult.updateMedication?.medication,
+            warning: 'This medication is linked to DoseSpot — name, dosage, and route are locked. Frequency and directions were updated.',
+        });
     }
 
     console.log(`[iPad:PatientData] Updated medication ${medication_id}`);
@@ -442,6 +585,46 @@ async function removeDiagnosis(healthieId: string, body: any) {
         return NextResponse.json({
             success: false,
             error: error instanceof Error ? error.message : 'Failed to remove diagnosis'
+        }, { status: 500 });
+    }
+}
+
+// ==================== CONFIRM DIAGNOSIS ====================
+async function confirmDiagnosis(healthieId: string, body: any) {
+    const { code, description, confirmed_by } = body;
+
+    if (!code) {
+        return NextResponse.json({ success: false, error: 'code is required' }, { status: 400 });
+    }
+
+    const patientId = await resolvePatientId(healthieId);
+    if (!patientId) {
+        return NextResponse.json({ success: false, error: 'Patient not found' }, { status: 404 });
+    }
+
+    const confirmedAt = new Date().toISOString();
+    const entry = { code, description: description || code, confirmed_by: confirmed_by || 'Provider', confirmed_at: confirmedAt };
+
+    try {
+        await query(`
+            UPDATE patients
+            SET confirmed_diagnoses = (
+                SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+                FROM jsonb_array_elements(COALESCE(confirmed_diagnoses, '[]'::jsonb)) elem
+                WHERE elem->>'code' != $2
+            ) || $3::jsonb,
+            updated_at = NOW()
+            WHERE patient_id = $1
+        `, [patientId, code, JSON.stringify([entry])]);
+
+        console.log(`[iPad:PatientData] Confirmed diagnosis ${code} for patient ${patientId} by ${entry.confirmed_by}`);
+
+        return NextResponse.json({ success: true, confirmed: entry });
+    } catch (error) {
+        console.error('[iPad:PatientData] Confirm diagnosis failed:', error);
+        return NextResponse.json({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to confirm diagnosis'
         }, { status: 500 });
     }
 }

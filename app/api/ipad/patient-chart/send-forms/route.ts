@@ -34,13 +34,13 @@ export async function GET(request: NextRequest) {
         // customModuleForms doesn't support server-side search consistently,
         // so we pull a page and filter client-side.
         const data = await healthieGraphQL<{ customModuleForms: CustomModuleForm[] }>(
-            `query ListForms($limit: Int) {
-                customModuleForms(offset: 0, limit: $limit) {
+            `query ListForms {
+                customModuleForms(offset: 0) {
                     id
                     name
                 }
             }`,
-            { limit }
+            {}
         );
         let forms = data.customModuleForms || [];
         if (q) forms = forms.filter(f => (f.name || '').toLowerCase().includes(q));

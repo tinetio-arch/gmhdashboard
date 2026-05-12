@@ -209,18 +209,37 @@ export async function POST(request: Request): Promise<Response> {
         ? `${resource.first_name || ''} ${resource.last_name || ''}`.trim()
         : 'Unknown';
 
-    console.log(`[patient-created-webhook] New patient: ${patientName} (ID: ${patientId})`);
+    console.log(`[patient-created-webhook] Event ${eventType}: ${patientName} (ID: ${patientId})`);
 
-    // Send immediate Telegram notification
-    await sendTelegramAlert(
-        `👤 *New Patient Created in Healthie*\n\n` +
-        `*Name:* ${patientName || 'Not provided'}\n` +
-        `*Healthie ID:* \`${patientId}\`\n\n` +
-        `🔄 Syncing to Snowflake...`
-    );
+    // FIX(2026-04-16): upsert into our Postgres patients + healthie_clients so
+    // new Healthie patients (Jacob Baker case) automatically appear in the GMH
+    // dashboard — not just Snowflake. Uses the shared dedup logic from
+    // ipad-patient-resolver so this is idempotent and can't create duplicates.
+    let pgUpsertResult: { patient_id: string | null; action: string; fullName: string | null } =
+        { patient_id: null, action: 'skipped', fullName: null };
+    if (patientId && patientId !== 'unknown') {
+        try {
+            const { upsertHealthiePatient } = await import('@/lib/ipad-patient-resolver');
+            pgUpsertResult = await upsertHealthiePatient(patientId);
+            console.log(`[patient-created-webhook] Postgres upsert: action=${pgUpsertResult.action}, patient_id=${pgUpsertResult.patient_id}, name=${pgUpsertResult.fullName || patientName}`);
+        } catch (e: any) {
+            console.error('[patient-created-webhook] Postgres upsert failed:', e.message);
+        }
+    }
 
-    // Trigger sync in the background (don't wait)
-    // This ensures patient is available in scribe system immediately
+    // Send immediate Telegram notification (only for created — updates are too chatty)
+    if (eventType === 'patient.created' || eventType.endsWith('.created')) {
+        const displayName = pgUpsertResult.fullName || patientName || 'Not provided';
+        await sendTelegramAlert(
+            `👤 *New Patient Created in Healthie*\n\n` +
+            `*Name:* ${displayName}\n` +
+            `*Healthie ID:* \`${patientId}\`\n` +
+            `*Postgres:* ${pgUpsertResult.action}\n\n` +
+            `🔄 Syncing to Snowflake...`
+        );
+    }
+
+    // Trigger Snowflake sync in the background (don't wait)
     triggerPatientSync().then(async (result) => {
         if (result.success) {
             await sendTelegramAlert(
@@ -241,7 +260,9 @@ export async function POST(request: Request): Promise<Response> {
         success: true,
         message: 'Patient received, sync triggered',
         patientId,
-        patientName,
+        patientName: pgUpsertResult.fullName || patientName,
+        postgres: pgUpsertResult.action,
+        local_patient_id: pgUpsertResult.patient_id,
     });
 }
 

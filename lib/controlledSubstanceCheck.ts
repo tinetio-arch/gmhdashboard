@@ -230,15 +230,18 @@ export async function recordControlledSubstanceCheck(
     // Get current system counts
     const systemCounts = await getSystemInventoryCounts();
 
-    // Calculate physical totals
+    // Calculate physical totals (vials + prefilled syringes)
     const physicalTotalCb = (input.physicalVialsCb30ml * 30) + (input.physicalPartialMlCb || 0);
     const physicalTotalTopRx = (input.physicalVialsTopRx10ml * 10) + (input.physicalPartialMlTopRx || 0);
+    const physicalSyringeMl = (input as any).physicalSyringeMl || 0;
 
-    // Calculate discrepancies (system count - physical count)
-    // Positive = system has more than physical (loss/waste)
-    // Negative = physical has more than system (gain)
-    const discrepancyCb = systemCounts.cb30ml.totalMl - physicalTotalCb;
-    const discrepancyTopRx = systemCounts.topRx10ml.totalMl - physicalTotalTopRx;
+    // FIX(2026-04-22): Discrepancy = (vials + staged syringes) - (physical vials + physical syringes)
+    // Previously staged doses were invisible — staff saw a discrepancy they couldn't explain.
+    const systemGrandTotal = systemCounts.cb30ml.totalMl + systemCounts.topRx10ml.totalMl
+        + systemCounts.cb30ml.stagedDoseMl + systemCounts.topRx10ml.stagedDoseMl;
+    const physicalGrandTotal = physicalTotalCb + physicalTotalTopRx + physicalSyringeMl;
+    const discrepancyCb = systemGrandTotal - physicalGrandTotal;
+    const discrepancyTopRx = 0; // Using grand total now — split per-vendor is misleading when syringes cross vendors
 
     // Threshold: Only flag as discrepancy if difference > 2ml
     // Differences <= 2ml are auto-documented as "user waste" (needle dead-space, spillage, etc.)

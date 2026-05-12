@@ -218,6 +218,18 @@ For any single task, you should ideally be touching 3 files or fewer. If you nee
 
 ## Debugging System
 
+### iPad/Mobile CEO Dashboard — MANDATORY Debug Checklist
+When touching ANY data that flows to the CEO iPad tab, verify at ALL 5 layers:
+
+1. **Database**: `psql` raw query returns correct values
+2. **API endpoint**: `curl` the route, verify response JSON fields + values
+3. **loadDashboard() mapping** (`public/ipad/app.js` ~line 987): New fields MUST be explicitly added to the `dashboardData = { ... }` object. This function does NOT pass through raw API data. **This is where bugs hide.**
+4. **renderCEODashboard()**: Verify template `${expressions}` reference correct field names from step 3
+5. **Actual device**: Ask for screenshot or verify on phone. Don't trust the debug script alone.
+
+**After ANY API response change**: `grep "dashboardData = {" public/ipad/app.js` and verify every new field is mapped.
+**After ANY iPad change**: Run `sync-mobile.sh` and update the mobile `index.html` version stamp.
+
 ### The DEBUG Protocol
 When encountering a bug, follow this exact sequence. Do NOT skip steps.
 

@@ -1,92 +1,160 @@
 #!/bin/bash
-# generate-status-report.sh — Queries live systems and outputs a markdown status report
+# =============================================================================
+# GMH Dashboard Live Status Report Generator
+# Queries PM2, disk, Postgres, and service health to produce LIVE_STATUS.md
 # Usage: bash ~/gmhdashboard/scripts/generate-status-report.sh
 # Output: ~/gmhdashboard/docs/LIVE_STATUS.md
+# =============================================================================
 
-OUTPUT="$HOME/gmhdashboard/docs/LIVE_STATUS.md"
+set -euo pipefail
+
+REPORT_FILE="$HOME/gmhdashboard/docs/LIVE_STATUS.md"
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
+ENV_FILE="$HOME/gmhdashboard/.env.local"
 
-# Load env vars safely (handle special chars in values)
-eval $(grep -E '^DATABASE_' $HOME/gmhdashboard/.env.local | while IFS='=' read -r key val; do echo "export $key=\"$val\""; done) 2>/dev/null || true
-export PGPASSWORD="$DATABASE_PASSWORD"
-export PGSSLMODE="$DATABASE_SSLMODE"
-DB_CMD="psql -h $DATABASE_HOST -p $DATABASE_PORT -U $DATABASE_USER -d $DATABASE_NAME -t -A"
+# Load database credentials from .env.local
+if [ -f "$ENV_FILE" ]; then
+  export DATABASE_HOST=$(grep '^DATABASE_HOST=' "$ENV_FILE" | cut -d'=' -f2-)
+  export DATABASE_PORT=$(grep '^DATABASE_PORT=' "$ENV_FILE" | cut -d'=' -f2-)
+  export DATABASE_NAME=$(grep '^DATABASE_NAME=' "$ENV_FILE" | cut -d'=' -f2-)
+  export DATABASE_USER=$(grep '^DATABASE_USER=' "$ENV_FILE" | cut -d'=' -f2-)
+  export DATABASE_PASSWORD=$(grep '^DATABASE_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2-)
+fi
+
+# Helper: run psql query
+run_sql() {
+  PGPASSWORD="$DATABASE_PASSWORD" psql -h "$DATABASE_HOST" -p "$DATABASE_PORT" -U "$DATABASE_USER" -d "$DATABASE_NAME" -t -A -c "$1" 2>/dev/null || echo "QUERY_FAILED"
+}
 
 echo "Generating live status report..."
 
-# ---- PM2 Status ----
-PM2_ONLINE=$(pm2 jlist 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.filter(s=>s.pm2_env.status==='online').length)" 2>/dev/null || echo '?')
-PM2_TOTAL=$(pm2 jlist 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.length)" 2>/dev/null || echo '?')
-PM2_RESTARTS=$(pm2 jlist 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));d.forEach(s=>console.log(s.name+': '+s.pm2_env.restart_time+' restarts'))" 2>/dev/null || echo 'unable to query')
+# --- Collect Data ---
 
-# ---- Disk Usage ----
-DISK_USAGE=$(df -h / | awk 'NR==2{print $5}')
-DISK_AVAIL=$(df -h / | awk 'NR==2{print $4}')
-DISK_TOTAL=$(df -h / | awk 'NR==2{print $2}')
+# PM2 Status
+PM2_JSON=$(pm2 jlist 2>/dev/null || echo '[]')
+PM2_SUMMARY=$(echo "$PM2_JSON" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    online = sum(1 for p in data if p["pm2_env"]["status"] == "online")
+    total = len(data)
+    high_restarts = [(p["name"], p["pm2_env"]["restart_time"]) for p in data if p["pm2_env"]["restart_time"] > 5]
+    print(f"| Services Online | {online}/{total} |" )
+    for name, restarts in high_restarts:
+        print(f"| ⚠️  {name} | {restarts} restarts |" )
+except:
+    print("| PM2 | ERROR reading status |")
+' 2>/dev/null)
 
-# ---- Memory ----
-MEM_USED=$(free -m 2>/dev/null | awk 'NR==2{printf "%.0f", $3/1024}' || echo '?')
-MEM_TOTAL=$(free -m 2>/dev/null | awk 'NR==2{printf "%.0f", $2/1024}' || echo '?')
+PM2_TABLE=$(echo "$PM2_JSON" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for p in data:
+        name = p["name"]
+        status = p["pm2_env"]["status"]
+        restarts = p["pm2_env"]["restart_time"]
+        mem = round(p["monit"]["memory"] / 1024 / 1024, 1)
+        cpu = p["monit"]["cpu"]
+        icon = "✅" if status == "online" else "🔴"
+        print(f"| {icon} {name} | {status} | {restarts} | {mem}MB | {cpu}% |" )
+except:
+    print("| ERROR | - | - | - | - |")
+' 2>/dev/null)
 
-# ---- CPU ----
-CPU_LOAD=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}' || echo '?')
+# Disk Usage
+DISK_LINE=$(df -h / | tail -1)
+DISK_USED=$(echo "$DISK_LINE" | awk '{print $3}')
+DISK_AVAIL=$(echo "$DISK_LINE" | awk '{print $4}')
+DISK_PCT=$(echo "$DISK_LINE" | awk '{print $5}')
 
-# ---- Database Queries ----
-ACTIVE_PATIENTS=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE status_key='active';" 2>/dev/null || echo '?')
-INACTIVE_PATIENTS=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE status_key='inactive';" 2>/dev/null || echo '?')
-BILLING_HOLDS=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE status_key='hold_payment_research';" 2>/dev/null || echo '?')
-TOTAL_PATIENTS=$($DB_CMD -c "SELECT COUNT(*) FROM patients;" 2>/dev/null || echo '?')
+# System Load
+LOAD_AVG=$(uptime | awk -F'load average: ' '{print $2}')
+MEM_INFO=$(free -m | awk '/Mem:/ {printf "%dMB / %dMB (%.0f%%)", $3, $2, $3/$2*100}')
 
-GHL_SYNCED=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE ghl_contact_id IS NOT NULL AND ghl_contact_id != '' AND status_key='active';" 2>/dev/null || echo '?')
-GHL_PENDING=$($DB_CMD -c "SELECT COUNT(*) FROM patients WHERE (ghl_contact_id IS NULL OR ghl_contact_id='') AND status_key='active';" 2>/dev/null || echo '?')
+# Database Queries
+PATIENT_COUNT=$(run_sql "SELECT COUNT(*) FROM patients WHERE status_key = 'active'")
+BILLING_HOLDS=$(run_sql "SELECT COUNT(*) FROM patients WHERE status_key = 'hold_payment_research'")
+PENDING_LABS=$(run_sql "SELECT COUNT(*) FROM lab_review_queue WHERE status = 'pending'" 2>/dev/null || echo "0")
+TOTAL_PATIENTS=$(run_sql "SELECT COUNT(*) FROM patients")
 
-PENDING_LABS=$($DB_CMD -c "SELECT COUNT(*) FROM lab_review_queue WHERE status='pending_review';" 2>/dev/null || echo '?')
+# GHL Sync Status
+GHL_PENDING=$(run_sql "SELECT COUNT(*) FROM patients WHERE ghl_sync_status = 'pending' OR ghl_sync_status IS NULL" 2>/dev/null || echo "N/A")
+GHL_SYNCED=$(run_sql "SELECT COUNT(*) FROM patients WHERE ghl_sync_status = 'synced'" 2>/dev/null || echo "N/A")
+GHL_ERROR=$(run_sql "SELECT COUNT(*) FROM patients WHERE ghl_sync_status = 'error'" 2>/dev/null || echo "N/A")
 
-ZERO_STOCK=$($DB_CMD -c "SELECT COUNT(*) FROM peptide_products pp LEFT JOIN (SELECT product_id, SUM(remaining_volume_ml) as total_stock FROM vials WHERE status='active' GROUP BY product_id) v ON pp.product_id=v.product_id WHERE pp.active=true AND (v.total_stock IS NULL OR v.total_stock <= 0);" 2>/dev/null || echo '?')
+# Recent service restarts (last 24h via PM2)
+RECENT_RESTARTS=$(echo "$PM2_JSON" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    recent = [(p["name"], p["pm2_env"]["restart_time"]) for p in data if p["pm2_env"]["restart_time"] > 0]
+    if recent:
+        for name, r in sorted(recent, key=lambda x: -x[1]):
+            print(f"- {name}: {r} restarts")
+    else:
+        print("- No restarts recorded")
+except:
+    print("- Error reading restart data")
+' 2>/dev/null)
 
-# ---- Build Report ----
-cat > "$OUTPUT" << REPORTEOF
-# Live System Status Report
+# --- Write Report ---
+
+cat > "$REPORT_FILE" << EOF
+# GMH Dashboard — Live Status Report
 
 **Generated**: $TIMESTAMP
-**Server**: AWS EC2 (3.141.49.8)
+**Server**: EC2 (us-east-2) | Amazon Linux
 
 ---
 
-## Infrastructure
+## System Health
 
-| Metric | Value | Target |
-|---|---|---|
-| Disk Usage | $DISK_USAGE ($DISK_AVAIL free of $DISK_TOTAL) | < 75% |
-| RAM | ${MEM_USED}GB / ${MEM_TOTAL}GB | < 80% |
-| CPU Load | $CPU_LOAD | < 2.0 |
-| PM2 Services | $PM2_ONLINE / $PM2_TOTAL online | All online |
-
-### PM2 Service Restarts
-\`\`\`
-$PM2_RESTARTS
-\`\`\`
-
-## Patient Data
-
-| Metric | Value | Target |
-|---|---|---|
-| Active Patients | $ACTIVE_PATIENTS | 345+ |
-| Inactive Patients | $INACTIVE_PATIENTS | Reactivate 20 |
-| Billing Holds | $BILLING_HOLDS | 0 |
-| Total in System | $TOTAL_PATIENTS | — |
-
-## Integrations
-
-| Metric | Value | Target |
-|---|---|---|
-| GHL Synced (active) | $GHL_SYNCED | 100% of active |
-| GHL Pending Sync | $GHL_PENDING | 0 |
-| Pending Lab Reviews | $PENDING_LABS | 0 (same day) |
-| Peptide SKUs at Zero | $ZERO_STOCK | 0 |
+| Metric | Value |
+|--------|-------|
+| Disk Used | $DISK_USED / $DISK_AVAIL available ($DISK_PCT) |
+| Memory | $MEM_INFO |
+| Load Average | $LOAD_AVG |
+$PM2_SUMMARY
 
 ---
-*Run: \`bash ~/gmhdashboard/scripts/generate-status-report.sh\`*
-REPORTEOF
 
-echo "Report saved to $OUTPUT"
+## PM2 Services
+
+| Service | Status | Restarts | Memory | CPU |
+|---------|--------|----------|--------|-----|
+$PM2_TABLE
+
+---
+
+## Database (Postgres)
+
+| Metric | Value |
+|--------|-------|
+| Total Patients | $TOTAL_PATIENTS |
+| Active Patients | $PATIENT_COUNT |
+| Billing Holds | $BILLING_HOLDS |
+| Pending Lab Reviews | $PENDING_LABS |
+
+---
+
+## GHL Sync Status
+
+| Status | Count |
+|--------|-------|
+| Synced | $GHL_SYNCED |
+| Pending | $GHL_PENDING |
+| Error | $GHL_ERROR |
+
+---
+
+## Recent Service Restarts
+
+$RECENT_RESTARTS
+
+---
+
+*Auto-generated by generate-status-report.sh — do not edit manually.*
+EOF
+
+echo "✅ Status report written to $REPORT_FILE"

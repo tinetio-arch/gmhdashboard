@@ -3,8 +3,8 @@
  * POST - Upload PDF for order and optionally push to Healthie
  */
 
-import { NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { query } from '@/lib/db';
@@ -22,9 +22,9 @@ const s3 = new S3Client({
 
 const BUCKET = 'gmh-specialty-orders';
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const formData = await request.formData();
 
         const orderId = formData.get('order_id') as string;
@@ -78,15 +78,18 @@ export async function POST(request: Request) {
             healthie_document_id: healthieDocumentId,
         });
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error uploading specialty order PDF:', error);
         return NextResponse.json({ error: 'Failed to upload PDF' }, { status: 500 });
     }
 }
 
 // Get presigned URL for viewing PDF
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
     try {
-        await requireUser('read');
+        await requireApiUser(request, 'read');
         const { searchParams } = new URL(request.url);
         const s3Key = searchParams.get('s3_key');
 
@@ -102,6 +105,9 @@ export async function GET(request: Request) {
 
         return NextResponse.json({ url });
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error getting presigned URL:', error);
         return NextResponse.json({ error: 'Failed to get URL' }, { status: 500 });
     }

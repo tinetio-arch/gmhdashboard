@@ -43,15 +43,23 @@ const PRESCRIPTION_FRAGMENT = `
     rx_reference_number
     pharmacy {
       name
-      address
+      line1
+      line2
       city
       state
       zip
-      phone
-      fax
+      phone_number
     }
-    first_prescription_diagnosis
-    second_prescription_diagnosis
+    first_prescription_diagnosis {
+      diagnosis_code
+      diagnosis_description
+      is_primary
+    }
+    second_prescription_diagnosis {
+      diagnosis_code
+      diagnosis_description
+      is_primary
+    }
   }
 `;
 

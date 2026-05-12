@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import {
     getTodayCheckStatus,
     getSystemInventoryCounts,
@@ -18,7 +18,7 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(request: NextRequest) {
     try {
-        const user = await requireUser('read');
+        await requireApiUser(request, 'read');
 
         const { searchParams } = new URL(request.url);
         const action = searchParams.get('action') || 'status';
@@ -62,6 +62,9 @@ export async function GET(request: NextRequest) {
 
         return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
     } catch (error: any) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('[controlled-check] GET error:', error);
         return NextResponse.json({ error: error.message }, { status: 500 });
     }
@@ -73,7 +76,7 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
     try {
-        const user = await requireUser('write');
+        const user = await requireApiUser(request, 'write');
         const body = await request.json();
 
         // Accept both naming conventions from UI
@@ -83,20 +86,31 @@ export async function POST(request: NextRequest) {
             physicalVialsCb30ml: parseInt(body.carrieboyd_full_vials ?? body.physicalVialsCb30ml) || 0,
             physicalVialsTopRx10ml: parseInt(body.toprx_vials ?? body.physicalVialsTopRx10ml) || 0,
             physicalPartialMlCb: parseFloat(body.carrieboyd_partial_ml ?? body.physicalPartialMlCb) || 0,
-            physicalPartialMlTopRx: parseFloat(body.physicalPartialMlTopRx) || 0,
+            physicalPartialMlTopRx: parseFloat(body.toprx_partial_ml ?? body.physicalPartialMlTopRx) || 0,
             checkType: body.check_type || 'morning',
             notes: body.notes || null,
             discrepancyNotes: body.discrepancyNotes || null
         };
 
-        // Get system counts to check for discrepancy
+        // Physical syringe count from the form
+        const physicalSyringeMl = parseFloat(body.physical_syringe_ml) || 0;
+        // Attach to input so recordControlledSubstanceCheck can use it
+        (input as any).physicalSyringeMl = physicalSyringeMl;
+
+        // Get system counts for pre-check
         const systemCounts = await getSystemInventoryCounts();
-        const physicalTotalCb = (input.physicalVialsCb30ml * 30) + (input.physicalPartialMlCb || 0);
-        const physicalTotalTopRx = (input.physicalVialsTopRx10ml * 10) + (input.physicalPartialMlTopRx || 0);
+
+        // Require discrepancy notes if difference > 2ml.
+        // FIX(2026-04-22): `discrepancyCb`/`discrepancyTopRx` were referenced without
+        // being declared — any POST hitting the threshold branch would ReferenceError.
+        // Compute them from systemCounts vs. the physical totals (dose + waste + syringe).
+        const physicalTotalCb =
+            input.physicalVialsCb30ml * 30 + (input.physicalPartialMlCb || 0);
+        const physicalTotalTopRx =
+            input.physicalVialsTopRx10ml * 10 + (input.physicalPartialMlTopRx || 0);
         const discrepancyCb = Math.abs(systemCounts.cb30ml.totalMl - physicalTotalCb);
         const discrepancyTopRx = Math.abs(systemCounts.topRx10ml.totalMl - physicalTotalTopRx);
 
-        // Require discrepancy notes if difference > 2ml
         const DISCREPANCY_THRESHOLD = 2.0;
         if ((discrepancyCb > DISCREPANCY_THRESHOLD || discrepancyTopRx > DISCREPANCY_THRESHOLD) && !input.discrepancyNotes) {
             return NextResponse.json(
@@ -158,6 +172,9 @@ export async function POST(request: NextRequest) {
             display: formatCheckForDisplay(check)
         });
     } catch (error: any) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('[controlled-check] POST error:', error);
         return NextResponse.json({ error: error.message }, { status: 500 });
     }

@@ -48,6 +48,13 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // FIX(2026-04-22): Include WC cancellation status in response
+    const wcMsg = result.wcOrderCancelled
+      ? `WC order #${result.wcOrderId} cancelled (ShipStation will auto-cancel). `
+      : result.wcOrderId
+        ? `⚠️ WC order #${result.wcOrderId} cancellation failed — cancel manually in WooCommerce. `
+        : '';
+
     return NextResponse.json({
       success: true,
       refund: {
@@ -57,7 +64,9 @@ export async function POST(request: NextRequest) {
       },
       healthie_document_id: result.healthieDocumentId,
       dispenses_reversed: result.dispensesReversed,
-      message: `Refunded $${result.refundAmount?.toFixed(2)}. ${result.dispensesReversed ? `${result.dispensesReversed} dispense(s) marked cancelled. ` : ''}Receipt uploaded to chart.`,
+      wc_order_cancelled: result.wcOrderCancelled || false,
+      wc_order_id: result.wcOrderId || null,
+      message: `Refunded $${result.refundAmount?.toFixed(2)}. ${result.dispensesReversed ? `${result.dispensesReversed} dispense(s) cancelled. ` : ''}${wcMsg}Receipt uploaded to chart.`,
     });
   } catch (error: any) {
     if (error?.status === 401 || error?.message === 'Unauthorized') {

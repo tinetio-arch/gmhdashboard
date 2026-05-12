@@ -20,6 +20,7 @@ interface FaxQueueItem {
     healthie_patient_id: string | null;
     status: string;
     approved_at: string | null;
+    rejection_reason: string | null;
 }
 
 interface PatientOption {
@@ -60,8 +61,22 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
     const [patientSearch, setPatientSearch] = useState('');
     const [isSearching, setIsSearching] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
     const [visibleToPatient, setVisibleToPatient] = useState(true);
+
+    // Sync local queue with server data after router.refresh() — useState only captures
+    // initialQueue on mount, so without this effect a refresh re-fetches on the server but
+    // never reaches the rendered list.
+    useEffect(() => {
+        setQueue(initialQueue);
+    }, [initialQueue]);
+
+    // Auto-dismiss success notices so they don't pile up; errors stay until dismissed.
+    useEffect(() => {
+        if (notice?.kind !== 'success') return;
+        const t = setTimeout(() => setNotice(null), 4000);
+        return () => clearTimeout(t);
+    }, [notice]);
 
     // Search patients as user types (debounced)
     useEffect(() => {
@@ -99,12 +114,12 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
 
     async function handleApprove(faxId: string, patientId: string) {
         if (!patientId) {
-            setError('Please select a patient');
+            setNotice({ kind: 'error', message: 'Please select a patient before approving.' });
             return;
         }
 
         setIsProcessing(true);
-        setError(null);
+        setNotice(null);
 
         try {
             const res = await fetch('/ops/api/faxes/queue', {
@@ -127,12 +142,13 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
                         : f
                 ));
                 setSelectedFax(null);
+                setNotice({ kind: 'success', message: 'Fax approved and uploaded to Healthie.' });
                 router.refresh();
             } else {
-                setError(data.error || 'Failed to approve');
+                setNotice({ kind: 'error', message: data.error || 'Failed to approve fax.' });
             }
         } catch (e) {
-            setError('Network error');
+            setNotice({ kind: 'error', message: 'Network error — fax not approved. Please retry.' });
         } finally {
             setIsProcessing(false);
         }
@@ -140,7 +156,7 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
 
     async function handleReject(faxId: string, reason: string) {
         setIsProcessing(true);
-        setError(null);
+        setNotice(null);
 
         try {
             const res = await fetch('/ops/api/faxes/queue', {
@@ -157,14 +173,16 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
 
             if (data.success) {
                 setQueue(prev => prev.map(f =>
-                    f.id === faxId ? { ...f, status: 'rejected' } : f
+                    f.id === faxId ? { ...f, status: 'rejected', rejection_reason: reason } : f
                 ));
                 setSelectedFax(null);
+                setNotice({ kind: 'success', message: 'Fax moved to Rejected.' });
+                router.refresh();
             } else {
-                setError(data.error || 'Failed to reject');
+                setNotice({ kind: 'error', message: data.error || 'Failed to reject fax.' });
             }
         } catch (e) {
-            setError('Network error');
+            setNotice({ kind: 'error', message: 'Network error — fax not rejected. Please retry.' });
         } finally {
             setIsProcessing(false);
         }
@@ -172,7 +190,7 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
 
     async function handleUnreject(faxId: string) {
         setIsProcessing(true);
-        setError(null);
+        setNotice(null);
 
         try {
             const res = await fetch('/ops/api/faxes/queue', {
@@ -188,13 +206,44 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
 
             if (data.success) {
                 setQueue(prev => prev.map(f =>
-                    f.id === faxId ? { ...f, status: 'pending_review' } : f
+                    f.id === faxId ? { ...f, status: 'pending_review', rejection_reason: null } : f
                 ));
+                setNotice({ kind: 'success', message: 'Fax moved back to Pending.' });
+                router.refresh();
             } else {
-                setError(data.error || 'Failed to unreject');
+                setNotice({ kind: 'error', message: data.error || 'Failed to move fax to pending.' });
             }
         } catch (e) {
-            setError('Network error');
+            setNotice({ kind: 'error', message: 'Network error — fax not moved. Please retry.' });
+        } finally {
+            setIsProcessing(false);
+        }
+    }
+
+    async function handleDelete(faxId: string) {
+        if (!confirm('Permanently delete this fax? This cannot be undone.')) return;
+
+        setIsProcessing(true);
+        setNotice(null);
+
+        try {
+            const res = await fetch('/ops/api/faxes/queue', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: faxId }),
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                setQueue(prev => prev.filter(f => f.id !== faxId));
+                setNotice({ kind: 'success', message: 'Fax permanently deleted.' });
+                router.refresh();
+            } else {
+                setNotice({ kind: 'error', message: data.error || 'Failed to delete fax.' });
+            }
+        } catch (e) {
+            setNotice({ kind: 'error', message: 'Network error — fax not deleted. Please retry.' });
         } finally {
             setIsProcessing(false);
         }
@@ -212,6 +261,51 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
 
     return (
         <div>
+            {/* Global notice banner — single source of truth for action feedback so
+                errors from approve/reject/unreject/delete are never silently dropped. */}
+            {notice && (
+                <div
+                    role={notice.kind === 'error' ? 'alert' : 'status'}
+                    style={{
+                        position: 'fixed',
+                        top: '1rem',
+                        right: '1rem',
+                        zIndex: 9999,
+                        padding: '0.75rem 1rem',
+                        borderRadius: '0.5rem',
+                        backgroundColor: notice.kind === 'success' ? '#d1fae5' : '#fee2e2',
+                        color: notice.kind === 'success' ? '#065f46' : '#991b1b',
+                        border: `1px solid ${notice.kind === 'success' ? '#10b981' : '#ef4444'}`,
+                        boxShadow: '0 6px 16px rgba(0,0,0,0.12)',
+                        fontWeight: 600,
+                        fontSize: '0.95rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.75rem',
+                        maxWidth: '24rem',
+                    }}
+                >
+                    <span aria-hidden>{notice.kind === 'success' ? '✓' : '⚠'}</span>
+                    <span>{notice.message}</span>
+                    <button
+                        onClick={() => setNotice(null)}
+                        aria-label="Dismiss"
+                        style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'inherit',
+                            cursor: 'pointer',
+                            fontWeight: 700,
+                            marginLeft: 'auto',
+                            fontSize: '1rem',
+                            lineHeight: 1,
+                        }}
+                    >
+                        ✕
+                    </button>
+                </div>
+            )}
+
             {/* Tabs */}
             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
                 {(['pending', 'approved', 'rejected'] as const).map(tab => (
@@ -436,12 +530,6 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
                                         )}
                                     </div>
 
-                                    {error && selectedFax?.id === fax.id && (
-                                        <div style={{ color: '#dc2626', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                                            {error}
-                                        </div>
-                                    )}
-
                                     {/* Visibility Toggle */}
                                     <label style={{
                                         display: 'flex',
@@ -512,7 +600,7 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
                                 </div>
                             )}
 
-                            {/* Rejected Status with Unreject */}
+                            {/* Rejected Status with Unreject + hard Delete */}
                             {fax.status === 'rejected' && (
                                 <div style={{
                                     display: 'flex',
@@ -525,23 +613,42 @@ export default function FaxesDashboardClient({ faxQueue: initialQueue }: Props) 
                                     <div style={{ color: '#991b1b', fontWeight: 600 }}>
                                         ✕ Rejected {fax.rejection_reason && `- ${fax.rejection_reason}`}
                                     </div>
-                                    <button
-                                        onClick={() => handleUnreject(fax.id)}
-                                        disabled={isProcessing}
-                                        style={{
-                                            padding: '0.4rem 1rem',
-                                            backgroundColor: '#6366f1',
-                                            color: '#fff',
-                                            border: 'none',
-                                            borderRadius: '0.375rem',
-                                            fontWeight: 600,
-                                            cursor: isProcessing ? 'not-allowed' : 'pointer',
-                                            opacity: isProcessing ? 0.5 : 1,
-                                            fontSize: '0.85rem',
-                                        }}
-                                    >
-                                        ↩ Move to Pending
-                                    </button>
+                                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                        <button
+                                            onClick={() => handleUnreject(fax.id)}
+                                            disabled={isProcessing}
+                                            style={{
+                                                padding: '0.4rem 1rem',
+                                                backgroundColor: '#6366f1',
+                                                color: '#fff',
+                                                border: 'none',
+                                                borderRadius: '0.375rem',
+                                                fontWeight: 600,
+                                                cursor: isProcessing ? 'not-allowed' : 'pointer',
+                                                opacity: isProcessing ? 0.5 : 1,
+                                                fontSize: '0.85rem',
+                                            }}
+                                        >
+                                            ↩ Move to Pending
+                                        </button>
+                                        <button
+                                            onClick={() => handleDelete(fax.id)}
+                                            disabled={isProcessing}
+                                            style={{
+                                                padding: '0.4rem 1rem',
+                                                backgroundColor: '#dc2626',
+                                                color: '#fff',
+                                                border: 'none',
+                                                borderRadius: '0.375rem',
+                                                fontWeight: 600,
+                                                cursor: isProcessing ? 'not-allowed' : 'pointer',
+                                                opacity: isProcessing ? 0.5 : 1,
+                                                fontSize: '0.85rem',
+                                            }}
+                                        >
+                                            🗑 Delete
+                                        </button>
+                                    </div>
                                 </div>
                             )}
                         </div>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
-import { getPool } from '@/lib/db';
+import { getPool, pgTimestampToUTCISO } from '@/lib/db';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 
 const HEALTHIE_API_URL = 'https://api.gethealthie.com/graphql';
@@ -119,7 +119,14 @@ export async function GET(request: NextRequest): Promise<Response> {
 
         return NextResponse.json({
             success: true,
-            items: result.rows,
+            // FIX(2026-04-15): coerce timestamp-without-tz columns to UTC ISO so the
+            // iPad UI doesn't treat naked DB strings as local Arizona time.
+            items: (result.rows || []).map((r: any) => ({
+                ...r,
+                received_at: pgTimestampToUTCISO(r.received_at),
+                created_at: r.created_at ? pgTimestampToUTCISO(r.created_at) : undefined,
+                processed_at: r.processed_at ? pgTimestampToUTCISO(r.processed_at) : undefined,
+            })),
             count: result.rowCount,
         });
     } catch (error) {
@@ -253,4 +260,41 @@ export async function POST(request: NextRequest): Promise<Response> {
     }
 
     return NextResponse.json({ success: false, error: 'Invalid action' }, { status: 400 });
+}
+
+// DELETE: Permanently remove a fax from the queue (hard delete).
+// Used when staff want to clear a rejected fax out of the system entirely
+// rather than leaving it in the Rejected tab forever.
+export async function DELETE(request: NextRequest): Promise<Response> {
+    let user;
+    try {
+        user = await requireApiUser(request, 'write');
+    } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+        }
+        throw error;
+    }
+
+    let body: { id?: string };
+    try {
+        body = await request.json();
+    } catch {
+        return NextResponse.json({ success: false, error: 'Invalid JSON' }, { status: 400 });
+    }
+
+    const id = body.id;
+    if (!id) {
+        return NextResponse.json({ success: false, error: 'Missing id' }, { status: 400 });
+    }
+
+    const pool = getPool();
+    const result = await pool.query('DELETE FROM fax_queue WHERE id = $1', [id]);
+
+    if (result.rowCount === 0) {
+        return NextResponse.json({ success: false, error: 'Fax not found' }, { status: 404 });
+    }
+
+    console.log(`[API:FaxQueue] ${user.email} hard-deleted fax ${id}`);
+    return NextResponse.json({ success: true, message: 'Fax permanently deleted' });
 }

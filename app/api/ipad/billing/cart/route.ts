@@ -16,6 +16,12 @@ export async function GET(request: NextRequest) {
     }
     // FIX(2026-04-07): Resolve patient_id — may be UUID or Healthie numeric ID
     const patientId = await resolvePatientId(rawPatientId) || rawPatientId;
+    // FIX(2026-04-22): Auto-delete stale cart items older than 48 hours on every load.
+    // Stale items can cause staff to accidentally re-charge products.
+    await query(
+      `DELETE FROM patient_billing_cart WHERE created_at < NOW() - INTERVAL '48 hours'`
+    ).catch((err: any) => console.warn('[billing/cart] Stale cleanup failed:', err.message));
+
     const items = await query<{
       id: number;
       product_id: string;
@@ -24,9 +30,10 @@ export async function GET(request: NextRequest) {
       quantity: number;
       added_by: string;
       current_stock: number;
+      created_at: string;
     }>(`
       SELECT
-        c.id, c.product_id, c.product_name, c.price, c.quantity, c.added_by,
+        c.id, c.product_id, c.product_name, c.price, c.quantity, c.added_by, c.created_at,
         COALESCE((SELECT SUM(o.quantity) FROM peptide_orders o WHERE o.product_id::text = c.product_id), 0)
           - COALESCE((SELECT SUM(d.quantity) FROM peptide_dispenses d WHERE d.product_id::text = c.product_id AND d.status = 'Paid' AND d.education_complete = true), 0)
           AS current_stock

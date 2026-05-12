@@ -7,11 +7,22 @@ import type { PatientDataEntryRow, ProfessionalPatient } from '@/lib/patientQuer
 import type { LookupSets } from '@/lib/lookups';
 import { computeLabStatus, deriveHealthieBillingStatus, deriveRowColors } from '@/lib/patientFormatting';
 import type { UserRole } from '@/lib/auth';
+import type { PatientSignals, SignalState } from '@/lib/patientSignals';
+import type { EligibilityResult } from '@/lib/trtEligibility';
 import { withBasePath } from '@/lib/basePath';
 import Link from 'next/link';
 
+type RelationshipInfo = {
+  parentPatientId: string | null;
+  parentName: string | null;
+  spousePatientId: string | null;
+  spouseName: string | null;
+  dependentCount: number;   // number of patients where parent_patient_id = this row's id
+};
+
 type EditablePatient = {
   id: string;
+  healthieClientId: string | null;
   patientName: string;
   alertStatus: string | null;
   statusKey: string | null;
@@ -92,7 +103,141 @@ type Props = {
   initialStatusFilter?: string;
   initialSearchQuery?: string;
   initialLabsDueFilter?: string;
+  signals?: Record<string, PatientSignals>;
+  eligibility?: Record<string, EligibilityResult>;
+  relationships?: Record<string, RelationshipInfo>;
 };
+
+const SIGNAL_DOT_COLOR: Record<SignalState, string> = {
+  good: '#16a34a',
+  warn: '#d97706',
+  bad: '#dc2626',
+  na: '#cbd5e1',
+  none: '#94a3b8'
+};
+
+function SignalPair({ icon, state, label }: { icon: string; state: SignalState; label: string }) {
+  return (
+    <span
+      title={label}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '0.15rem',
+        marginRight: '0.5rem',
+        fontSize: '0.8rem',
+        cursor: 'help'
+      }}
+    >
+      <span>{icon}</span>
+      <span
+        style={{
+          display: 'inline-block',
+          width: '0.5rem',
+          height: '0.5rem',
+          borderRadius: '50%',
+          background: SIGNAL_DOT_COLOR[state]
+        }}
+      />
+    </span>
+  );
+}
+
+function eligibilityStateToSignal(state: EligibilityResult['state'] | undefined, hasOverrideRecent?: boolean): { state: SignalState; label: string } {
+  if (!state || state === 'n/a') return { state: 'na', label: 'Not applicable (non-TRT)' };
+  if (state === 'first-dispense') return { state: 'na', label: 'No prior dispense yet' };
+  if (state === 'eligible' || state === 'eligible-grace') return { state: 'good', label: state === 'eligible' ? 'Eligible for pickup' : 'In grace window — early pickup ok' };
+  if (state === 'not-yet') return { state: 'warn', label: 'Not yet eligible (still in supply)' };
+  return { state: 'none', label: '' };
+}
+
+function RelationshipChips({ info }: { info?: RelationshipInfo }) {
+  if (!info) return null;
+  const chips: React.ReactNode[] = [];
+  if (info.parentName) {
+    chips.push(
+      <span key="parent" title={`Dependent of ${info.parentName}`} style={{
+        display: 'inline-block', marginLeft: '0.5rem', padding: '0.1rem 0.45rem',
+        borderRadius: '3px', background: 'rgba(139, 92, 246, 0.12)', color: '#7c3aed',
+        fontSize: '0.7rem', fontWeight: 500
+      }}>
+        👶 Dependent of {info.parentName}
+      </span>
+    );
+  }
+  if (info.spouseName) {
+    chips.push(
+      <span key="spouse" title={`Spouse: ${info.spouseName}`} style={{
+        display: 'inline-block', marginLeft: '0.5rem', padding: '0.1rem 0.45rem',
+        borderRadius: '3px', background: 'rgba(14, 165, 233, 0.12)', color: '#0369a1',
+        fontSize: '0.7rem', fontWeight: 500
+      }}>
+        💕 Spouse of {info.spouseName}
+      </span>
+    );
+  }
+  if (info.dependentCount > 0) {
+    chips.push(
+      <span key="kids" title={`${info.dependentCount} dependent(s) on file`} style={{
+        display: 'inline-block', marginLeft: '0.5rem', padding: '0.1rem 0.45rem',
+        borderRadius: '3px', background: 'rgba(34, 197, 94, 0.12)', color: '#15803d',
+        fontSize: '0.7rem', fontWeight: 500
+      }}>
+        👨‍👩‍👧 {info.dependentCount} dep{info.dependentCount > 1 ? 's' : ''}
+      </span>
+    );
+  }
+  return <>{chips}</>;
+}
+
+function SignalCell({ sig, elig }: { sig?: PatientSignals; elig?: EligibilityResult }) {
+  if (!sig) {
+    return <span style={{ color: '#94a3b8', fontSize: '0.75rem' }}>—</span>;
+  }
+  const refill = eligibilityStateToSignal(elig?.state);
+  return (
+    <span style={{ whiteSpace: 'nowrap' }}>
+      <SignalPair icon="📋" state={sig.intake?.state ?? 'none'} label={sig.intake?.label ?? 'Intake: no data'} />
+      <SignalPair icon="✍️" state={sig.consents.state} label={`Consents: ${sig.consents.label}`} />
+      <SignalPair icon="📱" state={sig.app.state} label={`App: ${sig.app.label}`} />
+      <SignalPair icon="🔬" state={sig.labs.state} label={`Labs: ${sig.labs.label}`} />
+      <SignalPair icon="📅" state={sig.lastVisit.state} label={`Last Visit: ${sig.lastVisit.label}`} />
+      <SignalPair icon="💉" state={refill.state} label={`Refill: ${refill.label}${elig?.nextEligibleDate ? ' — next eligible ' + elig.nextEligibleDate : ''}`} />
+    </span>
+  );
+}
+
+function SignalsLegend() {
+  return (
+    <div
+      style={{
+        fontSize: '0.72rem',
+        color: '#64748b',
+        padding: '0.4rem 0.75rem',
+        background: '#f8fafc',
+        borderRadius: '0.375rem',
+        display: 'inline-flex',
+        flexWrap: 'wrap',
+        gap: '0.75rem',
+        alignItems: 'center',
+        marginBottom: '0.5rem'
+      }}
+    >
+      <strong style={{ color: '#0f172a' }}>Signals legend:</strong>
+      <span>📋 Intake</span>
+      <span>✍️ Consents</span>
+      <span>📱 App</span>
+      <span>🔬 Labs</span>
+      <span>📅 Last Visit</span>
+      <span>💉 Refill Eligible</span>
+      <span style={{ opacity: 0.6 }}>·</span>
+      <span>🟢 good</span>
+      <span>🟡 attention</span>
+      <span>🔴 action needed</span>
+      <span>⚪ N/A</span>
+    </div>
+  );
+}
 
 type EditableCellProps = {
   rowId: string;
@@ -331,13 +476,15 @@ function toBooleanValue(value: unknown): boolean {
   return false;
 }
 
-function mapPatient(row: PatientDataEntryRow, supplement?: ProfessionalPatient): EditablePatient {
+function mapPatient(row: PatientDataEntryRow, supplement?: ProfessionalPatient, eligibility?: EligibilityResult): EditablePatient {
   const extra = supplement ?? null;
   const controlledSource = toNullableString(row.last_controlled_dispense_at ?? extra?.last_controlled_dispense_at);
   const manualSource = toNullableString(row.last_supply_date ?? extra?.last_supply_date);
   const lastSupplyFromDea = Boolean(controlledSource);
   const chosenSupply = lastSupplyFromDea ? controlledSource : manualSource;
-  const eligibleSupply = calculateEligibleDate(chosenSupply);
+  // Server-computed eligibility (lib/trtEligibility.ts) using real dose_frequency_days × syringe_count.
+  // Falls back to the legacy hardcoded 2-month estimate only if server didn't compute one (no dispense history yet).
+  const eligibleSupply = eligibility?.nextEligibleDate || calculateEligibleDate(chosenSupply);
   const normalizedLastLab = toNullableString(row.last_lab ?? extra?.last_lab);
   const normalizedNextLab = toNullableString(row.next_lab ?? extra?.next_lab);
   const providedLabStatus = toNullableString(row.lab_status);
@@ -378,6 +525,7 @@ function mapPatient(row: PatientDataEntryRow, supplement?: ProfessionalPatient):
     methodOfPayment,
     paymentMethodColor: toNullableString(row.payment_method_color),
     clientTypeKey: toNullableString(row.client_type_key),
+    healthieClientId: toNullableString(row.healthie_client_id),
     typeOfClient,
     clientTypeColor: toNullableString(row.client_type_color),
     isPrimaryCare: toBooleanValue(row.is_primary_care),
@@ -444,6 +592,17 @@ function toDateTimeInput(value: unknown): string {
     return date.toISOString().slice(0, 16);
   }
   return candidate.slice(0, 16);
+}
+
+function formatPhoneDisplay(value: unknown): string {
+  if (!value) return '—';
+  const raw = String(value).replace(/[^\d]/g, '');
+  // Strip leading 1 (US country code)
+  const digits = raw.length === 11 && raw.startsWith('1') ? raw.slice(1) : raw;
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return String(value) || '—';
 }
 
 function formatDisplayDate(value: unknown): string {
@@ -576,7 +735,10 @@ export default function PatientTable({
   currentUserEmail,
   initialStatusFilter,
   initialSearchQuery,
-  initialLabsDueFilter
+  initialLabsDueFilter,
+  signals,
+  eligibility,
+  relationships
 }: Props) {
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
@@ -596,20 +758,22 @@ export default function PatientTable({
   const clientLookupByKey = useMemo(() => new Map(lookups.clientTypes.map((client) => [client.type_key, client])), [lookups.clientTypes]);
 
   const [rows, setRows] = useState<EditablePatient[]>(() =>
-    patients.map((row) => mapPatient(row, professionalMap.get(row.patient_id)))
+    patients.map((row) => mapPatient(row, professionalMap.get(row.patient_id), eligibility?.[row.patient_id]))
   );
-  const [patientTab, setPatientTab] = useState<'all' | 'member' | 'visit'>('all');
+  const [patientTab, setPatientTab] = useState<'all' | 'unclassified' | 'member' | 'intermittent' | 'visit'>('all');
   const [filterStatus, setFilterStatus] = useState<string>(initialStatusFilter || 'all');
   const [searchTerm, setSearchTerm] = useState(initialSearchQuery || '');
   const [labsDueDays, setLabsDueDays] = useState<string>(initialLabsDueFilter || '');
   const [savingId, setSavingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [activeCell, setActiveCell] = useState<{ rowId: string; field: EditableFieldKey } | null>(null);
+  const [abxtacModal, setAbxtacModal] = useState<{ healthie: string; patientName: string } | null>(null);
   const canEdit = currentUserRole !== 'read';
   const canDeletePatient = currentUserRole === 'admin';
+  const canManageAbxtac = currentUserRole === 'admin';
 
   useEffect(() => {
-    setRows(patients.map((row) => mapPatient(row, professionalMap.get(row.patient_id))));
+    setRows(patients.map((row) => mapPatient(row, professionalMap.get(row.patient_id), eligibility?.[row.patient_id])));
   }, [patients, professionalMap]);
 
   const rowsRef = useRef(rows);
@@ -651,13 +815,20 @@ export default function PatientTable({
   }
 
 
+  const isUnclassified = (r: EditablePatient) => !r.typeOfClient || r.typeOfClient.trim() === '';
   const memberCount = useMemo(() => rows.filter(r => r.patientType === 'member').length, [rows]);
+  const intermittentCount = useMemo(() => rows.filter(r => r.patientType === 'intermittent').length, [rows]);
   const visitCount = useMemo(() => rows.filter(r => r.patientType === 'visit').length, [rows]);
+  const unclassifiedCount = useMemo(() => rows.filter(isUnclassified).length, [rows]);
 
   const filteredRows = useMemo(() => {
     const matches = rows.filter((row) => {
       // Tab filter
-      if (patientTab !== 'all' && row.patientType !== patientTab) return false;
+      if (patientTab === 'unclassified') {
+        if (!isUnclassified(row)) return false;
+      } else if (patientTab !== 'all' && row.patientType !== patientTab) {
+        return false;
+      }
 
       let matchesStatus = filterStatus === 'all';
       if (!matchesStatus && filterStatus) {
@@ -698,8 +869,10 @@ export default function PatientTable({
   const headerLabels = [
     'Patient Name',
     'Alert Status',
+    'Phone',
     'Method of Payment',
     'Client Type',
+    'Patient Type',
     'Regimen',
     'Last Lab',
     'Next Lab',
@@ -709,7 +882,6 @@ export default function PatientTable({
     'Contract End',
     'DOB',
     'Address',
-    'Phone',
     'Email',
     'Added By',
     'Date Added',
@@ -902,7 +1074,8 @@ export default function PatientTable({
           dateAdded: row.dateAdded || timestamp,
           lastModified: timestamp,
           email: row.email || null,
-          membershipOwes: row.membershipOwes || null
+          membershipOwes: row.membershipOwes || null,
+          patientType: row.patientType || null
         })
       });
 
@@ -1002,8 +1175,22 @@ export default function PatientTable({
         <button style={tabStyle(patientTab === 'member')} onClick={() => setPatientTab('member')}>
           Members ({memberCount})
         </button>
+        <button style={tabStyle(patientTab === 'intermittent')} onClick={() => setPatientTab('intermittent')}>
+          Intermittent ({intermittentCount})
+        </button>
         <button style={tabStyle(patientTab === 'visit')} onClick={() => setPatientTab('visit')}>
           Visits ({visitCount})
+        </button>
+        <button
+          style={{
+            ...tabStyle(patientTab === 'unclassified'),
+            ...(unclassifiedCount > 0 && patientTab !== 'unclassified'
+              ? { color: '#b45309', fontWeight: 600 }
+              : {})
+          }}
+          onClick={() => setPatientTab('unclassified')}
+        >
+          Unclassified ({unclassifiedCount})
         </button>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center' }}>
@@ -1082,9 +1269,12 @@ export default function PatientTable({
                       cellStyle={baseCell}
                       display={
                         row.patientName ? (
-                          <Link href={detailHref} style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'none' }}>
-                            {row.patientName}
-                          </Link>
+                          <span>
+                            <Link href={detailHref} style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'none' }}>
+                              {row.patientName}
+                            </Link>
+                            <RelationshipChips info={relationships?.[row.id]} />
+                          </span>
                         ) : (
                           renderText(row.patientName)
                         )
@@ -1133,6 +1323,24 @@ export default function PatientTable({
                             </option>
                           ))}
                         </select>
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="phoneNumber"
+                      cellStyle={compactCellStyle}
+                      display={formatPhoneDisplay(row.phoneNumber)}
+                      renderEditor={({ onBlur }) => (
+                        <input
+                          type="text"
+                          value={row.phoneNumber}
+                          onChange={(event) =>
+                            updateRow(row.id, (current) => ({ ...current, phoneNumber: event.target.value }))
+                          }
+                          onBlur={onBlur}
+                          autoFocus
+                          style={inputStyle}
+                        />
                       )}
                     />
                     <EditableCell
@@ -1198,6 +1406,30 @@ export default function PatientTable({
                               {type.display_name}
                             </option>
                           ))}
+                        </select>
+                      )}
+                    />
+                    <EditableCell
+                      rowId={row.id}
+                      field="patientType"
+                      cellStyle={baseCell}
+                      display={renderText(row.patientType === 'visit' ? 'Visit' : row.patientType === 'intermittent' ? 'Intermittent' : 'Member')}
+                      renderEditor={({ onBlur }) => (
+                        <select
+                          value={row.patientType ?? 'member'}
+                          onChange={(event) =>
+                            updateRow(row.id, (current) => ({
+                              ...current,
+                              patientType: event.target.value
+                            }))
+                          }
+                          onBlur={onBlur}
+                          autoFocus
+                          style={selectStyle}
+                        >
+                          <option value="member">Member</option>
+                          <option value="intermittent">Intermittent</option>
+                          <option value="visit">Visit</option>
                         </select>
                       )}
                     />
@@ -1347,24 +1579,6 @@ export default function PatientTable({
                     />
                     <EditableCell
                       rowId={row.id}
-                      field="phoneNumber"
-                      cellStyle={compactCellStyle}
-                      display={renderText(row.phoneNumber)}
-                      renderEditor={({ onBlur }) => (
-                        <input
-                          type="text"
-                          value={row.phoneNumber}
-                          onChange={(event) =>
-                            updateRow(row.id, (current) => ({ ...current, phoneNumber: event.target.value }))
-                          }
-                          onBlur={onBlur}
-                          autoFocus
-                          style={inputStyle}
-                        />
-                      )}
-                    />
-                    <EditableCell
-                      rowId={row.id}
                       field="email"
                       cellStyle={{ ...compactCellStyle, whiteSpace: 'normal' as const }}
                       display={renderText(row.email)}
@@ -1384,22 +1598,6 @@ export default function PatientTable({
                     <td style={compactCellStyle}>{renderText(row.addedBy)}</td>
                     <td style={compactCellStyle}>{formatDisplayDate(row.dateAdded)}</td>
                     <td style={compactCellStyle}>{formatDisplayDate(row.lastModified)}</td>
-                    <td style={narrowCellStyle}>
-                      {row.lastSupplyDate?.trim() ? (
-                        <Link
-                          href={detailHref}
-                          style={{
-                            color: row.lastSupplyFromDea ? '#0284c7' : '#0f172a',
-                            fontWeight: row.lastSupplyFromDea ? 600 : 500,
-                            textDecoration: row.lastSupplyFromDea ? 'underline' : 'none'
-                          }}
-                        >
-                          {formatDisplayDate(row.lastSupplyDate)}
-                        </Link>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
                     <td style={{ ...baseCell, minWidth: '100px' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
                         {row.serviceTags.length > 0 ? row.serviceTags.map((tag) => (
@@ -1421,25 +1619,63 @@ export default function PatientTable({
                         )) : <span style={{ color: '#cbd5e1', fontSize: '0.75rem' }}>—</span>}
                       </div>
                     </td>
-                    <td style={narrowCellStyle}>{formatDisplayDate(row.eligibleForNextSupply)}</td>
-                    {canDeletePatient && (
-                      <td style={{ ...baseCell, minWidth: '120px' }}>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(row.id)}
-                          disabled={savingId === row.id}
+                    <td style={narrowCellStyle}>
+                      {row.lastSupplyDate?.trim() ? (
+                        <Link
+                          href={detailHref}
                           style={{
-                            padding: '0.45rem 0.95rem',
-                            borderRadius: '0.5rem',
-                            border: '1px solid rgba(248, 113, 113, 0.6)',
-                            background: 'rgba(248, 113, 113, 0.15)',
-                            color: '#f87171',
-                            cursor: savingId === row.id ? 'wait' : 'pointer',
-                            fontWeight: 600
+                            color: row.lastSupplyFromDea ? '#0284c7' : '#0f172a',
+                            fontWeight: row.lastSupplyFromDea ? 600 : 500,
+                            textDecoration: row.lastSupplyFromDea ? 'underline' : 'none'
                           }}
                         >
-                          Delete
-                        </button>
+                          {formatDisplayDate(row.lastSupplyDate)}
+                        </Link>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td style={narrowCellStyle}>{formatDisplayDate(row.eligibleForNextSupply)}</td>
+                    {canDeletePatient && (
+                      <td style={{ ...baseCell, minWidth: '180px' }}>
+                        <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                          {canManageAbxtac && row.clientTypeKey === 'abxtac' && row.healthieClientId && (
+                            <button
+                              type="button"
+                              onClick={() => setAbxtacModal({ healthie: row.healthieClientId!, patientName: row.patientName })}
+                              style={{
+                                padding: '0.4rem 0.7rem',
+                                borderRadius: '0.4rem',
+                                border: '1px solid rgba(34, 197, 94, 0.45)',
+                                background: 'rgba(34, 197, 94, 0.1)',
+                                color: '#22c55e',
+                                cursor: 'pointer',
+                                fontSize: '0.75rem',
+                                fontWeight: 600
+                              }}
+                              title="Change ABXTAC membership status"
+                            >
+                              ABXTAC
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(row.id)}
+                            disabled={savingId === row.id}
+                            style={{
+                              padding: '0.4rem 0.7rem',
+                              borderRadius: '0.4rem',
+                              border: '1px solid rgba(248, 113, 113, 0.6)',
+                              background: 'rgba(248, 113, 113, 0.15)',
+                              color: '#f87171',
+                              cursor: savingId === row.id ? 'wait' : 'pointer',
+                              fontSize: '0.75rem',
+                              fontWeight: 600
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -1450,6 +1686,159 @@ export default function PatientTable({
         </div>
       </div>
       {filteredRows.length === 0 && <p style={{ color: '#64748b' }}>No patients match your filters.</p>}
+      {abxtacModal && (
+        <ABXTACStatusModal
+          healthieId={abxtacModal.healthie}
+          patientName={abxtacModal.patientName}
+          onClose={() => setAbxtacModal(null)}
+          onSaved={(newStatus) => {
+            setAbxtacModal(null);
+            setFeedback(`ABXTAC status set to ${newStatus} for ${abxtacModal.patientName}`);
+            setTimeout(() => setFeedback(null), 4000);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ABXTACStatusModal({
+  healthieId,
+  patientName,
+  onClose,
+  onSaved
+}: {
+  healthieId: string;
+  patientName: string;
+  onClose: () => void;
+  onSaved: (newStatus: string) => void;
+}) {
+  const [status, setStatus] = useState<'active' | 'payment_hold' | 'inactive'>('active');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch(withBasePath('/api/admin/abxtac/set-status/'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ healthie_id: healthieId, status, reason: reason.trim() || undefined })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(data.error || `Request failed (${response.status})`);
+        setSaving(false);
+        return;
+      }
+      onSaved(status);
+    } catch (e: any) {
+      setError(e?.message || 'Request failed');
+      setSaving(false);
+    }
+  }
+
+  const STATUS_META: Record<string, { label: string; color: string; desc: string }> = {
+    active: { label: 'Active', color: '#22c55e', desc: 'Paid and in good standing.' },
+    payment_hold: { label: 'Payment Hold', color: '#f59e0b', desc: 'Blocks mobile app login when ABXTAC_LOCKOUT_ENABLED=true.' },
+    inactive: { label: 'Inactive', color: '#94a3b8', desc: 'Cancelled. App login allowed (read-only), no discount.' }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.55)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#ffffff', padding: '1.5rem', borderRadius: '0.75rem',
+          maxWidth: '460px', width: '90%', boxShadow: '0 20px 50px rgba(15,23,42,0.25)'
+        }}
+      >
+        <h2 style={{ margin: '0 0 0.25rem', fontSize: '1.1rem' }}>ABXTAC Membership Status</h2>
+        <p style={{ margin: '0 0 1rem', color: '#64748b', fontSize: '0.85rem' }}>
+          Patient: <strong>{patientName}</strong> · Healthie ID: <code>{healthieId}</code>
+        </p>
+
+        <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.3rem', color: '#334155' }}>
+          New Status
+        </label>
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+          {(['active', 'payment_hold', 'inactive'] as const).map(s => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setStatus(s)}
+              style={{
+                flex: 1, padding: '0.55rem 0.6rem', borderRadius: '0.4rem',
+                border: `1px solid ${status === s ? STATUS_META[s].color : 'rgba(148,163,184,0.35)'}`,
+                background: status === s ? `${STATUS_META[s].color}20` : '#ffffff',
+                color: status === s ? STATUS_META[s].color : '#475569',
+                fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer'
+              }}
+            >
+              {STATUS_META[s].label}
+            </button>
+          ))}
+        </div>
+        <p style={{ margin: '0 0 1rem', fontSize: '0.75rem', color: '#64748b', fontStyle: 'italic' }}>
+          {STATUS_META[status].desc}
+        </p>
+
+        <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.3rem', color: '#334155' }}>
+          Reason (optional, for audit log)
+        </label>
+        <textarea
+          value={reason}
+          onChange={e => setReason(e.target.value)}
+          placeholder="e.g., Stripe card declined 3x, or patient requested cancellation"
+          rows={3}
+          style={{
+            width: '100%', padding: '0.5rem', borderRadius: '0.4rem',
+            border: '1px solid rgba(148,163,184,0.35)', fontSize: '0.85rem',
+            fontFamily: 'inherit', resize: 'vertical'
+          }}
+        />
+
+        {error && (
+          <p style={{ color: '#dc2626', fontSize: '0.8rem', marginTop: '0.5rem' }}>{error}</p>
+        )}
+
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            style={{
+              padding: '0.5rem 1rem', borderRadius: '0.4rem',
+              border: '1px solid rgba(148,163,184,0.35)', background: '#ffffff',
+              color: '#475569', cursor: saving ? 'wait' : 'pointer', fontWeight: 600
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            style={{
+              padding: '0.5rem 1.2rem', borderRadius: '0.4rem',
+              border: '1px solid #0369a1', background: '#0369a1',
+              color: '#ffffff', cursor: saving ? 'wait' : 'pointer', fontWeight: 600
+            }}
+          >
+            {saving ? 'Saving…' : `Set ${STATUS_META[status].label}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

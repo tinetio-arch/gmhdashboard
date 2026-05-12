@@ -3,6 +3,7 @@ import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
 import { generateDocPdf } from '@/lib/pdf/docPdfGenerator';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -114,7 +115,7 @@ export async function POST(request: NextRequest) {
         // Generate PDF
         const pdfBuffer = await generateDocPdf({
             patientName: patient?.full_name || 'Unknown',
-            patientDob: patient?.dob ? new Date(patient.dob).toLocaleDateString() : null,
+            patientDob: patient?.dob ? formatDateUTC(patient.dob) : null,
             visitDate,
             provider: providerName,
             docType: doc_type as any,

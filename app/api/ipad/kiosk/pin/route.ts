@@ -63,7 +63,8 @@ export async function POST(request: NextRequest) {
             await query('DELETE FROM kiosk_config');
             await query(
                 'INSERT INTO kiosk_config (pin_hash, set_by) VALUES ($1, $2)',
-                [pinHash, adminUser.userId]
+                // FIX(2026-04-22): PublicUser uses `user_id`, not `userId`.
+                [pinHash, adminUser.user_id]
             );
 
             return NextResponse.json({ success: true, message: 'Kiosk PIN set' });

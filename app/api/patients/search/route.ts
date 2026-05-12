@@ -106,6 +106,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             patients: activeUsers.slice(0, 25).map((user: any) => ({
                 id: user.id,
                 healthie_id: user.id,
+                full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
                 first_name: user.first_name || '',
                 last_name: user.last_name || '',
                 dob: user.dob || '',

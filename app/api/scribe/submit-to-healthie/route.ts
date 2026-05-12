@@ -5,6 +5,7 @@ import { healthieGraphQL } from '@/lib/healthieApi';
 import { sendMessage } from '@/lib/telegram-client';
 import { generateSoapPdf } from '@/lib/pdf/soapPdfGenerator';
 import { generateDocPdf } from '@/lib/pdf/docPdfGenerator';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -243,46 +244,47 @@ export async function POST(request: NextRequest) {
         // 5. Lock the form answer group
         let locked = false;
         let signed = false;
+        // FIX(2026-04-22): collect partial failures so the iPad can surface them.
+        // Previously every sub-step silently `console.warn`'d "non-fatal" — providers saw
+        // ✅ Submitted while the Healthie chart could be missing PDF / allergies / vitals.
+        const partialFailures: string[] = [];
         try {
             await healthieGraphQL(`
-                mutation LockFormAnswerGroup($id: ID!) {
-                    lockFormAnswerGroup(id: $id) {
-                        form_answer_group { id locked }
+                mutation LockFormAnswerGroup($input: LockInput!) {
+                    lockFormAnswerGroup(input: $input) {
+                        form_answer_group { id locked_by { id } }
+                        messages { field message }
                     }
                 }
-            `, { id: healthieNoteId });
+            `, { input: { id: healthieNoteId } });
             locked = true;
         } catch (lockErr) {
             console.warn('[Scribe:Submit] Note locking failed:', lockErr instanceof Error ? lockErr.message : lockErr);
-            // Non-fatal
+            partialFailures.push('lock');
         }
 
-        // 5.1. Sign the form answer group (provider signature)
+        // 5.1. Sign the form answer group (provider signature).
+        // FIX(2026-04-22): Healthie uses SignInput (not signFormAnswerGroupInput),
+        // and FormAnswerGroup exposes `is_locked` + `locked_at` (not `locked`).
+        // FormAnswerGroupSigning has `created_at` (no `signed_at`).
         if (locked) {
             try {
                 await healthieGraphQL(`
-                    mutation SignFormAnswerGroup($input: signFormAnswerGroupInput!) {
+                    mutation SignFormAnswerGroup($input: SignInput!) {
                         signFormAnswerGroup(input: $input) {
-                            form_answer_group {
-                                id
-                                locked
-                                form_answer_group_signings {
-                                    id
-                                    signed_at
-                                }
-                            }
+                            form_answer_group { id is_locked locked_at }
+                            form_answer_group_signing { id created_at user { id } }
+                            messages { field message }
                         }
                     }
                 `, {
-                    input: {
-                        id: healthieNoteId,
-                    },
+                    input: { id: healthieNoteId },
                 });
                 signed = true;
                 console.log(`[Scribe:Submit] Chart signed in Healthie: ${healthieNoteId}`);
             } catch (signErr) {
-                console.warn('[Scribe:Submit] Chart signing failed:', signErr instanceof Error ? signErr.message : signErr);
-                // Non-fatal — chart is still locked even if signing fails
+                console.error('[Scribe:Submit] Chart signing FAILED:', signErr instanceof Error ? signErr.message : signErr);
+                partialFailures.push('sign');
             }
         }
 
@@ -307,7 +309,7 @@ export async function POST(request: NextRequest) {
         try {
             const pdfBuffer = await generateSoapPdf({
                 patientName: patient.full_name || 'Unknown',
-                patientDob: patient.dob ? new Date(patient.dob).toLocaleDateString() : null,
+                patientDob: patient.dob ? formatDateUTC(patient.dob) : null,
                 visitDate,
                 visitType: note.visit_type || 'follow_up',
                 provider: providerName,
@@ -347,6 +349,7 @@ export async function POST(request: NextRequest) {
             }
         } catch (pdfErr) {
             console.warn('[Scribe:Submit] PDF upload to Healthie failed (non-fatal):', pdfErr instanceof Error ? pdfErr.message : pdfErr);
+            partialFailures.push('pdf');
         }
 
         // 5.6. Upload supplementary docs (work notes, discharge instructions, etc.) to Healthie
@@ -365,7 +368,7 @@ export async function POST(request: NextRequest) {
                 try {
                     const docPdfBuffer = await generateDocPdf({
                         patientName: patient.full_name || 'Unknown',
-                        patientDob: patient.dob ? new Date(patient.dob).toLocaleDateString() : null,
+                        patientDob: patient.dob ? formatDateUTC(patient.dob) : null,
                         visitDate,
                         provider: providerName,
                         docType: docType as any,
@@ -410,6 +413,7 @@ export async function POST(request: NextRequest) {
             }
         } catch (suppErr) {
             console.warn('[Scribe:Submit] Supplementary doc upload failed (non-fatal):', suppErr instanceof Error ? suppErr.message : suppErr);
+            partialFailures.push('supplementary_docs');
         }
 
         // 5.7. Write allergies to Healthie (from SOAP data)
@@ -452,6 +456,7 @@ export async function POST(request: NextRequest) {
             }
         } catch (allergiesErr) {
             console.warn('[Scribe:Submit] Allergy write-back failed (non-fatal):', allergiesErr instanceof Error ? allergiesErr.message : allergiesErr);
+            partialFailures.push('allergies');
         }
 
         // 5.7. Write vitals to Healthie (from Objective section)
@@ -527,6 +532,7 @@ export async function POST(request: NextRequest) {
             }
         } catch (vitalsErr) {
             console.warn('[Scribe:Submit] Vitals write-back failed (non-fatal):', vitalsErr instanceof Error ? vitalsErr.message : vitalsErr);
+            partialFailures.push('vitals');
         }
 
         // Note: ICD-10 codes are already embedded in the Assessment section of the SOAP form answer,
@@ -583,6 +589,14 @@ export async function POST(request: NextRequest) {
                 healthie_note_id: healthieNoteId,
                 healthie_status: signed ? 'signed' : (locked ? 'locked' : 'submitted'),
                 is_resubmit: isResubmit,
+                // FIX(2026-04-22): partial_failures tells the iPad which sub-steps
+                // failed (pdf, supplementary_docs, allergies, vitals, sign, lock) so
+                // providers see a warning banner instead of a false ✅ Submitted.
+                partial_failures: partialFailures,
+                pdf_uploaded: !!pdfDocumentId,
+                docs_uploaded: docsUploaded,
+                allergies_created: allergiesCreated,
+                vitals_created: vitalsCreated,
             },
         });
     } catch (error) {

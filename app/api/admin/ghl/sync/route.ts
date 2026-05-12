@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { syncPatientToGHL, syncMultiplePatients, syncAllPatientsToGHL } from '@/lib/patientGHLSync';
 import { fetchPatientDataEntries } from '@/lib/patientQueries';
 
@@ -15,7 +15,7 @@ import { fetchPatientDataEntries } from '@/lib/patientQueries';
  */
 export async function POST(request: NextRequest) {
   try {
-    const user = await requireUser('write');
+    const user = await requireApiUser(request, 'write');
     const body = await request.json();
 
     // Single patient sync
@@ -123,6 +123,9 @@ export async function POST(request: NextRequest) {
     );
 
   } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     console.error('GHL sync error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },

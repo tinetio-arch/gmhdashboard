@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { generateSoapPdf } from '@/lib/pdf/soapPdfGenerator';
+import { formatDateUTC } from '@/lib/dateUtils';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,7 +79,7 @@ export async function GET(request: NextRequest) {
 
         const pdfBuffer = await generateSoapPdf({
             patientName: row.patient_name || 'Unknown Patient',
-            patientDob: row.patient_dob ? new Date(row.patient_dob).toLocaleDateString() : null,
+            patientDob: row.patient_dob ? formatDateUTC(row.patient_dob) : null,
             visitDate,
             visitType: row.visit_type || 'follow_up',
             provider: row.provider_name || 'Phil Schafer, NP',

@@ -24,37 +24,45 @@ interface HealthieAppointment {
 }
 
 async function fetchTodayAppointments(): Promise<HealthieAppointment[]> {
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-    try {
-        const data = await healthieGraphQL<{
-            appointments: HealthieAppointment[];
-        }>(`
-      query GetTodayAppointments($date: String) {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+    const PROVIDER_IDS = ['12088269', '12093125'];
+
+    const appointmentQuery = `query GetAppointments($providerId: ID!, $day: String!) {
         appointments(
-          filter_by_date_range: true,
-          date_from: $date,
-          date_to: $date,
-          should_paginate: false
+            filter: "all",
+            provider_id: $providerId,
+            specificDay: $day,
+            should_paginate: false
         ) {
-          id
-          date
-          appointment_type {
-            name
-          }
-          provider {
-            full_name
-          }
-          status
-          client {
             id
-            first_name
-            last_name
-          }
+            date
+            pm_status
+            appointment_type { name }
+            provider { full_name }
+            attendees { id first_name last_name }
         }
-      }
-    `, { date: todayStr });
-        return data.appointments || [];
+    }`;
+
+    try {
+        const allAppts: HealthieAppointment[] = [];
+        for (const provId of PROVIDER_IDS) {
+            const data = await healthieGraphQL<{ appointments: any[] }>(
+                appointmentQuery,
+                { providerId: provId, day: today }
+            );
+            for (const a of (data.appointments || [])) {
+                const attendee = a.attendees?.[0];
+                allAppts.push({
+                    id: a.id,
+                    date: a.date,
+                    appointment_type: a.appointment_type,
+                    provider: a.provider,
+                    status: a.pm_status || null,
+                    client: attendee ? { id: attendee.id, first_name: attendee.first_name, last_name: attendee.last_name } : null,
+                });
+            }
+        }
+        return allAppts;
     } catch (err) {
         console.error('[MorningPrep] Healthie appointments fetch failed:', err instanceof Error ? err.message : err);
         return [];
@@ -172,9 +180,9 @@ async function checkLabStatus(matchedPatients: MatchedPatient[]): Promise<number
     if (healthieIds.length === 0) return 0;
 
     const labs = await query<{ healthie_id: string }>(`
-    SELECT patient->>'healthie_id' as healthie_id
+    SELECT healthie_id
     FROM lab_review_queue
-    WHERE patient->>'healthie_id' = ANY($1)
+    WHERE healthie_id = ANY($1)
       AND status = 'pending_review'
   `, [healthieIds]);
 

@@ -3,6 +3,9 @@ export const dynamic = 'force-dynamic';
 import PatientTable from './PatientTable';
 import { fetchPatientDataEntries, fetchProfessionalDashboardPatients } from '@/lib/patientQueries';
 import { fetchLookupSets } from '@/lib/lookups';
+import { fetchBulkPatientSignalsAsObject } from '@/lib/patientSignals';
+import { fetchBulkDispenseEligibilityAsObject } from '@/lib/trtEligibility';
+import { fetchBulkRelationships } from '@/lib/patientRelationships';
 import AddPatientForm from './AddPatientForm';
 import { requireUser } from '@/lib/auth';
 
@@ -12,10 +15,13 @@ export default async function PatientsPage({
   searchParams: { status?: string; search?: string; labs_due?: string }
 }) {
   const user = await requireUser('write');
-  const [patients, lookups, professionalPatients] = await Promise.all([
+  const [patients, lookups, professionalPatients, signals, eligibility, relationships] = await Promise.all([
     fetchPatientDataEntries(),
     fetchLookupSets(),
-    fetchProfessionalDashboardPatients()
+    fetchProfessionalDashboardPatients(),
+    fetchBulkPatientSignalsAsObject(),
+    fetchBulkDispenseEligibilityAsObject(),
+    fetchBulkRelationships()
   ]);
   const userEmail = user.email;
 
@@ -38,6 +44,9 @@ export default async function PatientsPage({
         initialStatusFilter={searchParams.status}
         initialSearchQuery={searchParams.search}
         initialLabsDueFilter={searchParams.labs_due}
+        signals={signals}
+        eligibility={eligibility}
+        relationships={relationships}
       />
     </section>
   );

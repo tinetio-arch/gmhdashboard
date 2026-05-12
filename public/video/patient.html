@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Video Call</title>
+  <script src="https://static.opentok.com/v2/js/opentok.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #0C141D;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #fff;
+    }
+    #subscriber {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #111827;
+    }
+    #subscriber video { object-fit: cover; width: 100%; height: 100%; }
+    #publisher {
+      position: absolute;
+      top: 12px; right: 12px;
+      width: 120px; height: 90px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 2px solid rgba(255,255,255,0.25);
+      z-index: 10;
+      background: #1e293b;
+    }
+    #publisher video { object-fit: cover; width: 100%; height: 100%; }
+    #status-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #0C141D;
+      z-index: 20;
+      transition: opacity 0.5s ease;
+    }
+    #status-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .status-text {
+      font-size: 18px;
+      font-weight: 600;
+      margin-top: 16px;
+      text-align: center;
+      padding: 0 20px;
+    }
+    .status-sub {
+      font-size: 14px;
+      color: #94a3b8;
+      margin-top: 8px;
+      text-align: center;
+      padding: 0 20px;
+    }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(255,255,255,0.15);
+      border-top-color: #3b82f6;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error-icon { font-size: 48px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div id="subscriber"></div>
+  <div id="publisher"></div>
+  <div id="status-overlay">
+    <div class="spinner"></div>
+    <div class="status-text">Connecting...</div>
+    <div class="status-sub">Please allow camera and microphone access if prompted.</div>
+  </div>
+
+  <script>
+    // Parse URL params
+    var params = new URLSearchParams(window.location.search);
+    var apiKey = params.get('k') || '';
+    var sessionId = params.get('s') || '';
+    var token = params.get('t') || '';
+    var appointmentId = params.get('aid') || '';
+    var patientName = decodeURIComponent(params.get('pname') || 'Patient');
+    var providerName = decodeURIComponent(params.get('name') || 'Your Provider');
+
+    // Signal waiting room
+    function signalWaiting(action) {
+      if (!appointmentId) return;
+      try {
+        fetch('/ops/api/video/waiting/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ appointmentId: appointmentId, patientName: patientName, action: action || 'join' }),
+        }).catch(function() {});
+      } catch(e) {}
+    }
+
+    function postMsg(type, message) {
+      try {
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: type, message: message || '' }));
+        }
+      } catch(e) {}
+    }
+
+    function showStatus(title, sub) {
+      var overlay = document.getElementById('status-overlay');
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = '<div class="spinner"></div>' +
+        '<div class="status-text">' + title + '</div>' +
+        (sub ? '<div class="status-sub">' + sub + '</div>' : '');
+    }
+
+    function showError(title, detail) {
+      var overlay = document.getElementById('status-overlay');
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = '<div class="error-icon">⚠️</div>' +
+        '<div class="status-text">' + title + '</div>' +
+        (detail ? '<div class="status-sub">' + detail + '</div>' : '');
+      postMsg('error', title + ': ' + (detail || ''));
+    }
+
+    function hideOverlay() {
+      document.getElementById('status-overlay').classList.add('hidden');
+    }
+
+    // Validate params
+    if (!apiKey || !sessionId || !token) {
+      showError('Missing Parameters', 'Video session data is incomplete. Please go back and try again.');
+    } else if (typeof OT === 'undefined') {
+      showError('SDK Error', 'Video SDK failed to load. Check your internet connection.');
+    } else {
+      document.querySelector('.status-text').textContent = 'Connecting...';
+
+      var connected = false;
+
+      try {
+        var session = OT.initSession(apiKey, sessionId);
+
+        session.on('exception', function(event) {
+          console.error('[Video] OT exception:', event.code, event.message);
+          if (!connected) {
+            showError('Session Error', event.message || 'Video session error (code ' + event.code + ')');
+          }
+        });
+
+        var publisher = OT.initPublisher('publisher', {
+          insertMode: 'append',
+          width: '100%',
+          height: '100%',
+          mirror: true,
+          showControls: false,
+        }, function(err) {
+          if (err) {
+            showError('Camera Error', err.message || 'Could not access camera/microphone.');
+            return;
+          }
+        });
+
+        session.on('streamCreated', function(event) {
+          hideOverlay();
+          postMsg('connected');
+          session.subscribe(event.stream, 'subscriber', {
+            insertMode: 'append', width: '100%', height: '100%',
+            style: { buttonDisplayMode: 'off' }
+          }, function(err) { if (err) console.error('[Video] Subscribe:', err); });
+        });
+
+        session.on('streamDestroyed', function() {
+          signalWaiting('leave');
+          showStatus('Call Ended', providerName + ' has disconnected.');
+          postMsg('disconnected');
+        });
+
+        session.on('sessionDisconnected', function(event) {
+          connected = false;
+          signalWaiting('leave');
+          if (event.reason === 'forceDisconnected') {
+            showStatus('Disconnected', 'You were removed from the session.');
+          } else if (event.reason === 'networkDisconnected') {
+            showError('Connection Lost', 'Your internet connection was lost. Please check your connection and try again.');
+          } else {
+            showStatus('Disconnected', 'The video session has ended.');
+          }
+          postMsg('disconnected');
+        });
+
+        session.connect(token, function(err) {
+          if (err) {
+            var msg = err.message || 'Could not join video session.';
+            if (err.name === 'OT_AUTHENTICATION_ERROR' || err.code === 1004) {
+              msg = 'Video session expired or invalid. Please go back and try again.';
+            } else if (err.code === 1006) {
+              msg = 'Session connection failed. The appointment may not be a video call type.';
+            }
+            showError('Connection Failed', msg);
+            return;
+          }
+          connected = true;
+          session.publish(publisher, function(pubErr) {
+            if (pubErr) {
+              showError('Publish Error', pubErr.message || 'Could not share video.');
+              return;
+            }
+            // Signal the waiting room so iPad knows patient is ready
+            signalWaiting('join');
+            showStatus('Connected \u2014 Waiting for provider to start', 'Your camera is on. ' + providerName + ' will join shortly.');
+          });
+        });
+      } catch(e) {
+        showError('Error', e.message || 'Something went wrong.');
+      }
+    }
+  </script>
+</body>
+</html>

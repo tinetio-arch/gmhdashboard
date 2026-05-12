@@ -19,9 +19,23 @@ async function loadLabData() {
     let ordersQueue: any[] = [];
 
     // Load Review Queue from PostgreSQL database
+    // NOTE: raw_result column intentionally excluded — it averages ~326KB/row
+    // (full Access Labs JSON parse) and is not used by the list view. Detail
+    // views fetch it on demand via /api/labs/review-queue/[id].
     try {
         const pool = getPool();
-        const reviewRes = await pool.query(`SELECT * FROM lab_review_queue ORDER BY created_at DESC`);
+        const reviewRes = await pool.query(`
+            SELECT
+                id, source, accession, patient_name, dob, gender,
+                collection_date, healthie_id, patient_id, match_confidence,
+                matched_name, tests_found, status, created_at, uploaded_at,
+                approved_at, approved_by, healthie_document_id,
+                healthie_lab_order_id, rejection_reason, pdf_path, s3_key,
+                upload_status, severity, critical_tests
+            FROM lab_review_queue
+            ORDER BY created_at DESC
+            LIMIT 200
+        `);
         reviewQueue = reviewRes.rows;
     } catch (e) {
         console.error("Failed to load review queue from DB:", e);
@@ -32,7 +46,7 @@ async function loadLabData() {
     try {
         const pool = getPool();
         const res = await pool.query(`
-            SELECT 
+            SELECT
                 id,
                 clinic_id,
                 patient_id,
@@ -48,6 +62,7 @@ async function loadLabData() {
                 ordering_provider
             FROM lab_orders
             ORDER BY created_at DESC
+            LIMIT 200
         `);
 
         ordersQueue = res.rows.map(row => ({

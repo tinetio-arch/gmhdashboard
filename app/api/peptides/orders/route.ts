@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
             order_date: body.order_date,
             po_number: body.po_number,
             notes: body.notes,
-            created_by: user.name || user.email,
+            created_by: user.display_name || user.email,
         });
 
         return NextResponse.json(order);

@@ -76,7 +76,17 @@ for j in jobs:
         fi
 
         # Send to CUPS printer
-        PRINT_RESULT=$(lp -d "$PRINTER" "$PDF_FILE" 2>&1)
+        # Zebra: if file is ZPL, send raw; otherwise send PDF with media options
+        if echo "$PRINTER" | grep -qi "zebra"; then
+            # Check if content is ZPL (starts with ^XA)
+            if head -c4 "$PDF_FILE" | grep -q "\\^XA"; then
+                PRINT_RESULT=$(lp -d "$PRINTER" -o raw "$PDF_FILE" 2>&1)
+            else
+                PRINT_RESULT=$(lp -d "$PRINTER" -o media=Custom.3x2in -o fit-to-page "$PDF_FILE" 2>&1)
+            fi
+        else
+            PRINT_RESULT=$(lp -d "$PRINTER" "$PDF_FILE" 2>&1)
+        fi
         PRINT_EXIT=$?
 
         if [ $PRINT_EXIT -eq 0 ]; then

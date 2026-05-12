@@ -33,7 +33,25 @@ export async function POST(request: NextRequest) {
 
     const healthieId = await resolveHealthieId(rawPatientId);
 
-    // Cancel any existing pending consents for this patient (only one active at a time)
+    // FIX(2026-04-22): Check for existing pending consent and return info instead of silently cancelling.
+    // Staff should know if someone else already sent a consent for this patient.
+    const existingConsents = await query<{ id: number; created_by: string; created_at: string; items: any }>(
+      `SELECT id, created_by, created_at, items FROM pending_peptide_consents WHERE patient_id = $1 AND status = 'pending' ORDER BY created_at DESC`,
+      [patientId]
+    );
+
+    let priorConsentWarning: string | null = null;
+    if (existingConsents.length > 0) {
+      const prior = existingConsents[0];
+      // Append 'Z' — DB stores timestamp without timezone but values are UTC.
+      // Without 'Z', Node.js parses as local (MST = UTC-7), giving wrong age.
+      const ageMs = Date.now() - new Date(prior.created_at + 'Z').getTime();
+      const ageMin = Math.round(ageMs / 60000);
+      priorConsentWarning = `Replaced a pending consent from ${prior.created_by || 'staff'} (${ageMin < 60 ? ageMin + 'm' : Math.round(ageMin / 60) + 'h'} ago)`;
+      console.log(`[Send Consent] Cancelling prior consent #${prior.id} by ${prior.created_by} for patient ${patientId}`);
+    }
+
+    // Cancel existing pending consents (only one active at a time)
     await query(
       `UPDATE pending_peptide_consents SET status = 'cancelled' WHERE patient_id = $1 AND status = 'pending'`,
       [patientId]
@@ -76,6 +94,7 @@ export async function POST(request: NextRequest) {
       consent_id: consent.id,
       items_count: consentItems.length,
       message: `Consent request created with ${consentItems.length} peptide(s). Patient will see it in their app.`,
+      prior_consent_warning: priorConsentWarning,
     });
   } catch (error: any) {
     if (error?.status === 401 || error?.message === 'Unauthorized') {

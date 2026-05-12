@@ -50,11 +50,13 @@ export default async function RootLayout({
     { label: 'Shipments', href: '/admin/shipments' },
     { label: 'App Control', href: '/admin/app-control' },
     { label: 'GHL Messages', href: '/admin/ghl-messages' },
+    { label: 'Exceptions Queue', href: '/exceptions' },
     (user.can_sign || userHasRole(user, 'admin')) ? { label: 'Provider Signatures', href: '/provider/signatures' } : null,
   ].filter((item): item is { label: string; href: string } => item !== null) : [];
 
   const helpItems = [
     { label: 'SOPs', href: '/menshealth' },
+    { label: 'Docs (SOT)', href: '/docs' },
   ];
 
   return (

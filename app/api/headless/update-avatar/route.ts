@@ -9,11 +9,17 @@ import { query } from '@/lib/db';
  * in the GMH Dashboard patients table.
  * 
  * Body: { healthie_id: string, avatar_url: string }
- * 
- * No auth required — internal endpoint called by Lambda only.
- * Follows the same pattern as the lab-status headless endpoint.
+ *
+ * Auth: x-jarvis-secret header (matches other headless endpoints).
  */
 export async function POST(request: NextRequest) {
+    // FIX(2026-04-15): Added x-jarvis-secret auth — endpoint was previously unauthenticated,
+    // allowing anyone to overwrite a patient's avatar URL by spoofing healthie_id
+    const secret = request.headers.get('x-jarvis-secret');
+    if (secret !== process.env.JARVIS_SHARED_SECRET) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     try {
         const body = await request.json();
         const { healthie_id, avatar_url } = body;
@@ -27,16 +33,28 @@ export async function POST(request: NextRequest) {
 
         console.log(`[headless/update-avatar] Updating avatar for healthie_id=${healthie_id}`);
 
-        const result = await query(
-            `UPDATE patients 
-       SET avatar_url = $1, updated_at = NOW() 
+        // FIX(2026-04-09): Check both patients.healthie_client_id AND healthie_clients table
+        let result = await query(
+            `UPDATE patients
+       SET avatar_url = $1, updated_at = NOW()
        WHERE healthie_client_id = $2
        RETURNING patient_id, full_name, avatar_url`,
             [avatar_url, healthie_id]
         );
 
+        // Fallback: check healthie_clients join table
         if (result.length === 0) {
-            console.log(`[headless/update-avatar] No patient found with healthie_client_id=${healthie_id}`);
+            result = await query(
+                `UPDATE patients
+           SET avatar_url = $1, updated_at = NOW()
+           WHERE patient_id = (SELECT patient_id::uuid FROM healthie_clients WHERE healthie_client_id = $2 AND is_active = true LIMIT 1)
+           RETURNING patient_id, full_name, avatar_url`,
+                [avatar_url, healthie_id]
+            );
+        }
+
+        if (result.length === 0) {
+            console.log(`[headless/update-avatar] No patient found with healthie_id=${healthie_id}`);
             return NextResponse.json(
                 { success: false, error: 'Patient not found' },
                 { status: 404 }

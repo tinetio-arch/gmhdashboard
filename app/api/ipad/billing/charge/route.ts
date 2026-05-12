@@ -5,6 +5,7 @@ import { createHealthieClient } from '@/lib/healthie';
 import { uploadSimpleReceiptToHealthie } from '@/lib/simpleReceiptUpload';
 import { v4 as uuidv4 } from 'uuid';
 import { resolvePatientId } from '@/lib/ipad-patient-resolver';
+import { reconcilePatientPayments } from '@/lib/payment-reconcile';
 
 /**
  * POST /api/ipad/billing/charge
@@ -23,8 +24,11 @@ export async function POST(request: NextRequest) {
         await requireApiUser(request, 'write');
 
         const body = await request.json();
-        const { patient_id, amount, description, stripe_account, product_id, items } = body;
+        const { patient_id, amount, description, stripe_account, product_id, items, idempotency_key } = body;
         // items: optional array of { product_id, name, amount, quantity } for multi-product cart checkout
+        // idempotency_key: per-attempt UUID. If supplied AND a prior succeeded transaction exists
+        // with the same key, we return that result instead of charging again. Prevents
+        // double-charges when the iPad's fetch loses the response (Coby Cook pattern).
 
         // Validate inputs
         if (!patient_id || !amount || !stripe_account) {
@@ -46,6 +50,31 @@ export async function POST(request: NextRequest) {
                 success: false,
                 error: 'stripe_account must be "healthie" or "direct"'
             }, { status: 400 });
+        }
+
+        // Idempotency replay guard — return prior result if the iPad already succeeded with this key.
+        if (idempotency_key) {
+            const [prior] = await query<any>(
+                `SELECT transaction_id, amount, description, status, stripe_charge_id, stripe_customer_id,
+                        receipt_number, healthie_document_id, stripe_account, healthie_billing_item_id
+                 FROM payment_transactions WHERE idempotency_key = $1 LIMIT 1`,
+                [idempotency_key]
+            );
+            if (prior && prior.status === 'succeeded') {
+                console.log(`[Billing] Idempotency replay: returning prior transaction ${prior.transaction_id} for key ${idempotency_key}`);
+                return NextResponse.json({
+                    success: true,
+                    replayed: true,
+                    stripe_account: prior.stripe_account,
+                    patient_name: undefined, // client already has it
+                    amount: parseFloat(prior.amount),
+                    charge_id: prior.stripe_charge_id || prior.healthie_billing_item_id,
+                    status: 'succeeded',
+                    receipt_number: prior.receipt_number,
+                    healthie_document_id: prior.healthie_document_id,
+                    message: 'This charge was already processed (idempotent replay).',
+                });
+            }
         }
 
         // FIX(2026-04-07): Use shared resolver — handles UUID/Healthie ID and auto-creates if needed
@@ -104,9 +133,9 @@ export async function POST(request: NextRequest) {
 
         // Route to appropriate Stripe account
         if (stripe_account === 'healthie') {
-            return await chargeViaHealthie(resolvedPatientId, patient.full_name, amount, stripeDescription, internalDescription);
+            return await chargeViaHealthie(resolvedPatientId, patient.full_name, amount, stripeDescription, internalDescription, idempotency_key);
         } else {
-            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, stripeDescription, product_id, items, internalDescription);
+            return await chargeViaDirectStripe(resolvedPatientId, patient.full_name, patient.email, amount, stripeDescription, product_id, items, internalDescription, idempotency_key);
         }
 
     } catch (error: any) {
@@ -116,7 +145,7 @@ export async function POST(request: NextRequest) {
         console.error('[/api/ipad/billing/charge POST]', error);
         return NextResponse.json({
             success: false,
-            error: error.message || 'Failed to process charge'
+            error: 'Failed to process charge'
         }, { status: 500 });
     }
 }
@@ -129,7 +158,8 @@ async function chargeViaHealthie(
     patientName: string,
     amount: number,
     description: string,
-    internalDescription?: string  // Original description for internal tracking
+    internalDescription?: string,  // Original description for internal tracking
+    idempotencyKey?: string
 ) {
     const healthieClient = createHealthieClient();
     if (!healthieClient) {
@@ -190,12 +220,18 @@ async function chargeViaHealthie(
                                  internalDescription?.toLowerCase().includes('testosterone') ||
                                  internalDescription?.toLowerCase().includes('trt');
 
+            // Clean up free-form description for the patient-facing receipt line.
+            // Internal records (Healthie billing item, payment_transactions, Stripe metadata)
+            // keep the raw `internalDescription` verbatim — only the receipt PDF is tidied.
+            const { cleanReceiptDescription } = await import('@/lib/billing/cleanReceiptDescription');
+            const receiptDescription = cleanReceiptDescription(internalDescription || description);
+
             healthieDocumentId = await uploadSimpleReceiptToHealthie({
                 healthieClientId,
                 receiptNumber,
                 date: new Date(),
                 patientName,
-                description: internalDescription || description,  // ACTUAL service description
+                description: receiptDescription || internalDescription || description,
                 amount,
                 paymentMethod: 'Credit Card (Healthie)',
                 clinicName: 'NOW Optimal Health',
@@ -211,15 +247,29 @@ async function chargeViaHealthie(
             // Don't fail the charge if receipt upload fails
         }
 
-        // Log the transaction with receipt info
+        // Log the transaction with receipt info + idempotency key for replay safety
         await query(
             `INSERT INTO payment_transactions (
                 patient_id, amount, description, stripe_account,
                 healthie_billing_item_id, status, created_at,
-                receipt_number, healthie_document_id
-            ) VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW(), $7, $8)`,
-            [patientId, amount, internalDescription || description, 'healthie', billingItem.id, billingItem.state, receiptNumber, healthieDocumentId]
+                receipt_number, healthie_document_id, idempotency_key
+            ) VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)
+            ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
+            [patientId, amount, internalDescription || description, 'healthie', billingItem.id, billingItem.state, receiptNumber, healthieDocumentId, idempotencyKey || null]
         );
+
+        // FIX(2026-04-28): Auto-clear stale Unpaid alerts when a Healthie charge succeeds.
+        const PAID_STATES = new Set(['paid', 'complete', 'completed', 'succeeded', 'success', 'processed']);
+        if (PAID_STATES.has(String(billingItem.state || '').toLowerCase())) {
+            try {
+                const recon = await reconcilePatientPayments(patientId, { actorEmail: 'ipad:billing/charge:healthie' });
+                if (recon.resolvedTransactions || recon.resolvedIssues) {
+                    console.log(`[billing/charge:healthie] Auto-resolved ${recon.resolvedTransactions} txn(s) + ${recon.resolvedIssues} issue(s) for ${patientName}`);
+                }
+            } catch (reconErr: any) {
+                console.error('[billing/charge:healthie] Auto-reconcile failed (non-blocking):', reconErr.message);
+            }
+        }
 
         return NextResponse.json({
             success: true,
@@ -243,8 +293,7 @@ async function chargeViaHealthie(
 
         return NextResponse.json({
             success: false,
-            error: error.message || 'Failed to charge via Healthie',
-            details: `Healthie Client ID: ${healthieClientId}, Amount: $${amount}`
+            error: 'Payment processing failed. Please try again or contact support.'
         }, { status: 500 });
     }
 }
@@ -260,7 +309,8 @@ async function chargeViaDirectStripe(
     description: string,
     product_id?: string,
     items?: Array<{ product_id: string; name: string; amount: number; quantity?: number }>,
-    internalDescription?: string  // FIX(2026-04-01): Original description for DB logging (pre-sanitization)
+    internalDescription?: string,  // FIX(2026-04-01): Original description for DB logging (pre-sanitization)
+    idempotencyKey?: string
 ) {
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
@@ -325,7 +375,9 @@ async function chargeViaDirectStripe(
         const paymentMethod = paymentMethods.data[0];
 
         // 4. Create payment intent and charge immediately
-        const paymentIntent = await stripe.paymentIntents.create({
+        // Pass idempotencyKey to Stripe ONLY when provided — passing `{}` trips the SDK's
+        // "Unknown arguments" error. FIX(2026-04-15): regression from earlier idempotency edit.
+        const paymentIntentParams = {
             amount: Math.round(amount * 100), // Convert dollars to cents
             currency: 'usd',
             customer: stripeCustomerId,
@@ -341,14 +393,18 @@ async function chargeViaDirectStripe(
                 enabled: true,
                 allow_redirects: 'never'
             }
-        });
+        };
+        const paymentIntent = idempotencyKey
+            ? await stripe.paymentIntents.create(paymentIntentParams, { idempotencyKey: `charge:${idempotencyKey}` })
+            : await stripe.paymentIntents.create(paymentIntentParams);
 
         // 5. Log transaction to database (use original internal description, not sanitized Stripe one)
         await query(
             `INSERT INTO payment_transactions (
                 patient_id, amount, description, stripe_account,
-                stripe_charge_id, stripe_customer_id, status, created_at
-            ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, NOW())`,
+                stripe_charge_id, stripe_customer_id, status, created_at, idempotency_key
+            ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, NOW(), $8)
+            ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
             [
                 patientId,
                 amount,
@@ -356,11 +412,41 @@ async function chargeViaDirectStripe(
                 'direct',
                 paymentIntent.id,
                 stripeCustomerId,
-                paymentIntent.status
+                paymentIntent.status,
+                idempotencyKey || null
             ]
         );
 
         console.log(`[Direct Stripe] Charged ${amount} to customer ${stripeCustomerId}, payment intent: ${paymentIntent.id}, status: ${paymentIntent.status}`);
+
+        // FIX(2026-04-28): Auto-clear stale "Unpaid" alerts for this patient now that a
+        // charge has succeeded. Resolves prior failed payment_transactions + open
+        // payment_issues so the iPad CEO Unpaid panel doesn't show ghost alerts.
+        if (paymentIntent.status === 'succeeded') {
+            try {
+                const recon = await reconcilePatientPayments(patientId, { actorEmail: 'ipad:billing/charge' });
+                if (recon.resolvedTransactions || recon.resolvedIssues) {
+                    console.log(`[billing/charge] Auto-resolved ${recon.resolvedTransactions} txn(s) + ${recon.resolvedIssues} issue(s) for ${patientName}`);
+                }
+            } catch (reconErr: any) {
+                console.error('[billing/charge] Auto-reconcile failed (non-blocking):', reconErr.message);
+            }
+        }
+
+        // FIX(2026-04-22): Clear billing cart SERVER-SIDE immediately after successful charge.
+        // Previously the iPad did this via a separate DELETE request that silently failed on
+        // network errors, leaving stale cart items visible → staff could re-add and double-charge.
+        try {
+            // Clear by both resolved UUID and original patient_id (may be Healthie numeric ID)
+            await query(
+                'DELETE FROM patient_billing_cart WHERE patient_id = $1 OR patient_id = $2',
+                [resolvedPatientId, patient_id]
+            );
+            console.log(`[billing/charge] Cleared billing cart for patient ${resolvedPatientId} after successful charge`);
+        } catch (cartClearErr) {
+            // Non-blocking — charge already succeeded, log for visibility
+            console.error('[billing/charge] Failed to clear cart after charge (non-blocking):', cartClearErr);
+        }
 
         // === AUTO-CREATE PEPTIDE DISPENSES ===
         let dispenseId = null;
@@ -396,17 +482,29 @@ async function chargeViaDirectStripe(
                 if (productCheck.length > 0) {
                     const product = productCheck[0];
                     const qty = item.quantity || 1;
+                    const dispenseNotes: string =
+                        (typeof body.dispense_notes === 'string' && body.dispense_notes.trim())
+                            ? body.dispense_notes.trim().slice(0, 500)
+                            : 'auto created';
+                    const expectedReceivedDate: string | null =
+                        (typeof body.expected_dispense_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.expected_dispense_date))
+                            ? body.expected_dispense_date
+                            : null;
                     for (let i = 0; i < qty; i++) {
                         const dispenseResult = await query<{ sale_id: number }>(
                             `INSERT INTO peptide_dispenses
-                                (product_id, quantity, patient_name, sale_date, status, education_complete,
-                                 notes, paid, stripe_payment_intent_id, amount_charged)
-                             VALUES ($1, 1, $2, CURRENT_DATE, 'Paid', true, $3, true, $4, $5)
+                                (product_id, quantity, patient_name, sale_date, order_date, received_date,
+                                 status, education_complete, notes, paid, stripe_payment_intent_id, amount_charged)
+                             VALUES ($1, 1, $2,
+                                 (NOW() AT TIME ZONE 'America/Phoenix')::date,
+                                 (NOW() AT TIME ZONE 'America/Phoenix')::date,
+                                 $3::date, 'Paid', true, $4, true, $5, $6)
                              RETURNING sale_id`,
                             [
                                 item.product_id,
                                 patientName || 'Unknown',
-                                `Auto-created from iPad billing. Charge: ${paymentIntent.id || 'N/A'}`,
+                                expectedReceivedDate,
+                                dispenseNotes,
                                 paymentIntent.id || null,
                                 item.amount
                             ]
@@ -474,6 +572,23 @@ async function chargeViaDirectStripe(
             // Don't fail the charge if receipt upload fails
         }
 
+        // FIX(2026-04-15): backfill the payment_transactions row with the receipt info.
+        // The INSERT above runs BEFORE the receipt is generated, so without this UPDATE the
+        // row stays with receipt_number/healthie_document_id = NULL and the /receipts view
+        // filters it out (Michele Meyer Pelleting charge case).
+        try {
+            await query(
+                `UPDATE payment_transactions
+                    SET receipt_number = COALESCE($1, receipt_number),
+                        healthie_document_id = COALESCE($2, healthie_document_id),
+                        updated_at = NOW()
+                  WHERE stripe_charge_id = $3`,
+                [receiptNumber, healthieDocumentId, paymentIntent.id]
+            );
+        } catch (updateErr) {
+            console.error('[Billing] Failed to backfill receipt info on transaction row:', updateErr);
+        }
+
         return NextResponse.json({
             success: true,
             stripe_account: 'direct',
@@ -495,19 +610,20 @@ async function chargeViaDirectStripe(
     } catch (error: any) {
         console.error('[chargeViaDirectStripe] Error:', error);
 
-        // Log failed transaction
+        // Log failed transaction (so /recovery can report the failure to the iPad if the
+        // response is also lost, AND so failed charges aren't invisible — Barbara $0 pattern)
         await query(
             `INSERT INTO payment_transactions (
                 patient_id, amount, description, stripe_account,
-                status, error_message, created_at
-            ) VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW())`,
-            [patientId, amount, description, 'direct', 'failed', error.message]
+                status, error_message, created_at, idempotency_key
+            ) VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW(), $7)
+            ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
+            [patientId, amount, description, 'direct', 'failed', error.message, idempotencyKey || null]
         );
 
         return NextResponse.json({
             success: false,
-            error: error.message || 'Failed to charge via Direct Stripe',
-            details: error.type || 'Unknown error'
+            error: 'Payment processing failed. Please try again or contact support.'
         }, { status: 500 });
     }
 }

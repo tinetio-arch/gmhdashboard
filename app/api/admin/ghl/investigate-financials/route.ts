@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import {
   investigateJanePatientsInGHL,
   investigateGHLContact,
@@ -17,9 +17,9 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
-    const user = await requireUser('read');
+    const user = await requireApiUser(request, 'read');
     if (user.role !== 'admin') {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -112,6 +112,9 @@ export async function GET(request: NextRequest) {
     }, { status: 400 });
 
   } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     console.error('GHL financial investigation error:', error);
     return NextResponse.json({
       error: error instanceof Error ? error.message : 'Unknown error'

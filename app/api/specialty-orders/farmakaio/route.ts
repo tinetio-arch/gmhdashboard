@@ -5,24 +5,27 @@
  * PATCH - Update order (status, notes, etc.)
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { fetchFarmakaioOrders, createFarmakaioOrder, updateFarmakaioOrder } from '@/lib/specialtyOrderQueries';
-import { requireUser } from '@/lib/auth';
+import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
-        await requireUser('read');
+        await requireApiUser(request, 'read');
         const orders = await fetchFarmakaioOrders();
         return NextResponse.json(orders);
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error fetching farmakaio orders:', error);
         return NextResponse.json({ error: 'Failed to fetch orders' }, { status: 500 });
     }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const body = await request.json();
 
         if (!body.patient_name) {
@@ -42,14 +45,17 @@ export async function POST(request: Request) {
 
         return NextResponse.json(order);
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error creating farmakaio order:', error);
         return NextResponse.json({ error: 'Failed to create order' }, { status: 500 });
     }
 }
 
-export async function PATCH(request: Request) {
+export async function PATCH(request: NextRequest) {
     try {
-        await requireUser('write');
+        await requireApiUser(request, 'write');
         const body = await request.json();
 
         if (!body.order_id) {
@@ -69,6 +75,9 @@ export async function PATCH(request: Request) {
 
         return NextResponse.json({ success: true });
     } catch (error) {
+        if (error instanceof UnauthorizedError) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         console.error('Error updating farmakaio order:', error);
         return NextResponse.json({ error: 'Failed to update order' }, { status: 500 });
     }

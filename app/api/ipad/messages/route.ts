@@ -245,18 +245,27 @@ export async function POST(request: NextRequest) {
         const { action } = body;
 
         if (action === 'send') {
-            const { conversation_id, content } = body;
-            if (!conversation_id || !content?.trim()) {
-                return NextResponse.json({ error: 'conversation_id and content are required' }, { status: 400 });
+            const { conversation_id, content, attached_image_string } = body;
+            if (!conversation_id || (!content?.trim() && !attached_image_string)) {
+                return NextResponse.json({ error: 'conversation_id and content or image are required' }, { status: 400 });
+            }
+
+            const variables: Record<string, unknown> = {
+                convId: conversation_id,
+                content: content?.trim() || '',
+            };
+            if (attached_image_string) {
+                variables.imageString = attached_image_string;
             }
 
             const data = await healthieGraphQL<{
                 createNote: { note: { id: string; content: string; created_at: string } | null; messages: Array<{ field: string; message: string }> };
             }>(`
-                mutation SendMessage($convId: String!, $content: String) {
+                mutation SendMessage($convId: String!, $content: String, $imageString: String) {
                     createNote(input: {
                         conversation_id: $convId,
                         content: $content
+                        attached_image_string: $imageString
                     }) {
                         note {
                             id content created_at
@@ -264,7 +273,7 @@ export async function POST(request: NextRequest) {
                         messages { field message }
                     }
                 }
-            `, { convId: conversation_id, content: content.trim() });
+            `, variables);
 
             if (data.createNote?.messages?.length) {
                 const errMsg = data.createNote.messages.map(m => m.message).join(', ');

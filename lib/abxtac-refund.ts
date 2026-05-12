@@ -31,6 +31,8 @@ export interface RefundResult {
   receiptNumber?: string;
   healthieDocumentId?: string | null;
   dispensesReversed?: number;
+  wcOrderCancelled?: boolean;
+  wcOrderId?: number | null;
   error?: string;
 }
 
@@ -64,13 +66,13 @@ export async function refundPaymentTransaction(opts: RefundOptions): Promise<Ref
               hc.healthie_client_id as hc_healthie_id
          FROM payment_transactions pt
          JOIN patients p ON pt.patient_id = p.patient_id
-         LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id AND hc.is_active = true
+         LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id::text AND hc.is_active = true
          WHERE pt.transaction_id = $1`
     : `SELECT pt.*, p.full_name, p.email, p.healthie_client_id, p.client_type_key,
               hc.healthie_client_id as hc_healthie_id
          FROM payment_transactions pt
          JOIN patients p ON pt.patient_id = p.patient_id
-         LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id AND hc.is_active = true
+         LEFT JOIN healthie_clients hc ON hc.patient_id = p.patient_id::text AND hc.is_active = true
          WHERE pt.stripe_charge_id = $1 AND pt.status = 'succeeded'
          ORDER BY pt.created_at DESC LIMIT 1`;
 
@@ -94,6 +96,12 @@ export async function refundPaymentTransaction(opts: RefundOptions): Promise<Ref
   }
 
   if (!txn.stripe_charge_id) {
+    if (txn.charged_to === 'company' || txn.stripe_account === 'company') {
+      return {
+        success: false,
+        error: 'Company-paid orders cannot be refunded here (no patient charge to reverse). To cancel, void the WooCommerce order on abxtac.com directly.',
+      };
+    }
     return {
       success: false,
       error: 'Transaction has no Stripe charge ID — cannot refund (likely a Healthie billing item).',
@@ -169,6 +177,75 @@ export async function refundPaymentTransaction(opts: RefundOptions): Promise<Ref
     [refund.id, reason || 'Refund', txn.transaction_id]
   );
 
+  // 5b. FIX(2026-04-22): Cancel WooCommerce order so ShipStation doesn't ship a refunded order.
+  // Look up WC order ID from the transaction row. For older orders missing the column,
+  // fall back to querying WC by _stripe_charge_id metadata.
+  let wcCancelled = false;
+  let wcOrderId: number | null = txn.woocommerce_order_id || null;
+  const wcUrl = process.env.ABXTAC_WC_URL || 'https://abxtac.com';
+  const wcKey = process.env.ABXTAC_CONSUMER_KEY;
+  const wcSecret = process.env.ABXTAC_CONSUMER_SECRET;
+
+  if (wcKey && wcSecret) {
+    try {
+      // Fallback: if no stored WC order ID, search WC by Stripe charge ID
+      if (!wcOrderId && txn.stripe_charge_id) {
+        const searchUrl = `${wcUrl}/wp-json/wc/v3/orders?search=${txn.stripe_charge_id}&per_page=1&consumer_key=${wcKey}&consumer_secret=${wcSecret}`;
+        const searchResp = await fetch(searchUrl);
+        if (searchResp.ok) {
+          const orders = await searchResp.json();
+          if (orders.length > 0) {
+            wcOrderId = orders[0].id;
+            console.log(`[abxtac-refund] Found WC order #${wcOrderId} via Stripe charge ID fallback`);
+            // Back-fill the column for future lookups
+            await query(
+              'UPDATE payment_transactions SET woocommerce_order_id = $1 WHERE transaction_id = $2',
+              [wcOrderId, txn.transaction_id]
+            ).catch(() => {});
+          }
+        }
+      }
+
+      // Also check pending_peptide_orders table (approval flow orders)
+      if (!wcOrderId && txn.stripe_charge_id) {
+        const [pendingOrder] = await query<{ woo_order_id: number }>(
+          'SELECT woo_order_id FROM pending_peptide_orders WHERE stripe_payment_intent_id = $1 AND woo_order_id IS NOT NULL LIMIT 1',
+          [txn.stripe_charge_id]
+        );
+        if (pendingOrder?.woo_order_id) {
+          wcOrderId = pendingOrder.woo_order_id;
+          console.log(`[abxtac-refund] Found WC order #${wcOrderId} via pending_peptide_orders`);
+        }
+      }
+
+      // Cancel the WC order
+      if (wcOrderId) {
+        const cancelResp = await fetch(
+          `${wcUrl}/wp-json/wc/v3/orders/${wcOrderId}?consumer_key=${wcKey}&consumer_secret=${wcSecret}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: 'cancelled',
+              customer_note: `Order cancelled — refund processed. Stripe refund: ${refund.id}`,
+            }),
+          }
+        );
+        if (cancelResp.ok) {
+          wcCancelled = true;
+          console.log(`[abxtac-refund] ✅ WooCommerce order #${wcOrderId} cancelled → ShipStation will auto-cancel`);
+        } else {
+          const errText = await cancelResp.text().catch(() => '');
+          console.error(`[abxtac-refund] ❌ Failed to cancel WC order #${wcOrderId}: ${cancelResp.status} ${errText}`);
+        }
+      } else {
+        console.log(`[abxtac-refund] No WooCommerce order found for charge ${txn.stripe_charge_id} — may be in-clinic dispense (no shipping)`);
+      }
+    } catch (wcErr: any) {
+      console.error('[abxtac-refund] WooCommerce cancellation failed (non-blocking):', wcErr.message);
+    }
+  }
+
   // 6. Log audit-trail refund row
   await query(
     `INSERT INTO payment_transactions
@@ -217,5 +294,7 @@ export async function refundPaymentTransaction(opts: RefundOptions): Promise<Ref
     receiptNumber: refundReceiptNumber,
     healthieDocumentId,
     dispensesReversed,
+    wcOrderCancelled: wcCancelled,
+    wcOrderId: wcOrderId,
   };
 }
