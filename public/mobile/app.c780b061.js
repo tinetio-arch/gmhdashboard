@@ -530,6 +530,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
     }, 300000); // 5 minutes
+
+    // FIX(2026-05-07): Background poll for unread messages so the badge updates
+    // even when the user is on Today/Labs/CEO/etc. Phil was missing messages because
+    // the badge only refreshed while the Messages tab was open.
+    pollMessagesBadge();
+    setInterval(pollMessagesBadge, 30000); // every 30s
 });
 
 // ─── AUTH & RBAC ────────────────────────────────────────────
@@ -1453,6 +1459,55 @@ function updateBadges() {
         } else {
             scribeBadge.classList.add('hidden');
         }
+    }
+}
+
+// FIX(2026-05-07): Messages badge was only updated when the user was actively on the
+// Messages tab, so new messages arriving while on Today/Labs/CEO/etc. were invisible.
+// pollMessagesBadge runs in the background regardless of current tab and pulses the
+// badge red + toasts when a new unread arrives.
+var _lastMessagesUnreadCount = 0;
+function setMessagesBadge(unreadCount) {
+    var badge = document.getElementById('messagesBadge');
+    if (!badge) return;
+    if (unreadCount > 0) {
+        badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+        badge.classList.remove('hidden');
+        badge.classList.add('alert'); // red + pulse animation (defined in style.css)
+    } else {
+        badge.classList.add('hidden');
+        badge.classList.remove('alert');
+    }
+}
+
+async function pollMessagesBadge() {
+    // Skip when app is backgrounded — saves battery and avoids stale toasts on resume
+    if (document.hidden) return;
+    if (!currentUser) return;
+    try {
+        var isPhilAdmin = currentUser?.permissions?.can_view_ceo_dashboard === true;
+        var msgUrl = '/ops/api/ipad/messages/';
+        if (!isPhilAdmin && currentUser?.healthie_provider_id) {
+            msgUrl += '?provider_id=' + currentUser.healthie_provider_id;
+        }
+        var data = await apiFetch(msgUrl);
+        var conversations = data.conversations || [];
+        var unreadCount = conversations.filter(function(c) { return c.unread; }).length;
+
+        // Keep cached list in sync so opening Messages tab doesn't double-fetch
+        messagesConversations = conversations;
+
+        setMessagesBadge(unreadCount);
+
+        // Toast + sound when count goes UP and user is NOT already on Messages tab
+        if (unreadCount > _lastMessagesUnreadCount && currentTab !== 'messages') {
+            var newOnes = unreadCount - _lastMessagesUnreadCount;
+            showToast('💬 ' + newOnes + ' new message' + (newOnes === 1 ? '' : 's'), 'info', 4000);
+        }
+        _lastMessagesUnreadCount = unreadCount;
+    } catch (e) {
+        if (e && e.message === 'AUTH_EXPIRED') return;
+        console.warn('[Messages Badge Poll] Failed:', e?.message || e);
     }
 }
 
@@ -21013,13 +21068,10 @@ async function loadMessagesConversations(force) {
         }
         var data = await apiFetch(msgUrl);
         messagesConversations = data.conversations || [];
-        // Update badge
+        // Update badge via shared helper so background poll stays in sync
         var unreadCount = messagesConversations.filter(function(c) { return c.unread; }).length;
-        var badge = document.getElementById('messagesBadge');
-        if (badge) {
-            if (unreadCount > 0) { badge.textContent = unreadCount; badge.classList.remove('hidden'); }
-            else { badge.classList.add('hidden'); }
-        }
+        setMessagesBadge(unreadCount);
+        _lastMessagesUnreadCount = unreadCount;
         renderConversationList(containerEl);
     } catch (e) {
         console.error('[Messages] Load error:', e);
