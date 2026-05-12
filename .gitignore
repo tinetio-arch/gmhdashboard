@@ -9,6 +9,8 @@ tsconfig.tsbuildinfo
 *.pem
 credentials.json
 token.json
+config/gmail-token.*
+config/gmail-credentials.*
 
 # documentation with potential secrets
 **/ANTIGRAVITY_SOURCE_OF_TRUTH.md
