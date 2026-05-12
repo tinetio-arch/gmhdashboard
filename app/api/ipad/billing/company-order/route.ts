@@ -130,6 +130,11 @@ async function createWooCommerceCompanyOrder(
 export async function POST(request: NextRequest) {
   try {
     const user = await requireApiUser(request, 'admin');
+    // Defense in depth: company-paid orders are restricted to admin@nowoptimal.com,
+    // mirroring the iPad UI button visibility. Other admins (if any) cannot place company orders.
+    if ((user as any).email?.toLowerCase() !== 'admin@nowoptimal.com') {
+      return NextResponse.json({ error: 'Company-paid orders are restricted to admin@nowoptimal.com' }, { status: 403 });
+    }
     const body = await request.json();
     const { patient_id, items, shipping_method = 'priority', idempotency_key } = body as {
       patient_id: string;

@@ -8311,9 +8311,11 @@ function renderFinancialTab(container, d) {
             <button onclick="shipPeptidesToPatient()" style="width:100%; padding:14px; background:linear-gradient(135deg, #7c3aed, #6d28d9); color:white; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;">
                 📦 Ship Peptides to Patient
             </button>
+            ${currentUser?.email === 'admin@nowoptimal.com' ? `
             <button onclick="orderPeptidesCompanyPaid()" style="width:100%; padding:14px; background:linear-gradient(135deg, #f59e0b, #d97706); color:white; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;">
                 🏥 Order for Patient (Company-Paid)
             </button>
+            ` : ''}
         </div>
     `;
 }
@@ -19976,11 +19978,8 @@ function showShipProductBrowser() {
             const safeDesc = (p.description || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
             const safeCategory = (p.category || '').replace(/'/g, "\\'");
             const imgSrc = p.image_url || p.vial_image_url || '';
-            // Company-paid orders are blocked server-side for SKUs without wholesale_cost.
-            // Surface this on the card so staff don't add an item that will get rejected.
-            const noAtCost = window._shipMode === 'company' && p.at_cost_price == null;
             return `
-            <div style="background:rgba(255,255,255,0.04); border:1px solid ${noAtCost ? 'rgba(239,68,68,0.4)' : (inCart ? 'rgba(124,58,237,0.5)' : 'rgba(255,255,255,0.08)')}; border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px; ${noAtCost ? 'opacity:0.55;' : ''}">
+            <div style="background:rgba(255,255,255,0.04); border:1px solid ${inCart ? 'rgba(124,58,237,0.5)' : 'rgba(255,255,255,0.08)'}; border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px;">
                 <div style="display:flex; gap:10px; align-items:flex-start; cursor:pointer;" onclick="togglePeptideInfo('${p.sku}')">
                     <img src="${imgSrc}" onerror="this.style.display='none'"
                         style="width:48px; height:48px; border-radius:8px; object-fit:cover; background:rgba(255,255,255,0.05);" />
@@ -20009,9 +20008,7 @@ function showShipProductBrowser() {
                             <span style="font-size:15px; font-weight:700; color:#fff;">$${p.price.toFixed(2)}</span>
                         `}
                     </div>
-                    ${noAtCost ? `
-                        <span style="padding:4px 10px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.35); border-radius:6px; color:#f87171; font-size:11px; font-weight:600;">No wholesale cost set</span>
-                    ` : (inCart ? `
+                    ${inCart ? `
                         <div style="display:flex; align-items:center; gap:6px;">
                             <button onclick="updateShipCartQty('${p.sku}', -1)" style="width:28px; height:28px; background:rgba(255,255,255,0.1); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">−</button>
                             <span style="font-size:14px; font-weight:600; color:#fff; min-width:20px; text-align:center;">${inCart.quantity}</span>
@@ -20019,7 +20016,7 @@ function showShipProductBrowser() {
                         </div>
                     ` : `
                         <button onclick="addToShipCart('${p.sku}')" style="padding:6px 14px; background:rgba(124,58,237,0.2); border:1px solid rgba(124,58,237,0.4); border-radius:6px; color:#c084fc; font-size:12px; font-weight:600; cursor:pointer;">Add</button>
-                    `)}
+                    `}
                 </div>
             </div>
             `;
@@ -20172,12 +20169,6 @@ function togglePeptideInfo(sku) {
 async function addToShipCart(sku) {
     const product = window._shipProducts.find(p => p.sku === sku);
     if (!product) return;
-
-    // Company-paid orders are blocked server-side for SKUs without wholesale_cost.
-    if (window._shipMode === 'company' && product.at_cost_price == null) {
-        showToast(product.name + ': no wholesale cost configured — cannot place company order. Add wholesale_cost in ypb_available_products first.', 'error');
-        return;
-    }
 
     // FIX(2026-04-22): Check if this product is already in the patient's DB-persisted billing cart.
     // Warns staff to prevent double-charging through both billing and ship paths.
