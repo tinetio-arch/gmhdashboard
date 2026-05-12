@@ -11,7 +11,7 @@ export async function GET(
     { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
     const resolvedParams = params instanceof Promise ? await params : params;
-    const { id: patientId } = resolvedParams;
+    const { id: rawId } = resolvedParams;
 
     try { await requireApiUser(request, 'read'); }
     catch (error) {
@@ -21,6 +21,27 @@ export async function GET(
     }
 
     try {
+        // iPad / native app may pass either the GMH UUID or the Healthie numeric ID.
+        // Resolve to UUID before any query against patients.patient_id (uuid column).
+        // Same pattern as the sibling demographics route.
+        let patientId = rawId;
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId);
+        if (!isUuid) {
+            const [resolved] = await query<{ patient_id: string }>(
+                `SELECT p.patient_id FROM patients p
+                 LEFT JOIN healthie_clients hc ON hc.patient_id::text = p.patient_id::text AND hc.is_active = true
+                 WHERE hc.healthie_client_id = $1 OR p.healthie_client_id = $1
+                 LIMIT 1`,
+                [rawId]
+            );
+            if (!resolved) {
+                return NextResponse.json(
+                    { success: false, error: 'Patient not found for ID: ' + rawId }, { status: 404 }
+                );
+            }
+            patientId = resolved.patient_id;
+        }
+
         // 1. Patient demographics
         const [patient] = await query<any>(
             'SELECT * FROM patients WHERE patient_id = $1', [patientId]
