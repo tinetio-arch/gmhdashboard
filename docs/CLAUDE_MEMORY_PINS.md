@@ -50,7 +50,7 @@
 - All services MUST have `max_restarts: 10` and `restart_delay: 5000`
 - After ANY PM2 change: `pm2 save`
 - Port conflicts cause infinite restart loops (burned CPU: 34,000+ restarts incident Jan 28, 106,000+ restarts incident Feb)
-- gmh-dashboard=3011, upload-receiver=3001, jessica-mcp=3002, ghl-webhooks=3003
+- gmh-dashboard=3011, upload-receiver=3001, jessica-mcp=3002, ghl-webhooks=PM2-only (no TCP listener observed 2026-05-12), nowmentalhealth-website=3003, nowprimary-website=3004, nowmenshealth-website=3007, nowoptimal-website=3008, abxtac-website=3009, dispatch-mcp=3010
 
 ## Mandatory Pre-Deploy Gatekeeper (NEW — May 2026)
 
