@@ -176,11 +176,14 @@ export async function POST(request: NextRequest) {
         }
 
         // Create scribe session
+        // Store transcribe_job_name explicitly so GET can read it back
+        // instead of reconstructing it from audio_s3_key (fragile regex).
         const [session] = await query<any>(`
             INSERT INTO scribe_sessions
                 (patient_id, appointment_id, visit_type, audio_s3_key,
-                 transcript, transcript_source, status, created_by, encounter_date)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 transcript, transcript_source, status, created_by, encounter_date,
+                 transcribe_job_name)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
         `, [
             resolvedPatientId,
@@ -192,6 +195,7 @@ export async function POST(request: NextRequest) {
             preTranscribed ? 'transcribed' : 'transcribing',               // new status for async
             user.user_id,
             encounterDate || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }),
+            transcribeJobName,
         ]);
 
         return NextResponse.json({
@@ -255,9 +259,32 @@ export async function GET(request: NextRequest) {
 
         // Check AWS Transcribe job status
         if (session.transcript_source === 'aws_transcribe_medical' && session.status === 'transcribing') {
-            // Derive job name from audio_s3_key timestamp
-            const timestamp = session.audio_s3_key?.match(/\/(\d+)\.\w+$/)?.[1] || '';
-            const jobName = `scribe-${session.patient_id}-${timestamp}`;
+            // Prefer the stored job name (always correct, set on POST).
+            // Fall back to deriving it from audio_s3_key for legacy sessions
+            // created before the transcribe_job_name column existed.
+            let jobName: string | null = session.transcribe_job_name || null;
+            if (!jobName) {
+                const timestamp = session.audio_s3_key?.match(/\/(\d+)\.\w+$/)?.[1] || '';
+                if (timestamp) {
+                    jobName = `scribe-${session.patient_id}-${timestamp}`;
+                }
+            }
+            if (!jobName) {
+                // Cannot determine job name → mark session as errored so iPad
+                // stops polling instead of spinning forever.
+                await query(
+                    `UPDATE scribe_sessions SET status = 'error', updated_at = NOW() WHERE session_id = $1`,
+                    [sessionId]
+                );
+                return NextResponse.json({
+                    success: false,
+                    data: {
+                        session_id: session.session_id,
+                        status: 'error',
+                        error: 'Transcription job name unavailable — session cannot be polled',
+                    },
+                }, { status: 422 });
+            }
 
             const transcribe = new TranscribeClient({ region: AWS_REGION });
             try {
@@ -268,7 +295,7 @@ export async function GET(request: NextRequest) {
 
                 if (jobStatus === 'COMPLETED') {
                     // Fetch transcript from S3
-                    const transcriptKey = `scribe/transcripts/${jobName}.json`;
+                    const transcriptKey = `scribe/transcripts/${jobName!}.json`;
                     const s3 = new S3Client({ region: AWS_REGION });
 
                     const s3Resp = await s3.send(new GetObjectCommand({
@@ -311,6 +338,26 @@ export async function GET(request: NextRequest) {
                         // Fallback to plain transcript if speaker labels not available
                         transcript = transcriptData.results?.transcripts?.[0]?.transcript || '';
                         console.warn('[Scribe] No speaker labels found in transcript, using plain text');
+                    }
+
+                    // If AWS returned no transcript (recording was too short, silent,
+                    // or auto-paused mid-record), mark as error rather than transcribed —
+                    // otherwise the UI shows "done" but produces no note.
+                    const trimmedLen = transcript.trim().length;
+                    if (trimmedLen === 0) {
+                        await query(
+                            `UPDATE scribe_sessions SET transcript = $1, status = 'error', updated_at = NOW() WHERE session_id = $2`,
+                            ['', sessionId]
+                        );
+                        console.warn(`[Scribe] Empty transcript for session ${sessionId} — marking as error`);
+                        return NextResponse.json({
+                            success: false,
+                            data: {
+                                session_id: session.session_id,
+                                status: 'error',
+                                error: 'No speech detected in recording. Please try again.',
+                            },
+                        }, { status: 422 });
                     }
 
                     // Update session with transcript
