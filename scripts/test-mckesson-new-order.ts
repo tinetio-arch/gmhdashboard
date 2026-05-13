@@ -25,7 +25,7 @@ dotenv.config({ path: '.env.local' });
 import { query, getPool } from '../lib/db';
 
 const BASE = process.env.MCK_TEST_BASE || 'http://localhost:3011';
-const ENDPOINT = `${BASE}/ops/api/ipad/mckesson/orders`;
+const ENDPOINT = `${BASE}/ops/api/ipad/mckesson/orders/`;
 const AUTH = process.env.INTERNAL_AUTH_SECRET;
 
 if (!AUTH) {
