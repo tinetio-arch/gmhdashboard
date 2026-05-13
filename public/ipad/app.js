@@ -9474,6 +9474,9 @@ function renderSuppliesSection() {
             `).join('')}
         </div>
         <div style="display:flex; gap:8px;">
+            <button class="btn-primary btn-sm" onclick="openNewMckessonOrderModal()" style="font-size:12px; padding:6px 14px; background:linear-gradient(135deg, #10b981 0%, #059669 100%);" title="Place a new McKesson order from the catalog">
+                📦 New Order
+            </button>
             <button class="btn-primary btn-sm" onclick="openMckessonMappingModal()" style="font-size:12px; padding:6px 14px; background:linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);">
                 🔗 Map to McKesson
             </button>
@@ -10491,6 +10494,398 @@ async function submitReorder(invoiceRowId) {
         }
     } catch (e) {
         showToast('Submit failed: ' + e.message);
+    }
+}
+
+// ─── New McKesson Order Modal ────────────────────────────────────
+//
+// Lets staff put together a fresh McKesson order from the catalog without
+// needing an existing invoice to reorder from. Two-step flow:
+//   1) Pick + cart → 2) PO# + dryRun preview → 3) confirm submit
+//
+// Backend route: POST /ops/api/ipad/mckesson/orders
+//   - dryRun=true (default) returns a preview only — no McKesson call.
+//   - dryRun=false requires an idempotencyKey (UUID v4) and is gated by
+//     MCKESSON_ALLOW_PRODUCTION_ORDERS in .env.local. Gate-engaged returns
+//     503 with { gateEngaged: true } — surfaced inline in the modal.
+//
+// Cart is browser-only (cleared on close). Idempotency key persists across
+// retries within a single modal session so a flaky network doesn't double-submit.
+
+let newOrderCart = [];                  // [{ mckItemId, supplyItemId, name, manufacturer, mfgPart, qty, uom, unitCost, purchasable }]
+let newOrderPreview = null;             // dryRun response from backend, null until preview is run
+let newOrderSubmitting = false;
+let newOrderIdempotencyKey = null;      // generated lazily; preserved across retries inside this modal session
+let newOrderPickerQuery = '';
+let newOrderPurchasableOnly = true;
+let newOrderPoNumber = '';
+
+function generateOrderIdempotencyKey() {
+    // RFC 4122 v4 (no external dep)
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+function defaultNewOrderPoNumber() {
+    const d = new Date();
+    const yyyymmdd = d.getFullYear().toString() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+    const rand = Math.floor(Math.random() * 36 ** 4).toString(36).toUpperCase().padStart(4, '0');
+    return `IPAD-${yyyymmdd}-${rand}`.slice(0, 30);
+}
+
+function openNewMckessonOrderModal() {
+    newOrderCart = [];
+    newOrderPreview = null;
+    newOrderSubmitting = false;
+    newOrderIdempotencyKey = null;
+    newOrderPickerQuery = '';
+    newOrderPurchasableOnly = true;
+    newOrderPoNumber = defaultNewOrderPoNumber();
+    renderNewMckessonOrderModal();
+}
+
+function closeNewMckessonOrderModal() {
+    const m = document.getElementById('newOrderModal');
+    if (m) m.remove();
+    newOrderCart = [];
+    newOrderPreview = null;
+    newOrderIdempotencyKey = null;
+}
+
+function setNewOrderPickerQuery(v) {
+    newOrderPickerQuery = (v || '').toLowerCase();
+    const list = document.getElementById('newOrderPickerList');
+    if (list) list.innerHTML = renderNewOrderPickerList();
+}
+
+function setNewOrderPurchasableOnly(v) {
+    newOrderPurchasableOnly = !!v;
+    renderNewMckessonOrderModal();
+}
+
+function setNewOrderPoNumber(v) {
+    newOrderPoNumber = (v || '').slice(0, 30);
+    // Don't full-rerender on every keystroke — just clear the preview if PO# changes after preview
+    if (newOrderPreview) {
+        newOrderPreview = null;
+        renderNewMckessonOrderModal();
+    }
+}
+
+function addNewOrderItem(supplyId) {
+    const supplies = supplyItems || extractSupplies();
+    const s = supplies.find(x => x.id === supplyId);
+    if (!s || !s.mckesson_item_id) { showToast('Item not in McKesson catalog'); return; }
+    const existing = newOrderCart.find(x => x.mckItemId === s.mckesson_item_id);
+    if (existing) {
+        existing.qty = Math.min(999, existing.qty + 1);
+    } else {
+        newOrderCart.push({
+            mckItemId: s.mckesson_item_id,
+            supplyItemId: s.id,
+            name: s.name,
+            manufacturer: s.manufacturer,
+            mfgPart: s.manufacturer_part_number,
+            qty: 1,
+            uom: s.mckesson_unit_of_measure || s.mckesson_buy_unit_of_measure || 'EA',
+            unitCost: s.unit_cost ? Number(s.unit_cost) : null,
+            purchasable: s.mckesson_purchasable,
+        });
+    }
+    // Cart change invalidates preview
+    newOrderPreview = null;
+    renderNewMckessonOrderModal();
+}
+
+function removeNewOrderItem(idx) {
+    newOrderCart.splice(idx, 1);
+    newOrderPreview = null;
+    renderNewMckessonOrderModal();
+}
+
+function setNewOrderQty(idx, v) {
+    const n = parseInt(v, 10);
+    if (!Number.isFinite(n) || n < 1) return;
+    newOrderCart[idx].qty = Math.min(999, n);
+    newOrderPreview = null;
+    // Don't re-render on every keystroke; the input keeps the value
+}
+
+async function previewNewOrder() {
+    if (newOrderCart.length === 0) { showToast('Add at least one item to preview'); return; }
+    try {
+        const body = {
+            items: newOrderCart.map(c => ({
+                mckItemId: c.mckItemId,
+                quantity: c.qty,
+                supplyItemId: c.supplyItemId,
+                unitOfMeasure: c.uom,
+            })),
+            poNumber: newOrderPoNumber || undefined,
+            dryRun: true,
+        };
+        showToast('Building preview…');
+        const r = await apiFetch('/ops/api/ipad/mckesson/orders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!r || !r.draft) { showToast('Preview failed: ' + (r?.error || 'unknown')); return; }
+        newOrderPreview = r.draft;
+        renderNewMckessonOrderModal();
+    } catch (e) {
+        showToast('Preview failed: ' + (e?.message || e));
+    }
+}
+
+async function submitNewOrder() {
+    if (!newOrderPreview) { showToast('Run preview first'); return; }
+    if (newOrderSubmitting) return;
+    if (!confirm('Submit this McKesson order? This will be charged to your account.')) return;
+    if (!newOrderIdempotencyKey) newOrderIdempotencyKey = generateOrderIdempotencyKey();
+    newOrderSubmitting = true;
+    renderNewMckessonOrderModal();
+    try {
+        const body = {
+            items: newOrderCart.map(c => ({
+                mckItemId: c.mckItemId,
+                quantity: c.qty,
+                supplyItemId: c.supplyItemId,
+                unitOfMeasure: c.uom,
+            })),
+            poNumber: newOrderPoNumber || undefined,
+            dryRun: false,
+            idempotencyKey: newOrderIdempotencyKey,
+        };
+        const r = await apiFetch('/ops/api/ipad/mckesson/orders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (r?.submitted) {
+            showToast(`Order submitted ✓ McKesson orderId=${r.orderId || '(pending)'}, PO=${r.poNumber}`);
+            closeNewMckessonOrderModal();
+            // Refresh invoices tab in case caller is viewing it
+            if (typeof loadInvoices === 'function') loadInvoices().catch(() => {});
+        } else if (r?.gateEngaged) {
+            // Gate is OFF — show inline banner, don't dismiss
+            newOrderSubmitting = false;
+            newOrderPreview = { ...newOrderPreview, _gateBanner: r.error || 'Production orders disabled' };
+            renderNewMckessonOrderModal();
+        } else {
+            showToast('Submit failed: ' + (r?.error || 'unknown'));
+            newOrderSubmitting = false;
+            renderNewMckessonOrderModal();
+        }
+    } catch (e) {
+        // apiFetch may throw on 503 with gateEngaged — try to surface that
+        const msg = e?.message || String(e);
+        if (/Production orders are disabled|gateEngaged/.test(msg)) {
+            newOrderSubmitting = false;
+            newOrderPreview = { ...newOrderPreview, _gateBanner: msg };
+            renderNewMckessonOrderModal();
+        } else {
+            showToast('Submit failed: ' + msg);
+            newOrderSubmitting = false;
+            renderNewMckessonOrderModal();
+        }
+    }
+}
+
+function renderNewOrderPickerList() {
+    const supplies = supplyItems || extractSupplies();
+    const q = newOrderPickerQuery;
+    const filtered = supplies.filter(s => {
+        if (!s.mckesson_item_id) return false;
+        if (newOrderPurchasableOnly && s.mckesson_purchasable !== true) return false;
+        if (!q) return true;
+        return (s.name || '').toLowerCase().includes(q)
+            || (s.mckesson_item_id || '').toLowerCase().includes(q)
+            || (s.manufacturer_part_number || '').toLowerCase().includes(q)
+            || (s.manufacturer || '').toLowerCase().includes(q)
+            || (s.minor_category || '').toLowerCase().includes(q);
+    }).slice(0, 50); // cap render
+    if (filtered.length === 0) {
+        return `<div style="padding:24px; text-align:center; color:var(--text-tertiary); font-size:12px;">
+            No matches.${newOrderPurchasableOnly ? ' Try unchecking "Purchasable only".' : ''}
+        </div>`;
+    }
+    return filtered.map(s => {
+        const inCart = newOrderCart.find(c => c.mckItemId === s.mckesson_item_id);
+        const purchaseBadge = s.mckesson_purchasable === true
+            ? '<span style="background:rgba(34,197,94,0.18); color:#22c55e; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:600;">PURCHASABLE</span>'
+            : s.mckesson_purchasable === false
+              ? '<span style="background:rgba(239,68,68,0.18); color:#ef4444; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:600;">NOT PURCHASABLE</span>'
+              : '';
+        const cost = s.unit_cost ? `$${Number(s.unit_cost).toFixed(2)}/${s.unit_cost_uom || 'EA'}` : '$—';
+        return `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid var(--border); ${inCart ? 'background:rgba(16,185,129,0.06);' : ''}">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:500; font-size:13px; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis;">${s.name}</div>
+                    <div style="font-size:10px; color:var(--text-tertiary); display:flex; gap:8px; align-items:center; margin-top:2px;">
+                        <span style="font-family:monospace; color:#60a5fa;">MCK ${s.mckesson_item_id}</span>
+                        ${s.manufacturer_part_number ? `<span>· ${s.manufacturer_part_number}</span>` : ''}
+                        ${s.manufacturer ? `<span>· ${s.manufacturer}</span>` : ''}
+                        <span>· ${cost}</span>
+                        ${purchaseBadge}
+                    </div>
+                </div>
+                <button onclick="addNewOrderItem(${s.id})" style="padding:6px 12px; background:${inCart ? 'var(--bg-tertiary)' : 'linear-gradient(135deg,#10b981 0%, #059669 100%)'}; color:${inCart ? 'var(--text-secondary)' : 'white'}; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">
+                    ${inCart ? `+1 (in cart: ${inCart.qty})` : '+ Add'}
+                </button>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderNewOrderCart() {
+    if (newOrderCart.length === 0) {
+        return `<div style="padding:20px; text-align:center; color:var(--text-tertiary); font-size:12px;">Cart is empty. Pick items from the catalog above.</div>`;
+    }
+    return newOrderCart.map((c, idx) => {
+        const notPurch = c.purchasable === false ? '<span style="color:#ef4444; font-size:10px; font-weight:600;">⚠ NOT PURCHASABLE</span>' : '';
+        const lineTotal = (c.unitCost || 0) * c.qty;
+        return `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:500; font-size:13px;">${c.name}</div>
+                    <div style="font-size:10px; color:var(--text-tertiary);">MCK ${c.mckItemId} · ${c.uom}${c.unitCost ? ` · $${c.unitCost.toFixed(2)}` : ''} ${notPurch}</div>
+                </div>
+                <input type="number" min="1" max="999" value="${c.qty}" onchange="setNewOrderQty(${idx}, this.value)"
+                       style="width:64px; padding:6px; background:var(--surface); border:1px solid var(--border-light); border-radius:5px; color:var(--text-primary); text-align:center; font-size:14px; font-weight:600;">
+                <div style="font-size:12px; color:var(--text-secondary); min-width:60px; text-align:right;">${c.unitCost ? '$' + lineTotal.toFixed(2) : '—'}</div>
+                <button onclick="removeNewOrderItem(${idx})" style="background:none; border:none; color:#ef4444; cursor:pointer; font-size:18px; padding:0 4px;" title="Remove">×</button>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderNewMckessonOrderModal() {
+    let modal = document.getElementById('newOrderModal');
+    const hasPreview = !!newOrderPreview;
+    const gateBanner = newOrderPreview?._gateBanner;
+    const subtotal = newOrderCart.reduce((s, c) => s + ((c.unitCost || 0) * c.qty), 0);
+    const previewItems = hasPreview ? (newOrderPreview.preview?.items || []) : [];
+    const previewWarnings = hasPreview ? (newOrderPreview.preview?.warnings || []) : [];
+    const previewGateEngaged = hasPreview ? newOrderPreview.preview?.gateEngaged : false;
+    const submitDisabled = !hasPreview || newOrderSubmitting || newOrderCart.length === 0;
+
+    const html = `
+        <div class="modal-overlay" id="newOrderModal" onclick="if(event.target===this)closeNewMckessonOrderModal()">
+            <div class="modal-content" style="max-width:920px; width:95vw; max-height:90vh; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <div>
+                        <h2 style="margin:0; font-size:18px;">📦 New McKesson Order</h2>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">
+                            Pick items → preview (dryRun) → confirm submit. Idempotency key generated automatically.
+                        </div>
+                    </div>
+                    <button onclick="closeNewMckessonOrderModal()" style="background:none; border:none; color:var(--text-tertiary); font-size:24px; cursor:pointer;">×</button>
+                </div>
+
+                ${gateBanner ? `
+                    <div style="margin-bottom:12px; padding:10px 14px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.30); border-radius:6px; color:#ef4444; font-size:12px;">
+                        ⚠ <strong>Production orders are disabled.</strong> Set <code>MCKESSON_ALLOW_PRODUCTION_ORDERS=true</code> in <code>.env.local</code> and restart the dashboard to enable live ordering. Preview still works.
+                        <div style="color:var(--text-tertiary); font-size:10px; margin-top:4px;">Backend response: ${gateBanner.replace(/</g,'&lt;')}</div>
+                    </div>
+                ` : ''}
+
+                <!-- Step 1: picker -->
+                <div style="margin-bottom:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <div style="font-weight:600; color:var(--text-secondary); font-size:13px;">1. Pick items from McKesson catalog</div>
+                        <label style="font-size:11px; color:var(--text-tertiary); display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" ${newOrderPurchasableOnly ? 'checked' : ''} onchange="setNewOrderPurchasableOnly(this.checked)">
+                            Purchasable only
+                        </label>
+                    </div>
+                    <input type="text" placeholder="🔍 Search by name, MCK #, part #, manufacturer, category…"
+                           value="${newOrderPickerQuery.replace(/"/g,'&quot;')}"
+                           oninput="setNewOrderPickerQuery(this.value)"
+                           style="width:100%; padding:9px 12px; border:1px solid var(--border-light); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); font-size:13px;">
+                    <div id="newOrderPickerList" style="margin-top:8px; max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;">
+                        ${renderNewOrderPickerList()}
+                    </div>
+                </div>
+
+                <!-- Step 2: cart -->
+                <div style="margin-bottom:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <div style="font-weight:600; color:var(--text-secondary); font-size:13px;">2. Your cart (${newOrderCart.length} item${newOrderCart.length === 1 ? '' : 's'})</div>
+                        ${subtotal > 0 ? `<div style="font-size:12px; color:var(--text-secondary);">Estimated subtotal: <strong style="color:#22c55e;">$${subtotal.toFixed(2)}</strong></div>` : ''}
+                    </div>
+                    <div style="max-height:200px; overflow-y:auto; padding:0 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg-secondary);">
+                        ${renderNewOrderCart()}
+                    </div>
+                </div>
+
+                <!-- Step 3: order details -->
+                <div style="margin-bottom:14px; display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div>
+                        <label style="font-size:11px; color:var(--text-tertiary); display:block; margin-bottom:4px;">PO Number (max 30 chars)</label>
+                        <input type="text" maxlength="30" value="${newOrderPoNumber.replace(/"/g,'&quot;')}"
+                               oninput="setNewOrderPoNumber(this.value)"
+                               style="width:100%; padding:8px 10px; border:1px solid var(--border-light); border-radius:5px; background:var(--bg-secondary); color:var(--text-primary); font-size:13px; font-family:monospace;">
+                    </div>
+                    <div>
+                        <label style="font-size:11px; color:var(--text-tertiary); display:block; margin-bottom:4px;">Ship-To (env default — TRI CITY MEDICAL)</label>
+                        <input type="text" disabled value="215 N McCormick St — Bill-To 62477188 / Ship-To 62477191"
+                               style="width:100%; padding:8px 10px; border:1px solid var(--border-light); border-radius:5px; background:var(--bg-tertiary); color:var(--text-tertiary); font-size:11px;">
+                    </div>
+                </div>
+
+                <!-- Action: preview -->
+                ${!hasPreview ? `
+                    <div style="display:flex; gap:8px; margin-top:14px;">
+                        <button onclick="closeNewMckessonOrderModal()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer; font-size:13px;">Cancel</button>
+                        <button onclick="previewNewOrder()" ${newOrderCart.length === 0 ? 'disabled' : ''}
+                                style="flex:2; padding:10px; background:${newOrderCart.length === 0 ? 'var(--bg-tertiary)' : 'linear-gradient(135deg,#3b82f6 0%, #1d4ed8 100%)'}; color:${newOrderCart.length === 0 ? 'var(--text-tertiary)' : 'white'}; border:none; border-radius:6px; cursor:${newOrderCart.length === 0 ? 'not-allowed' : 'pointer'}; font-size:13px; font-weight:600;">
+                            ▶ Preview Order (dryRun)
+                        </button>
+                    </div>
+                ` : `
+                    <!-- Step 4: preview + confirm submit -->
+                    <div style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.25); border-radius:6px; padding:12px; margin-top:14px;">
+                        <div style="font-weight:600; font-size:13px; margin-bottom:8px; color:#60a5fa;">✓ Preview (NOT submitted to McKesson)</div>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:8px;">
+                            ${previewItems.length} line${previewItems.length === 1 ? '' : 's'} ·
+                            estimated total: <strong style="color:var(--text-secondary);">$${(newOrderPreview.preview?.totalEstimate || 0).toFixed(2)}</strong>
+                            · PO: <code>${newOrderPreview.poNumber || '(none)'}</code>
+                            ${previewGateEngaged ? ' · <span style="color:#ef4444;">⚠ Gate engaged</span>' : ''}
+                        </div>
+                        <div style="max-height:160px; overflow-y:auto; font-size:11px; font-family:monospace; color:var(--text-secondary);">
+                            ${previewItems.map(l => `
+                                <div style="padding:3px 0;">${l.product_id} × ${l.quantity} ${l.uom} — ${l.name}${l.unit_cost ? ` ($${l.line_total.toFixed(2)})` : ''}</div>
+                            `).join('')}
+                        </div>
+                        ${previewWarnings.length > 0 ? `
+                            <div style="margin-top:8px; padding:8px; background:rgba(234,179,8,0.10); border-left:3px solid #eab308; font-size:11px; color:#eab308;">
+                                ${previewWarnings.map(w => `<div>⚠ ${w}</div>`).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                    <div style="display:flex; gap:8px; margin-top:12px;">
+                        <button onclick="closeNewMckessonOrderModal()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer; font-size:13px;">Cancel</button>
+                        <button onclick="previewNewOrder()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer; font-size:13px;">↻ Re-preview</button>
+                        <button onclick="submitNewOrder()" ${submitDisabled ? 'disabled' : ''}
+                                style="flex:2; padding:10px; background:${submitDisabled ? 'var(--bg-tertiary)' : 'linear-gradient(135deg,#10b981 0%, #059669 100%)'}; color:${submitDisabled ? 'var(--text-tertiary)' : 'white'}; border:none; border-radius:6px; cursor:${submitDisabled ? 'not-allowed' : 'pointer'}; font-size:13px; font-weight:600;">
+                            ${newOrderSubmitting ? '⏳ Submitting…' : '✓ Submit Order'}
+                        </button>
+                    </div>
+                `}
+            </div>
+        </div>
+    `;
+    if (modal) {
+        modal.outerHTML = html;
+    } else {
+        document.body.insertAdjacentHTML('beforeend', html);
     }
 }
 

@@ -841,6 +841,76 @@ export async function placeAndRecordOrder(
 }
 
 /**
+ * Place a McKesson order with idempotency-key replay.
+ *
+ * Behaviour:
+ *  - If a `mckesson_orders` row already exists with `idempotency_key = $idempotencyKey`,
+ *    return that row (and the stored response) — DOES NOT call McKesson again.
+ *  - Otherwise calls `placeAndRecordOrder` and then stamps the new row with the key.
+ *
+ * The two-step write (insert without key, then UPDATE) means a duplicate submit
+ * in flight could create two rows briefly — but the UNIQUE partial index on
+ * `idempotency_key` makes the second UPDATE fail, and the caller can re-fetch
+ * the winning row. Good enough for iPad-scale traffic (~1 order/day).
+ *
+ * Production gate is enforced by submitOrder() inside placeAndRecordOrder().
+ *
+ * @param idempotencyKey UUID v4 supplied by the client
+ * @returns { dbOrder, mckResponse, replay } — replay=true when the existing row was returned
+ */
+export async function placeAndRecordOrderWithIdempotency(
+  accountId: string,
+  items: Array<{ supplyItemId?: number; mckItemId: string; quantity: number; unitOfMeasure?: string }>,
+  shipToAccountId: string,
+  poNumber: string | undefined,
+  createdBy: string | undefined,
+  idempotencyKey: string,
+): Promise<{ dbOrder: McKessonOrderRow; mckResponse: McKessonOrderResponse; replay: boolean }> {
+  // 1. Replay check
+  const existing = await query<McKessonOrderRow>(
+    `SELECT * FROM mckesson_orders WHERE idempotency_key = $1 LIMIT 1`,
+    [idempotencyKey]
+  );
+  if (existing[0]) {
+    return {
+      dbOrder: existing[0],
+      mckResponse: (existing[0].response_data as McKessonOrderResponse) || ({ accepted: false, orderId: null, validation: [] } as any),
+      replay: true,
+    };
+  }
+
+  // 2. Place and record (this calls submitOrder which enforces the production gate)
+  const result = await placeAndRecordOrder(accountId, items, shipToAccountId, poNumber, createdBy);
+
+  // 3. Stamp the new row with the idempotency key. UNIQUE partial index prevents
+  //    two concurrent submits from both winning; on conflict we replay the winner.
+  try {
+    await query(
+      `UPDATE mckesson_orders SET idempotency_key = $1 WHERE id = $2`,
+      [idempotencyKey, result.dbOrder.id]
+    );
+    (result.dbOrder as any).idempotency_key = idempotencyKey;
+  } catch (e: any) {
+    if (String(e?.message || e).includes('uq_mckesson_orders_idempotency_key')) {
+      const winner = await query<McKessonOrderRow>(
+        `SELECT * FROM mckesson_orders WHERE idempotency_key = $1 LIMIT 1`,
+        [idempotencyKey]
+      );
+      if (winner[0]) {
+        return {
+          dbOrder: winner[0],
+          mckResponse: (winner[0].response_data as McKessonOrderResponse) || result.mckResponse,
+          replay: true,
+        };
+      }
+    }
+    console.error('[MCKESSON] idempotency stamp failed (non-fatal):', e?.message || e);
+  }
+
+  return { ...result, replay: false };
+}
+
+/**
  * Fetch all McKesson orders from our database, most recent first.
  */
 export async function fetchMcKessonOrders(limit: number = 50): Promise<McKessonOrderRow[]> {
