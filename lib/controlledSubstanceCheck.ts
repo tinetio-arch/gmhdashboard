@@ -230,15 +230,22 @@ export async function recordControlledSubstanceCheck(
     // Get current system counts
     const systemCounts = await getSystemInventoryCounts();
 
-    // Calculate physical totals (vials + prefilled syringes)
+    // Calculate physical totals (vials only — form counts vials, not prefilled syringes).
     const physicalTotalCb = (input.physicalVialsCb30ml * 30) + (input.physicalPartialMlCb || 0);
     const physicalTotalTopRx = (input.physicalVialsTopRx10ml * 10) + (input.physicalPartialMlTopRx || 0);
     const physicalSyringeMl = (input as any).physicalSyringeMl || 0;
 
-    // FIX(2026-04-22): Discrepancy = (vials + staged syringes) - (physical vials + physical syringes)
-    // Previously staged doses were invisible — staff saw a discrepancy they couldn't explain.
+    // FIX(2026-05-12): Compare vials-to-vials. Staged doses (prefilled syringes) are
+    // tracked separately in the staged_doses table; their volume has already been
+    // deducted from vials.remaining_volume_ml at staging time, so they do NOT belong
+    // in the vial-based comparison. Previously this added stagedDoseMl to the system
+    // side without adding it to physical (the form has no syringe-count input),
+    // producing a guaranteed >=stagedDoseMl ghost discrepancy every check.
+    //
+    // If a future form starts collecting physicalSyringeMl, both sides can include
+    // staged volume; until then, both sides are vial-only.
     const systemGrandTotal = systemCounts.cb30ml.totalMl + systemCounts.topRx10ml.totalMl
-        + systemCounts.cb30ml.stagedDoseMl + systemCounts.topRx10ml.stagedDoseMl;
+        + (physicalSyringeMl > 0 ? (systemCounts.cb30ml.stagedDoseMl + systemCounts.topRx10ml.stagedDoseMl) : 0);
     const physicalGrandTotal = physicalTotalCb + physicalTotalTopRx + physicalSyringeMl;
     const discrepancyCb = systemGrandTotal - physicalGrandTotal;
     const discrepancyTopRx = 0; // Using grand total now — split per-vendor is misleading when syringes cross vendors
