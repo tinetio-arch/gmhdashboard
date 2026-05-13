@@ -1,6 +1,6 @@
 # Dispatch Briefing — For New Cowork/Dispatch Sessions
 
-> **Last updated**: May 12, 2026
+> **Last updated**: May 12, 2026 (evening — Cowork dispatch build)
 > **Purpose**: Read this FIRST when starting a new Dispatch session. Contains current state, active work, and key decisions.
 
 ## What Happened Most Recently (May 12, 2026)
@@ -11,6 +11,17 @@
 - ABXTAC password reset hardening
 - All merged to master, production running commit 8eac0d2+
 
+### McKesson New-Order Modal (Cowork, evening of May 12) ✅ SHIPPED
+- iPad **📦 New Order** button on Supplies tab → modal with picker → cart → dryRun preview → confirm submit.
+- Backend: new `POST /api/ipad/mckesson/orders` (iPad-namespaced; existing `/api/mckesson/orders` left untouched). dryRun=true is the default; live submit requires UUID-v4 `idempotencyKey`.
+- Production gate (`MCKESSON_ALLOW_PRODUCTION_ORDERS`) **stays false** — every live submit currently returns 503 `gateEngaged:true`. The 36-assertion test script (`scripts/test-mckesson-new-order.ts`) includes this as test #11. Phil flips the gate manually when ready.
+- DB migration: `migrations/20260512_mckesson_order_idempotency.sql` (partial UNIQUE index on `mckesson_orders.idempotency_key`).
+- Mobile synced to `app.c77759b5.js`.
+- Plan: `~/gmhdashboard/.tmp/mckesson-new-order-modal.plan.md`.
+- Commits: `598b1ea` (feature) + `45d8fda` (test endpoint trailing-slash fix); merged via `5aa2ad7`.
+- Note: claude-mckesson's "ready to merge" framing from earlier was misleading — that session was still parked. This work was done from Cowork on a fresh `claude/dispatch-build/mckesson-new-order-modal` branch.
+- Follow-up: Dispatch-chat ordering tool wraps this same backend (outlined in plan §10; ~150 lines in `~/dispatch-mcp/server.py` — not built yet).
+
 ### Infrastructure Built Today
 - `scripts/pre-deploy-check.sh` — mandatory gatekeeper before any pm2 restart
 - `scripts/refresh-project-tracker.sh` — auto-generates live data section of PROJECT_TRACKER.md
@@ -18,6 +29,7 @@
 - Context preservation + code safety rules added to CLAUDE.md
 - All SOT modules refreshed with live data (was stale since April 6)
 - DEPENDENCIES.md, CLAUDE_MEMORY_PINS.md, INDEX.md all updated
+- **Dispatch-MCP**: send-prompt fix + worktree-isolation patch deployed (separate work; fresh `cs` tmux sessions now get their own worktree automatically — Cowork-via-SSH keeps using the shared tree with careful targeted `git add`).
 
 ### Key Decisions Made
 - ignoreBuildErrors stays true for now (146 pre-existing TS errors, mostly admin pages)
