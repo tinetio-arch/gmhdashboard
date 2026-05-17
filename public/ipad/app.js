@@ -15322,9 +15322,11 @@ async function submitAddToSchedule() {
         for (var i = 0; i < scheduleAllBlocks.length; i++) {
             var b = scheduleAllBlocks[i];
             if (!b.date || b.provider_id !== providerId) continue;
-            var mm = b.date.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}/);
-            if (!mm || mm[1] !== dateVal) continue;
-            var bStart = parseInt(mm[2], 10) * 60 + parseInt(mm[3], 10);
+            // FIX(2026-05-17): b.date is strict ISO UTC after the May 12 server
+            // normalization. Use the shared Phoenix-local parser.
+            var bp2 = getPhoenixBlockParts(b.date);
+            if (!bp2 || bp2.dateStr !== dateVal) continue;
+            var bStart = bp2.hour * 60 + bp2.minute;
             var bEnd = bStart + (b.length || 0);
             if (slotStart < bEnd && slotEnd > bStart) { conflictBlock = b; break; }
         }
@@ -15818,9 +15820,11 @@ async function submitBreak() {
         scheduleAllData.forEach(function(a) {
             if (!a.date) return;
             if (a.provider_id && a.provider_id !== providerId) return;
-            var dm = a.date.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}/);
-            if (!dm || dm[1] !== date) return;
-            var apptMin = parseInt(dm[2], 10) * 60 + parseInt(dm[3], 10);
+            // FIX(2026-05-17): a.date is strict ISO UTC after the May 12 server
+            // normalization. Use Phoenix-local parts, not the old space-format regex.
+            var ap = getPhoenixBlockParts(a.date);
+            if (!ap || ap.dateStr !== date) return;
+            var apptMin = ap.hour * 60 + ap.minute;
             var apptEnd = apptMin + (a.length || 30);
             if (apptMin < blockEnd && apptEnd > blockStart) {
                 conflicts.push(a);
@@ -15957,6 +15961,27 @@ async function decideBlockRequest(requestId, decision) {
     }
 }
 
+// FIX(2026-05-17): Block dates come back as strict ISO UTC ("...Z") after the
+// May 12 pgTimestampToUTCISO normalization on the server, so the old regex
+// that expected "YYYY-MM-DD HH:MM:SS -0700" no longer matched (or matched the
+// UTC hours, showing a 7am block as 2pm). Parse via parseHealthieDate and
+// pull Phoenix-local fields from Intl.DateTimeFormat instead.
+function getPhoenixBlockParts(dateStr) {
+    var d = parseHealthieDate(dateStr);
+    if (isNaN(d.getTime())) return null;
+    var parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Phoenix',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(d).reduce(function(o, p) { o[p.type] = p.value; return o; }, {});
+    var hour = parts.hour === '24' ? 0 : parseInt(parts.hour, 10);
+    return {
+        dateStr: parts.year + '-' + parts.month + '-' + parts.day,
+        hour: hour,
+        minute: parseInt(parts.minute, 10),
+    };
+}
+
 // Return the block covering (slotHour:slotMin) for the given provider on
 // scheduleSelectedDate, or null if the 30-min slot is not blocked.
 // providerMatch can be provider_id OR provider_name OR null for any-provider.
@@ -15968,10 +15993,10 @@ function getSlotBlock(slotHour, slotMin, providerMatch) {
     for (var i = 0; i < scheduleAllBlocks.length; i++) {
         var b = scheduleAllBlocks[i];
         if (!b.date) continue;
-        var m = b.date.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}/);
-        if (!m || m[1] !== dayStr) continue;
+        var bp = getPhoenixBlockParts(b.date);
+        if (!bp || bp.dateStr !== dayStr) continue;
         if (providerMatch && b.provider_id !== providerMatch && b.provider_name !== providerMatch) continue;
-        var bStart = parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+        var bStart = bp.hour * 60 + bp.minute;
         var bEnd = bStart + (b.length || 0);
         if (slotStart < bEnd && slotEnd > bStart) return b;
     }
@@ -16012,8 +16037,11 @@ function renderBlockBanner(forDate, opts) {
     var targetStr = typeof forDate === 'string' ? forDate : getPhoenixDateStr(forDate);
     var blocks = scheduleAllBlocks.filter(function(b) {
         if (!b.date) return false;
-        var m = b.date.match(/^(\d{4}-\d{2}-\d{2})/);
-        if (!m || m[1] !== targetStr) return false;
+        // FIX(2026-05-17): compare Phoenix date, not the raw leading YYYY-MM-DD.
+        // For ISO UTC strings, a late-evening Phoenix block (e.g. 6pm AZ = 01:00 UTC
+        // next day) would otherwise be filed under the wrong day.
+        var bp = getPhoenixBlockParts(b.date);
+        if (!bp || bp.dateStr !== targetStr) return false;
         if (scheduleProviderFilter !== 'all' && b.provider_name !== scheduleProviderFilter) return false;
         return true;
     });
@@ -16026,9 +16054,11 @@ function renderBlockBanner(forDate, opts) {
     };
     var out = '';
     blocks.forEach(function(b) {
-        var m = (b.date || '').match(/(\d{2}):(\d{2}):\d{2}/);
-        var startH = m ? parseInt(m[1], 10) : 0;
-        var startM = m ? parseInt(m[2], 10) : 0;
+        // FIX(2026-05-17): use Phoenix-local parts, not a naive regex on the
+        // ISO UTC string (which would render 7am AZ as 2pm).
+        var bp = getPhoenixBlockParts(b.date);
+        var startH = bp ? bp.hour : 0;
+        var startM = bp ? bp.minute : 0;
         var startTime = fmt12(startH, startM);
         var totalEnd = startH * 60 + startM + (b.length || 0);
         var endTime = fmt12(Math.floor(totalEnd / 60) % 24, totalEnd % 60);
@@ -16055,12 +16085,14 @@ function editBreak(blockId) {
     if (!blockId) return;
     var block = (scheduleAllBlocks || []).find(function(b) { return b.id === blockId; });
     if (!block) { alert('Block not found — refresh and try again.'); return; }
-    // Parse date "YYYY-MM-DD HH:MM:SS -0700"
-    var m = (block.date || '').match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):\d{2}/);
-    if (!m) return;
-    var dateStr = m[1];
-    var startH = m[2], startM = m[3];
-    var totalEnd = parseInt(startH, 10) * 60 + parseInt(startM, 10) + (block.length || 30);
+    // FIX(2026-05-17): block.date is strict ISO UTC after the May 12 server
+    // normalization. Parse via the shared helper so we get Phoenix-local fields.
+    var bp = getPhoenixBlockParts(block.date);
+    if (!bp) return;
+    var dateStr = bp.dateStr;
+    var startH = String(bp.hour).padStart(2, '0');
+    var startM = String(bp.minute).padStart(2, '0');
+    var totalEnd = bp.hour * 60 + bp.minute + (block.length || 30);
     var endH = String(Math.floor(totalEnd / 60) % 24).padStart(2, '0');
     var endM = String(totalEnd % 60).padStart(2, '0');
 
