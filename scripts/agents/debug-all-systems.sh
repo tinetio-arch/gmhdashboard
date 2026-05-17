@@ -153,6 +153,15 @@ else
     fail "NaN in patient-context" "Fields: $NAN_CHECK"
 fi
 
+# iPad block-date parser regression check — catches wire-format flips between
+# the server and the iPad client. Added after the 2026-05-17 ISO-UTC incident.
+IPAD_DATE_OUT=$(node "$(dirname "$0")/test-ipad-date-parsing.js" 2>&1)
+if [ $? -eq 0 ]; then
+    pass "iPad date parser handles ISO UTC + legacy Healthie formats"
+else
+    fail "iPad date parser" "$(echo "$IPAD_DATE_OUT" | tr '\n' ' ' | cut -c1-300)"
+fi
+
 # ═══════════════════════════════════════
 # 6. WHOLESALE PRICING SECURITY
 # ═══════════════════════════════════════
