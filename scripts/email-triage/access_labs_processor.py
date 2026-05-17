@@ -9,6 +9,7 @@ import json
 import boto3
 import base64
 import logging
+import requests
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
@@ -240,53 +241,346 @@ Lab Report Text:
         
         return results
     
+    # ---------------------------------------------------------------------
+    # Active-patient defense-in-depth helpers
+    # FIX(2026-05-17): Snowflake HEALTHIE_PATIENTS table still contains archived
+    # Healthie IDs (the per-sync active filter is leaky/stale), and PATIENT_360_VIEW
+    # uses *dashboard* status, not Healthie's archived flag. Net effect: the fuzzy
+    # matcher in match_to_healthie() can pick an archived-duplicate Healthie ID,
+    # which then writes a stuck "inactive patient" row into lab_review_queue.
+    # Three-step defense:
+    #   1. Verify every Snowflake-matched id against live Healthie API.
+    #   2. If archived, look up the clinic-curated Postgres `patients` table
+    #      (same source of truth that /home/ec2-user/scripts/labs/fetch_results.py
+    #      uses as Tier 1) for the canonical active healthie_client_id.
+    #   3. If Postgres also misses, search Healthie API directly for an active dup.
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _unpack_fuzz_match(m):
+        """thefuzz.process.extract returns 2-tuples for list input and 3-tuples for
+        dict input. Normalize to (name, score)."""
+        if len(m) >= 2:
+            return m[0], m[1]
+        return None, 0
+
+    def _lookup_postgres_active(self, normalized_name: str, dob: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fuzzy-match against the Postgres `patients` table (active only).
+        Returns {'healthie_id','name','dob','patient_id'} or None.
+        This is the same source-of-truth fetch_results.py uses as Tier 1."""
+        try:
+            import psycopg2
+            from thefuzz import fuzz, process
+            conn = psycopg2.connect(
+                host=os.environ.get('DATABASE_HOST', 'localhost'),
+                port=int(os.environ.get('DATABASE_PORT', '5432')),
+                database=os.environ.get('DATABASE_NAME', 'postgres'),
+                user=os.environ.get('DATABASE_USER', 'clinicadmin'),
+                password=os.environ.get('DATABASE_PASSWORD'),
+                sslmode=os.environ.get('DATABASE_SSLMODE', 'require'),
+                connect_timeout=10
+            )
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT patient_id, full_name, healthie_client_id, dob
+                  FROM patients
+                 WHERE healthie_client_id IS NOT NULL
+                   AND (status IS NULL OR LOWER(status) NOT IN ('inactive', 'hold_patient_research', 'hold_payment_research'))
+            """)
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            if not rows:
+                return None
+            by_name = {(r[1] or 'Unknown'): {
+                'patient_id': str(r[0]),
+                'name': r[1] or 'Unknown',
+                'healthie_id': str(r[2]),
+                'dob': str(r[3]) if r[3] else None
+            } for r in rows}
+            matches = process.extract(normalized_name, list(by_name.keys()), scorer=fuzz.token_sort_ratio, limit=5)
+            if not matches:
+                return None
+            best_name, score = self._unpack_fuzz_match(matches[0])
+            if score < 85 or not best_name:
+                return None
+            return by_name[best_name]
+        except Exception as e:
+            logger.warning(f"Postgres active lookup failed for '{normalized_name}': {e}")
+            return None
+
+    def _verify_healthie_active(self, healthie_id: str) -> Optional[bool]:
+        """Look up a Healthie user by id; return True if active, False if archived
+        or unknown-to-Healthie, None only if the HTTP lookup itself failed (network
+        error or non-200) so the caller can fall through rather than block on a
+        transient API problem.
+
+        We trust Healthie's `active` boolean — `archived_at` is unreliable
+        (we've seen rows with active=True AND archived_at set, where the patient
+        is in fact the live record; see Shawn Antrim 12742287, Phillip Schafer
+        12123979 in production data 2026-05-17)."""
+        api_key = os.environ.get('HEALTHIE_API_KEY')
+        if not api_key or not healthie_id:
+            return None
+        try:
+            query = """
+            query VerifyActive($id: ID) {
+                user(id: $id) {
+                    id
+                    active
+                }
+            }
+            """
+            response = requests.post(
+                'https://api.gethealthie.com/graphql',
+                json={'query': query, 'variables': {'id': str(healthie_id)}},
+                headers={
+                    'Authorization': f'Basic {api_key}',
+                    'AuthorizationSource': 'API',
+                    'Content-Type': 'application/json'
+                },
+                timeout=10
+            )
+            if response.status_code != 200:
+                logger.warning(f"Healthie verify HTTP {response.status_code} for id={healthie_id}")
+                return None
+            data = response.json()
+            user = (data.get('data') or {}).get('user')
+            if user is None:
+                # Healthie doesn't recognize this id (deleted/never existed).
+                # Treat as "not active" so caller falls back to rescue tiers.
+                return False
+            return bool(user.get('active'))
+        except Exception as e:
+            logger.warning(f"Healthie verify failed for id={healthie_id}: {e}")
+            return None
+
+    def _search_healthie_direct_active(self, normalized_name: str, dob: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Direct Healthie API search restricted to ACTIVE patients only.
+        Used as fallback when Snowflake candidate match resolves to an archived id."""
+        api_key = os.environ.get('HEALTHIE_API_KEY')
+        if not api_key or not normalized_name:
+            return None
+        try:
+            query = """
+            query SearchActivePatients($keywords: String) {
+                users(keywords: $keywords, active_status: "Active") {
+                    id
+                    first_name
+                    last_name
+                    dob
+                    active
+                }
+            }
+            """
+            response = requests.post(
+                'https://api.gethealthie.com/graphql',
+                json={'query': query, 'variables': {'keywords': normalized_name}},
+                headers={
+                    'Authorization': f'Basic {api_key}',
+                    'AuthorizationSource': 'API',
+                    'Content-Type': 'application/json'
+                },
+                timeout=10
+            )
+            if response.status_code != 200:
+                logger.warning(f"Healthie search HTTP {response.status_code} for '{normalized_name}'")
+                return None
+            users = (response.json().get('data') or {}).get('users') or []
+            # Defense in depth — re-filter even though active_status:Active was set.
+            # Trust the `active` boolean alone; archived_at is unreliable in Healthie.
+            active_users = [u for u in users if u.get('active')]
+            if not active_users:
+                return None
+            # Prefer DOB match if available
+            if dob:
+                # Normalize "MM/DD/YYYY" → "YYYY-MM-DD" for comparison
+                try:
+                    target_dob = datetime.strptime(dob.strip(), '%m/%d/%Y').strftime('%Y-%m-%d')
+                except Exception:
+                    target_dob = dob.strip()
+                for u in active_users:
+                    if (u.get('dob') or '').strip() == target_dob:
+                        return {
+                            'id': str(u['id']),
+                            'name': f"{u.get('first_name','')} {u.get('last_name','')}".strip(),
+                            'dob': u.get('dob')
+                        }
+            u = active_users[0]
+            return {
+                'id': str(u['id']),
+                'name': f"{u.get('first_name','')} {u.get('last_name','')}".strip(),
+                'dob': u.get('dob')
+            }
+        except Exception as e:
+            logger.warning(f"Healthie direct search failed for '{normalized_name}': {e}")
+            return None
+
     def match_to_healthie(self, patient_name: str, dob: Optional[str] = None) -> Dict[str, Any]:
         """
         Find patient in Healthie using fuzzy matching.
         Returns match info with confidence score.
+
+        Defense-in-depth: after the Snowflake-backed fuzzy match resolves a
+        Healthie ID, verify against the live Healthie API that the ID is still
+        active. If archived, fall back to a direct Healthie API search restricted
+        to active patients. See FIX(2026-05-17) comment above.
         """
         # Import patient matching from scribe orchestrator
         try:
             import sys
             sys.path.insert(0, '/home/ec2-user/scripts/scribe')
             from scribe_orchestrator import ScribeOrchestrator
-            
+
             orchestrator = ScribeOrchestrator()
-            
+
             # Normalize name from "Last, First" to "First Last"
             if ',' in patient_name:
                 parts = patient_name.split(',')
                 normalized_name = f"{parts[1].strip()} {parts[0].strip()}"
             else:
                 normalized_name = patient_name
-            
+
             # Use existing fuzzy matching
             candidates = orchestrator.get_patient_candidate_list()
-            
+
             if not candidates:
+                # No Snowflake candidates — fall straight to direct Healthie active-only search.
+                api_match = self._search_healthie_direct_active(normalized_name, dob)
+                if api_match:
+                    logger.info(f"Matched via direct Healthie search (no Snowflake candidates): {api_match['name']} ({api_match['id']})")
+                    return {
+                        'patient_id': api_match['id'],
+                        'healthie_id': api_match['id'],
+                        'confidence': 0.95,
+                        'matched_name': api_match['name'],
+                        'top_matches': [],
+                        'source': 'healthie_api'
+                    }
                 return {'patient_id': None, 'confidence': 0.0, 'matched_name': None, 'top_matches': []}
-            
+
             from thefuzz import fuzz, process
-            
+
             name_to_patient = {p['name']: p for p in candidates}
             patient_names = list(name_to_patient.keys())
-            
+
             matches = process.extract(normalized_name, patient_names, scorer=fuzz.token_sort_ratio, limit=5)
-            
+
+            # thefuzz returns 2-tuples for list input on this box's version; the
+            # original `name, score, _ = matches[0]` unpack raised silently and
+            # forced every match through the except branch (always returning
+            # None). Normalize to (name, score).
+            top_matches_serializable = [
+                (*self._unpack_fuzz_match(m), name_to_patient[self._unpack_fuzz_match(m)[0]].get('id'))
+                for m in matches[:3] if self._unpack_fuzz_match(m)[0]
+            ]
+
             if matches:
-                best_match_name, score, _ = matches[0]
+                best_match_name, score = self._unpack_fuzz_match(matches[0])
+                if not best_match_name:
+                    return {'patient_id': None, 'confidence': 0.0, 'matched_name': None, 'top_matches': []}
                 best_patient = name_to_patient[best_match_name]
-                
+                matched_id = best_patient.get('healthie_id') or best_patient['id']
+
+                # --- Defense-in-depth: verify ID is still active in Healthie ---
+                active_check = self._verify_healthie_active(matched_id)
+                if active_check is False:
+                    logger.warning(
+                        f"Snowflake matched archived Healthie id={matched_id} "
+                        f"for '{normalized_name}' — looking for active dup"
+                    )
+                    # Rescue tier A: Postgres `patients` table (clinic-curated SoT,
+                    # same primary tier fetch_results.py uses).
+                    pg_match = self._lookup_postgres_active(normalized_name, dob)
+                    if pg_match and pg_match.get('healthie_id') and pg_match['healthie_id'] != str(matched_id):
+                        # Verify the Postgres-chosen id is still active in Healthie
+                        # before swapping. If Healthie says it's archived too, fall
+                        # through to direct API search.
+                        pg_active = self._verify_healthie_active(pg_match['healthie_id'])
+                        if pg_active is not False:
+                            logger.info(
+                                f"Replaced archived id {matched_id} with Postgres active id "
+                                f"{pg_match['healthie_id']} ({pg_match['name']})"
+                            )
+                            return {
+                                'patient_id': pg_match['healthie_id'],
+                                'healthie_id': pg_match['healthie_id'],
+                                'confidence': max(score / 100.0, 0.9),
+                                'matched_name': pg_match['name'],
+                                'top_matches': top_matches_serializable,
+                                'source': 'postgres_fallback',
+                                'replaced_archived_id': str(matched_id)
+                            }
+                    # Rescue tier B: direct Healthie API search restricted to active.
+                    api_match = self._search_healthie_direct_active(normalized_name, dob)
+                    if api_match:
+                        logger.info(
+                            f"Replaced archived id {matched_id} with Healthie API active id "
+                            f"{api_match['id']} ({api_match['name']})"
+                        )
+                        return {
+                            'patient_id': api_match['id'],
+                            'healthie_id': api_match['id'],
+                            'confidence': max(score / 100.0, 0.9),
+                            'matched_name': api_match['name'],
+                            'top_matches': top_matches_serializable,
+                            'source': 'healthie_api_fallback',
+                            'replaced_archived_id': str(matched_id)
+                        }
+                    # No active dup found anywhere — return no-match rather than the archived id.
+                    logger.error(
+                        f"Archived id={matched_id} matched and no active dup found for "
+                        f"'{normalized_name}' — refusing to write archived id to queue. "
+                        f"Item will surface in review queue for manual patient selection."
+                    )
+                    return {
+                        'patient_id': None,
+                        'healthie_id': None,
+                        'confidence': 0.0,
+                        'matched_name': best_match_name,
+                        'top_matches': top_matches_serializable,
+                        'rejected_archived_id': str(matched_id)
+                    }
+                # active_check is True or None (unknown). If unknown, fall through
+                # — better to keep working than to block on a transient API failure.
+
+                # Low-confidence rescue: if the Snowflake fuzzy match is below
+                # 85% (the same gate scribe_orchestrator.identify_patient uses),
+                # consult Postgres before accepting the match. Postgres is
+                # clinic-curated and often holds the patient when Snowflake
+                # candidate-list pagination/limit misses it. See production
+                # incident 2026-05-17 where 'ANTRIM, SHAWN' fuzzy-matched
+                # 'Katie Sheehan' at 64% because the Antrim duplicate cluster
+                # was not in the 5000-row candidate list.
+                if score < 85:
+                    pg_match = self._lookup_postgres_active(normalized_name, dob)
+                    if pg_match and pg_match.get('healthie_id'):
+                        pg_active = self._verify_healthie_active(pg_match['healthie_id'])
+                        if pg_active is not False:
+                            logger.info(
+                                f"Low-confidence Snowflake match ({score}%) → upgraded via Postgres "
+                                f"to {pg_match['name']} ({pg_match['healthie_id']})"
+                            )
+                            return {
+                                'patient_id': pg_match['healthie_id'],
+                                'healthie_id': pg_match['healthie_id'],
+                                'confidence': 0.9,
+                                'matched_name': pg_match['name'],
+                                'top_matches': top_matches_serializable,
+                                'source': 'postgres_low_confidence_rescue',
+                                'snowflake_below_threshold_match': best_match_name
+                            }
+
                 return {
                     'patient_id': best_patient['id'],
                     'confidence': score / 100.0,
                     'matched_name': best_match_name,
                     'healthie_id': best_patient.get('healthie_id'),
-                    'top_matches': [(m[0], m[1], name_to_patient[m[0]].get('id')) for m in matches[:3]]
+                    'top_matches': top_matches_serializable
                 }
-            
+
             return {'patient_id': None, 'confidence': 0.0, 'matched_name': None, 'top_matches': []}
-            
+
         except Exception as e:
             logger.error(f"Patient matching failed: {e}")
             return {'patient_id': None, 'confidence': 0.0, 'matched_name': None, 'error': str(e)}
