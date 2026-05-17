@@ -68,8 +68,22 @@ export async function POST(request: NextRequest) {
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(note.patient_id);
         
         if (isUuid) {
+            // FIX(2026-05-17): When a patient has multiple active healthie_clients rows
+            // (duplicate mapping from upsert_demographics_match / ipad_auto_resolve_match),
+            // prefer the row matching the canonical patients.healthie_client_id. Previously
+            // PG returned rows in arbitrary order, so submit silently picked a stale/bad
+            // mapping → Healthie createFormAnswerGroup returned no form_answer_group →
+            // generic "Failed to create/update SOAP form in Healthie — no ID returned".
             const [localPatient] = await query<any>(
-                'SELECT p.patient_id, p.full_name, p.dob, p.clinic, hc.healthie_client_id FROM patients p LEFT JOIN healthie_clients hc ON p.patient_id::text = hc.patient_id AND hc.is_active = true WHERE p.patient_id = $1',
+                `SELECT p.patient_id, p.full_name, p.dob, p.clinic,
+                        COALESCE(hc.healthie_client_id, p.healthie_client_id) AS healthie_client_id
+                 FROM patients p
+                 LEFT JOIN healthie_clients hc
+                   ON p.patient_id::text = hc.patient_id AND hc.is_active = true
+                 WHERE p.patient_id = $1
+                 ORDER BY (hc.healthie_client_id = p.healthie_client_id) DESC NULLS LAST,
+                          hc.created_at ASC NULLS LAST
+                 LIMIT 1`,
                 [note.patient_id]
             );
             if (localPatient) {
@@ -179,6 +193,10 @@ export async function POST(request: NextRequest) {
         // 4. Create or Update FormAnswerGroup in Healthie (matching Telegram bot)
         let healthieNoteId: string | null = null;
         const isResubmit = !!note.healthie_note_id;
+        // FIX(2026-05-17): capture Healthie's validation messages so a no-ID failure
+        // surfaces the actual reason (e.g. archived user, invalid field) instead of
+        // the generic "no ID returned" that hid the McCartney duplicate-mapping bug.
+        let lastMessages: Array<{ field?: string; message?: string }> = [];
 
         if (isResubmit) {
             // Update existing form answer group
@@ -198,14 +216,16 @@ export async function POST(request: NextRequest) {
             });
 
             healthieNoteId = updateResult?.updateFormAnswerGroup?.form_answer_group?.id;
+            lastMessages = updateResult?.updateFormAnswerGroup?.messages || [];
 
             // Fallback: if update fails (e.g. deleted in Healthie), create new
             if (!healthieNoteId) {
-                console.warn('[Scribe:Submit] Update failed, falling back to create new');
+                console.warn('[Scribe:Submit] Update failed, falling back to create new', { messages: lastMessages });
                 const createResult = await healthieGraphQL<any>(`
                     mutation CreateFormAnswerGroup($input: createFormAnswerGroupInput!) {
                         createFormAnswerGroup(input: $input) {
                             form_answer_group { id }
+                            messages { field message }
                         }
                     }
                 `, {
@@ -217,6 +237,7 @@ export async function POST(request: NextRequest) {
                     },
                 });
                 healthieNoteId = createResult?.createFormAnswerGroup?.form_answer_group?.id;
+                lastMessages = createResult?.createFormAnswerGroup?.messages || lastMessages;
             }
         } else {
             // Create new form answer group
@@ -224,6 +245,7 @@ export async function POST(request: NextRequest) {
                 mutation CreateFormAnswerGroup($input: createFormAnswerGroupInput!) {
                     createFormAnswerGroup(input: $input) {
                         form_answer_group { id }
+                        messages { field message }
                     }
                 }
             `, {
@@ -235,10 +257,20 @@ export async function POST(request: NextRequest) {
                 },
             });
             healthieNoteId = createResult?.createFormAnswerGroup?.form_answer_group?.id;
+            lastMessages = createResult?.createFormAnswerGroup?.messages || [];
         }
 
         if (!healthieNoteId) {
-            throw new Error('Failed to create/update SOAP form in Healthie — no ID returned');
+            const detail = lastMessages.length
+                ? lastMessages.map(m => `${m.field || 'base'}: ${m.message || 'unknown'}`).join('; ')
+                : 'no validation messages returned';
+            console.error('[Scribe:Submit] Healthie form mutation returned no ID', {
+                patient_id: note.patient_id,
+                healthie_patient_id: healthiePatientId,
+                is_resubmit: isResubmit,
+                messages: lastMessages,
+            });
+            throw new Error(`Healthie rejected SOAP form for patient ${healthiePatientId}: ${detail}`);
         }
 
         // 5. Lock the form answer group
