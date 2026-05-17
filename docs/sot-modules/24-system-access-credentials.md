@@ -43,9 +43,10 @@
 | Secondary | `#FFD700` | Gold accent |
 | Background | `#0A0E1A` | App dark theme |
 
-### Master Appointment Type Registry (Live in Healthie — 28 Types)
+### Master Appointment Type Registry (Live in Healthie — 30 Types)
 
 > **Queried from Healthie API on March 25, 2026.** These are the REAL IDs.
+> **Updated 2026-05-12**: Added Tri-Mix Injection Consult (527506) and Acupuncture (527507) — both staff-only (`clients_can_book: false`), bound to Dr. Whitten only (`require_specific_providers: true` + provider connection to 12093125). Pattern matches existing 504725 / 520702.
 
 #### Video-Enabled Types (Telehealth already works)
 | ID | Name | Duration | Price | Contact Types |
@@ -84,6 +85,8 @@
 | `511073` | Migrated Appointment | 15 min | — | System (hidden) |
 | `520702` | Male HRT Follow-Up | 30 min | — | Men's Health |
 | `520703` | PC Follow-Up | 30 min | — | Primary Care |
+| `527506` | Tri-Mix Injection Consult | 30 min | — | Men's Health (staff-only `clients_can_book: false`, bound to Dr. Whitten via `require_specific_providers: true`) |
+| `527507` | Acupuncture | 30 min | — | Men's Health (staff-only `clients_can_book: false`, bound to Dr. Whitten via `require_specific_providers: true`) |
 
 ### Telehealth Appointment Types — TO CREATE
 

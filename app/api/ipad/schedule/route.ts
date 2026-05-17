@@ -360,7 +360,10 @@ export async function POST(request: NextRequest) {
                 if (nameLower.includes('male hormone') ||
                     nameLower.includes('nmh ') ||
                     nameLower.includes('trt ') ||
-                    nameLower.includes('mens health')) {
+                    nameLower.includes('mens health') ||
+                    nameLower.includes('tri-mix') ||
+                    nameLower.includes('trimix') ||
+                    nameLower.includes('acupuncture')) {
                     return 'NowMensHealth.Care';
                 }
 

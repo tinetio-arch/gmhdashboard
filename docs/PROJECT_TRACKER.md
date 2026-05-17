@@ -10,51 +10,51 @@
 ---
 
 <!-- AUTOGEN:START — do not edit between these markers; overwritten by scripts/refresh-project-tracker.sh -->
-## LIVE SYSTEM SNAPSHOT (verified 2026-05-12)
+## LIVE SYSTEM SNAPSHOT (verified 2026-05-17)
 
-_Auto-regenerated 2026-05-12 14:09:34 MST by `scripts/refresh-project-tracker.sh`._
+_Auto-regenerated 2026-05-17 06:00:02 MST by `scripts/refresh-project-tracker.sh`._
 
 | Metric | Value | Source |
 |---|---|---|
-| Total patients | **493** | `SELECT COUNT(*) FROM patients` |
-| ↳ active | 378 | `status_key='active'` |
-| ↳ active_pending | 33 | `status_key='active_pending'` |
-| ↳ inactive | 74 | `status_key='inactive'` |
-| ↳ hold_payment_research | 7 | `status_key='hold_payment_research'` |
+| Total patients | **500** | `SELECT COUNT(*) FROM patients` |
+| ↳ active | 382 | `status_key='active'` |
+| ↳ active_pending | 32 | `status_key='active_pending'` |
+| ↳ inactive | 75 | `status_key='inactive'` |
+| ↳ hold_payment_research | 10 | `status_key='hold_payment_research'` |
 | ↳ inactive_payment_research | 1 | `status_key='inactive_payment_research'` |
-| healthie_clients rows | 505 | (>patients because legacy duplicate links exist) |
+| healthie_clients rows | 512 | (>patients because legacy duplicate links exist) |
 | patient_qb_mapping rows | 192 | QuickBooks mappings |
 | patient_ghl_mapping rows | 0 | GHL contact mappings |
 | memberships (active) | 32 | `status='active'` |
-| lab_orders (total) | 164 | — |
+| lab_orders (total) | 173 | — |
 | lab_review_queue (pending) | 0 | — |
-| dispenses (total) | 769 | — |
-| dea_transactions | 814 | — |
-| staged_doses (staged) | 6 | — |
+| dispenses (total) | 791 | — |
+| dea_transactions | 833 | — |
+| staged_doses (staged) | 1 | — |
 | payment_issues (open) | 0 | `resolved_at IS NULL` |
 | bioscope_authorized (active) | 1 | `revoked_at IS NULL` |
 | Postgres tables (public) | **118** | `information_schema.tables` |
-| PM2 services | **15** total, **15** online | `pm2 jlist` |
+| PM2 services | **0** total, **0** online | `pm2 jlist` |
 | Cron jobs (active) | **34** | `crontab -l` (non-comment, non-blank) |
-| Disk used | **49%** (52G free of 100G) | `df -h /` |
-| Git branch | `claude/claude3/add-refresh-project-tracker-cron-entry-f` @ `ccf9ab6` (3 dirty file(s)) | `git status --porcelain` |
-| Orphan Claude branches | 3 | `git branch --list 'claude/*'` |
-| Active coordinator sessions | 10 | `~/.claude/coord/registry.json` |
+| Disk used | **50%** (51G free of 100G) | `df -h /` |
+| Git branch | `master` @ `1698946` (17 dirty file(s)) | `git status --porcelain` |
+| Orphan Claude branches | 9 | `git branch --list 'claude/*'` |
+| Active coordinator sessions | 5 | `~/.claude/coord/registry.json` |
 
 ### Patient distribution by `client_type_key`
 | Type | Count |
 |---|---|
-| nowmenshealth | 317 |
+| nowmenshealth | 320 |
 | nowlongevity | 43 |
+| nowprimarycare | 28 |
 | sick_visit | 27 |
-| nowprimarycare | 26 |
 | primecare_premier_50_month | 20 |
-| qbo_tcmh_180_month | 13 |
 | approved_disc_pro_bono_pt | 13 |
+| qbo_tcmh_180_month | 12 |
 | primecare_elite_100_month | 10 |
+| (null) | 7 |
 | qbo_f_f_fr_veteran_140_month | 6 |
 | jane_f_f_fr_veteran_140_month | 5 |
-| (null) | 4 |
 | other | 4 |
 | jane_tcmh_180_month | 3 |
 | ins_supp_60_month | 2 |
@@ -62,6 +62,17 @@ _Auto-regenerated 2026-05-12 14:09:34 MST by `scripts/refresh-project-tracker.sh
 <!-- AUTOGEN:END -->
 
 
+
+
+
+
+
+
+---
+
+## Recent Session Output — 2026-05-12
+
+- **Tri-Mix + Acupuncture appointment types added (claude12 session)**: Two new staff-only Healthie types — `527506` Tri-Mix Injection Consult and `527507` Acupuncture, both 30 min in-person, `clients_can_book: false`, **bound to Dr. Whitten only** via `require_specific_providers: true` + provider connection to 12093125 (pattern matches existing 504725 / 520702). No pricing (per Mar 31 SOT rule). Two idempotent scripts: `scripts/healthie/create-trimix-acupuncture-types.js` (creates) + `scripts/healthie/bind-trimix-acupuncture-to-whitten.js` (binds provider). `getClinicGroup()` updated to map both to NowMensHealth.Care brand. Mobile-app booking.ts intentionally NOT updated (patient-facing list — staff-only types stay hidden). Master SOT + module 24 + module 06 all updated. Debug 26/26 pass.
 
 ---
 

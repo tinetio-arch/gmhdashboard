@@ -59,6 +59,19 @@ pm2 save
 
 > **Module 06 freshness note (2026-05-12)**: This file's per-change detail is current through April 1, 2026. For Apr 15 / Apr 19 / Apr 22 / Apr 25 / Apr 28 / Apr 29 / May 12 see the canonical SOT (`ANTIGRAVITY_SOURCE_OF_TRUTH.md` lines 405–582) and the active-projects sections of `docs/PROJECT_TRACKER.md`. Highlights below.
 
+### May 12, 2026: Tri-Mix + Acupuncture Appointment Types (Staff-Only, Dr. Whitten)
+- Created two new Healthie appointment types, both **staff-only** (`clients_can_book: false`) and **bound to Dr. Whitten only** (`require_specific_providers: true` + provider connection to 12093125):
+  - `527506` Tri-Mix Injection Consult — 30 min, in-person, Men's Health
+  - `527507` Acupuncture — 30 min, in-person, Men's Health (Dr. Whitten is the only clinic acupuncturist)
+- No pricing (Mar 31 SOT rule — avoids Healthie auto-invoice on booking).
+- Two idempotent scripts (each queries current state first; safe to re-run):
+  - `scripts/healthie/create-trimix-acupuncture-types.js` — creates types
+  - `scripts/healthie/bind-trimix-acupuncture-to-whitten.js` — enforces single-provider binding
+- Provider-binding gotcha (introspected from schema): `updateAppointmentType.provider_ids_for_appt_type_connections` defaults to **removing all connections** if omitted from a mutation. The bind script always passes the full intended set.
+- `getClinicGroup()` in `app/api/ipad/schedule/route.ts:356` updated with `tri-mix`/`trimix`/`acupuncture` patterns → groups under `NowMensHealth.Care` in iPad/staff schedule UI.
+- Patient-facing mobile app (`mobile-app/src/config/booking.ts`) intentionally NOT updated — staff-only types must not appear in patient booking flows. `clients_can_book: false` is the enforcement mechanism (precedent: April 19 "Talk with Doc" consolidation hid 14 old telehealth types the same way).
+- Registry updated in module 24 + master SOT (28 → 30 types).
+
 ### May 12, 2026: SOT Refresh + Pre-Deploy Gatekeeper + Branch Discipline Rules
 - Discovered 16 orphan Claude Code branches + a 362-file uncommitted refactor running in prod with `ignoreBuildErrors=true`. Cleanup + new safety rules:
 - Added `scripts/pre-deploy-check.sh` — MANDATORY gatekeeper before any `pm2 restart gmh-dashboard` (commit `11f0e58`, fixed in `8eac0d2`).
