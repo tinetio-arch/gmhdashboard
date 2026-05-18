@@ -89,17 +89,20 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
             setCheckStatus(statusData);
             setSystemCounts(countsData);
 
-            // Pre-fill with system counts as default
-            // IMPORTANT: subtract staged dose volume from partial, because staff
-            // counts what's in VIALS only — prefilled syringes are separate.
+            // Pre-fill with system counts as default.
+            // FIX(2026-05-12): Do NOT subtract staged_ml from partial_ml here.
+            // partial_ml is computed from vials.remaining_volume_ml, and every
+            // staging path (app/api/staged-doses, ipad/stage-dose, smart-dispense/stage)
+            // already deducts the staged volume from remaining_volume_ml. Subtracting
+            // again caused a guaranteed N ml ghost discrepancy whenever staged doses
+            // existed (e.g., TopRX showed "33 full + 0ml partial" while the vials
+            // actually held 19.6ml — staff submitted the pre-fill and got flagged
+            // for a discrepancy that wasn't real).
             if (countsData) {
                 setCbFull(String(countsData.carrieboyd_full_vials || 0));
-                // Vial-only partial = DB partial minus staged doses
-                const cbVialPartial = Math.max(0, (countsData.carrieboyd_partial_ml || 0) - (countsData.carrieboyd_staged_ml || 0));
-                setCbPartial(String(cbVialPartial.toFixed(1)));
+                setCbPartial(String((countsData.carrieboyd_partial_ml || 0).toFixed(1)));
                 setTrCount(String(countsData.toprx_full_vials ?? countsData.toprx_vials ?? 0));
-                const trVialPartial = Math.max(0, (countsData.toprx_partial_ml || 0) - (countsData.toprx_staged_ml || 0));
-                setTrPartial(String(trVialPartial.toFixed(1)));
+                setTrPartial(String((countsData.toprx_partial_ml || 0).toFixed(1)));
             }
         } catch (err) {
             console.error('Failed to load check status:', err);
@@ -241,13 +244,15 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
             )}
 
             <form onSubmit={handleSubmit}>
-                {/* System shows what it expects — vial-only counts, staged doses shown separately */}
+                {/* System shows what it expects — vial-only counts, staged doses shown separately.
+                    FIX(2026-05-12): partial_ml is already net of staged volume (staging deducts
+                    from vials.remaining_volume_ml), so don't subtract staged here. */}
                 <div style={{ backgroundColor: '#f8fafc', padding: '0.75rem 1rem', borderRadius: '0.5rem', marginBottom: '1rem' }}>
                     <p style={{ margin: 0, fontSize: '0.85rem', color: '#64748b' }}>
                         <strong>System expects:</strong>{' '}
-                        Carrie Boyd: {systemCounts?.carrieboyd_full_vials} full + {Math.max(0, (systemCounts?.carrieboyd_partial_ml ?? 0) - (systemCounts?.carrieboyd_staged_ml ?? 0)).toFixed(1)}ml partial = {((systemCounts?.carrieboyd_total_ml ?? 0) - (systemCounts?.carrieboyd_staged_ml ?? 0)).toFixed(1)}ml
+                        Carrie Boyd: {systemCounts?.carrieboyd_full_vials} full + {(systemCounts?.carrieboyd_partial_ml ?? 0).toFixed(1)}ml partial = {(systemCounts?.carrieboyd_total_ml ?? 0).toFixed(1)}ml
                         {' | '}
-                        TopRX: {systemCounts?.toprx_full_vials ?? systemCounts?.toprx_vials} full{Math.max(0, (systemCounts?.toprx_partial_ml ?? 0) - (systemCounts?.toprx_staged_ml ?? 0)) > 0 ? ` + ${Math.max(0, (systemCounts?.toprx_partial_ml ?? 0) - (systemCounts?.toprx_staged_ml ?? 0)).toFixed(1)}ml partial` : ''} = {((systemCounts?.toprx_total_ml ?? 0) - (systemCounts?.toprx_staged_ml ?? 0)).toFixed(1)}ml
+                        TopRX: {systemCounts?.toprx_full_vials ?? systemCounts?.toprx_vials} full{(systemCounts?.toprx_partial_ml ?? 0) > 0 ? ` + ${(systemCounts?.toprx_partial_ml ?? 0).toFixed(1)}ml partial` : ''} = {(systemCounts?.toprx_total_ml ?? 0).toFixed(1)}ml
                     </p>
                     {((systemCounts?.carrieboyd_staged_ml ?? 0) > 0 || (systemCounts?.toprx_staged_ml ?? 0) > 0) && (
                         <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: '#7c3aed', fontWeight: 500 }}>
