@@ -225,6 +225,29 @@ export async function PUT(
             console.warn('[demographics] GHL sync failed:', ghlErr);
         }
 
+        // FIX(2026-05-19): persist Healthie sync outcome so blocked patients
+        // (e.g. email-collision with a provider record) surface in /ops instead
+        // of vanishing into PM2 logs. Matches the column convention used by the
+        // /api/patients/[id] PATCH route.
+        try {
+            const isEmailCollision = !!healthieError && /email\s+is\s+already\s+in\s+use|email\s+has\s+already\s+been\s+taken/i.test(healthieError);
+            const nextStatus = healthieSynced
+                ? 'ok'
+                : (healthieError ? (isEmailCollision ? 'blocked_email_collision' : 'error') : null);
+            if (nextStatus) {
+                await query(
+                    `UPDATE patients
+                     SET healthie_sync_status = $1,
+                         healthie_sync_error = $2,
+                         healthie_last_synced_at = NOW()
+                     WHERE patient_id = $3::uuid`,
+                    [nextStatus, healthieError ? healthieError.substring(0, 500) : null, String(patientId)]
+                );
+            }
+        } catch (persistErr) {
+            console.error('[demographics] Failed to persist healthie_sync_status:', persistErr);
+        }
+
         return NextResponse.json({
             success: true,
             healthie_synced: healthieSynced,

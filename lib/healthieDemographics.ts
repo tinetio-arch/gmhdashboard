@@ -196,9 +196,20 @@ function shouldSyncPatient(row: PatientRow): boolean {
   return HEALTHIE_PAYMENT_REGEX.test(method) && HEALTHIE_CLIENT_TYPES.has(clientType);
 }
 
+// Heuristic for the specific Healthie failure mode where a patient's email
+// collides with another Healthie user (typically a provider account, e.g. the
+// Whitten / Foster cases). Healthie returns a `messages` entry that we re-emit
+// as the thrown error string from `updateClient`.
+const EMAIL_COLLISION_RE = /email\s+is\s+already\s+in\s+use|email\s+has\s+already\s+been\s+taken/i;
+
+export type HealthieSyncResult =
+  | { status: 'synced'; healthie_sync_status: 'ok' }
+  | { status: 'partial'; healthie_sync_status: 'blocked_email_collision' | 'error'; reason: string; address_synced: boolean }
+  | { status: 'skipped'; reason: string };
+
 export async function syncHealthiePatientDemographics(
   patientId: string
-): Promise<{ status: 'synced' | 'skipped'; reason?: string }> {
+): Promise<HealthieSyncResult> {
   const row = await fetchPatientRow(patientId);
   if (!row) {
     return { status: 'skipped', reason: 'Patient not found' };
@@ -219,22 +230,53 @@ export async function syncHealthiePatientDemographics(
   const healthieClientId = await ensureHealthieClientId(row, healthieClient);
   const { first, last } = splitName(row.patient_name);
 
-  // Update core demographics (name, email, phone, DOB)
-  await healthieClient.updateClient(healthieClientId, {
-    first_name: first,
-    last_name: last,
-    email: row.email ?? undefined,
-    phone_number: sanitizePhone(row.phone_number),
-    dob: normalizeDob(row.date_of_birth),
-  });
+  // FIX(2026-05-19): make updateClient failure NON-FATAL.
+  // Previously, when Healthie rejected the email field (e.g. provider+patient
+  // email collision — Whitten / Foster), the throw bypassed the address sync
+  // below, so the patient's NEW address never reached Healthie. That's how
+  // Ryan Foster's package went to his old Circle 8 Lane address. We now
+  // capture the demographic failure but still attempt the address upsert.
+  let demographicsError: string | null = null;
+  try {
+    await healthieClient.updateClient(healthieClientId, {
+      first_name: first,
+      last_name: last,
+      email: row.email ?? undefined,
+      phone_number: sanitizePhone(row.phone_number),
+      dob: normalizeDob(row.date_of_birth),
+    });
+  } catch (err) {
+    demographicsError = err instanceof Error ? err.message : String(err);
+  }
 
   // Update address using dedicated Healthie location mutation
   // (updateClient ignores the location field — Healthie requires createLocation/updateLocation)
+  let addressSynced = false;
+  let addressError: string | null = null;
   const location = buildLocationInput(row);
   if (location) {
-    await healthieClient.upsertClientLocation(healthieClientId, location);
+    try {
+      await healthieClient.upsertClientLocation(healthieClientId, location);
+      addressSynced = true;
+    } catch (err) {
+      addressError = err instanceof Error ? err.message : String(err);
+    }
+  } else {
+    // No address on file to sync — treat as no-op success for this leg.
+    addressSynced = true;
   }
 
-  return { status: 'synced' };
+  if (!demographicsError && addressSynced) {
+    return { status: 'synced', healthie_sync_status: 'ok' };
+  }
+
+  const combinedError = [demographicsError, addressError].filter(Boolean).join('; ');
+  const isEmailCollision = demographicsError !== null && EMAIL_COLLISION_RE.test(demographicsError);
+  return {
+    status: 'partial',
+    healthie_sync_status: isEmailCollision ? 'blocked_email_collision' : 'error',
+    reason: combinedError || 'Unknown Healthie sync error',
+    address_synced: addressSynced,
+  };
 }
 

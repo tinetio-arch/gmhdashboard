@@ -20271,6 +20271,7 @@ async function shipPeptidesToPatient() {
 
     window._shipCart = [];
     window._shipOverrideAddress = null; // FIX: Reset stale address from previous flow
+    window._shipAddressConfirmed = false; // FIX(2026-05-19): reset confirm gate per ship flow
     window._shipPatient = { patientId, healthieId, patientName, demographics };
 
     showToast('Loading peptide catalog...', 'info');
@@ -20843,7 +20844,11 @@ function showShipCartReview() {
     `;
 }
 
-window._shipAddressConfirmed = true; // Auto-confirm if patient has address on file
+// FIX(2026-05-19): require EXPLICIT staff click on "Confirm This Address" before
+// Charge & Ship will fire. Was defaulting to true — staff could ship to a stale
+// address without ever reviewing it. The server now also rejects ship-order /
+// company-order POSTs that lack `address_confirmed: true`.
+window._shipAddressConfirmed = false;
 
 function toggleShipAddressEdit() {
     const form = document.getElementById('ship-address-form');
@@ -20923,7 +20928,20 @@ async function executeShipOrder() {
 
     if (!cart.length) { showToast('Cart is empty', 'error'); return; }
 
-    // Address is auto-confirmed if patient has one on file; staff can edit if needed
+    // FIX(2026-05-19): explicit address confirmation gate. Staff must click
+    // "Confirm This Address" before we'll charge & ship, even if the patient
+    // already has demographics on file (those can be months stale).
+    if (!window._shipAddressConfirmed) {
+        showToast('Click ✓ Confirm This Address before shipping', 'error');
+        const confirmBtn = document.getElementById('ship-confirm-addr-btn');
+        if (confirmBtn) {
+            confirmBtn.style.background = 'rgba(239,68,68,0.25)';
+            confirmBtn.style.borderColor = 'rgba(239,68,68,0.6)';
+            confirmBtn.style.color = '#fca5a5';
+            confirmBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return;
+    }
 
     if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; btn.style.opacity = '0.6'; }
 
@@ -20955,6 +20973,7 @@ async function executeShipOrder() {
                     quantity: i.quantity
                 })),
                 shipping_address: window._shipOverrideAddress || null,
+                address_confirmed: true,
                 idempotency_key: idempotencyKey
             })
         });
@@ -20966,6 +20985,7 @@ async function executeShipOrder() {
             const orderedItems = [...cart]; // Save before clearing
             window._shipCart = [];
             window._shipOverrideAddress = null;
+            window._shipAddressConfirmed = false;
 
             // Show comprehensive ship order confirmation
             showShipOrderConfirmation({
@@ -21007,6 +21027,7 @@ async function executeShipOrder() {
             const orderedItems = [...cart];
             window._shipCart = [];
             window._shipOverrideAddress = null;
+            window._shipAddressConfirmed = false;
             document.getElementById('ship-modal')?.remove();
             showShipOrderConfirmation({
                 patientName: patient.patientName,
