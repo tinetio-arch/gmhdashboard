@@ -23,10 +23,13 @@ Patient Form (app/patients/)
 ### 2. Healthie Sync → Postgres → Dashboard → GHL
 ```
 Healthie API (webhooks: app/api/integrations/healthie/webhook/route.ts)
-  → divergence log → agent_action_log (agent_name='healthie_webhook',
-                                       action_type='patient_divergence')
-  → COALESCE UPDATE patients (dob/phone/address/email — webhook still wins
-                              today; flip to log-only is a future step)
+  → SoT reconciliation (Phase 3, 2026-05-19): /ops is authoritative.
+      • /ops field NULL  → BACKFILL patients (dob/phone/address/email)
+      • /ops == Healthie → no-op
+      • /ops != Healthie → INSERT sync_conflicts row; patients UNCHANGED
+    (the old COALESCE-overwrite + agent_action_log 'patient_divergence'
+     breadcrumb are REMOVED — sync_conflicts is the structured truth;
+     surfaced read-only at /ops/sync-conflicts)
   → scripts/process-healthie-webhooks.ts (queued event handler)
   → Postgres: patients, healthie_clients, payment_issues tables
   → Dashboard UI (app/patients/, app/patient-hub/)
