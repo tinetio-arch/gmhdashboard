@@ -81,22 +81,68 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       }
     })();
 
-    // Sync patient demographics to Healthie if eligible
+    // Sync patient demographics to Healthie if eligible.
+    // FIX(2026-05-19): persist the sync result on `patients.healthie_sync_status`
+    // / `healthie_sync_error` so blocked patients (e.g. email collision with a
+    // provider record) are visible in /ops and we stop discarding the failure
+    // signal. Previously the catch block only console.error'd, so address-leg
+    // failures (Ryan Foster) went unnoticed.
     (async () => {
+      // Skip retrying patients that are already flagged as blocked — a human
+      // needs to resolve the collision (deduper, not sync) before we try again.
+      const [blocked] = await query<{ healthie_sync_status: string | null }>(
+        `SELECT healthie_sync_status FROM patients WHERE patient_id = $1`,
+        [params.id]
+      );
+      if (blocked?.healthie_sync_status === 'blocked_email_collision') {
+        console.log(
+          `[API] ⏭️ Skipping Healthie sync for patient ${params.id} (blocked_email_collision — resolve dedup first)`
+        );
+        return;
+      }
+
+      let nextStatus: string | null = null;
+      let nextError: string | null = null;
+
       try {
         const result = await syncHealthiePatientDemographics(params.id);
         if (result.status === 'synced') {
           console.log(`[API] ✅ Synced demographics for patient ${params.id} to Healthie`);
-        } else {
+          nextStatus = 'ok';
+        } else if (result.status === 'skipped') {
           console.log(
             `[API] ℹ️ Skipped Healthie sync for patient ${params.id}: ${result.reason}`
           );
+          // Don't touch status for skipped rows — patient isn't eligible.
+          return;
+        } else {
+          // partial: address may or may not have synced; demographics did not.
+          console.warn(
+            `[API] ⚠️ Healthie sync partial for patient ${params.id} (${result.healthie_sync_status}, address_synced=${result.address_synced}): ${result.reason}`
+          );
+          nextStatus = result.healthie_sync_status;
+          nextError = result.reason.substring(0, 500);
         }
       } catch (healthieError) {
-        console.error(
-          `[API] ❌ Failed to sync patient ${params.id} to Healthie:`,
-          healthieError instanceof Error ? healthieError.message : healthieError
-        );
+        const msg = healthieError instanceof Error ? healthieError.message : String(healthieError);
+        console.error(`[API] ❌ Failed to sync patient ${params.id} to Healthie:`, msg);
+        nextStatus = 'error';
+        nextError = msg.substring(0, 500);
+      }
+
+      if (nextStatus) {
+        try {
+          await query(
+            `UPDATE patients
+             SET healthie_sync_status = $1,
+                 healthie_sync_error = $2,
+                 healthie_last_synced_at = NOW()
+             WHERE patient_id = $3`,
+            [nextStatus, nextError, params.id]
+          );
+        } catch (persistErr) {
+          console.error(`[API] Failed to persist healthie_sync_status:`, persistErr);
+        }
       }
     })();
 

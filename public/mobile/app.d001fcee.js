@@ -13284,7 +13284,7 @@ function showPipelineModal(title, rows, channel) {
                         ${r.tracking_number ? `<div style="color:var(--text-tertiary);">Tracking:</div><div style="color:var(--text-primary);">${r.tracking_url ? `<a href="${sanitize(r.tracking_url)}" target="_blank" style="color:#22d3ee;">${sanitize(r.tracking_number)}</a>` : sanitize(r.tracking_number)} ${r.tracking_carrier ? '(' + sanitize(r.tracking_carrier) + ')' : ''}</div>` : ''}
                         ${r.shipped_at ? `<div style="color:var(--text-tertiary);">Shipped:</div><div style="color:var(--text-primary);">${new Date(r.shipped_at).toLocaleString()}</div>` : ''}
                         ${(r.dispense_ids && r.dispense_ids.length) ? `<div style="color:var(--text-tertiary);">Dispenses:</div><div style="color:var(--text-primary);">#${r.dispense_ids.join(', #')}</div>` : ''}
-                        ${r.education_complete != null ? `<div style="color:var(--text-tertiary);">Education:</div><div style="color:${r.education_complete ? '#22c55e' : '#f59e0b'};">${r.education_complete ? '✓ complete' : 'incomplete'}</div>` : ''}
+                        ${r.education_complete != null && r.channel === 'inhouse' ? `<div style="color:var(--text-tertiary);">Education:</div><div style="color:${r.education_complete ? '#22c55e' : '#f59e0b'};">${r.education_complete ? '✓ complete' : 'incomplete'}</div>` : ''}
                         ${r.received_date ? `<div style="color:var(--text-tertiary);">Picked up:</div><div style="color:var(--text-primary);">${r.received_date}</div>` : ''}
                     </div>
                 </div>
@@ -20271,6 +20271,7 @@ async function shipPeptidesToPatient() {
 
     window._shipCart = [];
     window._shipOverrideAddress = null; // FIX: Reset stale address from previous flow
+    window._shipAddressConfirmed = false; // FIX(2026-05-19): reset confirm gate per ship flow
     window._shipPatient = { patientId, healthieId, patientName, demographics };
 
     showToast('Loading peptide catalog...', 'info');
@@ -20843,7 +20844,11 @@ function showShipCartReview() {
     `;
 }
 
-window._shipAddressConfirmed = true; // Auto-confirm if patient has address on file
+// FIX(2026-05-19): require EXPLICIT staff click on "Confirm This Address" before
+// Charge & Ship will fire. Was defaulting to true — staff could ship to a stale
+// address without ever reviewing it. The server now also rejects ship-order /
+// company-order POSTs that lack `address_confirmed: true`.
+window._shipAddressConfirmed = false;
 
 function toggleShipAddressEdit() {
     const form = document.getElementById('ship-address-form');
@@ -20880,17 +20885,26 @@ async function sendPeptideConsent() {
     if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
 
     try {
+        // FIX(2026-05-19): Ship-to flow is channel='woo' — ABXTAC handles consent at WC
+        // checkout, so the API skips creating a pending consent. Frontend passes channel
+        // so the API can distinguish the ship-to caller from in-house callers.
         const response = await fetch('/ops/api/ipad/billing/send-consent/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({
                 patient_id: patient.healthieId || patient.patientId,
+                channel: 'woo',
                 items: cart.map(i => ({ sku: i.sku, name: i.name, price: i.price, quantity: i.quantity }))
             })
         });
         const result = await response.json();
         if (result.success) {
+            if (result.skipped) {
+                showToast('Ship-to orders don’t need a consent — ABXTAC handles it.', 'info');
+                if (btn) { btn.textContent = 'Not required for ship-to'; btn.style.background = 'rgba(100,116,139,0.2)'; btn.style.borderColor = 'rgba(100,116,139,0.4)'; btn.style.color = '#94a3b8'; }
+                return;
+            }
             // FIX(2026-04-22): Show warning if a prior consent was replaced
             if (result.prior_consent_warning) {
                 showToast('⚠️ ' + result.prior_consent_warning, 'info');
@@ -20914,7 +20928,20 @@ async function executeShipOrder() {
 
     if (!cart.length) { showToast('Cart is empty', 'error'); return; }
 
-    // Address is auto-confirmed if patient has one on file; staff can edit if needed
+    // FIX(2026-05-19): explicit address confirmation gate. Staff must click
+    // "Confirm This Address" before we'll charge & ship, even if the patient
+    // already has demographics on file (those can be months stale).
+    if (!window._shipAddressConfirmed) {
+        showToast('Click ✓ Confirm This Address before shipping', 'error');
+        const confirmBtn = document.getElementById('ship-confirm-addr-btn');
+        if (confirmBtn) {
+            confirmBtn.style.background = 'rgba(239,68,68,0.25)';
+            confirmBtn.style.borderColor = 'rgba(239,68,68,0.6)';
+            confirmBtn.style.color = '#fca5a5';
+            confirmBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return;
+    }
 
     if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; btn.style.opacity = '0.6'; }
 
@@ -20946,6 +20973,7 @@ async function executeShipOrder() {
                     quantity: i.quantity
                 })),
                 shipping_address: window._shipOverrideAddress || null,
+                address_confirmed: true,
                 idempotency_key: idempotencyKey
             })
         });
@@ -20957,6 +20985,7 @@ async function executeShipOrder() {
             const orderedItems = [...cart]; // Save before clearing
             window._shipCart = [];
             window._shipOverrideAddress = null;
+            window._shipAddressConfirmed = false;
 
             // Show comprehensive ship order confirmation
             showShipOrderConfirmation({
@@ -20998,6 +21027,7 @@ async function executeShipOrder() {
             const orderedItems = [...cart];
             window._shipCart = [];
             window._shipOverrideAddress = null;
+            window._shipAddressConfirmed = false;
             document.getElementById('ship-modal')?.remove();
             showShipOrderConfirmation({
                 patientName: patient.patientName,

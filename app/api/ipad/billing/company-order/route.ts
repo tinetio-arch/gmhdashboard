@@ -136,15 +136,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Company-paid orders are restricted to admin@nowoptimal.com' }, { status: 403 });
     }
     const body = await request.json();
-    const { patient_id, items, shipping_method = 'priority', idempotency_key } = body as {
+    const { patient_id, items, shipping_method = 'priority', idempotency_key, address_confirmed } = body as {
       patient_id: string;
       items: CompanyOrderItem[];
       shipping_method?: 'priority' | 'express';
       idempotency_key?: string;
+      address_confirmed?: boolean;
     };
 
     if (!patient_id || !items?.length) {
       return NextResponse.json({ error: 'patient_id and items are required' }, { status: 400 });
+    }
+
+    // FIX(2026-05-19): defense in depth — iPad UI gates ship/company-order on
+    // an explicit "Confirm This Address" click. Server rejects POSTs without
+    // the confirmation flag (Ryan Foster shipped to a stale address because
+    // the prior auto-confirm default skipped staff review entirely).
+    if (address_confirmed !== true) {
+      return NextResponse.json({
+        error: 'Shipping address must be confirmed by staff before placing a company order.'
+      }, { status: 400 });
     }
 
     if (idempotency_key) {

@@ -231,8 +231,20 @@ async function runSync(request: NextRequest) {
 
                         if (wc.status === 'completed' || trackingNumber) {
                             stage = 'wc_shipped';
-                            shippedAt = t.shippedAt || wc.date_modified || null;
-                            if (wc.date_completed) deliveredAt = wc.date_completed;
+                            // shipped_at: prefer the carrier-note timestamp (actual ship event),
+                            // then wc.date_completed (ShipStation marks the WC order completed
+                            // when it hands the label off), then wc.date_modified as a last resort.
+                            shippedAt = t.shippedAt || wc.date_completed || wc.date_modified || null;
+                            // FIX(2026-05-19): do NOT treat wc.date_completed as delivered_at.
+                            // WC moves to "completed" when ShipStation hands the package off
+                            // to the carrier — that's the SHIP event, not delivery. We have
+                            // no carrier delivery signal wired yet (no USPS/UPS webhook,
+                            // no ShipStation /shipments poll). Leave delivered_at NULL until
+                            // a real delivery source exists; the schema's `wc_delivered`
+                            // stage is reserved for when that lands. (Ryan Foster investigation
+                            // surfaced this — every WC peptide order was being marked
+                            // "delivered" within minutes of label print.)
+                            deliveredAt = null;
                         } else if (wc.status === 'processing') {
                             stage = 'wc_pending';
                             if (ageHours >= STUCK_WC_PROCESSING) {

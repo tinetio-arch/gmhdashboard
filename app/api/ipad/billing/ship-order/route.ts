@@ -135,15 +135,26 @@ export async function POST(request: NextRequest) {
   try {
     const user = await requireApiUser(request, 'write');
     const body = await request.json();
-    const { patient_id, items, shipping_method = 'priority', idempotency_key } = body as {
+    const { patient_id, items, shipping_method = 'priority', idempotency_key, address_confirmed } = body as {
       patient_id: string;
       items: ShipOrderItem[];
       shipping_method?: 'priority' | 'express';
       idempotency_key?: string;
+      address_confirmed?: boolean;
     };
 
     if (!patient_id || !items?.length) {
       return NextResponse.json({ error: 'patient_id and items are required' }, { status: 400 });
+    }
+
+    // FIX(2026-05-19): defense in depth — iPad UI now gates on an explicit
+    // "Confirm This Address" click. Server rejects any ship-order POST that
+    // doesn't carry the confirmation flag. Prevents non-iPad callers (or a
+    // future regression in app.js) from shipping to stale demographics.
+    if (address_confirmed !== true) {
+      return NextResponse.json({
+        error: 'Shipping address must be confirmed by staff before charging.'
+      }, { status: 400 });
     }
 
     // FIX(2026-04-15): idempotency — if the iPad retried with the same key, return the
