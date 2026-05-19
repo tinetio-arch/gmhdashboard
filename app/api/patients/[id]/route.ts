@@ -47,36 +47,54 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       patientType: body.patientType ?? null
     });
 
-    // Sync the updated patient to GHL asynchronously (don't block response)
+    // Sync the updated patient to GHL asynchronously (don't block response).
+    // PHASE 2-r (2026-05-19): persist the sync outcome on `ghl_sync_status` /
+    // `ghl_sync_error` / `ghl_last_synced_at` on EVERY code path — success,
+    // soft-fail (`syncResult.success === false`), and thrown error. Previously
+    // only the throw branch wrote a status, so a soft-fail (e.g. GHL validation
+    // rejection) left `ghl_sync_status` stuck at its prior value. This mirrors
+    // the persist-status pattern claude9 wired up for the Healthie sync.
     (async () => {
+      let nextStatus: 'ok' | 'error' | null = null;
+      let nextError: string | null = null;
+
       try {
         const patientForSync = await fetchPatientById(params.id);
         if (patientForSync) {
           const syncResult = await syncPatientToGHL(patientForSync, user.user_id);
           if (syncResult.success) {
             console.log(`[API] ✅ Successfully synced updated patient ${patientForSync.patient_name} (${params.id}) to GHL. Contact ID: ${syncResult.ghlContactId || 'N/A'}`);
+            nextStatus = 'ok';
           } else {
-            console.error(`[API] ❌ Failed to sync updated patient ${patientForSync.patient_name} (${params.id}) to GHL: ${syncResult.error}`);
+            const errMsg = syncResult.error || 'unknown error';
+            console.error(`[API] ❌ Failed to sync updated patient ${patientForSync.patient_name} (${params.id}) to GHL: ${errMsg}`);
+            nextStatus = 'error';
+            nextError = errMsg;
           }
         } else {
+          // Couldn't fetch the patient row to send — don't touch ghl_sync_status
+          // because we genuinely don't know whether the upstream is reachable.
           console.error(`[API] ⚠️  Could not fetch patient ${params.id} for GHL sync`);
         }
       } catch (ghlError) {
-        // Log the error but don't fail the patient update
         const errorMsg = ghlError instanceof Error ? ghlError.message : String(ghlError);
         console.error(`[API] ❌ Failed to sync updated patient ${params.id} to GHL:`, errorMsg);
-        // The patient is still updated successfully, GHL sync can be retried later
-        // Update patient record with error status
+        nextStatus = 'error';
+        nextError = errorMsg;
+      }
+
+      if (nextStatus) {
         try {
           await query(
-            `UPDATE patients 
-             SET ghl_sync_status = 'error',
-                 ghl_sync_error = $1
-             WHERE patient_id = $2`,
-            [errorMsg.substring(0, 500), params.id]
+            `UPDATE patients
+             SET ghl_sync_status = $1,
+                 ghl_sync_error = $2,
+                 ghl_last_synced_at = NOW()
+             WHERE patient_id = $3`,
+            [nextStatus, nextError ? nextError.substring(0, 500) : null, params.id]
           );
         } catch (updateError) {
-          console.error(`[API] Failed to update patient sync error status:`, updateError);
+          console.error(`[API] Failed to persist ghl_sync_status:`, updateError);
         }
       }
     })();

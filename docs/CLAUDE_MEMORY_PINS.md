@@ -169,6 +169,42 @@ The `claude-coord` tool (at `~/.claude/bin/claude-coord`) coordinates 5–15 par
 - Hard rules baked in: `webhook_processor` cannot set `inactive`; out of `inactive` only via `admin_api` or `script:*`
 - Module: `docs/sot-modules/28-hardening-plan-v3.md`. Acceptance tests: `scripts/test-status-chokepoint.ts` (17/17 passing)
 
+## Patient Sync Status Columns (NEW May 19, 2026)
+
+Two parallel status columns on `patients`, both populated by every successful or failed sync attempt:
+
+- `ghl_sync_status` / `ghl_sync_error` / `ghl_last_synced_at` — GHL contact upsert
+- `healthie_sync_status` / `healthie_sync_error` / `healthie_last_synced_at` — Healthie demographics + address
+
+Status values: `ok` (last attempt succeeded), `error` (generic failure — see error column), `blocked_email_collision` (Healthie rejected the email because another user — usually a provider account — already has it; **do NOT retry** until a human resolves the dedup). `NULL` = never attempted.
+
+**Write sites** (all use the same pattern: persist on success AND on every failure path, set `*_last_synced_at = NOW()`):
+- `app/api/patients/[id]/route.ts` PATCH — both GHL + Healthie sync legs
+- `app/api/ipad/patient/[id]/demographics/route.ts` PUT — both GHL + Healthie sync legs
+
+Index: `idx_patients_healthie_sync_blocked` partial index for the /ops triage surface.
+
+## Healthie Sync Gate (loosened May 19, 2026)
+
+`lib/healthieDemographics.ts:syncHealthiePatientDemographics()`:
+
+- Sync runs when `method_of_payment ~ /healthie/i` AND (`client_type ∈ {NowMensHealth.Care, NowPrimary.Care}` OR patient already has a `healthie_clients` link).
+- Only the original allowlist (`NowMensHealth.Care`, `NowPrimary.Care`) reaches `ensureHealthieClientId`'s create-by-sync path. Other types sync demographics ONLY if they're already linked.
+- Unblocks ~83 patients that were silently skipping (NOWLongevity, Sick Visit, PrimeCare Premier/Elite, Pro-Bono).
+
+## Healthie Webhook Divergence Log (NEW May 19, 2026)
+
+`app/api/integrations/healthie/webhook/route.ts` writes to `agent_action_log` BEFORE its COALESCE update when the incoming Healthie payload differs from the local `patients` row. Query the audit:
+
+```sql
+SELECT created_at, summary, details
+FROM agent_action_log
+WHERE agent_name = 'healthie_webhook' AND action_type = 'patient_divergence'
+ORDER BY created_at DESC LIMIT 50;
+```
+
+The COALESCE write still happens — instrumentation is additive. Future flip to log-only requires its own session once we know which fields drift most.
+
 ## BioSCOPE Third-Party API (NEW Apr 29, 2026)
 
 - Bearer token format `bsk_live_<32 bytes base64url>` in `BIOSCOPE_API_SECRET` (Stripe/GitHub-style prefix for grep/leak detection)
