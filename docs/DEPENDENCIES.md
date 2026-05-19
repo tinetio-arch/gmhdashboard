@@ -14,10 +14,11 @@ Patient Form (app/patients/)
   → lib/patientHealthieSync.ts (createClient mutation → Healthie)
   → lib/patientGHLSync.ts (create contact → GHL via lib/ghl.ts)
   → healthie_clients table (stores healthie_client_id)
-  → patient_ghl_mapping table (stores ghl_contact_id)
+  → patients.ghl_contact_id (stores GHL contact id; the legacy mapping
+    table was dropped 2026-05-19 — it was empty with zero callsites)
 ```
 **If you change**: Patient creation form or patientQueries  
-**Also verify**: Healthie sync, GHL sync, healthie_clients table, ghl_contact_id mapping
+**Also verify**: Healthie sync, GHL sync, healthie_clients table, patients.ghl_contact_id
 
 ### 2. Healthie Sync → Postgres → Dashboard → GHL
 ```
@@ -266,7 +267,7 @@ ANY code path that writes patients.status_key
 ## Database Table Dependency Clusters
 
 ### Patient Core
-`patients` ← `healthie_clients` ← `patient_ghl_mapping` ← `patient_qb_mapping`
+`patients` (`ghl_contact_id` column) ← `healthie_clients` ← `patient_qb_mapping`
 + NEW: `patient_signals_cache` (badge cache populated nightly by `scripts/refresh-intake-signals.js`)
 
 ### Classification & Status (Hardening v3, Apr 2026)
