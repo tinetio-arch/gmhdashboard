@@ -45,6 +45,7 @@
 | `28-hardening-plan-v2-audit.md` | **AUDIT** Post-v2 audit of writers found in the wild (366 lines) — inputs that informed v3 | Auditing patient_status writers; understanding the migration backlog v3 closed |
 | `28-hardening-plan-v3.md` | **ACTIVE** Patient status chokepoint v3 (2,544 lines) — `lib/status-transitions.ts`, DB trigger, ESLint rule, 17/17 acceptance tests | Any change that touches `patients.status_key`. Phase 1.0–1.4 ✅ complete; 1.5 soak window |
 | `29-bioscope-integration.md` | **NEW (Apr 29 2026)** BioSCOPE third-party API: allowlist (`bioscope_authorized_patients`), `BIOSCOPE_API_SECRET` + dedicated `BIOSCOPE_HEALTHIE_API_KEY`, admin UI at `/ops/admin/bioscope`, audit to `agent_action_log` | Working on BioSCOPE integration, adding/revoking BioSCOPE patients, building patient-scoped third-party APIs |
+| `30-peptide-pipeline.md` | **NEW (May 19 2026)** Peptide channel discriminator: `peptide_dispenses.channel='woo'\|'inhouse'`, the two fulfillment chains, the 3 education surfaces gated on `inhouse`, INSERT site map | Any change to peptide_dispenses, iPad billing flows, mobile peptide checkout, or the Healthie billing-item webhook |
 
 ## Quick Decision Tree
 

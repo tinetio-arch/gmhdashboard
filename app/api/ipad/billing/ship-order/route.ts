@@ -364,8 +364,8 @@ export async function POST(request: NextRequest) {
       for (let i = 0; i < item.quantity; i++) {
         const result = await pool.query<{ sale_id: string }>(
           `INSERT INTO peptide_dispenses
-           (patient_name, sale_date, status, paid, amount_charged, stripe_payment_intent_id, notes)
-           VALUES ($1, CURRENT_DATE, 'Shipped', true, $2, $3, $4)
+           (patient_name, sale_date, status, paid, amount_charged, stripe_payment_intent_id, notes, channel)
+           VALUES ($1, CURRENT_DATE, 'Shipped', true, $2, $3, $4, 'woo')
            RETURNING sale_id`,
           [patient.full_name, item.price, paymentIntent.id, `Shipped via ABX TAC - ${item.name} (${item.sku})`]
         );

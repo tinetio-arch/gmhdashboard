@@ -279,6 +279,16 @@ ANY code path that writes patients.status_key
 `bioscope_authorized_patients` ← `agent_action_log` (audit row per call, `agent_name='bioscope'`)
 `abxtac_customer_access` (BioBox consult eligibility — `provider_verified=true AND tier_expires_at > NOW()`)
 
+### Peptide fulfillment (May 2026)
+Two channels share `peptide_dispenses.channel='woo'|'inhouse'` (mirrors `peptide_order_tracking.channel`):
+
+- **inhouse**: `patient_billing_cart` → `app/api/ipad/billing/charge` → `peptide_dispenses` (channel=`inhouse`, status=`Paid`, `education_complete` flipped at clinic pickup). Education required.
+- **woo (ship-to)**: `patient_billing_cart` → `app/api/ipad/billing/ship-order` (or mobile `app/api/headless/checkout`, or `pending-orders` approval, or `company-order`) → ABXTAC WooCommerce REST → ShipStation → USPS. Also writes `peptide_dispenses` (channel=`woo`, status=`Shipped`) + `payment_transactions.woocommerce_order_id`. ABXTAC handles consent/education at WC checkout — GMH dashboard does NOT prompt for education on these rows.
+
+Healthie billing-item webhook (`lib/healthie/peptideWebhook.ts`) skips auto-creating a `Pending` dispense when `payment_transactions.healthie_billing_item_id` already has a `woocommerce_order_id` (the ship-order route owns the row).
+
+See `docs/sot-modules/30-peptide-pipeline.md` for the full INSERT site map and gated education surfaces.
+
 ### Mobile / Push (NEW)
 `patient_push_tokens` ← `push_send_log` (Apr 19 push notification system)
 `app_access_controls` (mobile app access gating)

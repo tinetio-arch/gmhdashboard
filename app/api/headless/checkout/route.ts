@@ -442,8 +442,8 @@ export async function POST(request: NextRequest) {
             for (let i = 0; i < item.quantity; i++) {
                 await pool.query(
                     `INSERT INTO peptide_dispenses
-                     (patient_name, sale_date, status, paid, amount_charged, stripe_payment_intent_id, notes)
-                     VALUES ($1, CURRENT_DATE, 'Shipped', true, $2, $3, $4)`,
+                     (patient_name, sale_date, status, paid, amount_charged, stripe_payment_intent_id, notes, channel)
+                     VALUES ($1, CURRENT_DATE, 'Shipped', true, $2, $3, $4, 'woo')`,
                     [patient.full_name, item.unit_price, paymentIntent.id,
                      `Mobile order — ${item.name} (${item.sku}) — ${discount.tier} tier (${Math.round(discount.discountPct*100)}% off)`]
                 );

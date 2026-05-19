@@ -302,8 +302,8 @@ export async function POST(request: NextRequest) {
       for (let i = 0; i < item.quantity; i++) {
         const result = await pool.query<{ sale_id: string }>(
           `INSERT INTO peptide_dispenses
-           (patient_name, sale_date, status, paid, amount_charged, notes)
-           VALUES ($1, CURRENT_DATE, 'Shipped', true, $2, $3)
+           (patient_name, sale_date, status, paid, amount_charged, notes, channel)
+           VALUES ($1, CURRENT_DATE, 'Shipped', true, $2, $3, 'woo')
            RETURNING sale_id`,
           [
             patient.full_name,

@@ -111,10 +111,34 @@ export async function handleBillingItemCreated(resourceId: string): Promise<{
 
         const patientName = `${recipient.first_name || ''} ${recipient.last_name || ''}`.trim();
 
+        // FIX(2026-05-19): If this Healthie BillingItem corresponds to a ship-to
+        // (channel='woo') order, the ship-order route already created the
+        // peptide_dispenses row. Auto-creating a second 'Pending'/incomplete row
+        // here pollutes the awaiting-education queue with rows that ABXTAC has
+        // already fulfilled. Detect the linkage via payment_transactions →
+        // woocommerce_order_id and skip the auto-create in that case.
+        const wcLink = await query<{ transaction_id: string }>(
+            `SELECT transaction_id FROM payment_transactions
+              WHERE healthie_billing_item_id = $1
+                AND woocommerce_order_id IS NOT NULL
+              LIMIT 1`,
+            [resourceId]
+        );
+
+        if (wcLink && wcLink.length > 0) {
+            console.log(`[Peptide Webhook] Skipping auto-create for ship-to billing item ${resourceId} — ship-order route owns the dispense row.`);
+            return {
+                processed: true,
+                dispenseCreated: false,
+                productName: peptideProduct.name,
+                patientName,
+            };
+        }
+
         // Check for duplicate (same patient, product, on same day)
         const today = new Date().toISOString().split('T')[0];
         const existing = await query<{ sale_id: string }>(
-            `SELECT sale_id FROM peptide_dispenses 
+            `SELECT sale_id FROM peptide_dispenses
        WHERE product_id = $1 AND patient_name = $2 AND sale_date = $3`,
             [peptideProduct.product_id, patientName, today]
         );
@@ -129,12 +153,13 @@ export async function handleBillingItemCreated(resourceId: string): Promise<{
             };
         }
 
-        // Create pending dispense
+        // Create pending dispense — channel='inhouse' explicitly (default matches,
+        // but be explicit since this path is the in-house Healthie billing flow).
         await query(
             `INSERT INTO peptide_dispenses (
         product_id, quantity, patient_name, sale_date, order_date,
-        status, education_complete, paid, healthie_billing_item_id, notes
-      ) VALUES ($1, 1, $2, $3, $3, 'Pending', false, false, $4, $5)`,
+        status, education_complete, paid, healthie_billing_item_id, notes, channel
+      ) VALUES ($1, 1, $2, $3, $3, 'Pending', false, false, $4, $5, 'inhouse')`,
             [
                 peptideProduct.product_id,
                 patientName,

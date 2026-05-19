@@ -13284,7 +13284,7 @@ function showPipelineModal(title, rows, channel) {
                         ${r.tracking_number ? `<div style="color:var(--text-tertiary);">Tracking:</div><div style="color:var(--text-primary);">${r.tracking_url ? `<a href="${sanitize(r.tracking_url)}" target="_blank" style="color:#22d3ee;">${sanitize(r.tracking_number)}</a>` : sanitize(r.tracking_number)} ${r.tracking_carrier ? '(' + sanitize(r.tracking_carrier) + ')' : ''}</div>` : ''}
                         ${r.shipped_at ? `<div style="color:var(--text-tertiary);">Shipped:</div><div style="color:var(--text-primary);">${new Date(r.shipped_at).toLocaleString()}</div>` : ''}
                         ${(r.dispense_ids && r.dispense_ids.length) ? `<div style="color:var(--text-tertiary);">Dispenses:</div><div style="color:var(--text-primary);">#${r.dispense_ids.join(', #')}</div>` : ''}
-                        ${r.education_complete != null ? `<div style="color:var(--text-tertiary);">Education:</div><div style="color:${r.education_complete ? '#22c55e' : '#f59e0b'};">${r.education_complete ? '✓ complete' : 'incomplete'}</div>` : ''}
+                        ${r.education_complete != null && r.channel === 'inhouse' ? `<div style="color:var(--text-tertiary);">Education:</div><div style="color:${r.education_complete ? '#22c55e' : '#f59e0b'};">${r.education_complete ? '✓ complete' : 'incomplete'}</div>` : ''}
                         ${r.received_date ? `<div style="color:var(--text-tertiary);">Picked up:</div><div style="color:var(--text-primary);">${r.received_date}</div>` : ''}
                     </div>
                 </div>
@@ -20880,17 +20880,26 @@ async function sendPeptideConsent() {
     if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
 
     try {
+        // FIX(2026-05-19): Ship-to flow is channel='woo' — ABXTAC handles consent at WC
+        // checkout, so the API skips creating a pending consent. Frontend passes channel
+        // so the API can distinguish the ship-to caller from in-house callers.
         const response = await fetch('/ops/api/ipad/billing/send-consent/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({
                 patient_id: patient.healthieId || patient.patientId,
+                channel: 'woo',
                 items: cart.map(i => ({ sku: i.sku, name: i.name, price: i.price, quantity: i.quantity }))
             })
         });
         const result = await response.json();
         if (result.success) {
+            if (result.skipped) {
+                showToast('Ship-to orders don’t need a consent — ABXTAC handles it.', 'info');
+                if (btn) { btn.textContent = 'Not required for ship-to'; btn.style.background = 'rgba(100,116,139,0.2)'; btn.style.borderColor = 'rgba(100,116,139,0.4)'; btn.style.color = '#94a3b8'; }
+                return;
+            }
             // FIX(2026-04-22): Show warning if a prior consent was replaced
             if (result.prior_consent_warning) {
                 showToast('⚠️ ' + result.prior_consent_warning, 'info');
