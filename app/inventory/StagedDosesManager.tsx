@@ -107,6 +107,8 @@ export default function StagedDosesManager({ patients, onUpdate }: Props) {
             });
 
             if (res.ok) {
+                const payload = await res.json().catch(() => null);
+
                 // Reset form
                 setSelectedPatientId('');
                 setPatientQuery('');
@@ -119,6 +121,38 @@ export default function StagedDosesManager({ patients, onUpdate }: Props) {
                 // Reload
                 await loadStagedDoses();
                 onUpdate?.();
+
+                // Prompt retire when staging drops the vial below the standard-dose threshold.
+                // Staging is the only vial-decrementing path that previously skipped this prompt.
+                const vialUsed: string | undefined = payload?.vialUsed;
+                const remainingRaw = payload?.remainingInVial;
+                const remaining = remainingRaw != null ? parseFloat(remainingRaw) : NaN;
+                if (vialUsed && remaining > 0 && remaining < 2.0) {
+                    const doRetire = window.confirm(
+                        `⚠️ Vial ${vialUsed} now has ${remaining.toFixed(2)} mL remaining — ` +
+                        `not enough for a standard dose.\n\nRetire this vial and document the remaining volume as waste?`
+                    );
+                    if (doRetire) {
+                        try {
+                            const retireResp = await fetch(withBasePath('/api/inventory/retire-vial'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ vialExternalId: vialUsed })
+                            });
+                            const retireResult = await retireResp.json().catch(() => null);
+                            if (retireResp.ok && retireResult?.success) {
+                                alert(`✅ Vial ${vialUsed} retired. ${parseFloat(retireResult.wastedMl).toFixed(2)} mL documented as waste.`);
+                                await loadStagedDoses();
+                                onUpdate?.();
+                            } else {
+                                alert(`Retire failed: ${retireResult?.error || 'unknown error'}`);
+                            }
+                        } catch (retireErr) {
+                            console.error('[StagedDosesManager] Retire vial failed:', retireErr);
+                            alert(`Retire failed for ${vialUsed} — check console.`);
+                        }
+                    }
+                }
             } else {
                 alert('Failed to save staged dose');
             }
