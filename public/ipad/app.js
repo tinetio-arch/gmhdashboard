@@ -14704,7 +14704,14 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
         typeOptions += '</optgroup>';
     });
 
-    var providerOptions = '<option value="12088269"' + (prefillProviderId === '12088269' ? ' selected' : '') + '>Phil Schafer NP</option><option value="12093125"' + (prefillProviderId === '12093125' ? ' selected' : '') + '>Dr. Aaron Whitten</option>';
+    // When no provider was prefilled (header "+ Book" or single-view slot click),
+    // force staff to explicitly pick — silent Phil-default caused mis-bookings.
+    var providerOptions = '';
+    if (!prefillProviderId) {
+        providerOptions += '<option value="" selected disabled>— Select Provider —</option>';
+    }
+    providerOptions += '<option value="12088269"' + (prefillProviderId === '12088269' ? ' selected' : '') + '>Phil Schafer NP</option>';
+    providerOptions += '<option value="12093125"' + (prefillProviderId === '12093125' ? ' selected' : '') + '>Dr. Aaron Whitten</option>';
     // Default location based on provider
     var defaultLocation = prefillProviderId === '12093125'
         ? 'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301'
@@ -15296,6 +15303,7 @@ async function submitAddToSchedule() {
     var location = document.getElementById('addSchedLocation')?.value || '';
 
     if (!patientId) { showToast('Please select a patient', 'error'); return; }
+    if (!providerId) { showToast('Please select a provider', 'error'); return; }
     if (!typeId) { showToast('Please select appointment type', 'error'); return; }
     if (!dateVal || !timeVal) { showToast('Please select date and time', 'error'); return; }
 
@@ -15389,7 +15397,13 @@ async function submitAddToSchedule() {
                 datetime: datetime,
                 length: durationVal || null,
                 contact_type: contactType,
-                location: location
+                location: location,
+                // iPad is staff-only and the provider dropdown is now a required explicit pick.
+                // Trust the operator verbatim — fixes the May 17 bug where MensHealth-branded
+                // types (e.g. 504736 NMH General TRT Telemedicine) silently rerouted Phil → Whitten.
+                // Public surfaces (ABXTAC website, chatbot, GHL webhook) omit this flag and remain
+                // subject to lib/appointmentRouting.ts guardrails.
+                staff_override: true
             })
         });
         document.getElementById('addScheduleModal')?.remove();
