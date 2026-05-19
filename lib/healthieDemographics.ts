@@ -17,7 +17,26 @@ type PatientRow = {
 };
 
 const HEALTHIE_PAYMENT_REGEX = /healthie/i;
-const HEALTHIE_CLIENT_TYPES = new Set(['NowMensHealth.Care', 'NowPrimary.Care']);
+
+// PHASE 6 (2026-05-19): record a skipped Healthie sync so it is never silent.
+// Best-effort — logging must NEVER break or block the sync path (mirrors the
+// webhook divergence-log pattern). Only call this for patients we know exist
+// in the patients table (the FK requires a valid patient_id UUID).
+async function logSyncSkip(
+  patientId: string,
+  reason: string,
+  details?: Record<string, unknown>
+): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO patient_sync_skips (patient_id, target_system, reason, details)
+       VALUES ($1, 'healthie', $2, $3::jsonb)`,
+      [patientId, reason, details ? JSON.stringify(details) : null]
+    );
+  } catch (err) {
+    console.warn('[healthieDemographics] patient_sync_skips insert failed (non-fatal):', err);
+  }
+}
 
 function splitName(fullName: string) {
   const tokens = fullName?.trim().split(/\s+/).filter(Boolean) ?? [];
@@ -190,25 +209,24 @@ async function fetchPatientRow(patientId: string): Promise<PatientRow | null> {
   return rows[0] ?? null;
 }
 
-// PHASE 6 (2026-05-19): the original gate also required client_type to be in
-// HEALTHIE_CLIENT_TYPES (only NowMensHealth.Care + NowPrimary.Care), which
-// silently skipped 83 patients — NOWLongevity.Care (40), Sick Visit (24),
-// PrimeCare Premier $50 (8), Pro-Bono PT (5), PrimeCare Elite $100 (5) —
-// despite their method_of_payment=Healthie. Their demographics never
-// propagated to Healthie even though they ARE Healthie-billed.
+// PHASE 6 (2026-05-19): the client_type allowlist gate is GONE.
 //
-// New rule (see syncHealthiePatientDemographics): sync if method matches AND
-// either the original allowlist applies OR the patient already has a linked
-// healthie_clients row. The "already-linked" branch widens the surface
-// without enabling spurious client creation for fringe types — we only
-// auto-create new Healthie clients for the original NowMensHealth/NowPrimary
-// types, exactly as before.
+// History: the original gate required client_type ∈ {NowMensHealth.Care,
+// NowPrimary.Care}, silently skipping ~83 Healthie-billed patients
+// (NOWLongevity.Care, Sick Visit, PrimeCare Premier/Elite, Pro-Bono). A first
+// loosening (also 2026-05-19) widened it to "allowlist OR already-linked",
+// still gating create-by-sync behind the allowlist. This change removes the
+// allowlist entirely: EVERY Healthie-billed active patient now attempts the
+// full sync, including create-by-sync (ensureHealthieClientId) when no link
+// exists yet. /ops + /ipad + /mobile are the SoT — propagation must not be
+// gated on a hard-coded type list.
+//
+// Skips that legitimately remain (patient inactive, not Healthie-billed) are
+// no longer silent: each writes a patient_sync_skips row via logSyncSkip.
+// Healthie hard-bounces (email collision) are handled downstream by the
+// healthie_sync_status column — not re-implemented here.
 function isHealthieBilledMethod(row: PatientRow): boolean {
   return HEALTHIE_PAYMENT_REGEX.test(row.method_of_payment ?? '');
-}
-
-function isInOriginalAllowlist(row: PatientRow): boolean {
-  return HEALTHIE_CLIENT_TYPES.has(row.client_type ?? '');
 }
 
 // Heuristic for the specific Healthie failure mode where a patient's email
@@ -231,25 +249,22 @@ export async function syncHealthiePatientDemographics(
   }
   // Skip sync for archived/inactive patients
   if (row.status_key === 'inactive') {
+    await logSyncSkip(row.patient_id, 'patient_inactive', { status_key: row.status_key });
     return { status: 'skipped', reason: 'Patient is archived/inactive' };
   }
   if (!isHealthieBilledMethod(row)) {
+    await logSyncSkip(row.patient_id, 'not_healthie_billed', {
+      method_of_payment: row.method_of_payment,
+    });
     return { status: 'skipped', reason: 'Patient not billed via Healthie' };
   }
 
-  // PHASE 6 (2026-05-19): widened gate. Patients in the original allowlist
-  // get the full sync (including ensureHealthieClientId which CAN create a
-  // new Healthie account). Patients outside the allowlist sync only if they
-  // already have a linked healthie_clients row — we never auto-create
-  // accounts for Sick Visit / Pro-Bono / Premier / Other types.
+  // PHASE 6 (2026-05-19): allowlist gate removed — every Healthie-billed active
+  // patient attempts the full sync. When no healthie_clients link exists yet,
+  // ensureHealthieClientId creates one (create-by-sync), regardless of
+  // client_type. The skips above are the ONLY remaining skip paths and both
+  // are now logged to patient_sync_skips.
   const existingLinkId = await fetchLinkedHealthieId(row.patient_id);
-  const inAllowlist = isInOriginalAllowlist(row);
-  if (!inAllowlist && existingLinkId === null) {
-    return {
-      status: 'skipped',
-      reason: `Patient not in Healthie auto-create allowlist (type=${row.client_type ?? 'unknown'}) and no existing link`,
-    };
-  }
 
   const healthieClient = createHealthieClient();
   if (!healthieClient) {
