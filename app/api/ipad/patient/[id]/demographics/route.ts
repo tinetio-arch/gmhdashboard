@@ -190,6 +190,8 @@ export async function PUT(
 
         // 3. Sync to GHL
         let ghlSynced = false;
+        let ghlError: string | null = null;
+        let ghlAttempted = false;
         try {
             const patientRows = await query(
                 `SELECT ghl_contact_id FROM patients WHERE patient_id = $1`,
@@ -200,6 +202,7 @@ export async function PUT(
             if (ghlContactId) {
                 const ghlApiKey = process.env.GHL_API_KEY;
                 if (ghlApiKey) {
+                    ghlAttempted = true;
                     const ghlResp = await fetch(`https://rest.gohighlevel.com/v1/contacts/${ghlContactId}`, {
                         method: 'PUT',
                         headers: {
@@ -219,10 +222,25 @@ export async function PUT(
                         }),
                     });
                     ghlSynced = ghlResp.ok;
+                    if (!ghlResp.ok) {
+                        // PHASE 2-r (2026-05-19): capture the GHL error body so the persisted
+                        // ghl_sync_error column carries the actual upstream reason, not just
+                        // a generic HTTP status. Body read is wrapped in its own try because
+                        // GHL occasionally returns malformed JSON on 4xx.
+                        let errBody = `HTTP ${ghlResp.status}`;
+                        try {
+                            const text = await ghlResp.text();
+                            if (text) errBody += `: ${text.substring(0, 400)}`;
+                        } catch { /* keep status-only message */ }
+                        ghlError = errBody;
+                        console.warn('[demographics] GHL sync HTTP failure:', errBody);
+                    }
                 }
             }
-        } catch (ghlErr) {
+        } catch (ghlErr: any) {
             console.warn('[demographics] GHL sync failed:', ghlErr);
+            ghlError = ghlErr?.message || String(ghlErr);
+            ghlAttempted = true;
         }
 
         // FIX(2026-05-19): persist Healthie sync outcome so blocked patients
@@ -246,6 +264,27 @@ export async function PUT(
             }
         } catch (persistErr) {
             console.error('[demographics] Failed to persist healthie_sync_status:', persistErr);
+        }
+
+        // PHASE 2-r (2026-05-19): persist the GHL sync outcome the same way we
+        // persist Healthie. Only writes when we actually attempted the call
+        // (ghlAttempted) — if there's no GHL contact_id or no API key, leave
+        // the prior ghl_sync_status alone instead of overwriting it with stale
+        // success/failure signal.
+        try {
+            if (ghlAttempted) {
+                const nextGhlStatus: 'ok' | 'error' = ghlSynced ? 'ok' : 'error';
+                await query(
+                    `UPDATE patients
+                     SET ghl_sync_status = $1,
+                         ghl_sync_error = $2,
+                         ghl_last_synced_at = NOW()
+                     WHERE patient_id = $3::uuid`,
+                    [nextGhlStatus, ghlError ? ghlError.substring(0, 500) : null, String(patientId)]
+                );
+            }
+        } catch (persistErr) {
+            console.error('[demographics] Failed to persist ghl_sync_status:', persistErr);
         }
 
         return NextResponse.json({

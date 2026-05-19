@@ -190,10 +190,25 @@ async function fetchPatientRow(patientId: string): Promise<PatientRow | null> {
   return rows[0] ?? null;
 }
 
-function shouldSyncPatient(row: PatientRow): boolean {
-  const method = row.method_of_payment ?? '';
-  const clientType = row.client_type ?? '';
-  return HEALTHIE_PAYMENT_REGEX.test(method) && HEALTHIE_CLIENT_TYPES.has(clientType);
+// PHASE 6 (2026-05-19): the original gate also required client_type to be in
+// HEALTHIE_CLIENT_TYPES (only NowMensHealth.Care + NowPrimary.Care), which
+// silently skipped 83 patients — NOWLongevity.Care (40), Sick Visit (24),
+// PrimeCare Premier $50 (8), Pro-Bono PT (5), PrimeCare Elite $100 (5) —
+// despite their method_of_payment=Healthie. Their demographics never
+// propagated to Healthie even though they ARE Healthie-billed.
+//
+// New rule (see syncHealthiePatientDemographics): sync if method matches AND
+// either the original allowlist applies OR the patient already has a linked
+// healthie_clients row. The "already-linked" branch widens the surface
+// without enabling spurious client creation for fringe types — we only
+// auto-create new Healthie clients for the original NowMensHealth/NowPrimary
+// types, exactly as before.
+function isHealthieBilledMethod(row: PatientRow): boolean {
+  return HEALTHIE_PAYMENT_REGEX.test(row.method_of_payment ?? '');
+}
+
+function isInOriginalAllowlist(row: PatientRow): boolean {
+  return HEALTHIE_CLIENT_TYPES.has(row.client_type ?? '');
 }
 
 // Heuristic for the specific Healthie failure mode where a patient's email
@@ -218,8 +233,22 @@ export async function syncHealthiePatientDemographics(
   if (row.status_key === 'inactive') {
     return { status: 'skipped', reason: 'Patient is archived/inactive' };
   }
-  if (!shouldSyncPatient(row)) {
+  if (!isHealthieBilledMethod(row)) {
     return { status: 'skipped', reason: 'Patient not billed via Healthie' };
+  }
+
+  // PHASE 6 (2026-05-19): widened gate. Patients in the original allowlist
+  // get the full sync (including ensureHealthieClientId which CAN create a
+  // new Healthie account). Patients outside the allowlist sync only if they
+  // already have a linked healthie_clients row — we never auto-create
+  // accounts for Sick Visit / Pro-Bono / Premier / Other types.
+  const existingLinkId = await fetchLinkedHealthieId(row.patient_id);
+  const inAllowlist = isInOriginalAllowlist(row);
+  if (!inAllowlist && existingLinkId === null) {
+    return {
+      status: 'skipped',
+      reason: `Patient not in Healthie auto-create allowlist (type=${row.client_type ?? 'unknown'}) and no existing link`,
+    };
   }
 
   const healthieClient = createHealthieClient();
@@ -227,7 +256,10 @@ export async function syncHealthiePatientDemographics(
     throw new Error('Healthie client not configured');
   }
 
-  const healthieClientId = await ensureHealthieClientId(row, healthieClient);
+  // Use the existing link when we have one (avoids a duplicate
+  // fetchLinkedHealthieId inside ensureHealthieClientId). Only allowlist
+  // patients without an existing link reach the create-by-sync path.
+  const healthieClientId = existingLinkId ?? (await ensureHealthieClientId(row, healthieClient));
   const { first, last } = splitName(row.patient_name);
 
   // FIX(2026-05-19): make updateClient failure NON-FATAL.

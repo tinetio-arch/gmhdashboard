@@ -21,15 +21,30 @@ Patient Form (app/patients/)
 
 ### 2. Healthie Sync → Postgres → Dashboard → GHL
 ```
-Healthie API (webhooks)
-  → scripts/process-healthie-webhooks.ts (webhook handler)
+Healthie API (webhooks: app/api/integrations/healthie/webhook/route.ts)
+  → divergence log → agent_action_log (agent_name='healthie_webhook',
+                                       action_type='patient_divergence')
+  → COALESCE UPDATE patients (dob/phone/address/email — webhook still wins
+                              today; flip to log-only is a future step)
+  → scripts/process-healthie-webhooks.ts (queued event handler)
   → Postgres: patients, healthie_clients, payment_issues tables
   → Dashboard UI (app/patients/, app/patient-hub/)
   → lib/ghl.ts → GHL contact update (tags, custom fields)
   → Snowflake (via cron sync every 4hr: scripts/sync-all-to-snowflake.py)
+
+Outbound sync (Postgres → Healthie):
+  PATCH /api/patients/[id], PUT /api/ipad/patient/[id]/demographics
+  → lib/healthieDemographics.ts:syncHealthiePatientDemographics()
+       Gate: method_of_payment ~ /healthie/i AND
+             (client_type ∈ {NowMensHealth.Care, NowPrimary.Care}
+              OR existing healthie_clients link)
+  → updateClient (demographics) + upsertClientLocation (address)
+       updateClient failure is NON-FATAL — address still attempted.
+  → persist outcome on patients.healthie_sync_status / _error / _last_synced_at
+  → parallel ghl_sync_status / _error / _last_synced_at write
 ```
 **If you change**: Webhook processing or patient table schema  
-**Also verify**: Dashboard patient views, GHL sync, Snowflake sync, Telegram reports
+**Also verify**: Dashboard patient views, GHL sync, Snowflake sync, Telegram reports, the *_sync_status columns still get written on every PATCH/PUT (May 19, 2026 contract — both sync legs persist on success AND failure), the divergence log query still returns rows on a manual webhook test, blocked_email_collision rows are NOT retried until human resolves them
 
 ### 3. Payment Decline → Auto-Hold → Patient Notification
 ```
