@@ -19,10 +19,25 @@ export async function POST(request: NextRequest) {
   try {
     const user = await requireApiUser(request, 'write');
     const body = await request.json();
-    const { patient_id: rawPatientId, items } = body;
+    const { patient_id: rawPatientId, items, channel: rawChannel } = body;
 
     if (!rawPatientId) {
       return NextResponse.json({ error: 'patient_id is required' }, { status: 400 });
+    }
+
+    // FIX(2026-05-19): Ship-to (channel='woo') peptides don't need a GMH consent
+    // form — ABXTAC handles consent at WC checkout. Skip silently so the iPad UI
+    // can call this route from any flow without polluting pending_peptide_consents
+    // with rows that will never be signed. Phil's intent: remove friction for
+    // ship-to patients, don't add gates.
+    const channel = (rawChannel === 'woo' || rawChannel === 'inhouse') ? rawChannel : 'inhouse';
+    if (channel === 'woo') {
+      return NextResponse.json({
+        success: true,
+        skipped: true,
+        reason: 'ship_to_channel',
+        message: 'Ship-to peptides do not require a GMH consent form (ABXTAC handles it).',
+      });
     }
 
     // Resolve patient
