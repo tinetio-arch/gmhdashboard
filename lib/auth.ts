@@ -42,6 +42,12 @@ const ROLE_PRIORITY: Record<UserRole, number> = {
 export const SESSION_COOKIE_NAME = 'gmh_session_v2';
 const SESSION_TTL_HOURS = 12;
 
+// Sentinel UUID used as user_id for internal API callers (x-internal-auth requests
+// from cron, Perplexity, Lambdas, etc.). Must be a valid UUID because audit/created_by
+// columns are uuid-typed and rejected the previous 'api-internal' string sentinel.
+// Code that needs to identify internal calls should compare user_id === INTERNAL_USER_ID.
+export const INTERNAL_USER_ID = '00000000-0000-0000-0000-000000000000';
+
 function ensureSessionSecret(): string {
   const secret = process.env.SESSION_SECRET;
   if (!secret) {
@@ -323,8 +329,12 @@ export async function requireApiUser(request: NextRequest, minRole: UserRole = '
   // Allow internal API access via shared secret (used by Perplexity, cron, etc.)
   const internalAuth = request.headers.get('x-internal-auth');
   if (internalAuth && internalAuth === process.env.INTERNAL_AUTH_SECRET) {
+    // FIX(2026-05-19): user_id was the string 'api-internal' which crashed any
+    // downstream INSERT into a UUID column (e.g. scribe writes hitting created_by).
+    // Use a designated zero-UUID sentinel so PG accepts it; consumers that need
+    // to identify internal callers should check user_id === INTERNAL_USER_ID.
     return {
-      user_id: 'api-internal',
+      user_id: INTERNAL_USER_ID,
       email: 'api@internal',
       role: 'admin' as UserRole,
       display_name: 'Internal API',

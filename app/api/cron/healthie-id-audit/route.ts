@@ -100,9 +100,31 @@ export async function GET(request: NextRequest) {
 
             if (correctId) {
                 await query('UPDATE patients SET healthie_client_id = $1 WHERE patient_id = $2', [correctId, row.patient_id]);
+                // FIX(2026-05-19): The previous UPDATE healthie_clients SET healthie_client_id = $new
+                // violated idx_healthie_clients_unique when the target ID already existed on another row.
+                // Pattern matches the Apr 22 upsert fix in healthieMigration.ts:
+                //   1. Deactivate any row that already holds correctId for a different patient.
+                //   2. Deactivate this patient's other healthie_clients rows (only one active per patient).
+                //   3. Upsert the canonical row via INSERT ... ON CONFLICT DO UPDATE.
                 await query(
-                    'UPDATE healthie_clients SET healthie_client_id = $1, updated_at = NOW() WHERE patient_id = $2::text AND is_active = true',
+                    `UPDATE healthie_clients SET is_active = false, updated_at = NOW()
+                     WHERE healthie_client_id = $1 AND patient_id != $2::text`,
                     [correctId, row.patient_id]
+                );
+                await query(
+                    `UPDATE healthie_clients SET is_active = false, updated_at = NOW()
+                     WHERE patient_id = $1::text AND healthie_client_id != $2 AND is_active = true`,
+                    [row.patient_id, correctId]
+                );
+                await query(
+                    `INSERT INTO healthie_clients (patient_id, healthie_client_id, match_method, is_active, created_at, updated_at)
+                     VALUES ($1::text, $2, 'audit_fix', true, NOW(), NOW())
+                     ON CONFLICT (healthie_client_id) DO UPDATE
+                     SET patient_id = EXCLUDED.patient_id,
+                         match_method = EXCLUDED.match_method,
+                         is_active = true,
+                         updated_at = NOW()`,
+                    [row.patient_id, correctId]
                 );
                 fixes.push({
                     name: row.full_name,
