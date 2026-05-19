@@ -14521,14 +14521,14 @@ function renderScheduleWeekView(contentEl) {
         byDate[getPhoenixDateStr(d)] = [];
     }
     filtered.forEach(function(p) {
-        // Healthie dates: "2026-03-25 09:15:00 -0700" — extract YYYY-MM-DD
+        // FIX(2026-05-19): p.date is strict ISO UTC after the May 12 server
+        // normalization. A bare YYYY-MM-DD slice off the front returns the UTC
+        // day, which shifts evening Phoenix appointments to the next day
+        // (e.g. 6pm AZ on May 18 = 01:00 UTC May 19, would land in May 19).
         var apptDate = '';
         if (p.date) {
-            var match = p.date.match(/^(\d{4}-\d{2}-\d{2})/);
-            apptDate = match ? match[1] : '';
-            if (!apptDate) {
-                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE }); } catch(e) {}
-            }
+            var pp = getPhoenixBlockParts(p.date);
+            apptDate = pp ? pp.dateStr : '';
         }
         if (byDate[apptDate] !== undefined) {
             byDate[apptDate].push(p);
@@ -14591,13 +14591,12 @@ function renderScheduleMonthView(contentEl) {
     // Group by date
     var byDate = {};
     filtered.forEach(function(p) {
+        // FIX(2026-05-19): same UTC-ISO bug as week view — Phoenix-local date,
+        // not the leading YYYY-MM-DD of the UTC string.
         var apptDate = '';
         if (p.date) {
-            var match = p.date.match(/^(\d{4}-\d{2}-\d{2})/);
-            apptDate = match ? match[1] : '';
-            if (!apptDate) {
-                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE }); } catch(e) {}
-            }
+            var pp = getPhoenixBlockParts(p.date);
+            apptDate = pp ? pp.dateStr : '';
         }
         if (!byDate[apptDate]) byDate[apptDate] = [];
         byDate[apptDate].push(p);
@@ -14918,13 +14917,16 @@ function validateSchedDuration() {
     for (var i = 0; i < scheduleAllData.length; i++) {
         var a = scheduleAllData[i];
         if (!a || a.provider_id !== provId || !a.date) continue;
-        var m = String(a.date).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
-        if (!m || m[1] !== dateVal) continue;
-        var aStart = parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+        // FIX(2026-05-19): a.date is strict ISO UTC after the May 12 server
+        // normalization. Compare Phoenix-local hours, otherwise a 7am AZ
+        // appointment looks like a 14:00 overlap (or no overlap at all).
+        var ap = getPhoenixBlockParts(a.date);
+        if (!ap || ap.dateStr !== dateVal) continue;
+        var aStart = ap.hour * 60 + ap.minute;
         var aEnd = aStart + (a.length || 30);
         if (reqStart < aEnd && reqEnd > aStart) {
             // SOFT warning: surface the overlap but allow staff to book anyway.
-            warn.textContent = '⚠ Overlaps existing appt at ' + (a.time || (m[2] + ':' + m[3])) + ' (' + (a.full_name || 'patient') + '). You can still book.';
+            warn.textContent = '⚠ Overlaps existing appt at ' + (a.time || (padTwo(ap.hour) + ':' + padTwo(ap.minute))) + ' (' + (a.full_name || 'patient') + '). You can still book.';
             warn.style.background = 'rgba(251,191,36,0.1)';
             warn.style.borderColor = 'rgba(251,191,36,0.3)';
             warn.style.color = '#fbbf24';
@@ -15009,14 +15011,19 @@ async function showEditAppointmentModal(apptId) {
     var apptTypes = Array.isArray(scheduleAppointmentTypes) ? scheduleAppointmentTypes.slice() : [];
     apptTypes.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
 
-    // Parse current date+time from the cached appointment. `appt.date` comes back from
-    // Healthie either as "YYYY-MM-DD HH:MM:SS ±HH:MM" or "YYYY-MM-DDTHH:MM:SS…"; either way
-    // the leading 10+5 chars are enough for the date/time inputs.
+    // FIX(2026-05-19): appt.date is strict ISO UTC ("...Z") after the May 12
+    // pgTimestampToUTCISO server normalization. A naive substring of the first
+    // 10+5 chars yields UTC, not Phoenix — e.g. 7am AZ appt shows as 14:00 in
+    // the edit modal. Use the shared Phoenix-local parser so the date/time
+    // inputs prefill with the times Phil actually sees on the grid.
     var curDateStr = '';
     var curTimeStr = '';
     if (appt.date) {
-        var m = String(appt.date).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
-        if (m) { curDateStr = m[1]; curTimeStr = m[2]; }
+        var bp = getPhoenixBlockParts(appt.date);
+        if (bp) {
+            curDateStr = bp.dateStr;
+            curTimeStr = padTwo(bp.hour) + ':' + padTwo(bp.minute);
+        }
     }
     if (!curTimeStr && appt.time) {
         // Fall back to the human-readable time (e.g. "7:30 AM") → "07:30".
@@ -15174,11 +15181,18 @@ async function submitEditAppointment() {
     var datetimeIso = dateStr + 'T' + timeStr + ':00-07:00';
 
     // Only send fields the user actually changed — keeps the Healthie input minimal.
+    // FIX(2026-05-19): match the showEditAppointmentModal change — original.date
+    // is strict ISO UTC, so the change-detection must compare Phoenix-local times.
+    // Otherwise an unchanged time still looks "changed" (UTC vs Phoenix) and we
+    // re-send the appointment with a wrong datetime to Healthie.
     var origDateStr = '';
     var origTimeStr = '';
     if (original.date) {
-        var dm = String(original.date).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
-        if (dm) { origDateStr = dm[1]; origTimeStr = dm[2]; }
+        var op = getPhoenixBlockParts(original.date);
+        if (op) {
+            origDateStr = op.dateStr;
+            origTimeStr = padTwo(op.hour) + ':' + padTwo(op.minute);
+        }
     }
     var origContactType = (function() {
         var ct = (original.contact_type || original.location || '').toLowerCase();
@@ -16061,16 +16075,15 @@ function getPendingRequestsForSlot(slotHour, slotMin, providerId) {
     return list.filter(function(r) {
         if (r.provider_id !== providerId) return false;
         if (r.status !== 'pending') return false;
-        var d = r.datetime ? new Date(r.datetime) : null;
-        if (!d || isNaN(d.getTime())) return false;
-        // Convert to Phoenix
-        var local = new Date(d.getTime() - (d.getTimezoneOffset() + 420) * 60000);
-        var dateStr = local.toISOString().slice(0, 10);
-        if (dateStr !== dayStr) return false;
-        var m = r.datetime.match(/T(\d{2}):(\d{2})/);
-        if (!m) return false;
-        var h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
-        var start = h * 60 + mi;
+        if (!r.datetime) return false;
+        // FIX(2026-05-19): r.datetime serializes from a Postgres TIMESTAMPTZ
+        // as strict ISO UTC ("...Z"). The previous hand-rolled offset math and
+        // the /T(\d{2}):(\d{2})/ regex both extracted UTC hours, so requests
+        // for 7am AZ landed in the 14:00 slot. Parse Phoenix-local fields via
+        // the shared helper.
+        var pp = getPhoenixBlockParts(r.datetime);
+        if (!pp || pp.dateStr !== dayStr) return false;
+        var start = pp.hour * 60 + pp.minute;
         var end = start + (r.length_minutes || 30);
         return start < slotEnd && end > slotStart;
     });
@@ -17058,12 +17071,13 @@ function renderScheduleDayGrid(contentEl) {
                 var isCovered = pd.coveredSet && pd.coveredSet.has(key) && appts.length === 0;
                 var blockCell = getSlotBlock(slot.hour, slot.min, pd.prov.id);
                 // Detect the first slot of the block (show label only once)
+                // FIX(2026-05-19): blockCell.date is ISO UTC; the old HH:MM:SS
+                // regex pulled UTC hour, so the label rendered on the wrong row
+                // (e.g. 7am AZ block would never satisfy slot.hour === bStartH).
                 var blockIsFirst = false;
                 if (blockCell) {
-                    var bm = (blockCell.date || '').match(/(\d{2}):(\d{2}):\d{2}/);
-                    var bStartH = bm ? parseInt(bm[1], 10) : -1;
-                    var bStartM = bm ? parseInt(bm[2], 10) : -1;
-                    blockIsFirst = (slot.hour === bStartH && slot.min === (bStartM < 30 ? 0 : 30));
+                    var bp = getPhoenixBlockParts(blockCell.date);
+                    if (bp) blockIsFirst = (slot.hour === bp.hour && slot.min === (bp.minute < 30 ? 0 : 30));
                 }
                 // When an appointment occupies a blocked slot, suppress the
                 // yellow bg so the appointment tile stands out. Keep the left
@@ -17206,12 +17220,11 @@ function renderScheduleDayGrid(contentEl) {
             var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
             var isCovered = coveredSet.has(key) && appts.length === 0;
             var blockCell = getSlotBlock(slot.hour, slot.min, scheduleProviderFilter);
+            // FIX(2026-05-19): same UTC-vs-Phoenix fix as the split view above.
             var blockIsFirst = false;
             if (blockCell) {
-                var bm2 = (blockCell.date || '').match(/(\d{2}):(\d{2}):\d{2}/);
-                var bStartH2 = bm2 ? parseInt(bm2[1], 10) : -1;
-                var bStartM2 = bm2 ? parseInt(bm2[2], 10) : -1;
-                blockIsFirst = (slot.hour === bStartH2 && slot.min === (bStartM2 < 30 ? 0 : 30));
+                var bp = getPhoenixBlockParts(blockCell.date);
+                if (bp) blockIsFirst = (slot.hour === bp.hour && slot.min === (bp.minute < 30 ? 0 : 30));
             }
             // Suppress yellow bg when an appointment is present so the tile's
             // buttons stay prominent. Keep the left edge marker.
