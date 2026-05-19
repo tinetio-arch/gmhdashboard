@@ -9170,8 +9170,41 @@ async function submitStageDose() {
         if (result?.success) {
             closeStageDoseModal();
             const totalMl = (doseMl + wasteMl) * syringeCount;
-            showToast(`Staged ${totalMl.toFixed(2)}mL from vial ${result.data?.vial_used || '?'} — ${result.data?.remaining_in_vial}mL remaining`, 'success');
+            const vialUsed = result.data?.vial_used || '?';
+            const remainingInVial = result.data?.remaining_in_vial;
+            showToast(`Staged ${totalMl.toFixed(2)}mL from vial ${vialUsed} — ${remainingInVial}mL remaining`, 'success');
             loadVialList();
+
+            // Prompt retire when staging drops the vial below the standard-dose threshold.
+            // Staging is the only vial-decrementing path that previously skipped this prompt,
+            // which left TopRX 10mL vials stranded at 0.4mL post-prefill (4 syringes × 2.4mL).
+            const newRemaining = remainingInVial != null ? parseFloat(remainingInVial) : NaN;
+            if (vialUsed !== '?' && newRemaining > 0 && newRemaining < 2.0) {
+                const doRetire = confirm(
+                    `Vial ${vialUsed} now has ${newRemaining.toFixed(2)} mL remaining — ` +
+                    `not enough for a standard dose.\n\nRetire this vial and document remaining as waste?`
+                );
+                if (doRetire) {
+                    try {
+                        const retireResp = await apiFetch('/ops/api/inventory/retire-vial', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ vialExternalId: vialUsed })
+                        });
+                        if (retireResp?.success) {
+                            showToast(`Vial ${vialUsed} retired — ${parseFloat(retireResp.wastedMl).toFixed(2)}mL documented as waste.`, 'success');
+                            loadVialList();
+                        } else {
+                            showToast(retireResp?.error || `Retire failed for ${vialUsed}`, 'error');
+                        }
+                    } catch (retireErr) {
+                        console.error('[iPad] Retire vial failed:', retireErr);
+                        if (retireErr?.message !== 'AUTH_EXPIRED') {
+                            showToast(`Retire failed for ${vialUsed} — check console`, 'error');
+                        }
+                    }
+                }
+            }
         } else {
             showToast(result?.error || 'Stage failed', 'error');
         }
@@ -18416,9 +18449,15 @@ async function submitQuickDispense() {
                         });
                         if (retireResp?.success) {
                             successEl.textContent += ` | Vial ${vialExternalId} retired (${parseFloat(newRemaining).toFixed(2)} mL waste documented).`;
+                            showToast(`Vial ${vialExternalId} retired — ${parseFloat(newRemaining).toFixed(2)}mL documented as waste.`, 'success');
+                        } else {
+                            showToast(retireResp?.error || `Retire failed for ${vialExternalId}`, 'error');
                         }
                     } catch (retireErr) {
                         console.error('[iPad] Retire vial failed:', retireErr);
+                        if (retireErr?.message !== 'AUTH_EXPIRED') {
+                            showToast(`Retire failed for ${vialExternalId} — check console`, 'error');
+                        }
                     }
                 }
             }
@@ -18556,14 +18595,22 @@ async function submitQuickDispense() {
                 );
                 if (doRetire) {
                     try {
-                        await apiFetch('/ops/api/inventory/retire-vial', {
+                        const retireResp = await apiFetch('/ops/api/inventory/retire-vial', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ vialExternalId: nextVialExternalId })
                         });
-                        successEl.innerHTML += `<br>🗑️ Vial ${nextVialExternalId} retired (${parseFloat(newRemaining2).toFixed(2)} mL waste documented).`;
+                        if (retireResp?.success) {
+                            successEl.innerHTML += `<br>🗑️ Vial ${nextVialExternalId} retired (${parseFloat(newRemaining2).toFixed(2)} mL waste documented).`;
+                            showToast(`Vial ${nextVialExternalId} retired — ${parseFloat(newRemaining2).toFixed(2)}mL documented as waste.`, 'success');
+                        } else {
+                            showToast(retireResp?.error || `Retire failed for ${nextVialExternalId}`, 'error');
+                        }
                     } catch (retireErr) {
                         console.error('[iPad] Retire vial failed:', retireErr);
+                        if (retireErr?.message !== 'AUTH_EXPIRED') {
+                            showToast(`Retire failed for ${nextVialExternalId} — check console`, 'error');
+                        }
                     }
                 }
             }

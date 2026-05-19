@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 
-export type DispenseEventType = 'created' | 'signed' | 'reopened' | 'updated' | 'deleted';
+export type DispenseEventType = 'created' | 'signed' | 'reopened' | 'updated' | 'deleted' | 'vial_retired';
 
 export type RecordDispenseEventInput = {
   dispenseId: string;
