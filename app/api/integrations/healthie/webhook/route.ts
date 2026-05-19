@@ -174,13 +174,18 @@ export async function POST(request: Request): Promise<Response> {
     email: client.email ?? null,
   };
 
-  // PHASE 3 INSTRUMENTATION (2026-05-19): log every divergence between the
-  // incoming Healthie payload and the current local patients row to
-  // agent_action_log (agent_name='healthie_webhook', action_type='patient_divergence').
-  // This is ADDITIVE — the COALESCE UPDATE below still runs and still wins —
-  // but the log lets us quantify how often Healthie disagrees with our local
-  // state. A future iteration will flip this to log-only once we know volume
-  // and which fields drift most often (the eventual SoT-enforcement step).
+  // PHASE 3 (2026-05-19): SoT ENFORCEMENT. /ops + /ipad + /mobile are the
+  // source of truth for patient demographics; Healthie is a downstream
+  // consumer. The inbound webhook NO LONGER overwrites a populated /ops field
+  // (the old COALESCE clobbered /ops whenever Healthie sent any value).
+  // Per incoming field:
+  //   - /ops field IS NULL/empty  → BACKFILL it (one-time, no conflict).
+  //   - /ops == Healthie          → no-op.
+  //   - /ops != Healthie          → record a sync_conflicts row; LEAVE /ops as-is.
+  // This replaces the prior additive agent_action_log 'patient_divergence'
+  // breadcrumb (removed) — sync_conflicts is now the structured truth.
+  let backfilledCount = 0;
+  let conflictCount = 0;
   try {
     const [current] = await query<{
       dob: any;
@@ -195,77 +200,71 @@ export async function POST(request: Request): Promise<Response> {
          FROM patients WHERE patient_id = $1`,
       [patientId]
     );
+
     if (current) {
-      const divergences: Record<string, { local: any; healthie: any }> = {};
+      // Field names below are a FIXED, code-controlled set (the keys of the
+      // `incoming` object) — never patient/payload-derived — so interpolating
+      // them into the UPDATE column list is the sanctioned dynamic-UPDATE
+      // pattern, not SQL injection.
+      const backfill: Record<string, string> = {};
+      const conflicts: Array<{ field: string; opsValue: string; externalValue: string }> = [];
+
       for (const k of Object.keys(incoming) as Array<keyof typeof incoming>) {
-        const inc = incoming[k as keyof typeof incoming];
+        const inc = incoming[k];
         if (inc === null || inc === undefined) continue; // Healthie didn't send this field
         const cur = (current as any)[k];
-        // Normalize for comparison: dob comes back as a Date object from pg.
-        let curStr: string;
-        if (cur instanceof Date) {
-          curStr = cur.toISOString().slice(0, 10);
-        } else {
-          curStr = cur == null ? '' : String(cur);
-        }
+        // dob comes back as a Date object from pg; normalize for comparison.
+        const curStr = cur instanceof Date ? cur.toISOString().slice(0, 10) : cur == null ? '' : String(cur);
         const incStr = String(inc);
-        if (incStr !== curStr) {
-          divergences[k] = { local: cur ?? null, healthie: inc };
+
+        if (curStr === '') {
+          backfill[k as string] = inc as string; // /ops empty → backfill
+        } else if (incStr === curStr) {
+          // equal → no-op
+        } else {
+          conflicts.push({ field: k as string, opsValue: curStr, externalValue: incStr });
         }
       }
-      if (Object.keys(divergences).length > 0) {
+
+      // Record conflicts — /ops wins, Healthie value is rejected and logged.
+      for (const c of conflicts) {
         await query(
-          `INSERT INTO agent_action_log
-             (agent_name, action_type, category, summary, details, status)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
-          [
-            'healthie_webhook',
-            'patient_divergence',
-            'sync',
-            `Healthie webhook diverged from local patients row on: ${Object.keys(divergences).join(', ')}`,
-            JSON.stringify({
-              patient_id: patientId,
-              healthie_client_id: healthieClientId,
-              divergences,
-            }),
-            'completed',
-          ]
+          `INSERT INTO sync_conflicts
+             (patient_id, source_system, field_name, ops_value, external_value)
+           VALUES ($1, 'healthie', $2, $3, $4)`,
+          [patientId, c.field, c.opsValue, c.externalValue]
         );
       }
-    }
-  } catch (divergenceErr) {
-    // Instrumentation must never break the webhook — swallow and continue.
-    console.warn('[healthie-webhook] divergence logging failed (non-fatal):', divergenceErr);
-  }
+      conflictCount = conflicts.length;
 
-  await query(
-    `
-      UPDATE patients
-         SET dob = COALESCE($2, dob),
-             phone_primary = COALESCE($3, phone_primary),
-             address_line1 = COALESCE($4, address_line1),
-             city = COALESCE($5, city),
-             state = COALESCE($6, state),
-             postal_code = COALESCE($7, postal_code),
-             email = COALESCE($8, email),
-             updated_at = NOW()
-       WHERE patient_id = $1
-    `,
-    [
-      patientId,
-      incoming.dob,
-      incoming.phone_primary,
-      incoming.address_line1,
-      incoming.city,
-      incoming.state,
-      incoming.postal_code,
-      incoming.email,
-    ]
-  );
+      // Backfill only the fields /ops did not already have.
+      const fields = Object.keys(backfill);
+      if (fields.length > 0) {
+        const setClauses: string[] = [];
+        const values: any[] = [patientId];
+        let idx = 2;
+        for (const f of fields) {
+          setClauses.push(`${f} = $${idx++}`);
+          values.push(backfill[f]);
+        }
+        setClauses.push('updated_at = NOW()');
+        await query(
+          `UPDATE patients SET ${setClauses.join(', ')} WHERE patient_id = $1`,
+          values
+        );
+        backfilledCount = fields.length;
+      }
+    }
+  } catch (sotErr) {
+    // SoT reconciliation must never 500 the webhook — log and continue.
+    console.error('[healthie-webhook] sync-conflict reconciliation failed (non-fatal):', sotErr);
+  }
 
   return NextResponse.json({
     success: true,
     patientId,
+    backfilled: backfilledCount,
+    conflicts: conflictCount,
   });
 }
 

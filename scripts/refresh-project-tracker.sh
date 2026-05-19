@@ -85,7 +85,7 @@ hold_payment=$(run_sql "SELECT COUNT(*) FROM patients WHERE status_key='hold_pay
 inactive_payment=$(run_sql "SELECT COUNT(*) FROM patients WHERE status_key='inactive_payment_research';")
 healthie_clients=$(run_sql "SELECT COUNT(*) FROM healthie_clients;")
 qb_mapping=$(run_sql "SELECT COUNT(*) FROM patient_qb_mapping;")
-ghl_mapping=$(run_sql "SELECT COUNT(*) FROM patient_ghl_mapping;")
+ghl_mapping=$(run_sql "SELECT COUNT(*) FROM patients WHERE ghl_contact_id IS NOT NULL;")
 memberships_active=$(run_sql "SELECT COUNT(*) FROM memberships WHERE status='active';")
 lab_orders=$(run_sql "SELECT COUNT(*) FROM lab_orders;")
 lab_pending=$(run_sql "SELECT COUNT(*) FROM lab_review_queue WHERE status IN ('pending','for_review');")
@@ -117,7 +117,7 @@ client_dist=$(run_sql "SELECT COALESCE(client_type_key,'(null)') || '|' || COUNT
   echo "| ↳ inactive_payment_research | ${inactive_payment} | \`status_key='inactive_payment_research'\` |"
   echo "| healthie_clients rows | ${healthie_clients} | (>patients because legacy duplicate links exist) |"
   echo "| patient_qb_mapping rows | ${qb_mapping} | QuickBooks mappings |"
-  echo "| patient_ghl_mapping rows | ${ghl_mapping} | GHL contact mappings |"
+  echo "| patients w/ ghl_contact_id | ${ghl_mapping} | \`ghl_contact_id IS NOT NULL\` (legacy mapping table dropped 2026-05-19) |"
   echo "| memberships (active) | ${memberships_active} | \`status='active'\` |"
   echo "| lab_orders (total) | ${lab_orders} | — |"
   echo "| lab_review_queue (pending) | ${lab_pending} | — |"

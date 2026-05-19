@@ -14,18 +14,22 @@ Patient Form (app/patients/)
   → lib/patientHealthieSync.ts (createClient mutation → Healthie)
   → lib/patientGHLSync.ts (create contact → GHL via lib/ghl.ts)
   → healthie_clients table (stores healthie_client_id)
-  → patient_ghl_mapping table (stores ghl_contact_id)
+  → patients.ghl_contact_id (stores GHL contact id; the legacy mapping
+    table was dropped 2026-05-19 — it was empty with zero callsites)
 ```
 **If you change**: Patient creation form or patientQueries  
-**Also verify**: Healthie sync, GHL sync, healthie_clients table, ghl_contact_id mapping
+**Also verify**: Healthie sync, GHL sync, healthie_clients table, patients.ghl_contact_id
 
 ### 2. Healthie Sync → Postgres → Dashboard → GHL
 ```
 Healthie API (webhooks: app/api/integrations/healthie/webhook/route.ts)
-  → divergence log → agent_action_log (agent_name='healthie_webhook',
-                                       action_type='patient_divergence')
-  → COALESCE UPDATE patients (dob/phone/address/email — webhook still wins
-                              today; flip to log-only is a future step)
+  → SoT reconciliation (Phase 3, 2026-05-19): /ops is authoritative.
+      • /ops field NULL  → BACKFILL patients (dob/phone/address/email)
+      • /ops == Healthie → no-op
+      • /ops != Healthie → INSERT sync_conflicts row; patients UNCHANGED
+    (the old COALESCE-overwrite + agent_action_log 'patient_divergence'
+     breadcrumb are REMOVED — sync_conflicts is the structured truth;
+     surfaced read-only at /ops/sync-conflicts)
   → scripts/process-healthie-webhooks.ts (queued event handler)
   → Postgres: patients, healthie_clients, payment_issues tables
   → Dashboard UI (app/patients/, app/patient-hub/)
@@ -266,7 +270,7 @@ ANY code path that writes patients.status_key
 ## Database Table Dependency Clusters
 
 ### Patient Core
-`patients` ← `healthie_clients` ← `patient_ghl_mapping` ← `patient_qb_mapping`
+`patients` (`ghl_contact_id` column) ← `healthie_clients` ← `patient_qb_mapping`
 + NEW: `patient_signals_cache` (badge cache populated nightly by `scripts/refresh-intake-signals.js`)
 
 ### Classification & Status (Hardening v3, Apr 2026)
