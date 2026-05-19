@@ -122,7 +122,8 @@ abxtac, admin (now incl. `/admin/bioscope`), analytics, app-access, auth, **bios
 | QuickBooks integration | HIGH | NOT VERIFIED (sync cron still running every 3hr) |
 | Stripe disconnected | HIGH | KEYS EXIST — VERIFY |
 | Open payment_issues | LOW | **2** open (was 50 in stale tracker) |
-| patient_ghl_mapping table empty | HIGH | 0 rows — GHL sync writes elsewhere, verify before any GHL dedupe |
+| patient_ghl_mapping table | (RESOLVED 2026-05-19) | DROPPED — was 0 rows / 0 callsites; GHL contact id lives on patients.ghl_contact_id |
+| SoT enforcement (Phases 7/6/3) | (SHIPPED 2026-05-19) | patient_ghl_mapping dropped; Healthie sync gate loosened (no client_type allowlist; skips→patient_sync_skips); webhook stops /ops overwrite (divergences→sync_conflicts, view at /ops/sync-conflicts). Branch claude/claude2/sot-enforcement-bundled-phase-3-webhook- merged to master + deployed. |
 
 ---
 
