@@ -23,7 +23,8 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 run_sql() {
-  PGPASSWORD="$DATABASE_PASSWORD" psql -h "$DATABASE_HOST" -p "$DATABASE_PORT" -U "$DATABASE_USER" -d "$DATABASE_NAME" -t -A -c "$1" 2>/dev/null || echo "ERROR"
+  PGPASSWORD="$DATABASE_PASSWORD" psql -h "$DATABASE_HOST" -p "$DATABASE_PORT" -U "$DATABASE_USER" -d "$DATABASE_NAME" -t -A -c "$1" \
+    2>>/tmp/health-check-sql-errors.log || echo "ERROR"
 }
 
 # Helper: evaluate KPI
@@ -156,8 +157,22 @@ else
   add_result "🔴" "Services Online" "$ONLINE_COUNT/$TOTAL_SERVICES" "All online" "$DOWN services DOWN"
 fi
 
-# --- KPI 8: Peptide SKUs at Zero Stock ---
-ZERO_STOCK=$(run_sql "SELECT COUNT(*) FROM peptide_products WHERE stock_quantity = 0 AND active = true" 2>/dev/null || echo "N/A")
+# --- KPI 8: Peptide SKUs at Zero Stock (in-house inventory) ---
+# Canonical formula (matches lib/peptideQueries.ts and app/api/ipad/billing/products/route.ts):
+#   current_stock = SUM(peptide_orders.quantity)
+#                 - SUM(peptide_dispenses.quantity WHERE status='Paid' AND education_complete=true)
+# peptide_products has NO stock_quantity column — the prior query was a silent schema error.
+ZERO_STOCK=$(run_sql "
+  SELECT COUNT(*) FROM peptide_products p
+  WHERE p.active = true
+    AND (
+      COALESCE((SELECT SUM(o.quantity) FROM peptide_orders o WHERE o.product_id = p.product_id), 0)
+      - COALESCE((SELECT SUM(d.quantity) FROM peptide_dispenses d
+                  WHERE d.product_id = p.product_id
+                    AND d.status = 'Paid'
+                    AND d.education_complete = true), 0)
+    ) <= 0
+" 2>/dev/null || echo "N/A")
 if [ "$ZERO_STOCK" = "ERROR" ] || [ "$ZERO_STOCK" = "N/A" ]; then
   add_result "⚠️" "Peptide Zero-Stock SKUs" "N/A" "0" "Could not query peptide inventory"
 elif [ "$ZERO_STOCK" -eq 0 ]; then
