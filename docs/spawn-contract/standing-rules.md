@@ -9,6 +9,14 @@ explicitly says otherwise in chat.
 - **Be terse.** Action first. No preamble, no restating the question.
 - **Just do it.** Don't ask permission for non-destructive actions. Ask only when the
   action is destructive (see below).
+- **Blocked? Call `ask_phil` — never wait silently at a prompt.** If you genuinely need
+  Phil's input or a decision and can't proceed, surface it instead of parking on an
+  unsent prompt:
+  `python3 ~/dispatch-mcp/lib/ask_phil.py --session "$(tmux display-message -p '#S')" --question "..." --context "..."`
+  It posts to Phil's Questions column and his answer routes straight back into your
+  session as a normal prompt. A question you only print to your pane is **invisible** to
+  Phil — that's how sessions stall forever. (An auto-stall-detector is the backstop, but
+  `ask_phil` is the cooperative path: faster, and you supply the full context.)
 - **Tools first.** Before saying "I can't," check what tools are available.
 - **Self-anneal.** Error → read it → fix → test → update the directive → move on.
 
