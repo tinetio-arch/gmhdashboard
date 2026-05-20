@@ -2107,6 +2107,7 @@ function renderTaskCard(t, myEmail) {
                     ${overdue ? '<span style="color:#ef4444; font-weight:700;">⚠️ OVERDUE</span>' : ''}
                 </div>
                 ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px; overflow-wrap:anywhere;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
+                ${Array.isArray(t.attachments) && t.attachments.length ? `<div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;">${t.attachments.map(a => `<a href="${sanitize(a.download_url)}" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:5px 9px; background:rgba(0,212,255,0.08); border:1px solid rgba(0,212,255,0.28); border-radius:6px; color:var(--cyan,#22d3ee); text-decoration:none; max-width:100%; overflow:hidden;"><span>📎</span><span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sanitize(a.name)}</span></a>`).join('')}</div>` : ''}
             </div>
             <span style="flex:0 0 auto; font-size:10px; padding:3px 8px; border-radius:6px; background:${statusColor}1f; color:${statusColor}; font-weight:700; white-space:nowrap; letter-spacing:0.03em;">${statusPill}</span>
         </div>

@@ -10,8 +10,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Additive: surface dispatch task attachments on the iPad to-do.
+ * The /agents inbox (dispatch JSON store) links to a staff_tasks row via
+ * row.staff_task_id. We scan the inbox once and build a map from
+ * staff_task_id -> { row_uuid, attachments } for rows that carry attachments,
+ * so the iPad can render openable links. Best-effort: any failure leaves the
+ * existing staff_tasks response untouched.
+ */
+function dispatchAttachmentsByStaffTaskId(): Map<number, { row_uuid: string; attachments: any[] }> {
+  const map = new Map<number, { row_uuid: string; attachments: any[] }>();
+  try {
+    const inboxDir = path.join(os.homedir(), '.claude', 'coord', 'inbox');
+    for (const f of fs.readdirSync(inboxDir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const r = JSON.parse(fs.readFileSync(path.join(inboxDir, f), 'utf8'));
+        const sid = Number(r?.staff_task_id);
+        const atts = Array.isArray(r?.attachments) ? r.attachments : [];
+        if (sid && atts.length) map.set(sid, { row_uuid: r.task_id, attachments: atts });
+      } catch { /* skip unparseable row */ }
+    }
+  } catch { /* inbox dir unreadable — leave map empty */ }
+  return map;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -43,6 +71,16 @@ export async function GET(request: NextRequest) {
     LIMIT 100`;
 
     const tasks = await query<any>(sql, params);
+    // Attach dispatch file-attachments (additive; never breaks the response).
+    try {
+      const attMap = dispatchAttachmentsByStaffTaskId();
+      if (attMap.size) {
+        for (const t of tasks as any[]) {
+          const link = attMap.get(Number(t.id));
+          if (link) { t.dispatch_row_uuid = link.row_uuid; t.attachments = link.attachments; }
+        }
+      }
+    } catch { /* leave tasks unmodified */ }
     return NextResponse.json({ success: true, tasks });
   } catch (error: any) {
     if (error?.status === 401) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
