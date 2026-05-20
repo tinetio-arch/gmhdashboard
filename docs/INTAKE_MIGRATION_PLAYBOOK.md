@@ -218,6 +218,53 @@ The dry-run path (env `INTAKE_DRY_RUN=1` or body `{"dry_run":true}`) validates +
 **no patient and no Healthie call** — use it for all pre-launch HTTP testing. The test script
 lives at `.tmp/test-intake-pipeline.ts` (regenerable; not committed).
 
+## 4c. ABXTAC GHL ↔ Healthie wiring audit (2026-05-20, read-only)
+
+Question: "Is everything wired so the intake forms we need to send ABXTAC patients
+reach them and land on the Healthie chart?" **Answer: No — nothing is wired end-to-end
+today.** Evidence from read-only probes of Healthie group 82534 + the GHL ABXTAC location
+(`OyC2MESFDP3Pxm10tECz`):
+
+- **Healthie group 82534 has NO onboarding flow attached.** (6 flows exist; only Men's
+  Health 75522, Primary 75523, Sick Visit 77894 are attached to groups.) → joining the
+  ABXTAC group auto-sends **nothing**. *(Upside: clears the comms gate — no surprise
+  Healthie emails on provisioning.)*
+- **The "ABX Tactical Services Agreement" form does NOT exist in Healthie** (75 templates
+  scanned; absent). It's only defined in `scripts/create-healthie-forms.ts` — never created.
+- **GHL native forms = lead-capture only** ("A2P", "Registration" ×2, "Optin Claim"). No
+  HIPAA / consent / intake form. GHL has **no form→Healthie sync** (the only GHL↔Healthie
+  link is the appointment-webhook adding tags). So GHL forms never reach the Healthie chart.
+- **GHL ABXTAC workflows are mostly DRAFT** (10 of 11 draft; only "Dashboard: Capture
+  Inbound SMS" is published). None send clinical intake/consent forms.
+- The generic Healthie templates DO exist and DO land on the chart **if sent** — but for
+  ABXTAC the only delivery path today is a staff member manually sending each via the
+  dashboard/iPad (`requestFormCompletion`). No automation.
+
+**Per-form end-to-end status** (delivery → answers on Healthie chart):
+
+| Intake form (ABXTAC needs) | In Healthie? | Auto-sent to patient? | Lands on chart if sent? | Wired E2E? |
+|---|---|---|---|---|
+| HIPAA Agreement (2898628) | ✅ | ❌ none | ✅ | ❌ |
+| Consent to Treat (2898608) | ✅ | ❌ none | ✅ | ❌ |
+| Telehealth Informed Consent (2898624) | ✅ | ❌ none | ✅ | ❌ |
+| AI Scribe Consent (2898621) | ✅ | ❌ none | ✅ | ❌ |
+| Financial Agreement (2898609) | ✅ | ❌ none | ✅ | ❌ |
+| Patient Intake (NOWOPTIMAL 2898622; generic) | ✅ | ❌ none | ✅ | ❌ |
+| Peptide Therapy Informed Consent (2960753) | ✅ | ❌ none | ✅ | ❌ |
+| ABX Tactical Services Agreement | ❌ missing | ❌ | ❌ | ❌ |
+
+**What's missing to wire it (two viable paths):**
+1. *Healthie-native:* create/attach an onboarding flow to group 82534 containing the
+   required forms (write op in Healthie — out of read-only scope). Then assigning the
+   group auto-sends them.
+2. *Our self-serve forms (this playbook):* create the missing forms in Healthie, fill in
+   `form_definitions.healthie_custom_module_form_id` + each `form_fields.healthie_custom_module_id`
+   (Step 4), deploy the branch, and send patients the `/ops/intake/abxtac/...` link via a
+   (published) GHL workflow. Then answers flow our form → our DB → Healthie chart.
+
+(Confirm the exact required form set with Phil — the table above is the standard telehealth
++ peptide set inferred from existing templates and `create-healthie-forms.ts`.)
+
 ## 5. Open items / next sessions
 - **🚦 Confirm/disable the auto onboarding flow on Healthie group 82534** (§4a gate) before any real provisioning.
 - **Deploy the branch** (behind the pre-deploy gate) so tests 5–8 (live HTTP + web form) can run.
