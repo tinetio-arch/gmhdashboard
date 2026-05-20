@@ -334,6 +334,14 @@
         var screenPublisher = null, isScreenSharing = false;
         var chartOpen = false, chartLoaded = false;
 
+        // FIX(2026-05-20): iOS Safari permits only ONE active media capture at a time.
+        // Starting a screen-share publisher tears down the call's mic capture, killing
+        // call audio (well-known WebRTC track-replacement quirk). iOS Safari also does
+        // not support getDisplayMedia screen capture at all. So we hide the Share button
+        // on iOS entirely. iPadOS 13+ reports a Mac userAgent, so we also check touch points.
+        var isIOS = (/iPad|iPhone|iPod/.test(navigator.userAgent)) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
         // Parse URL params
         var params = new URLSearchParams(window.location.search);
         var appointmentId = params.get('appointment_id') || '';
@@ -361,11 +369,18 @@
             document.getElementById('waitingState').style.display = 'none';
             document.getElementById('topBar').style.display = 'flex';
             document.getElementById('headerPatient').textContent = patientName;
-            // Enable video-dependent buttons now that session is connected
-            ['muteBtn', 'videoBtn', 'shareBtn'].forEach(function(id) {
+            // Enable video-dependent buttons now that session is connected.
+            // FIX(2026-05-20): On iOS, do NOT enable Share — hide it entirely. Starting a
+            // screen-share publisher on iOS Safari kills the call's mic audio.
+            var videoBtns = isIOS ? ['muteBtn', 'videoBtn'] : ['muteBtn', 'videoBtn', 'shareBtn'];
+            videoBtns.forEach(function(id) {
                 var btn = document.getElementById(id);
                 if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
             });
+            if (isIOS) {
+                var shareBtn = document.getElementById('shareBtn');
+                if (shareBtn && shareBtn.parentElement) shareBtn.parentElement.style.display = 'none';
+            }
         }
 
         function startTimer() {
@@ -462,6 +477,10 @@
 
         function startScreenShare() {
             if (!session || isScreenSharing) return;
+            // FIX(2026-05-20): Defense in depth — never start a screen-share publisher on
+            // iOS Safari (button is hidden, but guard against programmatic calls). It would
+            // kill the call's mic audio. See isIOS note above.
+            if (isIOS) { console.warn('[Video] Screen share suppressed on iOS to protect call audio.'); return; }
             screenPublisher = OT.initPublisher(null, {
                 videoSource: 'screen',
                 publishAudio: false,
