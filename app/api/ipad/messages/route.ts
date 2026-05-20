@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import { healthieGraphQL } from '@/lib/healthieApi';
+import { query } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -15,8 +16,9 @@ export const maxDuration = 30;
  *   - offset (optional): Pagination offset for conversations list (default 0)
  */
 export async function GET(request: NextRequest) {
+    let user;
     try {
-        await requireApiUser(request, 'read');
+        user = await requireApiUser(request, 'read');
     } catch (error) {
         if (error instanceof UnauthorizedError)
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -194,7 +196,7 @@ export async function GET(request: NextRequest) {
                 name: m.display_name || m.display_other_user_name || m.convo!.name || 'Conversation',
                 last_message: m.convo!.last_message_content || '',
                 updated_at: m.convo!.updated_at,
-                unread: !m.viewed,
+                unread: false, // recomputed per-staff below (Healthie `viewed` is org-key-scoped)
                 member_count: m.convo!.conversation_memberships_count || 0,
                 members: (m.convo!.conversation_memberships || [])
                     .map(cm => cm.display_name)
@@ -205,6 +207,11 @@ export async function GET(request: NextRequest) {
         // Sort by most recent first
         conversations.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
+        // FIX(2026-05-19): Compute unread per logged-in staff member from local read
+        // tracking. Healthie's `viewed` only reflects the org API key identity (Phil),
+        // so it was wrong for every other staff member. See conversation_reads migration.
+        await applyUnreadFlags(conversations, user?.user_id);
+
         return NextResponse.json({ success: true, conversations });
     } catch (error) {
         console.error('[iPad Messages] Error:', error);
@@ -212,6 +219,51 @@ export async function GET(request: NextRequest) {
             { error: error instanceof Error ? error.message : 'Failed to load messages' },
             { status: 500 }
         );
+    }
+}
+
+/**
+ * Set conversations[].unread per the logged-in staff member, using the
+ * conversation_reads table (NOT Healthie's org-key-scoped `viewed` flag).
+ *
+ * First-use seeding: the very first time a user loads messages they have no read
+ * rows; we seed the current backlog as "read" (last_read = now) so the badge
+ * doesn't flood. After that, a conversation is unread iff it has no read row
+ * (genuinely new since first use) or a newer message arrived since they last opened it.
+ */
+async function applyUnreadFlags(
+    conversations: Array<{ id: string; updated_at: string; unread: boolean }>,
+    userId: string | undefined
+): Promise<void> {
+    // x-internal-auth callers aren't real users (user_id is not a UUID) — skip tracking.
+    if (!userId || userId === 'api-internal' || conversations.length === 0) return;
+
+    const ids = conversations.map(c => c.id);
+
+    const totalRows = await query<{ n: string }>(
+        'SELECT COUNT(*)::text AS n FROM conversation_reads WHERE user_id = $1',
+        [userId]
+    );
+    if (totalRows[0]?.n === '0') {
+        await query(
+            `INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
+             SELECT $1, UNNEST($2::text[]), NOW()
+             ON CONFLICT (user_id, conversation_id) DO NOTHING`,
+            [userId, ids]
+        );
+        return; // all unread already false
+    }
+
+    const rows = await query<{ conversation_id: string; last_read_at: string }>(
+        `SELECT conversation_id, last_read_at::text AS last_read_at
+           FROM conversation_reads
+          WHERE user_id = $1 AND conversation_id = ANY($2::text[])`,
+        [userId, ids]
+    );
+    const readMap = new Map(rows.map(r => [r.conversation_id, new Date(r.last_read_at).getTime()]));
+    for (const c of conversations) {
+        const lastRead = readMap.get(c.id);
+        c.unread = lastRead === undefined ? true : new Date(c.updated_at).getTime() > lastRead;
     }
 }
 
