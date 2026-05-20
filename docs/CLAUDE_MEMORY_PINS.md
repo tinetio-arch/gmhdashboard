@@ -188,9 +188,9 @@ Index: `idx_patients_healthie_sync_blocked` partial index for the /ops triage su
 
 `lib/healthieDemographics.ts:syncHealthiePatientDemographics()`:
 
-- Sync runs when `method_of_payment ~ /healthie/i` AND (`client_type ∈ {NowMensHealth.Care, NowPrimary.Care}` OR patient already has a `healthie_clients` link).
-- Only the original allowlist (`NowMensHealth.Care`, `NowPrimary.Care`) reaches `ensureHealthieClientId`'s create-by-sync path. Other types sync demographics ONLY if they're already linked.
-- Unblocks ~83 patients that were silently skipping (NOWLongevity, Sick Visit, PrimeCare Premier/Elite, Pro-Bono).
+- Every Healthie-billed active patient is attempted for sync regardless of `client_type` (the original `NowMensHealth.Care` / `NowPrimary.Care` allowlist was removed in commit `9797915` on May 19, 2026, 75 minutes after the initial loosening shipped in `ad52574`).
+- Skips (e.g. `method_of_payment` does not include healthie, `status_key=inactive`) are logged to the `patient_sync_skips` table with a reason for operator visibility.
+- Unblocks ~83 patients that were silently skipping under the prior allowlist gate.
 
 ## Healthie Webhook Divergence Log (NEW May 19, 2026)
 
