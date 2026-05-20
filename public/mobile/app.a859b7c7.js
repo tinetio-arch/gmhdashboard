@@ -2104,6 +2104,7 @@ function renderTaskCard(t, myEmail) {
             <span style="font-size:10px; padding:3px 8px; border-radius:6px; background:${priColor}15; color:${priColor}; font-weight:600; white-space:nowrap;">${t.priority.toUpperCase()}</span>
         </div>
         <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+            <button onclick="openTaskChatSheet(${t.id}, ${JSON.stringify(sanitize(t.title)).replace(/"/g, '&quot;')})" data-task-chat-btn="${t.id}" style="padding:6px 10px; background:rgba(0,212,255,0.10); border:1px solid rgba(0,212,255,0.30); border-radius:6px; color:var(--cyan,#22d3ee); font-size:11px; font-weight:600; cursor:pointer; position:relative;">💬 Chat<span data-task-chat-badge="${t.id}" style="display:none; margin-left:4px; min-width:16px; padding:0 5px; border-radius:8px; background:#22d3ee; color:#0a0f1a; font-size:10px; font-weight:700; line-height:14px; vertical-align:middle;"></span></button>
             <button onclick="showTaskNoteModal(${t.id})" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:11px; cursor:pointer;">📝 Note</button>
             <button onclick="showEditTaskModal(${t.id}, '${sanitize(t.title).replace(/'/g, '')}', '${sanitize(t.description || '').replace(/'/g, '')}', '${t.priority}', '${t.assigned_to}', '${t.due_date || ''}')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:11px; cursor:pointer;">✏️ Edit</button>
             ${isAssignedToMe && t.status === 'pending' ? `<button onclick="updateStaffTask(${t.id}, 'in_progress')" style="padding:6px 10px; background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:6px; color:#3b82f6; font-size:11px; font-weight:600; cursor:pointer;">▶ Start</button>` : ''}
@@ -2111,6 +2112,332 @@ function renderTaskCard(t, myEmail) {
         </div>
     </div>`;
 }
+
+// ============================================================
+// PER-TASK CHAT BOTTOM-SHEET (Wave 3a UI)
+// ─ Hannah/Michele/Whitten/Audrey tap 💬 on a task card. The sheet slides
+//   up, fetches inbox row chat_thread via /api/ipad/chat?staff_task_id=N,
+//   renders bubbles aligned by from_slug, and posts replies via
+//   POST /api/ipad/chat. Polls every 30s while open.
+// ============================================================
+let _taskChatState = {
+    staffTaskId: null,        // currently-open task id (number)
+    rowUuid: null,            // resolved inbox row_uuid
+    currentSlug: null,        // current user's staff slug (e.g. 'phil')
+    pollTimer: null,
+    lastThread: [],
+    sending: false,
+};
+
+function _taskChatEscapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+}
+
+function _taskChatInitialFor(slug) {
+    if (!slug) return '?';
+    return String(slug).trim().charAt(0).toUpperCase() || '?';
+}
+
+function _taskChatColorFor(slug) {
+    const palette = ['#22d3ee', '#a78bfa', '#f59e0b', '#ef4444', '#34d399', '#f472b6', '#60a5fa'];
+    let h = 0;
+    const s = String(slug || '');
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return palette[h % palette.length];
+}
+
+function _taskChatFormatTs(iso) {
+    if (!iso) return '';
+    try {
+        const d = new Date(iso);
+        const now = new Date();
+        const sameDay = d.toDateString() === now.toDateString();
+        const opts = sameDay
+            ? { hour: 'numeric', minute: '2-digit' }
+            : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+        return d.toLocaleString('en-US', opts);
+    } catch (e) { return ''; }
+}
+
+function _taskChatRenderBubbles(thread, mySlug) {
+    if (!thread || thread.length === 0) {
+        return '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; min-height:200px; padding:40px 20px; text-align:center; color:var(--text-tertiary);">'
+             + '<div style="font-size:36px; margin-bottom:8px;">💬</div>'
+             + '<div style="font-size:14px; font-weight:600; color:var(--text-secondary);">No messages yet</div>'
+             + '<div style="font-size:12px; margin-top:4px;">Start the thread — anyone assigned will get a Google Chat DM.</div>'
+             + '</div>';
+    }
+    // Thread arrives newest-first from /api/ipad/chat. Render oldest-first
+    // (top → bottom = old → new) so the composer pins to the most recent.
+    const ordered = [...thread].reverse();
+    return ordered.map(function(entry) {
+        const fromSlug = entry.from || 'unknown';
+        const isMe = mySlug && fromSlug === mySlug;
+        const initial = _taskChatInitialFor(fromSlug);
+        const color = _taskChatColorFor(fromSlug);
+        const ts = _taskChatFormatTs(entry.at);
+        const surface = entry.from_surface ? ' · ' + _taskChatEscapeHtml(entry.from_surface) : '';
+        const bubbleBg = isMe ? 'linear-gradient(135deg,#0891b2,#22d3ee)' : 'rgba(255,255,255,0.06)';
+        const bubbleColor = isMe ? '#0a0f1a' : 'var(--text-primary)';
+        const align = isMe ? 'flex-end' : 'flex-start';
+        const avatar = '<div style="flex:0 0 auto; width:28px; height:28px; border-radius:50%; background:' + color + '; color:#0a0f1a; font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center;">' + initial + '</div>';
+        const bubble = ''
+            + '<div style="max-width:72%; display:flex; flex-direction:column; align-items:' + align + ';">'
+            +   '<div style="padding:8px 12px; border-radius:14px; background:' + bubbleBg + '; color:' + bubbleColor + '; font-size:14px; line-height:1.4; word-wrap:break-word; white-space:pre-wrap;">' + _taskChatEscapeHtml(entry.body) + '</div>'
+            +   '<div style="font-size:10px; color:var(--text-tertiary); margin-top:3px; padding:0 4px;">' + _taskChatEscapeHtml(fromSlug) + surface + (ts ? ' · ' + _taskChatEscapeHtml(ts) : '') + '</div>'
+            + '</div>';
+        return '<div style="display:flex; gap:8px; margin:8px 0; flex-direction:' + (isMe ? 'row-reverse' : 'row') + '; align-items:flex-end;">' + avatar + bubble + '</div>';
+    }).join('');
+}
+
+function _taskChatSetBadge(staffTaskId, count) {
+    document.querySelectorAll('[data-task-chat-badge="' + staffTaskId + '"]').forEach(function(el) {
+        if (count > 0) {
+            el.textContent = String(count);
+            el.style.display = 'inline-block';
+        } else {
+            el.style.display = 'none';
+        }
+    });
+}
+
+async function _taskChatFetchAndRender() {
+    if (_taskChatState.staffTaskId == null) return;
+    const staffTaskId = _taskChatState.staffTaskId;
+    try {
+        const r = await fetch('/ops/api/ipad/chat/?staff_task_id=' + encodeURIComponent(staffTaskId), { credentials: 'include' });
+        const data = await r.json();
+        if (!data || !data.success) {
+            console.warn('[task-chat] fetch failed:', data && data.error);
+            return;
+        }
+        // Update state.
+        _taskChatState.rowUuid = data.row_uuid;
+        _taskChatState.currentSlug = data.current_user_slug;
+        _taskChatState.lastThread = data.thread || [];
+        // Update badge on the source card.
+        _taskChatSetBadge(staffTaskId, (data.thread || []).length);
+        // Render only if still open and on the same task.
+        const host = document.getElementById('task-chat-thread');
+        if (host && _taskChatState.staffTaskId === staffTaskId) {
+            const wasNearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 80;
+            host.innerHTML = _taskChatRenderBubbles(data.thread || [], data.current_user_slug);
+            if (wasNearBottom) host.scrollTop = host.scrollHeight;
+        }
+        // Disable composer if the row isn't synced yet or no slug.
+        const ta = document.getElementById('task-chat-input');
+        const sendBtn = document.getElementById('task-chat-send');
+        if (ta && sendBtn) {
+            if (!data.row_uuid) {
+                ta.placeholder = 'Inbox row not synced yet — try again in a minute…';
+                ta.disabled = true;
+                sendBtn.disabled = true;
+            } else if (!data.current_user_slug) {
+                ta.placeholder = 'Your account isn’t mapped to a staff slug — chat is read-only';
+                ta.disabled = true;
+                sendBtn.disabled = true;
+            } else {
+                ta.placeholder = 'Reply…';
+                ta.disabled = false;
+                sendBtn.disabled = false;
+            }
+        }
+    } catch (e) {
+        console.warn('[task-chat] fetch error:', e && e.message);
+    }
+}
+
+async function _taskChatSend() {
+    if (_taskChatState.sending) return;
+    const ta = document.getElementById('task-chat-input');
+    if (!ta) return;
+    const body = (ta.value || '').trim();
+    if (!body) return;
+    if (_taskChatState.staffTaskId == null) return;
+    _taskChatState.sending = true;
+    const sendBtn = document.getElementById('task-chat-send');
+    if (sendBtn) sendBtn.disabled = true;
+    ta.disabled = true;
+    try {
+        const r = await fetch('/ops/api/ipad/chat/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ staff_task_id: _taskChatState.staffTaskId, body }),
+        });
+        const data = await r.json();
+        if (data && data.success) {
+            ta.value = '';
+            // Pull the fresh thread immediately.
+            await _taskChatFetchAndRender();
+            if (typeof showToast === 'function') {
+                const dm = data.dm_status === 'sent' ? ' · DM sent' : '';
+                showToast('Message sent' + dm, 'success');
+            }
+        } else {
+            if (typeof showToast === 'function') showToast('Send failed: ' + (data && data.error || 'unknown'), 'error');
+            console.error('[task-chat] send failed:', data);
+        }
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Network error sending message', 'error');
+        console.error('[task-chat] send error:', e);
+    } finally {
+        _taskChatState.sending = false;
+        ta.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
+        ta.focus();
+    }
+}
+
+function closeTaskChatSheet() {
+    if (_taskChatState.pollTimer) {
+        clearInterval(_taskChatState.pollTimer);
+        _taskChatState.pollTimer = null;
+    }
+    _taskChatState.staffTaskId = null;
+    _taskChatState.rowUuid = null;
+    const sheet = document.getElementById('task-chat-sheet');
+    const backdrop = document.getElementById('task-chat-backdrop');
+    if (sheet) {
+        sheet.style.transform = 'translateY(100%)';
+        setTimeout(function() { sheet.remove(); }, 220);
+    }
+    if (backdrop) {
+        backdrop.style.opacity = '0';
+        setTimeout(function() { backdrop.remove(); }, 220);
+    }
+}
+
+function openTaskChatSheet(staffTaskId, taskTitle) {
+    // Idempotent — close any existing instance first.
+    closeTaskChatSheet();
+    _taskChatState.staffTaskId = staffTaskId;
+    _taskChatState.lastThread = [];
+
+    const isMobile = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+    const sheetWidth = isMobile ? '100%' : 'min(640px, 92vw)';
+    const sheetMaxHeight = isMobile ? '88vh' : '78vh';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'task-chat-backdrop';
+    backdrop.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:11000; opacity:0; transition:opacity 220ms ease;';
+    backdrop.onclick = closeTaskChatSheet;
+
+    const sheet = document.createElement('div');
+    sheet.id = 'task-chat-sheet';
+    sheet.style.cssText = ''
+        + 'position:fixed; left:50%; bottom:0; transform:translate(-50%, 100%);'
+        + 'width:' + sheetWidth + '; max-width:100vw;'
+        + 'height:' + sheetMaxHeight + ';'
+        + 'background:var(--bg-primary,#0a0f1a);'
+        + 'border:1px solid rgba(100,200,255,0.18); border-bottom:none;'
+        + 'border-radius:18px 18px 0 0;'
+        + 'box-shadow:0 -20px 60px rgba(0,0,0,0.55);'
+        + 'z-index:11001;'
+        + 'display:flex; flex-direction:column;'
+        + 'transition:transform 220ms cubic-bezier(.2,.7,.2,1);'
+        + 'will-change:transform;';
+    sheet.innerHTML = ''
+        // Grab handle
+        + '<div id="task-chat-handle" style="flex:0 0 auto; padding:8px 0 6px; display:flex; justify-content:center; cursor:grab; touch-action:none;">'
+        +   '<div style="width:48px; height:5px; border-radius:3px; background:rgba(255,255,255,0.18);"></div>'
+        + '</div>'
+        // Header
+        + '<div style="flex:0 0 auto; display:flex; align-items:center; gap:10px; padding:4px 16px 12px; border-bottom:1px solid rgba(255,255,255,0.07);">'
+        +   '<div style="flex:1; min-width:0;">'
+        +     '<div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; font-weight:600;">Task chat</div>'
+        +     '<div style="font-size:15px; font-weight:700; color:var(--text-primary); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + _taskChatEscapeHtml(taskTitle || ('Task #' + staffTaskId)) + '</div>'
+        +   '</div>'
+        +   '<button onclick="closeTaskChatSheet()" aria-label="Close" style="flex:0 0 auto; width:34px; height:34px; border-radius:8px; border:1px solid var(--border-light,rgba(255,255,255,0.12)); background:var(--surface,rgba(255,255,255,0.04)); color:var(--text-secondary); font-size:18px; cursor:pointer;">✕</button>'
+        + '</div>'
+        // Thread (scrollable)
+        + '<div id="task-chat-thread" style="flex:1 1 auto; overflow-y:auto; padding:14px 16px; -webkit-overflow-scrolling:touch;">'
+        +   '<div style="display:flex; align-items:center; justify-content:center; padding:24px; color:var(--text-tertiary); font-size:13px;">Loading chat…</div>'
+        + '</div>'
+        // Composer (sticky)
+        + '<div style="flex:0 0 auto; padding:10px 12px 14px; border-top:1px solid rgba(255,255,255,0.07); background:var(--bg-primary,#0a0f1a); padding-bottom:max(14px, env(safe-area-inset-bottom));">'
+        +   '<div style="display:flex; gap:8px; align-items:flex-end;">'
+        +     '<textarea id="task-chat-input" rows="1" placeholder="Loading…" style="flex:1; resize:none; min-height:38px; max-height:140px; padding:9px 12px; border-radius:10px; border:1px solid var(--border-light,rgba(255,255,255,0.12)); background:var(--surface,rgba(255,255,255,0.04)); color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;" disabled></textarea>'
+        +     '<button id="task-chat-send" onclick="_taskChatSend()" style="flex:0 0 auto; min-width:64px; padding:10px 14px; border:none; border-radius:10px; background:linear-gradient(135deg,#0891b2,#22d3ee); color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer;" disabled>Send</button>'
+        +   '</div>'
+        + '</div>';
+
+    document.body.appendChild(backdrop);
+    document.body.appendChild(sheet);
+
+    // Slide-up animation (next frame).
+    requestAnimationFrame(function() {
+        backdrop.style.opacity = '1';
+        sheet.style.transform = 'translate(-50%, 0)';
+    });
+
+    // Textarea auto-grow + Enter-to-send (Shift+Enter = newline).
+    const ta = document.getElementById('task-chat-input');
+    if (ta) {
+        ta.addEventListener('input', function() {
+            ta.style.height = 'auto';
+            ta.style.height = Math.min(140, ta.scrollHeight) + 'px';
+        });
+        ta.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                _taskChatSend();
+            }
+        });
+    }
+
+    // Swipe-down-to-dismiss on the grab handle.
+    const handle = document.getElementById('task-chat-handle');
+    if (handle) {
+        let startY = null;
+        let dragging = false;
+        const onStart = function(e) {
+            startY = (e.touches ? e.touches[0].clientY : e.clientY);
+            dragging = true;
+            sheet.style.transition = 'none';
+        };
+        const onMove = function(e) {
+            if (!dragging || startY == null) return;
+            const y = (e.touches ? e.touches[0].clientY : e.clientY);
+            const dy = Math.max(0, y - startY);
+            sheet.style.transform = 'translate(-50%, ' + dy + 'px)';
+        };
+        const onEnd = function(e) {
+            if (!dragging) return;
+            dragging = false;
+            sheet.style.transition = 'transform 220ms cubic-bezier(.2,.7,.2,1)';
+            const y = (e.changedTouches ? e.changedTouches[0].clientY : e.clientY);
+            const dy = startY == null ? 0 : Math.max(0, y - startY);
+            if (dy > 90) {
+                closeTaskChatSheet();
+            } else {
+                sheet.style.transform = 'translate(-50%, 0)';
+            }
+            startY = null;
+        };
+        handle.addEventListener('touchstart', onStart, { passive: true });
+        handle.addEventListener('touchmove', onMove, { passive: true });
+        handle.addEventListener('touchend', onEnd);
+        handle.addEventListener('mousedown', onStart);
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onEnd);
+    }
+
+    // Initial load + 30s poll.
+    _taskChatFetchAndRender();
+    _taskChatState.pollTimer = setInterval(function() {
+        if (document.hidden) return;
+        _taskChatFetchAndRender();
+    }, 30000);
+}
+
+// Expose for inline-onclick handlers.
+window.openTaskChatSheet = openTaskChatSheet;
+window.closeTaskChatSheet = closeTaskChatSheet;
+window._taskChatSend = _taskChatSend;
+// ─── END PER-TASK CHAT BOTTOM-SHEET ─────────────────────────
 
 function showCreateTaskModal() {
     // Active staff — synced from Healthie organizationMembers (active only)
