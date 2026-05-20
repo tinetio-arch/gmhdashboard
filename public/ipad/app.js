@@ -1,4 +1,4 @@
-// VERSION: 2026-03-19-09:35 - Patient tab spinner fix v3 + diagnostic logging
+// VERSION: 2026-05-20-14:15 - Approve special lab ORDERS from iPad (pending_approval → submit + print requisition)
 /* ============================================================
    GMH Ops v2.0 — iPad Companion App (LIVE DATA)
    Connects to /ops/api/* endpoints via same-origin cookies
@@ -3152,6 +3152,8 @@ function renderLabOrderCard(order) {
     const error = order.submission_error ? sanitize(order.submission_error) : '';
     const orderId = order.id;
     const canViewReq = status === 'submitted';
+    const needsApproval = status === 'pending_approval';
+    const isApproving = !!order._approving;
 
     const statusStyles = {
         submitted: { bg: '#dcfce7', fg: '#166534', label: '✓ Submitted' },
@@ -3183,7 +3185,11 @@ function renderLabOrderCard(order) {
             <div class="lab-actions" style="margin-top:10px;">
                 ${canViewReq ? `
                     <button class="btn-view-pdf" onclick="event.stopPropagation(); openLabRequisition(${orderId})">
-                        📄 View Requisition
+                        📄 Print Requisition
+                    </button>
+                ` : needsApproval ? `
+                    <button class="btn-approve" onclick="event.stopPropagation(); approveLabOrder(${orderId})" ${isApproving ? 'disabled' : ''} style="${isApproving ? 'opacity:0.6; cursor:wait;' : ''}">
+                        ${isApproving ? '⏳ Submitting…' : '✓ Approve &amp; Print Requisition'}
                     </button>
                 ` : `
                     <button class="btn-view-pdf" disabled style="opacity:0.5; cursor:not-allowed;">
@@ -3246,6 +3252,51 @@ async function openLabRequisition(orderId) {
                 <p>${(e && e.message) || 'Network error'}</p>
             `;
         }
+    }
+}
+
+// Approve a restricted/special lab ORDER (status 'pending_approval') from the iPad.
+// Submits to Access Labs via /api/labs/order/[id]/approve, which generates the
+// requisition PDF, then auto-opens it so staff can print immediately.
+async function approveLabOrder(orderId) {
+    const order = labOrders.find(o => o.id == orderId);
+    if (!order) return;
+    if (order._approving) return; // guard against double-tap
+    if (!confirm(`Approve and submit this lab order for ${order.patient_name || 'this patient'}? This generates the requisition for printing.`)) return;
+
+    order._approving = true;
+    renderCurrentTab();
+
+    try {
+        // Submission runs a server-side python script (Access Labs) — allow extra time.
+        const result = await apiFetch(`/ops/api/labs/order/${orderId}/approve/`, {
+            method: 'POST',
+            _timeout: 60000
+        });
+        order._approving = false;
+        if (result?.success) {
+            order.status = 'submitted';
+            order.submitted_at = new Date().toISOString();
+            if (result.external_id) order.external_order_id = result.external_id;
+            showToast('Lab order approved — opening requisition to print', 'success');
+            renderCurrentTab();
+            updateBadges();
+            // Auto-open the requisition PDF so staff can print right away.
+            if (result.requisition_pdf_available) {
+                setTimeout(() => openLabRequisition(orderId), 400);
+            }
+        } else {
+            order.status = 'failed';
+            order.submission_error = result?.error || 'Approval failed';
+            showToast(result?.error || 'Approval failed', 'error');
+            renderCurrentTab();
+        }
+    } catch (e) {
+        order._approving = false;
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('[Lab Order Approve] failed:', e);
+        showToast('Approval failed: ' + (e.message || 'network error'), 'error');
+        renderCurrentTab();
     }
 }
 

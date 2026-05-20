@@ -1,4 +1,4 @@
-// VERSION: 2026-03-19-09:35 - Patient tab spinner fix v3 + diagnostic logging
+// VERSION: 2026-05-20-14:15 - Approve special lab ORDERS from iPad (pending_approval → submit + print requisition)
 /* ============================================================
    GMH Ops v2.0 — iPad Companion App (LIVE DATA)
    Connects to /ops/api/* endpoints via same-origin cookies
@@ -2107,6 +2107,7 @@ function renderTaskCard(t, myEmail) {
                     ${overdue ? '<span style="color:#ef4444; font-weight:700;">⚠️ OVERDUE</span>' : ''}
                 </div>
                 ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px; overflow-wrap:anywhere;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
+                ${Array.isArray(t.attachments) && t.attachments.length ? `<div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;">${t.attachments.map(a => `<a href="${sanitize(a.download_url)}" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:5px 9px; background:rgba(0,212,255,0.08); border:1px solid rgba(0,212,255,0.28); border-radius:6px; color:var(--cyan,#22d3ee); text-decoration:none; max-width:100%; overflow:hidden;"><span>📎</span><span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sanitize(a.name)}</span></a>`).join('')}</div>` : ''}
             </div>
             <span style="flex:0 0 auto; font-size:10px; padding:3px 8px; border-radius:6px; background:${statusColor}1f; color:${statusColor}; font-weight:700; white-space:nowrap; letter-spacing:0.03em;">${statusPill}</span>
         </div>
@@ -3151,6 +3152,8 @@ function renderLabOrderCard(order) {
     const error = order.submission_error ? sanitize(order.submission_error) : '';
     const orderId = order.id;
     const canViewReq = status === 'submitted';
+    const needsApproval = status === 'pending_approval';
+    const isApproving = !!order._approving;
 
     const statusStyles = {
         submitted: { bg: '#dcfce7', fg: '#166534', label: '✓ Submitted' },
@@ -3182,7 +3185,11 @@ function renderLabOrderCard(order) {
             <div class="lab-actions" style="margin-top:10px;">
                 ${canViewReq ? `
                     <button class="btn-view-pdf" onclick="event.stopPropagation(); openLabRequisition(${orderId})">
-                        📄 View Requisition
+                        📄 Print Requisition
+                    </button>
+                ` : needsApproval ? `
+                    <button class="btn-approve" onclick="event.stopPropagation(); approveLabOrder(${orderId})" ${isApproving ? 'disabled' : ''} style="${isApproving ? 'opacity:0.6; cursor:wait;' : ''}">
+                        ${isApproving ? '⏳ Submitting…' : '✓ Approve &amp; Print Requisition'}
                     </button>
                 ` : `
                     <button class="btn-view-pdf" disabled style="opacity:0.5; cursor:not-allowed;">
@@ -3245,6 +3252,51 @@ async function openLabRequisition(orderId) {
                 <p>${(e && e.message) || 'Network error'}</p>
             `;
         }
+    }
+}
+
+// Approve a restricted/special lab ORDER (status 'pending_approval') from the iPad.
+// Submits to Access Labs via /api/labs/order/[id]/approve, which generates the
+// requisition PDF, then auto-opens it so staff can print immediately.
+async function approveLabOrder(orderId) {
+    const order = labOrders.find(o => o.id == orderId);
+    if (!order) return;
+    if (order._approving) return; // guard against double-tap
+    if (!confirm(`Approve and submit this lab order for ${order.patient_name || 'this patient'}? This generates the requisition for printing.`)) return;
+
+    order._approving = true;
+    renderCurrentTab();
+
+    try {
+        // Submission runs a server-side python script (Access Labs) — allow extra time.
+        const result = await apiFetch(`/ops/api/labs/order/${orderId}/approve/`, {
+            method: 'POST',
+            _timeout: 60000
+        });
+        order._approving = false;
+        if (result?.success) {
+            order.status = 'submitted';
+            order.submitted_at = new Date().toISOString();
+            if (result.external_id) order.external_order_id = result.external_id;
+            showToast('Lab order approved — opening requisition to print', 'success');
+            renderCurrentTab();
+            updateBadges();
+            // Auto-open the requisition PDF so staff can print right away.
+            if (result.requisition_pdf_available) {
+                setTimeout(() => openLabRequisition(orderId), 400);
+            }
+        } else {
+            order.status = 'failed';
+            order.submission_error = result?.error || 'Approval failed';
+            showToast(result?.error || 'Approval failed', 'error');
+            renderCurrentTab();
+        }
+    } catch (e) {
+        order._approving = false;
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('[Lab Order Approve] failed:', e);
+        showToast('Approval failed: ' + (e.message || 'network error'), 'error');
+        renderCurrentTab();
     }
 }
 
@@ -7610,6 +7662,22 @@ function renderChartingTab(container, d) {
     const alerts = d.alerts || [];
     const scribeHist = d.scribe_history || [];
 
+    // FIX(2026-05-20): list BOTH past and future appointments (Phil request). The API now
+    // pulls filter:"all" from Healthie; split into upcoming (soonest first) + past (most
+    // recent first) so the chart shows the full appointment history, not just upcoming.
+    const _apptMs = (a) => { const t = new Date(a && a.date ? a.date : 0).getTime(); return isNaN(t) ? 0 : t; };
+    const _nowMs = Date.now();
+    const upcomingAppts = hAppts.filter(a => _apptMs(a) >= _nowMs).sort((a, b) => _apptMs(a) - _apptMs(b));
+    const pastAppts = hAppts.filter(a => _apptMs(a) < _nowMs).sort((a, b) => _apptMs(b) - _apptMs(a));
+    const apptCard = (a, upcoming) => `
+                    <div class="chart-visit-card"${upcoming ? ' style="border-left:2px solid var(--cyan);"' : ''}>
+                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
+                        <div style="flex:1">
+                            <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
+                            <div class="chart-med-detail">${a.provider?.full_name || ''}${a.pm_status ? ' · ' + a.pm_status : ''}</div>
+                        </div>
+                    </div>`;
+
     function fmtDate(dt) {
         if (!dt) return '—';
         try { const dd = new Date(dt); return isNaN(dd.getTime()) ? '—' : dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE }); } catch { return '—'; }
@@ -7698,6 +7766,21 @@ function renderChartingTab(container, d) {
     });
 
     container.innerHTML = `
+        <!-- Appointments — always visible, expanded, top of chart. FIX(2026-05-20): was a collapsed
+             section buried below Clinical Notes that vanished entirely when a patient had no upcoming
+             appts, so it read as "missing." Now always shown with an empty state. -->
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>📅 Appointments (${hAppts.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${hAppts.length > 0 ? `
+                    ${upcomingAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700; padding:2px 2px 4px;">Upcoming (${upcomingAppts.length})</div>${upcomingAppts.map(a => apptCard(a, true)).join('')}` : ''}
+                    ${pastAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; padding:10px 2px 4px;">Past (${pastAppts.length})</div>${pastAppts.slice(0, 15).map(a => apptCard(a, false)).join('')}${pastAppts.length > 15 ? `<div style="font-size:10px; color:var(--text-tertiary); padding:6px 2px;">+ ${pastAppts.length - 15} older not shown</div>` : ''}` : ''}
+                ` : '<div class="chart-empty" style="padding:12px; text-align:center; color:var(--text-tertiary);">No appointments on file</div>'}
+            </div>
+        </div>
         <!-- All Clinical Notes (unified timeline) -->
         <div class="chart-section">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
@@ -7762,26 +7845,6 @@ function renderChartingTab(container, d) {
                 }).join('') : '<div class="chart-empty" style="padding:16px; text-align:center;">No clinical notes yet. Click Record Visit to create one.</div>'}
             </div>
         </div>
-<!-- Appointments -->
-        ${hAppts.length > 0 ? `
-        <div class="chart-section collapsed">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>\ud83d\udcc5 Appointments (${hAppts.length})</span>
-                <span class="chart-chevron">\u203a</span>
-            </div>
-            <div class="chart-section-body">
-                ${hAppts.slice(0, 10).map(a => `
-                    <div class="chart-visit-card">
-                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
-                        <div style="flex:1">
-                            <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
-                            <div class="chart-med-detail">${a.provider?.full_name || ''} \u00b7 ${a.pm_status || a.status || ''}</div>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-        ` : ''}
         <!-- Alerts -->
         ${alerts.length > 0 ? `
         <div class="chart-section collapsed">
