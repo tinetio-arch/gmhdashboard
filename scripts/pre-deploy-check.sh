@@ -115,7 +115,11 @@ echo ""
 echo "--- Check 7: Dangerous Patterns ---"
 # Exclude this script itself — its own regex literals would otherwise
 # match its own diff and trigger a false positive every time it's edited.
-DANGEROUS=$(git diff HEAD~1 --unified=0 -- ':(exclude)scripts/pre-deploy-check.sh' 2>/dev/null | grep -c "DROP TABLE\|DELETE FROM patients\|rm -rf\|status_key.*inactive.*WHERE\|TRUNCATE" || true)
+# Also exclude docs/markdown/text paths — deletions show with '-' in diffs and
+# would otherwise match regex literals quoted inside docs (e.g. status_key
+# UPDATE examples in SOT modules). We only want to flag dangerous patterns
+# introduced in real code changes, not text removed from documentation.
+DANGEROUS=$(git diff HEAD~1 --unified=0 -- ':(exclude)scripts/pre-deploy-check.sh' ':(exclude)*.md' ':(exclude)docs/**' ':(exclude)*.txt' ':(exclude)CHANGELOG*' 2>/dev/null | grep -c "DROP TABLE\|DELETE FROM patients\|rm -rf\|status_key.*inactive.*WHERE\|TRUNCATE" || true)
 if [ "$DANGEROUS" -eq 0 ]; then
     check_pass "No dangerous SQL/commands in recent changes"
 else
