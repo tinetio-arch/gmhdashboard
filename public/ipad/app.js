@@ -2074,6 +2074,9 @@ function renderStaffTasksUI(container, tasks, isAdmin) {
         ${assignedByMe.length > 0 ? '<div style="font-size:12px; font-weight:700; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.05em; margin:12px 0 6px;">Assigned by Me (' + assignedByMe.length + ')</div>' : ''}
         ${assignedByMe.map(t => renderTaskCard(t, myEmail)).join('')}
         `;
+
+    // Light per-task chat unread badges (one batched request, non-blocking).
+    refreshTaskChatBadges();
 }
 
 function renderTaskCard(t, myEmail) {
@@ -2083,15 +2086,19 @@ function renderTaskCard(t, myEmail) {
     const dueStr = t.due_date ? formatDate(t.due_date) : '';
     const overdue = t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed';
     const statusLabel = t.status === 'in_progress' ? '🔄 In Progress' : '⏳ Pending';
+    // Status pill (top-right) — reflects current task state. Priority is already
+    // conveyed by the left border + the priority chip in the meta row.
+    const statusColor = t.status === 'completed' ? '#22c55e' : t.status === 'in_progress' ? '#3b82f6' : '#9ca3af';
+    const statusPill = t.status === 'in_progress' ? 'IN PROGRESS' : t.status === 'completed' ? 'DONE' : 'PENDING';
     const isAssignedToMe = t.assigned_to === myEmail;
     const isCreatedByMe = t.created_by === myEmail;
 
     return `
-    <div style="background:${priBg}; border:1px solid ${overdue ? 'rgba(239,68,68,0.4)' : priColor + '30'}; border-left:5px solid ${priColor}; border-radius:12px; padding:14px; margin-bottom:10px;">
-        <div style="display:flex; justify-content:space-between; align-items:start;">
-            <div style="flex:1;">
-                <div style="font-size:15px; font-weight:700; color:var(--text-primary);">${priIcon} ${sanitize(t.title)}</div>
-                ${t.description ? `<div style="font-size:13px; color:var(--text-secondary); margin-top:4px; line-height:1.4;">${sanitize(t.description)}</div>` : ''}
+    <div data-task-id="${t.id}" style="background:${priBg}; border:1px solid ${overdue ? 'rgba(239,68,68,0.4)' : priColor + '30'}; border-left:5px solid ${priColor}; border-radius:12px; padding:14px; margin-bottom:10px; transition:opacity 280ms ease, transform 280ms ease, margin 280ms ease, padding 280ms ease;">
+        <div style="display:flex; justify-content:space-between; align-items:start; gap:10px;">
+            <div style="flex:1; min-width:0;">
+                <div style="font-size:15px; font-weight:700; color:var(--text-primary); overflow-wrap:anywhere; word-break:break-word;">${priIcon} ${sanitize(t.title)}</div>
+                ${t.description ? `<div style="font-size:13px; color:var(--text-secondary); margin-top:4px; line-height:1.4; overflow-wrap:anywhere; word-break:break-word;">${sanitize(t.description)}</div>` : ''}
                 <div style="font-size:11px; color:var(--text-tertiary); margin-top:6px; display:flex; flex-wrap:wrap; gap:8px;">
                     ${isAssignedToMe ? `<span>From: <strong>${sanitize(t.created_by_name || t.created_by)}</strong></span>` : `<span>To: <strong>${sanitize(t.assigned_to_name || t.assigned_to)}</strong></span>`}
                     <span style="color:${priColor};">${t.priority.toUpperCase()}</span>
@@ -2099,9 +2106,9 @@ function renderTaskCard(t, myEmail) {
                     ${dueStr ? `<span>Due: ${dueStr}</span>` : ''}
                     ${overdue ? '<span style="color:#ef4444; font-weight:700;">⚠️ OVERDUE</span>' : ''}
                 </div>
-                ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
+                ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px; overflow-wrap:anywhere;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
             </div>
-            <span style="font-size:10px; padding:3px 8px; border-radius:6px; background:${priColor}15; color:${priColor}; font-weight:600; white-space:nowrap;">${t.priority.toUpperCase()}</span>
+            <span style="flex:0 0 auto; font-size:10px; padding:3px 8px; border-radius:6px; background:${statusColor}1f; color:${statusColor}; font-weight:700; white-space:nowrap; letter-spacing:0.03em;">${statusPill}</span>
         </div>
         <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
             <button onclick="openTaskChatSheet(${t.id}, ${JSON.stringify(sanitize(t.title)).replace(/"/g, '&quot;')})" data-task-chat-btn="${t.id}" style="padding:6px 10px; background:rgba(0,212,255,0.10); border:1px solid rgba(0,212,255,0.30); border-radius:6px; color:var(--cyan,#22d3ee); font-size:11px; font-weight:600; cursor:pointer; position:relative;">💬 Chat<span data-task-chat-badge="${t.id}" style="display:none; margin-left:4px; min-width:16px; padding:0 5px; border-radius:8px; background:#22d3ee; color:#0a0f1a; font-size:10px; font-weight:700; line-height:14px; vertical-align:middle;"></span></button>
@@ -2195,13 +2202,48 @@ function _taskChatRenderBubbles(thread, mySlug) {
 function _taskChatSetBadge(staffTaskId, count) {
     document.querySelectorAll('[data-task-chat-badge="' + staffTaskId + '"]').forEach(function(el) {
         if (count > 0) {
-            el.textContent = String(count);
+            el.textContent = count > 99 ? '99+' : String(count);
             el.style.display = 'inline-block';
         } else {
             el.style.display = 'none';
         }
     });
 }
+
+// Per-task "seen" tracking (localStorage). Unread = current thread length minus
+// the length the current device last viewed. No server-side read receipts, so
+// this is a per-device approximation — good enough to light the 💬 badge.
+const _TASK_CHAT_SEEN_KEY = 'taskChatSeen.v1';
+function _taskChatGetSeenMap() {
+    try { return JSON.parse(localStorage.getItem(_TASK_CHAT_SEEN_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+}
+function _taskChatSetSeen(staffTaskId, len) {
+    try {
+        const m = _taskChatGetSeenMap();
+        m[String(staffTaskId)] = len;
+        localStorage.setItem(_TASK_CHAT_SEEN_KEY, JSON.stringify(m));
+    } catch (e) { /* storage full / disabled — non-fatal */ }
+}
+
+// Fetch chat thread lengths for every synced inbox row in one request and light
+// the per-task unread badges. Called after the task list renders.
+async function refreshTaskChatBadges() {
+    try {
+        const r = await fetch('/ops/api/ipad/chat/?counts=1', { credentials: 'include' });
+        const data = await r.json();
+        if (!data || !data.success || !data.counts) return;
+        const seen = _taskChatGetSeenMap();
+        Object.keys(data.counts).forEach(function(id) {
+            const total = data.counts[id] || 0;
+            const seenLen = seen[id] || 0;
+            _taskChatSetBadge(id, Math.max(0, total - seenLen));
+        });
+    } catch (e) {
+        console.warn('[task-chat] badge refresh failed:', e && e.message);
+    }
+}
+window.refreshTaskChatBadges = refreshTaskChatBadges;
 
 async function _taskChatFetchAndRender() {
     if (_taskChatState.staffTaskId == null) return;
@@ -2217,8 +2259,10 @@ async function _taskChatFetchAndRender() {
         _taskChatState.rowUuid = data.row_uuid;
         _taskChatState.currentSlug = data.current_user_slug;
         _taskChatState.lastThread = data.thread || [];
-        // Update badge on the source card.
-        _taskChatSetBadge(staffTaskId, (data.thread || []).length);
+        // Viewing the thread marks it read: persist seen-length and clear the
+        // unread badge on the source card.
+        _taskChatSetSeen(staffTaskId, (data.thread || []).length);
+        _taskChatSetBadge(staffTaskId, 0);
         // Render only if still open and on the same task.
         const host = document.getElementById('task-chat-thread');
         if (host && _taskChatState.staffTaskId === staffTaskId) {
@@ -2530,12 +2574,27 @@ async function createStaffTask() {
 
 async function updateStaffTask(taskId, status) {
     try {
-        await fetch('/ops/api/ipad/staff-tasks/', {
+        const resp = await fetch('/ops/api/ipad/staff-tasks/', {
             method: 'PATCH', credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ task_id: taskId, status })
         });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
         showToast(status === 'completed' ? 'Task completed!' : 'Task updated', 'success');
+        // Completed/cancelled tasks leave the list — fade the card out, then
+        // reload so the rest of the list reflows cleanly.
+        if (status === 'completed' || status === 'cancelled') {
+            const card = document.querySelector('[data-task-id="' + taskId + '"]');
+            if (card) {
+                card.style.opacity = '0';
+                card.style.transform = 'translateX(40px)';
+                card.style.marginBottom = '0';
+                card.style.paddingTop = '0';
+                card.style.paddingBottom = '0';
+                setTimeout(loadMyStaffTasks, 300);
+                return;
+            }
+        }
         loadMyStaffTasks();
     } catch (e) { showToast('Failed to update task', 'error'); }
 }
