@@ -3,7 +3,7 @@
 
 # SPAWN_CONTRACT
 
-_Generated 2026-05-19 23:55 MST. Every Cowork task and tmux session spawned by Dispatch
+_Generated 2026-05-20 12:25 MST. Every Cowork task and tmux session spawned by Dispatch
 inherits this contract. Source: `docs/spawn-contract/*.md` + live learned-patterns._
 
 # Phil's Standing Rules
@@ -89,6 +89,19 @@ pre-deploy gate**.
   context record other sessions read.
 - Keep the diff minimal and focused.
 
+### When you need Phil's input/decision
+DO NOT park silently with an unsent prompt, and DO NOT open an interactive AskUserQuestion
+menu (it eats the send_prompt keystrokes that deliver Phil's answer). Instead surface your
+question to Phil's Questions column:
+
+```
+python3 ~/dispatch-mcp/lib/ask_phil.py --session "$(tmux display-message -p '#S')" --question '...' --context '...'
+```
+
+This puts your question in Phil's dashboard Questions column where he can answer it
+(optionally with an AI-suggested answer). Then continue other work or just wait — his
+answer will arrive in your session as a normal prompt, exactly as if he typed it here.
+
 ## Before any `pm2 restart gmh-dashboard`
 1. `bash scripts/pre-deploy-check.sh` — if it returns **BLOCKED**, stop and fix. Read
    `docs/DEPLOY_CHECK.md` for the report. Override only with Phil's explicit approval.
@@ -139,7 +152,7 @@ false sense that work is deployed when it is not.
 
 ## Learned Patterns (Phil — HIGHEST PRIORITY, overrides defaults)
 
-> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-19 23:55 MST
+> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-20 12:25 MST
 
 # Learned patterns
 
