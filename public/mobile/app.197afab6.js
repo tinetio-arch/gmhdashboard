@@ -23601,7 +23601,10 @@ async function viewPharmacyPdf(encodedS3Key) {
 
     async function subscribeOnce(userId) {
         try {
-            const reg = await navigator.serviceWorker.register('/ipad/sw.js', { scope: '/ipad/' });
+            const isMobile = location.pathname.startsWith('/mobile');
+            const swPath = isMobile ? '/mobile/sw.js' : '/ipad/sw.js';
+            const swScope = isMobile ? '/mobile/' : '/ipad/';
+            const reg = await navigator.serviceWorker.register(swPath, { scope: swScope });
             await navigator.serviceWorker.ready;
             // Re-check permission: if the user has previously denied, don't pester.
             if (Notification.permission === 'denied') {
