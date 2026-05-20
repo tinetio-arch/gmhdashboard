@@ -70,6 +70,16 @@ export async function POST(request: NextRequest) {
     let contactPhone = payload.phone || payload.contactPhone || payload.contact_phone || null;
     const contactEmail = payload.email || payload.contactEmail || payload.contact_email || null;
 
+    // Sending staff member (outbound only). Populated once the GHL Workflow sends user
+    // merge fields ({{user.name}} / {{user.email}}) on outbound-message triggers. We
+    // accept a range of key spellings a workflow might use.
+    const sentByName =
+      payload.userName || payload.user_name || payload.user?.name ||
+      payload.sentByName || payload.sent_by_name || payload.staffName || null;
+    const sentByEmail =
+      payload.userEmail || payload.user_email || payload.user?.email ||
+      payload.sentByEmail || payload.sent_by_email || payload.staffEmail || null;
+
     if (!contactId) {
       console.warn('[GHL-WH] Missing contactId in payload:', JSON.stringify(payload).substring(0, 200));
       return NextResponse.json({ error: 'contactId is required' }, { status: 400 });
@@ -140,13 +150,16 @@ export async function POST(request: NextRequest) {
         message_id, conversation_id, contact_id, location_id, account_key,
         direction, message_type, body,
         contact_name, contact_phone, contact_email,
-        ghl_timestamp, raw_payload
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        ghl_timestamp, raw_payload,
+        sent_by_name, sent_by_email
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         messageId || null, conversationId, contactId, locationId, accountKey,
         normalizedDirection, messageType, body,
         contactName, contactPhone, contactEmail,
         ghlTimestamp, JSON.stringify(payload),
+        normalizedDirection === 'outbound' ? sentByName : null,
+        normalizedDirection === 'outbound' ? sentByEmail : null,
       ]
     );
 

@@ -60,9 +60,12 @@ export async function GET(request: NextRequest) {
         received_at: string;
         ghl_timestamp: string | null;
         raw_payload: unknown;
+        sent_by_name: string | null;
+        sent_by_email: string | null;
       }>(
         `SELECT id, message_id, conversation_id, contact_id, direction, message_type, body,
-                contact_name, contact_phone, received_at, ghl_timestamp, raw_payload
+                contact_name, contact_phone, received_at, ghl_timestamp, raw_payload,
+                sent_by_name, sent_by_email
          FROM ghl_messages
          WHERE account_key = $1 AND contact_id = $2
          ORDER BY received_at DESC
@@ -92,6 +95,8 @@ export async function GET(request: NextRequest) {
             // produces correct Arizona time.
             timestamp: pgTimestampToUTCISO(m.ghl_timestamp || m.received_at),
             attachments,
+            sentByName: m.sent_by_name,
+            sentByEmail: m.sent_by_email,
           };
         }),
       });
@@ -198,7 +203,7 @@ export async function GET(request: NextRequest) {
  * Body: { account: string, contactId: string, message: string }
  */
 export async function POST(request: NextRequest) {
-  await requireApiUser(request, 'write');
+  const user = await requireApiUser(request, 'write');
 
   try {
     const body = await request.json();
@@ -235,19 +240,22 @@ export async function POST(request: NextRequest) {
     const result = await client.sendSms(contactId, (message || '').trim(), attachments);
     const locationId = client.getLocationId() || '';
 
-    // Store the sent message in DB (include attachments in raw_payload)
+    // Store the sent message in DB (include attachments in raw_payload).
+    // Record WHICH staff member sent it (dashboard-originated replies know the user).
     const rawPayload = attachments?.length ? JSON.stringify({ attachments }) : null;
     await query(
       `INSERT INTO ghl_messages (
         message_id, contact_id, location_id, account_key,
         direction, message_type, body,
-        contact_name, contact_phone, ghl_timestamp, raw_payload
-      ) VALUES ($1, $2, $3, $4, 'outbound', $5, $6, $7, $8, NOW(), $9)`,
+        contact_name, contact_phone, ghl_timestamp, raw_payload,
+        sent_by_name, sent_by_email
+      ) VALUES ($1, $2, $3, $4, 'outbound', $5, $6, $7, $8, NOW(), $9, $10, $11)`,
       [
         result.id || null, contactId, locationId, account,
         attachments?.length ? 'SMS' : 'SMS',
         (message || '').trim(), contactName || null, contactPhone || null,
         rawPayload,
+        user?.display_name || null, user?.email || null,
       ]
     );
 
