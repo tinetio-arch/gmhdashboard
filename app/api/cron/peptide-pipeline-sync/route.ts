@@ -310,7 +310,12 @@ async function runSync(request: NextRequest) {
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, NOW())
                 ON CONFLICT (payment_id) DO UPDATE SET
                   channel = EXCLUDED.channel,
-                  stage = EXCLUDED.stage,
+                  -- FIX(2026-05-20): once a real delivery is recorded (by the
+                  -- ShipStation webhook / USPS poll), keep the row at 'wc_delivered'
+                  -- so the next sync doesn't revert it to 'wc_shipped'. Paired with
+                  -- the COALESCE on delivered_at below.
+                  stage = CASE WHEN peptide_order_tracking.delivered_at IS NOT NULL
+                               THEN 'wc_delivered' ELSE EXCLUDED.stage END,
                   wc_order_id = EXCLUDED.wc_order_id,
                   wc_order_number = EXCLUDED.wc_order_number,
                   wc_status = EXCLUDED.wc_status,
@@ -318,7 +323,13 @@ async function runSync(request: NextRequest) {
                   tracking_carrier = EXCLUDED.tracking_carrier,
                   tracking_url = EXCLUDED.tracking_url,
                   shipped_at = EXCLUDED.shipped_at,
-                  delivered_at = EXCLUDED.delivered_at,
+                  -- FIX(2026-05-20): preserve a real delivered_at once set by the
+                  -- ShipStation webhook or the USPS poll fallback. The cron itself
+                  -- never derives delivered_at (EXCLUDED.delivered_at is always NULL
+                  -- here — see ~line 247), so without COALESCE every 15-min sync
+                  -- would erase the carrier delivery signal. Order is preserved as
+                  -- 'wc_delivered' downstream because stage is set by those writers.
+                  delivered_at = COALESCE(peptide_order_tracking.delivered_at, EXCLUDED.delivered_at),
                   dispense_ids = EXCLUDED.dispense_ids,
                   education_complete = EXCLUDED.education_complete,
                   received_date = EXCLUDED.received_date,
