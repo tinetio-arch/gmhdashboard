@@ -7698,6 +7698,26 @@ function renderChartingTab(container, d) {
     });
 
     container.innerHTML = `
+        <!-- Appointments — always visible, expanded, top of chart. FIX(2026-05-20): was a collapsed
+             section buried below Clinical Notes that vanished entirely when a patient had no upcoming
+             appts, so it read as "missing." Now always shown with an empty state. -->
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>📅 Appointments (${hAppts.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${hAppts.length > 0 ? hAppts.slice(0, 10).map(a => `
+                    <div class="chart-visit-card">
+                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
+                        <div style="flex:1">
+                            <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
+                            <div class="chart-med-detail">${a.provider?.full_name || ''} · ${a.pm_status || a.status || ''}</div>
+                        </div>
+                    </div>
+                `).join('') : '<div class="chart-empty" style="padding:12px; text-align:center; color:var(--text-tertiary);">No upcoming appointments</div>'}
+            </div>
+        </div>
         <!-- All Clinical Notes (unified timeline) -->
         <div class="chart-section">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
@@ -7762,26 +7782,6 @@ function renderChartingTab(container, d) {
                 }).join('') : '<div class="chart-empty" style="padding:16px; text-align:center;">No clinical notes yet. Click Record Visit to create one.</div>'}
             </div>
         </div>
-<!-- Appointments -->
-        ${hAppts.length > 0 ? `
-        <div class="chart-section collapsed">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>\ud83d\udcc5 Appointments (${hAppts.length})</span>
-                <span class="chart-chevron">\u203a</span>
-            </div>
-            <div class="chart-section-body">
-                ${hAppts.slice(0, 10).map(a => `
-                    <div class="chart-visit-card">
-                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
-                        <div style="flex:1">
-                            <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
-                            <div class="chart-med-detail">${a.provider?.full_name || ''} \u00b7 ${a.pm_status || a.status || ''}</div>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-        ` : ''}
         <!-- Alerts -->
         ${alerts.length > 0 ? `
         <div class="chart-section collapsed">
