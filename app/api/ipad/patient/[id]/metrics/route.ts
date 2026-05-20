@@ -2,6 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { healthieGraphQL } from '@/lib/healthieApi';
+import { sendMessage } from '@/lib/telegram-client';
+
+// FIX(2026-05-20): Healthie sync failures here were swallowed into the pm2 error
+// log with no alert, so iPad metrics silently went stale (the audit found 198
+// "[metrics] Healthie sync failed" lines today, zero notifications). We now
+// surface the failure in the API response AND fire a throttled Telegram alert.
+// Throttle is process-local (one PM2 worker) — enough to turn 198 silent failures
+// into a visible signal without flooding Phil.
+let lastHealthieMetricAlertAt = 0;
+const HEALTHIE_METRIC_ALERT_THROTTLE_MS = 30 * 60 * 1000; // 30 min
 
 /**
  * GET /api/ipad/patient/[id]/metrics — returns recent metric entries
@@ -122,6 +132,7 @@ export async function POST(
 
         // Try Healthie sync (don't fail if it doesn't work)
         let healthieEntryId: string | null = null;
+        let healthieSyncError: string | null = null;
         try {
             const patientRows = await query(
                 `SELECT healthie_client_id FROM healthie_clients WHERE patient_id = $1 AND is_active = true LIMIT 1`,
@@ -186,7 +197,29 @@ export async function POST(
                 }
             }
         } catch (healthieError) {
-            console.warn('[metrics] Healthie sync failed:', healthieError);
+            // FIX(2026-05-20): was console.warn + swallow — surfaced to nobody.
+            // Escalate to error, record the message for the response, and fire a
+            // throttled alert so a Healthie outage is visible, not silent.
+            healthieSyncError = healthieError instanceof Error ? healthieError.message : String(healthieError);
+            console.error('[metrics] Healthie sync failed (metric SAVED locally, NOT synced to Healthie):', healthieSyncError);
+
+            const now = Date.now();
+            if (now - lastHealthieMetricAlertAt > HEALTHIE_METRIC_ALERT_THROTTLE_MS) {
+                lastHealthieMetricAlertAt = now;
+                const chatId = process.env.TELEGRAM_CHAT_ID;
+                if (chatId) {
+                    sendMessage(
+                        chatId,
+                        `⚠️ *iPad metric → Healthie sync failing*\n` +
+                            `Patient \`${patientId}\` metric (${metric_type}) saved locally but NOT synced to Healthie.\n` +
+                            `Error: ${healthieSyncError}\n` +
+                            `_(throttled: max 1 alert / 30 min — check pm2 logs for the full count)_`,
+                        { parseMode: 'Markdown' }
+                    ).catch((e) => console.error('[metrics] failed to send Healthie-sync alert:', e));
+                } else {
+                    console.error('[metrics] TELEGRAM_CHAT_ID not configured — cannot alert on Healthie sync failure');
+                }
+            }
         }
 
         return NextResponse.json({
@@ -194,6 +227,9 @@ export async function POST(
             metric_id: metricId,
             healthie_synced: !!healthieEntryId,
             healthie_entry_id: healthieEntryId,
+            // FIX(2026-05-20): surface the sync failure so the iPad can show a
+            // "saved locally, not synced" indicator instead of looking fully fresh.
+            healthie_error: healthieSyncError,
         });
     } catch (error: any) {
         if (error?.name === 'UnauthorizedError' || error?.status === 401) {

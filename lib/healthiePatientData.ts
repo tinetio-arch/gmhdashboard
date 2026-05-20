@@ -47,10 +47,22 @@ const EMPTY_PROFILE: HealthiePatientProfile = {
 
 // ─── Helpers ────────────────────────────────────────────────────
 
-/** Race a promise against a timeout (ms). Returns `fallback` on timeout. */
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+/**
+ * Race a promise against a timeout (ms). Returns `fallback` on timeout.
+ *
+ * FIX(2026-05-20): the underlying lib/healthie.ts methods used to swallow errors
+ * into [] internally; they now throw (so callers can tell an outage from an empty
+ * result). This profile aggregates ~8 independent Healthie sections, so we
+ * deliberately degrade a single failed/slow section to its fallback rather than
+ * failing the whole patient panel — but we now LOG the failure (label) so a
+ * Healthie outage is visible instead of looking like a patient with no data.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label = 'section'): Promise<T> {
     return Promise.race([
-        promise,
+        promise.catch((err) => {
+            console.error(`[healthiePatientData] ${label} failed, degrading to fallback:`, err?.message || err);
+            return fallback;
+        }),
         new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
     ]);
 }
@@ -105,21 +117,23 @@ export async function fetchHealthiePatientProfile(
             documents,
             forms,
         ] = await Promise.all([
-            withTimeout(client.getMedications(healthieClientId), TIMEOUT, [] as HealthieMedication[]),
-            withTimeout(client.getAllergies(healthieClientId), TIMEOUT, [] as HealthieAllergy[]),
-            withTimeout(client.getPrescriptions(healthieClientId), TIMEOUT, [] as HealthiePrescription[]),
-            withTimeout(client.getClientSubscriptions(healthieClientId), TIMEOUT, [] as HealthieSubscription[]),
-            withTimeout(client.getPaymentMethods(healthieClientId), TIMEOUT, [] as HealthiePaymentMethod[]),
-            withTimeout(client.getBillingItems(healthieClientId, 25), TIMEOUT, [] as HealthieBillingItem[]),
+            withTimeout(client.getMedications(healthieClientId), TIMEOUT, [] as HealthieMedication[], 'medications'),
+            withTimeout(client.getAllergies(healthieClientId), TIMEOUT, [] as HealthieAllergy[], 'allergies'),
+            withTimeout(client.getPrescriptions(healthieClientId), TIMEOUT, [] as HealthiePrescription[], 'prescriptions'),
+            withTimeout(client.getClientSubscriptions(healthieClientId), TIMEOUT, [] as HealthieSubscription[], 'subscriptions'),
+            withTimeout(client.getPaymentMethods(healthieClientId), TIMEOUT, [] as HealthiePaymentMethod[], 'paymentMethods'),
+            withTimeout(client.getBillingItems(healthieClientId, 25), TIMEOUT, [] as HealthieBillingItem[], 'billingItems'),
             withTimeout(
                 client.getDocuments(healthieClientId).then((d: any[]) => d.length),
                 TIMEOUT,
-                0
+                0,
+                'documents'
             ),
             withTimeout(
                 client.getFormAnswerGroups(healthieClientId).then((f: any[]) => f.length),
                 TIMEOUT,
-                0
+                0,
+                'forms'
             ),
         ]);
 

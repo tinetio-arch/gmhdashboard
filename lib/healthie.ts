@@ -375,8 +375,13 @@ export class HealthieClient {
       const result = await this.graphql<{ medications: HealthieMedication[] }>(query, variables);
       return result.medications ?? [];
     } catch (error) {
-      this.debugLog('Error fetching medications:', error);
-      return [];
+      // FIX(2026-05-20): previously returned [] here, so a Healthie outage was
+      // indistinguishable from "no medications" (debugLog is a no-op unless
+      // HEALTHIE_DEBUG_ENABLED). Log loudly + propagate so callers can tell
+      // error from empty. See lib/healthiePatientData.ts withTimeout for the
+      // intentional per-section degradation that depends on this throwing.
+      console.error('[Healthie] getMedications failed:', error);
+      throw error;
     }
   }
 
@@ -400,8 +405,10 @@ export class HealthieClient {
       const result = await this.graphql<{ allergySensitivities: HealthieAllergy[] }>(query, { patientId: userId });
       return result.allergySensitivities ?? [];
     } catch (error) {
-      this.debugLog('Error fetching allergies:', error);
-      return [];
+      // FIX(2026-05-20): propagate instead of silently returning [] — an empty
+      // allergy list on an outage is a patient-safety hazard if shown as fact.
+      console.error('[Healthie] getAllergies failed:', error);
+      throw error;
     }
   }
 
@@ -451,8 +458,10 @@ export class HealthieClient {
       const result = await this.graphql<{ prescriptions: HealthiePrescription[] }>(query, variables);
       return result.prescriptions ?? [];
     } catch (error) {
-      this.debugLog('Error fetching prescriptions:', error);
-      return [];
+      // FIX(2026-05-20): propagate instead of silently returning [] — showing an
+      // empty prescription list on a Healthie outage could hide active meds.
+      console.error('[Healthie] getPrescriptions failed:', error);
+      throw error;
     }
   }
 
@@ -592,8 +601,12 @@ export class HealthieClient {
       const results = await this.fetchUsersPage({ offset: 0, pageSize: 20, keywords: name.trim() });
       return results.map(user => this.transformUserRecord(user));
     } catch (error) {
-      this.debugLog('Error searching clients by name:', error);
-      return [];
+      // FIX(2026-05-20): CRITICAL for duplicate prevention. Previously returned []
+      // on error, which the patient-sync dedup path reads as "no existing match"
+      // and then creates a duplicate chart. Propagate so an outage aborts the
+      // dedup decision instead of masquerading as "no duplicate found".
+      console.error('[Healthie] searchClientsByName failed:', error);
+      throw error;
     }
   }
 
