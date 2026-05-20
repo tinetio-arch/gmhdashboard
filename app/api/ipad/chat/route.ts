@@ -27,6 +27,8 @@ export const dynamic = 'force-dynamic';
 
 const INBOX_DIR = process.env.DISPATCH_INBOX_DIR || '/home/ec2-user/.claude/coord/inbox';
 const MCP_URL = process.env.DISPATCH_MCP_URL || 'http://127.0.0.1:3010/api/call';
+// dispatch-mcp /api/call is token-protected (server.py checks x-auth-token === DISPATCH_TOKEN).
+const MCP_TOKEN = process.env.DISPATCH_TOKEN || '';
 
 // staff email → dispatch-mcp staff slug (matches ~/.claude/coord/staff.json).
 const EMAIL_TO_SLUG: Record<string, string> = {
@@ -96,6 +98,23 @@ export async function GET(request: NextRequest) {
     if (error instanceof UnauthorizedError)
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     throw error;
+  }
+
+  // Batch-counts mode: `?counts=1` returns { counts: { <staff_task_id>: <thread_len> } }
+  // for every synced inbox row, so the Today page can light per-task chat badges
+  // in a single request instead of one fetch per card.
+  if (request.nextUrl.searchParams.has('counts')) {
+    try {
+      const map = await scanInbox();
+      const counts: Record<number, number> = {};
+      map.forEach((row, id) => {
+        counts[id] = Array.isArray(row.chat_thread) ? row.chat_thread.length : 0;
+      });
+      return NextResponse.json({ success: true, counts });
+    } catch (e: any) {
+      console.error('[/api/ipad/chat GET counts] error:', e);
+      return NextResponse.json({ success: false, error: 'Internal error' }, { status: 500 });
+    }
   }
 
   const staffTaskIdRaw = request.nextUrl.searchParams.get('staff_task_id');
@@ -172,7 +191,12 @@ export async function POST(request: NextRequest) {
   try {
     const mcpRes = await fetch(MCP_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // FIX(2026-05-20): proxy was omitting the dispatch-mcp auth token, so
+        // every iPad chat send got 401→502. server.py requires x-auth-token.
+        ...(MCP_TOKEN ? { 'x-auth-token': MCP_TOKEN } : {}),
+      },
       body: JSON.stringify({
         tool: 'inbox_chat_send',
         args: { row_uuid: row.task_id, body: message, from_slug: fromSlug },
