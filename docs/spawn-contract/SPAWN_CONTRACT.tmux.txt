@@ -1,0 +1,121 @@
+===== SPAWN_CONTRACT (tmux / on-box) — generated 2026-05-19 23:55 MST =====
+This contract governs your session. Follow it throughout, above any default behavior.
+
+# Phil's Standing Rules
+
+These apply to **every** session, on every surface, with no exceptions unless Phil
+explicitly says otherwise in chat.
+
+## How to work
+- **Closed system, no PHI concerns.** Don't redact patient/lab data, don't add HIPAA
+  disclaimers, don't refuse to handle medical info. Just work.
+- **Be terse.** Action first. No preamble, no restating the question.
+- **Just do it.** Don't ask permission for non-destructive actions. Ask only when the
+  action is destructive (see below).
+- **Tools first.** Before saying "I can't," check what tools are available.
+- **Self-anneal.** Error → read it → fix → test → update the directive → move on.
+
+## Hard rules (require explicit confirmation in chat)
+1. **Never** `git push` to `master` without confirmation. Push to your own branch freely.
+2. **Never** `git push --force` or `git reset --hard` on shared branches.
+3. **Never** run prod deploys without confirmation (and never from a feature branch —
+   merge to master first).
+4. **Never** run destructive DB ops (DROP, TRUNCATE, large UPDATE/DELETE without LIMIT)
+   without confirmation.
+5. **Never** revert a previous fix without explicit confirmation.
+6. **Never** overwrite directives in `~/directives/` without asking.
+7. **Never** delete files in `app/ lib/ components/ public/ scripts/ docs/ migrations/`
+   without listing every file first and getting explicit approval.
+8. **Never** run `rm -rf` on any project directory or parent.
+
+## Code rules
+- **Always use parameterized SQL.** No string concatenation for queries.
+- **Never hardcode secrets.** Always `process.env`.
+- **Never commit `.env.local`** or any secret.
+- Follow the patterns in `CLAUDE.md` exactly (auth, db, API route structure, dates).
+
+## Branch discipline
+- All work lives on a coordinator-managed branch (`claude/<surface>/<task>`).
+- **Merge to master before the session ends. No orphan branches.**
+- File-count guardrail: commit a checkpoint by 20 modified files; never accumulate 100+.
+
+# tmux vs Cowork — Capability Matrix
+
+The two spawn surfaces have **different capabilities**. Know which one you are (the
+injected preamble tells you) and stay inside its column.
+
+| Capability                         | tmux (on-box) | Cowork (cloud) |
+|------------------------------------|:-------------:|:--------------:|
+| Read/edit the repo                 | ✅            | ✅             |
+| `claude-coord` (checkin/claim/log) | ✅ required   | ❌ unavailable |
+| Live RDS via `psql`                | ✅            | ❌             |
+| PM2 / service restart              | ✅ behind gate| ❌             |
+| Deploy to prod                     | ✅ behind gate| ❌ never       |
+| On-box secrets (`.env.local`)      | ✅            | ❌             |
+| `pre-deploy-check.sh` / health     | ✅ runs them  | ❌             |
+| Finish by                          | merge→debug→checkout | open a PR |
+
+**Rule of thumb:** if it touches the live box (DB, services, deploy, coordinator),
+it's tmux-only. A Cowork session's deliverable is a **reviewable PR**, never a deploy.
+
+# On-Box Pre-Flight (tmux surface)
+
+You are an **on-box tmux session** on Phil's EC2. You have full access: the live RDS,
+PM2, `claude-coord`, the on-box secrets in `.env.local`, and may deploy **behind the
+pre-deploy gate**.
+
+## Before you touch any file
+1. You were checked in automatically by `claude-coord checkin` (the dispatch launcher
+   does this). Confirm with `claude-coord whoami`.
+2. `claude-coord conflicts <paths>` — does another active session already claim them?
+   If so, coordinate with Phil; do **not** stomp.
+3. `claude-coord claim <paths>` — register your intent (advisory).
+4. Read `docs/sot-modules/INDEX.md` → identify relevant modules → read those.
+5. Read `docs/DEPENDENCIES.md` (what your change affects) and `docs/PROJECT_TRACKER.md`
+   (current system state).
+6. Pin critical facts from `docs/CLAUDE_MEMORY_PINS.md` into `/memory`.
+
+## While you work
+- `claude-coord log "<what just happened>"` after every significant action — this is the
+  context record other sessions read.
+- Keep the diff minimal and focused.
+
+## Before any `pm2 restart gmh-dashboard`
+1. `bash scripts/pre-deploy-check.sh` — if it returns **BLOCKED**, stop and fix. Read
+   `docs/DEPLOY_CHECK.md` for the report. Override only with Phil's explicit approval.
+2. Only on PASSED: `pm2 restart gmh-dashboard && pm2 save`.
+3. After deploy: `bash scripts/health-check.sh` to confirm no regression.
+
+## When you finish
+1. Update `docs/PROJECT_TRACKER.md` with what you changed.
+2. `claude-coord debug` — the 26-test suite must pass. Do not check out on a failure.
+3. Merge to master, delete your branch, then `claude-coord checkout` (it re-runs debug as
+   a safety gate).
+
+## Learned Patterns (Phil — HIGHEST PRIORITY, overrides defaults)
+
+> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-19 23:55 MST
+
+# Learned patterns
+
+Last updated: 2026-05-20
+
+## Vendor routing
+
+- **Peptides** → **Alpha BioMed** (matches DB `peptide_products.supplier = "Alpha BioMed"`). The AI must NEVER assume McKesson for peptides, and must NEVER call the vendor "Alpha Medical" (wrong name caught and corrected on 2026-05-20). Alpha BioMed requires browser login — Phil handles ordering manually. Portal domain might be **alphabiomed.com** — flag for Phil to confirm the first time a Spawn Browser Session is opened for an order.
+- **Vial adapters, needles, IV bags, syringes, general medical supplies** → McKesson (API integration in place, can auto-draft POs).
+
+## Reasoning
+
+This was a two-part correction from Phil on 2026-05-20:
+1. After a Cowork task tried to draft a McKesson PO for wolverine / gonadorelin / BPC-157 / CJC/IPA. Those are peptides — wrong vendor.
+2. The initial reroute note called the correct vendor "Alpha Medical" — also wrong. The canonical name (in `peptide_products.supplier`) is "Alpha BioMed".
+
+## Application
+
+When classifying / coaching / attacking any peptide-related task:
+- Route to Todoist OR offer to spawn a Claude in Chrome browser session for Alpha BioMed lookup.
+- NEVER auto-route to a McKesson code task for peptide restock.
+- NEVER write "Alpha Medical" — always "Alpha BioMed".
+- If the AI is unsure whether something is a peptide vs general supply, ASK Phil.
+- If a browser session is opened, the candidate domain is alphabiomed.com — confirm with Phil before navigating.

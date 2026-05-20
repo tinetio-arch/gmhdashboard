@@ -11,6 +11,25 @@ You are **AntiGravity**, the AI development agent for Granite Mountain Health (G
 
 ---
 
+## SPAWN_CONTRACT — read this if you were spawned by Dispatch
+
+Every Cowork task and tmux session spawned by Dispatch inherits the **SPAWN_CONTRACT**:
+Phil's standing rules + a surface-specific pre-flight + the latest learned patterns + the
+tmux-vs-Cowork capability matrix. The canonical, generated copy is **`docs/SPAWN_CONTRACT.md`**.
+
+- **On-box tmux sessions** get the contract injected as their first prompt automatically
+  (via `dispatch-mcp` and `scripts/claude-task.sh`). You have full on-box capability
+  (psql, PM2, `claude-coord`) and may deploy **behind the pre-deploy gate**.
+- **Cowork cloud sessions** run in an isolated sandbox and can't be injected on-box —
+  **read `docs/SPAWN_CONTRACT.md` now and follow its "Cloud Pre-Flight (Cowork surface)"
+  section.** You have **no** on-box access: no `claude-coord`, no `pm2`, no live `psql`,
+  no deploy. Your deliverable is a **reviewable PR against `master`**, never a deploy.
+
+The contract is built from `docs/spawn-contract/*.md` by `scripts/build-spawn-contract.sh`.
+Edit the source parts and re-run the generator; never hand-edit the generated files.
+
+---
+
 ## System Architecture
 
 ### Stack

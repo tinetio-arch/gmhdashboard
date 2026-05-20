@@ -71,10 +71,29 @@ if [ -n "$USER_INPUT" ]; then
   TASK_PROMPT="${TASK_PROMPT} ADDITIONAL INSTRUCTIONS FROM PHIL: ${USER_INPUT}"
 fi
 
-# Add standard preamble
-PREAMBLE="SAFETY RULES: NEVER delete any files in app/ lib/ components/ public/ scripts/ docs/ migrations/ without listing them first and getting explicit approval. NEVER assume a directory is safe to clean. NEVER run rm -rf on any project directory. Before starting: (1) Read docs/sot-modules/INDEX.md (2) Read docs/DEPENDENCIES.md (3) Read docs/CLAUDE_MEMORY_PINS.md and pin critical facts to /memory. After completing work: update docs/PROJECT_TRACKER.md and run bash ~/gmhdashboard/scripts/health-check.sh."
+# Add the SPAWN_CONTRACT preamble (tmux/on-box surface). Single source of truth:
+# scripts/build-spawn-contract.sh generates it from docs/spawn-contract/*.md and
+# mirrors it to ~/.claude/coord/. This session is an on-box, remotely-controlled tmux
+# pane, so it gets the tmux (full-capability) contract.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONTRACT_FILE=""
+for candidate in \
+  "$HOME/.claude/coord/spawn-contract.tmux.txt" \
+  "$SCRIPT_DIR/../docs/spawn-contract/SPAWN_CONTRACT.tmux.txt"; do
+  if [ -f "$candidate" ]; then CONTRACT_FILE="$candidate"; break; fi
+done
 
-FULL_PROMPT="${PREAMBLE} ${TASK_PROMPT}"
+if [ -n "$CONTRACT_FILE" ]; then
+  PREAMBLE="$(cat "$CONTRACT_FILE")"
+else
+  # Fallback if the contract hasn't been generated — keep the minimal safety floor.
+  PREAMBLE="SAFETY RULES: NEVER delete files in app/ lib/ components/ public/ scripts/ docs/ migrations/ without listing them first and getting explicit approval. NEVER run rm -rf on any project directory. Before starting: read docs/sot-modules/INDEX.md, docs/DEPENDENCIES.md, docs/CLAUDE_MEMORY_PINS.md. After: update docs/PROJECT_TRACKER.md and run bash ~/gmhdashboard/scripts/health-check.sh. (SPAWN_CONTRACT missing — run scripts/build-spawn-contract.sh.)"
+fi
+
+FULL_PROMPT="${PREAMBLE}
+
+===== YOUR TASK =====
+${TASK_PROMPT}"
 
 # Create tmux session and launch claude
 tmux new-session -d -s "$SESSION"
@@ -83,8 +102,18 @@ tmux send-keys -t "$SESSION" "claude --dangerously-skip-permissions" Enter
 # Wait for Claude to initialize
 sleep 5
 
-# Send the task prompt
-tmux send-keys -t "$SESSION" "$FULL_PROMPT" Enter
+# Send the task prompt. Use load-buffer + paste-buffer (atomic) instead of send-keys:
+# the contract is multi-line, and send-keys would treat embedded newlines as Enter
+# keystrokes and submit the prompt prematurely. paste-buffer delivers it as one paste,
+# then a discrete Enter submits it cleanly.
+PROMPT_BUF="/tmp/claude-task-${TASK_ID}-prompt.txt"
+printf '%s' "$FULL_PROMPT" > "$PROMPT_BUF"
+tmux load-buffer -b "spawn-contract-${SESSION}" "$PROMPT_BUF"
+tmux paste-buffer -b "spawn-contract-${SESSION}" -t "$SESSION"
+sleep 1
+tmux send-keys -t "$SESSION" Enter
+tmux delete-buffer -b "spawn-contract-${SESSION}" 2>/dev/null || true
+rm -f "$PROMPT_BUF"
 
 # Wait for Claude to start processing, then enable remote control
 sleep 3
