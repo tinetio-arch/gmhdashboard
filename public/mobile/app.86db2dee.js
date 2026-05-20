@@ -6,26 +6,37 @@
    NEW: Patient timeout fix, CEO tab restrictions, print labels, split-vial dispensing
    ============================================================ */
 
-// Log version immediately so we can verify correct file is loaded
-console.log('%c📱 iPad App v2.4.0 Loaded', 'background: #22d3ee; color: #000; padding: 4px 8px; border-radius: 4px; font-weight: bold');
-console.log('✅ v2.4.0: Timeout fixes, CEO restrictions, print labels, split-vial dispense');
-console.log('🕒 Build time: March 18, 2026');
+// ─── PRODUCTION LOG SUPPRESSION ─────────────────────────────
+// Set to true only for local debugging — false for App Store builds.
+// When false, console.log and console.warn are silenced to prevent
+// PHI leaking into device logs (HIPAA compliance).
+const DEBUG_MODE = false;
+if (!DEBUG_MODE) {
+    const _noop = () => {};
+    console.log = _noop;
+    console.warn = _noop;
+    // console.error is preserved so real crashes still surface
+}
 
 // Show version in page (will be visible in bottom corner)
 window.addEventListener('DOMContentLoaded', () => {
+    // Position version stamp pinned DIRECTLY above the tab bar.
+    // Uses the same safe-area cap (10px) as the tab-bar padding so they stay glued together.
+    // Safari's URL bar can inflate env(safe-area-inset-bottom) to 80-100px — cap it.
     document.body.insertAdjacentHTML('beforeend', `
         <div style="
             position: fixed;
-            bottom: 10px;
-            right: 10px;
-            background: rgba(0, 0, 0, 0.7);
+            bottom: calc(var(--tab-height, 60px) + max(4px, min(env(safe-area-inset-bottom, 0px), 10px)) + 2px);
+            right: 8px;
+            background: rgba(0, 0, 0, 0.55);
             color: #22d3ee;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 9px;
             font-family: monospace;
-            z-index: 9999;
+            z-index: 10;
             pointer-events: none;
+            opacity: 0.6;
         ">v2.4.0</div>
     `);
 });
@@ -34,10 +45,14 @@ window.addEventListener('DOMContentLoaded', () => {
 let dashboardData = null;       // from /ops/api/ipad/dashboard
 let healthieAppointments = [];  // from /ops/api/cron/morning-prep
 let inventorySummary = null;    // from /ops/api/inventory/intelligence/summary
+let statusActivity = null;      // from /ops/api/dashboard/status-activity (Phase 1.4)
 let inventoryAlerts = [];       // from /ops/api/inventory/intelligence/alerts
 let vialList = [];              // individual vials from /ops/api/inventory/vials
 let labsQueue = [];             // from /ops/api/labs/review-queue
+let labOrders = [];             // from /ops/api/ipad/lab-orders (ordered but not yet resulted)
 let patient360Cache = {};       // patient_id -> 360 data
+let patient360CacheTs = {};     // patient_id -> epoch ms (TTL tracker — FIX 2026-04-22)
+const PATIENT_360_TTL_MS = 5 * 60 * 1000;  // 5 min — long enough to save requests, short enough to avoid stale vitals/meds
 let allPatients = [];            // from /ops/api/patients
 let scribeSessions = [];         // from /ops/api/scribe/sessions
 let activeScribeSession = null;  // currently selected session
@@ -55,6 +70,7 @@ let autoPausedBySystem = false;  // true when auto-paused by visibilitychange (p
 let scribeView = 'list';        // 'list' | 'new' | 'recording' | 'transcript' | 'note' | 'review'
 let supplyItems = null;          // from /ops/api/inventory/supplies
 let scheduleAllData = [];        // from /ops/api/ipad/schedule (all appointments)
+let scheduleAllBlocks = [];      // blockers (breaks / blocked time) from same endpoint
 
 // ─── CONSTANTS ──────────────────────────────────────────────
 const CLINIC_TIMEZONE = 'America/Phoenix';
@@ -62,28 +78,53 @@ const WASTE_PER_SYRINGE = 0.1;  // mL waste per testosterone syringe
 
 // ─── BACKGROUND TRANSCRIPTION POLLING SERVICE ───────────────
 // Survives tab navigation, page visibility changes, and user actions
-let activePolls = new Map(); // sessionId → { sessionId, attempts, maxAttempts, interval }
+// FIX(2026-04-22): Added exponential backoff, document.hidden skip, and circuit breaker
+let activePolls = new Map(); // sessionId → { sessionId, attempts, maxAttempts, interval, consecutiveErrors, currentDelay }
+
+const POLL_INITIAL_DELAY = 5000;   // 5s — first 6 polls
+const POLL_MID_DELAY = 15000;      // 15s — after 30s
+const POLL_MAX_DELAY = 30000;      // 30s — after 2 min
+const POLL_MAX_ATTEMPTS = 40;      // ~5 min total with backoff
+const POLL_MAX_CONSECUTIVE_ERRORS = 3; // stop after 3 network failures in a row
+
+function _getPollDelay(attempts) {
+    if (attempts < 6) return POLL_INITIAL_DELAY;
+    if (attempts < 14) return POLL_MID_DELAY;
+    return POLL_MAX_DELAY;
+}
 
 function startBackgroundTranscriptionPoll(sessionId) {
-    if (activePolls.has(sessionId)) {
-        console.log(`[Background Poll] Already polling session ${sessionId}`);
-        return;
-    }
+    if (activePolls.has(sessionId)) return;
 
     const pollInfo = {
         sessionId,
         attempts: 0,
-        maxAttempts: 60,
+        maxAttempts: POLL_MAX_ATTEMPTS,
         interval: null,
+        consecutiveErrors: 0,
+        currentDelay: POLL_INITIAL_DELAY,
     };
 
     activePolls.set(sessionId, pollInfo);
 
-    pollInfo.interval = setInterval(async () => {
+    function scheduleNext() {
+        const delay = _getPollDelay(pollInfo.attempts);
+        pollInfo.currentDelay = delay;
+        pollInfo.interval = setTimeout(pollOnce, delay);
+    }
+
+    async function pollOnce() {
         pollInfo.attempts++;
+
+        // Skip poll when app is backgrounded — saves battery on mobile
+        if (document.hidden) {
+            scheduleNext();
+            return;
+        }
 
         try {
             const data = await apiFetch(`/ops/api/scribe/transcribe?session_id=${sessionId}`);
+            pollInfo.consecutiveErrors = 0;
 
             if (data?.success && data.data?.status === 'transcribed') {
                 stopBackgroundPoll(sessionId);
@@ -93,40 +134,137 @@ function startBackgroundTranscriptionPoll(sessionId) {
                 showToast(`✅ Transcription complete for ${patientName}`, 'success');
                 updateBadges();
                 if (currentTab === 'scribe') renderCurrentTab();
+                return;
             } else if (data?.data?.status === 'error') {
                 stopBackgroundPoll(sessionId);
                 showToast(`❌ Transcription failed`, 'error');
                 scribeLoaded = false;
                 await loadScribeSessions();
                 if (currentTab === 'scribe') renderCurrentTab();
+                return;
             } else if (pollInfo.attempts >= pollInfo.maxAttempts) {
                 stopBackgroundPoll(sessionId);
                 showToast(`⏱ Transcription timed out - check back later`, 'warning');
+                return;
             }
+            scheduleNext();
         } catch (err) {
             if (err.message === 'AUTH_EXPIRED') {
                 stopBackgroundPoll(sessionId);
                 throw err;
             }
-            console.warn(`[Background Poll] Error for ${sessionId}:`, err);
+            pollInfo.consecutiveErrors++;
+            if (pollInfo.consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) {
+                stopBackgroundPoll(sessionId);
+                showToast('Transcription polling stopped — network issues. Tap retry later.', 'warning');
+                return;
+            }
+            scheduleNext();
         }
-    }, 5000);
+    }
 
-    console.log(`[Background Poll] Started for session ${sessionId}`);
+    scheduleNext();
 }
 
 function stopBackgroundPoll(sessionId) {
     const pollInfo = activePolls.get(sessionId);
     if (pollInfo?.interval) {
-        clearInterval(pollInfo.interval);
+        clearTimeout(pollInfo.interval);
         activePolls.delete(sessionId);
-        console.log(`[Background Poll] Stopped for session ${sessionId}`);
     }
 }
 
 function stopAllBackgroundPolls() {
     for (const [sessionId] of activePolls) {
         stopBackgroundPoll(sessionId);
+    }
+    stopGlobalMessagesPoll();
+}
+
+// ─── GLOBAL HEALTHIE MESSAGES NOTIFIER ──────────────────────
+// FIX(2026-05-11): Poll Healthie inbox in the background regardless of active tab
+// so new messages trigger the bottom-nav badge + an audible beep + a toast.
+// Previously the messages poller was scoped to the Messages tab — users on other
+// tabs received no signal that new Healthie messages had arrived.
+let _globalMessagesPollTimer = null;
+let _lastUnreadMessagesCount = -1; // -1 sentinel: first poll primes baseline (no beep)
+let _messagesBeepCtx = null;
+let _messagesVisibilityHandlerInstalled = false;
+
+function _playMessageBeep() {
+    try {
+        _messagesBeepCtx = _messagesBeepCtx || new (window.AudioContext || window.webkitAudioContext)();
+        if (_messagesBeepCtx.state === 'suspended') _messagesBeepCtx.resume().catch(() => {});
+        const t = _messagesBeepCtx.currentTime;
+        const osc = _messagesBeepCtx.createOscillator();
+        const gain = _messagesBeepCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, t);
+        osc.frequency.setValueAtTime(1175, t + 0.12); // two-tone chirp
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.55);
+        osc.connect(gain).connect(_messagesBeepCtx.destination);
+        osc.start(t);
+        osc.stop(t + 0.6);
+    } catch (e) { /* audio unavailable — silent fallback */ }
+}
+
+async function _pollGlobalMessagesOnce() {
+    if (!currentUser) return;
+    if (document.hidden) return;
+    try {
+        const isPhilAdmin = currentUser?.permissions?.can_view_ceo_dashboard === true;
+        let url = '/ops/api/ipad/messages/';
+        if (!isPhilAdmin && currentUser?.healthie_provider_id) {
+            url += '?provider_id=' + currentUser.healthie_provider_id;
+        }
+        const data = await apiFetch(url);
+        const convos = data.conversations || [];
+        const unread = convos.filter(c => c.unread).length;
+
+        // Keep in-memory cache fresh so opening the Messages tab shows current data
+        if (typeof messagesConversations !== 'undefined') {
+            messagesConversations = convos;
+        }
+
+        setMessagesBadge(unread);
+
+        if (_lastUnreadMessagesCount >= 0 && unread > _lastUnreadMessagesCount) {
+            const delta = unread - _lastUnreadMessagesCount;
+            const newest = convos.filter(c => c.unread)
+                .slice()
+                .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0];
+            const who = newest?.name || 'a patient';
+            const msg = delta === 1
+                ? `💬 New Healthie message from ${who}`
+                : `💬 ${delta} new Healthie messages`;
+            _playMessageBeep();
+            try { showToast(msg, 'info', 6000); } catch (e) {}
+        }
+        _lastUnreadMessagesCount = unread;
+    } catch (e) {
+        console.warn('[GlobalMessagesPoll] failed:', e?.message || e);
+    }
+}
+
+function startGlobalMessagesPoll() {
+    stopGlobalMessagesPoll();
+    _lastUnreadMessagesCount = -1; // re-prime baseline on each (re)start
+    _pollGlobalMessagesOnce(); // immediate first fetch — primes baseline & badge
+    _globalMessagesPollTimer = setInterval(_pollGlobalMessagesOnce, 30000);
+    if (!_messagesVisibilityHandlerInstalled) {
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && _globalMessagesPollTimer) _pollGlobalMessagesOnce();
+        });
+        _messagesVisibilityHandlerInstalled = true;
+    }
+}
+
+function stopGlobalMessagesPoll() {
+    if (_globalMessagesPollTimer) {
+        clearInterval(_globalMessagesPollTimer);
+        _globalMessagesPollTimer = null;
     }
 }
 
@@ -135,23 +273,19 @@ async function checkForPendingTranscriptions() {
         const sessions = scribeSessions.filter(s => s.status === 'transcribing');
         if (sessions.length === 0) return;
 
-        console.log(`[Scribe Recovery] Found ${sessions.length} sessions in 'transcribing' status`);
-
         for (const session of sessions) {
             const check = await apiFetch(`/ops/api/scribe/transcribe?session_id=${session.session_id}`);
 
             if (check?.success && check.data?.status === 'transcribed') {
-                console.log(`[Scribe Recovery] ✅ Recovered completed transcription for ${session.patient_name}`);
                 scribeLoaded = false;
                 await loadScribeSessions();
                 showToast(`✅ Recovered completed transcription for ${session.patient_name}`, 'success');
             } else if (check?.data?.status === 'transcribing') {
-                console.log(`[Scribe Recovery] Session ${session.session_id} still processing - starting background poll`);
                 startBackgroundTranscriptionPoll(session.session_id);
             }
         }
     } catch (err) {
-        console.warn('[Scribe Recovery] Check failed:', err);
+        console.error('[Scribe Recovery] Check failed:', err);
     }
 }
 
@@ -305,6 +439,7 @@ let isConnected = false;
 let isLoading = false;
 let scribeLoaded = false;       // prevent infinite reload
 let labsLoaded = false;         // prevent infinite reload
+let labOrdersLoaded = false;    // prevent infinite reload for lab orders
 let patientsLoaded = false;     // prevent infinite reload
 let currentUser = null;          // from /api/ipad/me — role, permissions
 
@@ -371,6 +506,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupHashRouting();
     loadAllData();
 
+    // FIX(2026-05-11): Background-poll Healthie inbox so new messages trigger
+    // the bottom-nav badge + a beep + a toast even when not on the Messages tab.
+    startGlobalMessagesPoll();
+
     // ✅ AUTO-REFRESH: Schedule tab refreshes every 5 minutes
     // FIX(2026-03-31): Use loadScheduleForRange instead of renderCurrentTab to avoid
     // destroying the entire DOM (which causes jarring resets and loses provider filter UI state)
@@ -384,6 +523,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
     }, 300000); // 5 minutes
+
+    // FIX(2026-05-19): Background unread polling is handled by startGlobalMessagesPoll()
+    // above (beep + toast + visibility-aware, lifecycle-managed). The earlier duplicate
+    // pollMessagesBadge() poller was removed to stop double-polling Healthie + double beeps.
 });
 
 // ─── AUTH & RBAC ────────────────────────────────────────────
@@ -430,6 +573,9 @@ async function handleLogout() {
     } catch (e) {
         console.warn('Logout API failed:', e);
     }
+
+    // Stop all background polling before clearing state
+    if (typeof stopAllBackgroundPolls === 'function') stopAllBackgroundPolls();
 
     // Clear local state
     currentUser = null;
@@ -591,12 +737,11 @@ function applyRolePermissions() {
         }
     }
 
-    // CEO tab — Phil Schafer ONLY
-    const isPhil = currentUser.email === 'admin@nowoptimal.com';
+    // CEO tab — admin role only (server-side permission check)
+    const canViewCEO = currentUser.permissions?.can_view_ceo_dashboard === true;
     const isProviderOrAdmin = currentUser.is_provider === true
-        || currentUser.email === 'admin@granitemountainhealth.com'
-        || currentUser.email === 'admin@nowoptimal.com';
-    if (isPhil && nav && !nav.querySelector('[data-tab="ceo"]')) {
+        || currentUser.permissions?.can_view_ceo_dashboard === true;
+    if (canViewCEO && nav && !nav.querySelector('[data-tab="ceo"]')) {
         const ceoTab = document.createElement('button');
         ceoTab.className = 'tab-item';
         ceoTab.dataset.tab = 'ceo';
@@ -666,18 +811,23 @@ function setupHashRouting() {
 }
 
 function handleHash() {
+    // SECURITY: when kiosk mode is active, never let URL changes re-render the staff app.
+    // Patient pressing browser Back triggers hashchange which would otherwise switchTab()
+    // beneath the overlay, exposing staff content via Reader mode / accessibility.
+    if (window.kioskActive) return;
     const hash = window.location.hash.replace('#', '') || 'today';
     switchTab(hash);
 }
 
 function switchTab(tab) {
+    if (window.kioskActive) return; // belt-and-suspenders — no tab switches during kiosk
     removeFloatingEditBar();
     const validTabs = ['today', 'labs', 'scribe', 'inventory', 'patients', 'ceo', 'schedule', 'messages'];
     if (!validTabs.includes(tab)) tab = 'today';
     // RBAC: prevent access to tabs user doesn't have permission for
     if (currentUser?.permissions) {
-        // CEO tab — Phil Schafer ONLY
-        if (tab === 'ceo' && currentUser.email !== 'admin@nowoptimal.com') tab = 'today';
+        // CEO tab — admin role only (server-side permission)
+        if (tab === 'ceo' && !currentUser.permissions?.can_view_ceo_dashboard) tab = 'today';
         if (tab === 'scribe' && !currentUser.permissions.can_use_scribe) tab = 'today';
         // Schedule and Messages tabs available to all authenticated users
     }
@@ -739,8 +889,8 @@ function renderCurrentTab() {
         case 'scribe': renderScribeView(view); break;
         case 'inventory': renderInventoryView(view); break;
         case 'patients': renderPatientsView(view); break;
-        case 'ceo': renderCEODashboard(view); break;
-        case 'schedule': renderScheduleView(view); break;
+        case 'ceo': renderCEODashboard(view); loadPushStats(); loadPeptidePipeline(); break;
+        case 'schedule': renderScheduleView(view); startVideoWaitingPoll(); break;
         case 'messages': renderMessagesView(view); break;
     }
 
@@ -921,17 +1071,25 @@ async function loadAllData() {
 
     let anySuccess = false;
 
-    // Parallel fetch: dashboard + inventory + schedule + patients + labs
+    // Parallel fetch: dashboard + inventory + schedule + patients + labs + signals + status activity
     const results = await Promise.allSettled([
         loadDashboard(),
         loadInventoryAlerts(),
         loadInventorySummary(),
         loadHealthieAppointments(),
         loadAllPatients(),
-        loadLabsQueue()
+        loadLabsQueue(),
+        loadPatientSignals(),
+        loadStatusActivity()
     ]);
 
     anySuccess = results.some(r => r.status === 'fulfilled' && r.value === true);
+
+    // FIX(2026-04-10): Show targeted warnings for individual data load failures
+    const scheduleResult = results[3]; // loadHealthieAppointments is index 3
+    if (scheduleResult.status === 'fulfilled' && scheduleResult.value === false) {
+        showToast('Schedule failed to load — tap to retry', 'warning');
+    }
 
     if (anySuccess) {
         setConnectionStatus(true);
@@ -946,6 +1104,12 @@ async function loadAllData() {
     isLoading = false;
     renderCurrentTab();
     updateBadges();
+
+    // After all data loads, explicitly render critical lab alerts (ceo data now available)
+    if (currentTab === 'today' && dashboardData?.ceo?.critical_lab_alerts?.length > 0) {
+        const cc = document.getElementById('criticalLabAlerts');
+        if (cc) renderCriticalLabAlerts(cc, dashboardData.ceo.critical_lab_alerts);
+    }
 
     // Restore chart panel if it was open before the refresh
     if (chartPanelOpen && chartPanelData && currentTab === 'scribe') {
@@ -963,7 +1127,7 @@ async function loadAllData() {
 async function loadDashboard() {
     try {
         const data = await apiFetch('/ops/api/ipad/dashboard/');
-        if (data.success && data.data) {
+        if (data && data.success && data.data) {
             // Normalize snake_case API fields to camelCase used by frontend
             const d = data.data;
             dashboardData = {
@@ -980,14 +1144,43 @@ async function loadDashboard() {
                 totalActivePatients: d.total_active_patients || d.totalActivePatients || 0,
                 patientsByType: d.patients_by_type || d.patientsByType || {},
                 ceo: d.ceo || {},
+                stripe_today: d.stripe_today || 0,
+                stripe_month: d.stripe_month || 0,
+                healthie_today: d.healthie_today || 0,
+                healthie_month: d.healthie_month || 0,
+                revenue_source: d.revenue_source || 'unknown',
             };
             return true;
         }
-        dashboardData = data.data || data;
-        return true;
+        // FIX(2026-04-22): previously fell through to `dashboardData = data.data || data`
+        // which served the unnormalized blob — every downstream .stagedDoses / .ceo read
+        // silently became undefined, rendering $0 across the CEO dashboard.
+        // Now: surface the failure so the UI can render an error state instead of lying.
+        console.error('[Dashboard] API responded without success/data shape:', data);
+        if (typeof showToast === 'function') showToast('Dashboard data unavailable — showing last known values', 'warning');
+        return false;
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         console.warn('Dashboard load failed:', e);
+        return false;
+    }
+}
+
+// Signals cache — keyed by patient_id (UUID).
+// Populated by loadPatientSignals(); renderPatientListItem reads from this.
+let patientSignalsCache = {};
+
+async function loadPatientSignals() {
+    try {
+        const data = await apiFetch('/ops/api/patients/signals/bulk/');
+        if (data && data.signals && typeof data.signals === 'object') {
+            patientSignalsCache = data.signals;
+            return true;
+        }
+        return false;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Patient signals load failed:', e);
         return false;
     }
 }
@@ -997,6 +1190,8 @@ async function loadHealthieAppointments() {
     try {
         // Use lightweight schedule endpoint (cookie-authenticated, no cron secret)
         const data = await apiFetch('/ops/api/ipad/schedule/');
+        // FIX(2026-04-22): explicit Array.isArray guards — previously `{success:true, patients:null}`
+        // slipped through every branch and left healthieAppointments untouched (stale data).
         if (data?.success && Array.isArray(data.patients)) {
             healthieAppointments = data.patients.map(p => ({
                 id: p.appointment_id || '',
@@ -1007,12 +1202,21 @@ async function loadHealthieAppointments() {
                 appointment_status: p.appointment_status || 'scheduled',
                 time: p.time || '',
                 provider: p.provider || '',
+                provider_id: p.provider_id || '',
+                date: p.date || '',
+                length: p.length || null,
+                location: p.location || '',
+                contact_type: p.contact_type || '',
                 has_staged_dose: p.has_staged_dose || false,
                 has_payment_issue: p.has_payment_issue || false,
                 has_pending_lab: p.has_pending_lab || false,
             }));
         } else if (Array.isArray(data)) {
             healthieAppointments = data;
+        } else {
+            console.warn('[iPad] Unexpected schedule response shape:', data);
+            healthieAppointments = [];
+            return false;
         }
         return true;
     } catch (e) {
@@ -1041,16 +1245,36 @@ async function loadInventorySummary() {
     }
 }
 
+async function loadStatusActivity() {
+    try {
+        const data = await apiFetch('/ops/api/dashboard/status-activity/?days=7');
+        if (data?.success && data?.data) {
+            statusActivity = data.data;
+            return true;
+        }
+        return false;
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Status activity load failed:', e);
+        return false;
+    }
+}
+
 async function loadVialList() {
     try {
         // Fetch individual active vials for the DEA inventory view
         const data = await apiFetch('/ops/api/inventory/vials/');
+        // FIX(2026-04-22): guard against null/non-array payloads that previously
+        // left vialList stale (showed old DEA counts after a soft API failure).
         if (data?.success && Array.isArray(data.data)) {
             vialList = data.data;
         } else if (Array.isArray(data)) {
             vialList = data;
-        } else if (data?.vials) {
+        } else if (Array.isArray(data?.vials)) {
             vialList = data.vials;
+        } else {
+            console.warn('[iPad] Unexpected vials response shape:', data);
+            vialList = [];
         }
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
@@ -1084,14 +1308,21 @@ async function loadLabsQueue() {
         // First load pending, then also load all for history
         const data = await apiFetch('/ops/api/labs/review-queue/?status=all&limit=100');
         // API returns { success, items: [...], counts: {...} }
+        // FIX(2026-04-22): strict Array.isArray on every branch so null items doesn't
+        // slip through and leave labsQueue untouched between reloads.
         if (data?.success && Array.isArray(data.items)) {
             labsQueue = data.items;
         } else if (Array.isArray(data)) {
             labsQueue = data;
-        } else if (data?.data && Array.isArray(data.data)) {
+        } else if (Array.isArray(data?.data)) {
             labsQueue = data.data;
-        } else if (data?.labs) {
+        } else if (Array.isArray(data?.labs)) {
             labsQueue = data.labs;
+        } else {
+            console.warn('[iPad] Unexpected labs response shape:', data);
+            labsQueue = [];
+            labsLoaded = true;
+            return false;
         }
         labsLoaded = true;
         return true;
@@ -1099,6 +1330,29 @@ async function loadLabsQueue() {
         labsLoaded = true; // mark as attempted even on failure
         if (e.message === 'AUTH_EXPIRED') throw e;
         console.warn('Labs queue load failed:', e);
+        return false;
+    }
+}
+
+async function loadLabOrders() {
+    try {
+        const data = await apiFetch('/ops/api/ipad/lab-orders/?status=all&limit=200');
+        if (data?.success && Array.isArray(data.orders)) {
+            labOrders = data.orders;
+        } else if (Array.isArray(data?.orders)) {
+            labOrders = data.orders;
+        } else if (Array.isArray(data)) {
+            labOrders = data;
+        } else {
+            console.warn('[iPad] Unexpected lab orders response shape:', data);
+            labOrders = [];
+        }
+        labOrdersLoaded = true;
+        return true;
+    } catch (e) {
+        labOrdersLoaded = true;
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        console.warn('Lab orders load failed:', e);
         return false;
     }
 }
@@ -1131,12 +1385,17 @@ async function loadAllPatients() {
 }
 
 async function loadPatient360(patientId, forceRefresh = false) {
-    if (!forceRefresh && patient360Cache[patientId]) return patient360Cache[patientId];
+    // FIX(2026-04-22): Added TTL so long-running iPad sessions don't serve stale
+    // vitals/meds. Cached entry older than PATIENT_360_TTL_MS is treated as absent.
+    const cachedTs = patient360CacheTs[patientId] || 0;
+    const fresh = (Date.now() - cachedTs) < PATIENT_360_TTL_MS;
+    if (!forceRefresh && fresh && patient360Cache[patientId]) return patient360Cache[patientId];
     try {
         const data = await apiFetch(`/ops/api/ipad/patient/${patientId}/`, { _timeout: 10000 });
         // API returns { success, data: { demographics, recent_dispenses, recent_peptides, payment_issues, staged_doses, summary } }
         const result = (data?.success && data?.data) ? data.data : data;
         patient360Cache[patientId] = result;
+        patient360CacheTs[patientId] = Date.now();
         return result;
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
@@ -1152,6 +1411,7 @@ async function loadPatient360(patientId, forceRefresh = false) {
 // Invalidate patient cache after mutations so next view shows fresh data
 function invalidatePatientCache(patientId) {
     delete patient360Cache[patientId];
+    delete patient360CacheTs[patientId];
 }
 
 // ─── BADGE UPDATES ──────────────────────────────────────────
@@ -1193,6 +1453,22 @@ function updateBadges() {
     }
 }
 
+// Badge setter shared by the background poller (_pollGlobalMessagesOnce),
+// the in-tab refresh (loadMessagesConversations), and markConversationRead.
+var _lastMessagesUnreadCount = 0;
+function setMessagesBadge(unreadCount) {
+    var badge = document.getElementById('messagesBadge');
+    if (!badge) return;
+    if (unreadCount > 0) {
+        badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+        badge.classList.remove('hidden');
+        badge.classList.add('alert'); // red + pulse animation (defined in style.css)
+    } else {
+        badge.classList.add('hidden');
+        badge.classList.remove('alert');
+    }
+}
+
 // ─── HELPERS ────────────────────────────────────────────────
 function getGreeting() {
     const h = new Date().getHours();
@@ -1211,6 +1487,12 @@ function formatDate() {
 function getInitials(name) {
     if (!name) return '?';
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+}
+
+// FIX(2026-04-22): HTML-escape initials for safe use inside onerror="" attributes.
+// Prevents XSS if a patient name contains quotes or script fragments.
+function safeInitials(name) {
+    return sanitize(getInitials(name));
 }
 
 function getStagedDoses() {
@@ -1412,20 +1694,32 @@ function renderTodayView(container) {
             </div>
         </div>
 
-        <!-- Critical Lab Alerts — TOP PRIORITY, right after stats -->
-        <div id="criticalLabAlerts"></div>
-
-        <!-- My Tasks — right after alerts -->
+        <!-- My Tasks — TOP PRIORITY, right after stats (above lab alerts) -->
         <div id="myStaffTasks">
             <div class="section-header">
                 <h2>📋 My Tasks</h2>
                 <div style="display:flex; gap:6px;">
-                    ${currentUser?.email === 'admin@nowoptimal.com' ? '<button onclick="showAllStaffTasks()" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">All Staff</button>' : ''}
+                    ${currentUser?.permissions?.can_view_ceo_dashboard ? '<button onclick="showAllStaffTasks()" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">All Staff</button>' : ''}
                     <button onclick="showCreateTaskModal()" style="padding:6px 12px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:6px; color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">+ New Task</button>
                 </div>
             </div>
             <div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">Loading tasks...</div>
         </div>
+
+        <!-- Critical Lab Alerts — directly below tasks -->
+        <div id="criticalLabAlerts"></div>
+
+        <!-- Pending Appointment Approvals (below Tasks) -->
+        <div id="pendingApptRequestsHost"></div>
+
+        <!-- Pending Peptide Orders (GLP approval required) -->
+        <div id="pendingPeptideOrdersHost"></div>
+
+        <!-- Peptide Order Pipeline — visible to all staff; refund actions admin-only -->
+        <div id="todayPeptidePipelineHost"></div>
+
+        <!-- Pending Break Requests — admin only -->
+        <div id="pendingBlockRequestsHost"></div>
 
         ${actions.length > 0 ? `
             <div class="section-header">
@@ -1452,15 +1746,13 @@ function renderTodayView(container) {
             </div>
         `).join('') : renderEmptyState('📅', 'No Appointments Today', 'No patients are scheduled for today')}
 
-        ${stagedDoses.length > 0 ? `
-            <div class="section-header" id="stagedDosesSection">
-                <h2>Staged Doses</h2>
-                <span class="section-action">${stagedCount} staged</span>
-            </div>
-            <div class="schedule-timeline stagger-in">
-                ${buildSchedule(stagedDoses).map(s => renderScheduleItem(s)).join('')}
-            </div>
-        ` : ''}
+        <div class="section-header">
+            <h2>📠 Sent Faxes</h2>
+            <button class="section-action" onclick="loadSentFaxes()">Refresh</button>
+        </div>
+        <div id="sentFaxesList" class="stagger-in">
+            <div style="padding:12px; text-align:center; color:var(--text-tertiary); font-size:13px;">Loading faxes...</div>
+        </div>
     `;
 
     // Setup swipe gestures on action cards
@@ -1479,52 +1771,92 @@ function renderTodayView(container) {
     // Load staff tasks — from cache instantly, then refresh from API
     if (window._cachedStaffTasks) {
         const c = document.getElementById('myStaffTasks');
-        if (c) renderStaffTasksUI(c, window._cachedStaffTasks, currentUser?.email === 'admin@nowoptimal.com');
+        if (c) renderStaffTasksUI(c, window._cachedStaffTasks, currentUser?.permissions?.can_view_ceo_dashboard);
     }
     setTimeout(() => loadMyStaffTasks(), 1000);
+
+    // Load pending appointment requests — shows below Tasks, provider approve/deny
+    loadPendingApptRequests().then(function() {
+        var host = document.getElementById('pendingApptRequestsHost');
+        if (host) host.innerHTML = renderPendingRequestsCard();
+    });
+
+    // Load pending peptide orders (GLP approval) — shows below appointment requests
+    loadPendingPeptideOrders();
+
+    // Load peptide pipeline (stuck/ready-for-pickup/etc.) for ALL staff
+    loadTodayPeptidePipeline();
+
+    // Load pending break requests — admin only
+    loadPendingBlockRequests().then(function() {
+        var host = document.getElementById('pendingBlockRequestsHost');
+        if (host) host.innerHTML = renderPendingBlockRequestsCard();
+    });
 }
 
 // ─── CRITICAL LAB ALERTS (rendered from dashboard data, no separate API call) ──────
 
 function renderCriticalLabAlerts(container, alerts) {
     if (!container || !alerts || alerts.length === 0) return;
-    container.innerHTML = `
-        <div class="section-header">
-            <h2 style="color:#ef4444;">🚨 Critical Lab Alerts</h2>
-            <span class="section-action">${alerts.length} alerts</span>
-        </div>
-        <div class="stagger-in">
-            ${alerts.map(function(a) {
-                var sevColor = a.severity === 'critical' ? '#ef4444' : a.severity === 'high' ? '#f59e0b' : '#3b82f6';
-                var collDate = a.collection_date || '';
-                var resultDate = a.result_received_at ? new Date(a.result_received_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '';
-                var approvedDate = a.approved_at ? new Date(a.approved_at).toLocaleDateString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '';
-                var provider = a.ordering_provider || 'Unknown';
-                return '<div style="background:var(--card); border:1px solid ' + sevColor + '40; border-left:5px solid ' + sevColor + '; border-radius:10px; padding:14px; margin-bottom:10px;">' +
-                    '<div style="display:flex; justify-content:space-between; align-items:start;">' +
-                        '<div style="flex:1;">' +
-                            '<div style="font-size:15px; font-weight:700; color:var(--text-primary);">' + sanitize(a.patient_name) + '</div>' +
-                            '<div style="font-size:14px; color:' + sevColor + '; font-weight:700; margin-top:4px;">' +
-                                sanitize(a.test_name) + ': ' + sanitize(a.test_value) + ' ' + sanitize(a.test_units || '') +
-                            '</div>' +
-                            '<div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">Ref range: ' + sanitize(a.reference_range || 'N/A') + '</div>' +
+
+    // Hannah → Phil task #18: group alerts by patient so each patient appears once
+    // with all their critical/urgent values listed together.
+    var groups = {};
+    var groupOrder = [];
+    alerts.forEach(function(a) {
+        var key = a.patient_id || ('name:' + (a.patient_name || 'unknown'));
+        if (!groups[key]) { groups[key] = []; groupOrder.push(key); }
+        groups[key].push(a);
+    });
+
+    var patientCount = groupOrder.length;
+    container.innerHTML = '' +
+        '<div class="section-header">' +
+            '<h2 style="color:#ef4444;">🚨 Critical Lab Alerts</h2>' +
+            '<span class="section-action">' + patientCount + ' patient' + (patientCount === 1 ? '' : 's') + ' · ' + alerts.length + ' value' + (alerts.length === 1 ? '' : 's') + '</span>' +
+        '</div>' +
+        '<div class="stagger-in">' +
+        groupOrder.map(function(key) {
+            var rows = groups[key];
+            var first = rows[0];
+            // Highest-severity colour for the card border
+            var hasCritical = rows.some(function(r) { return r.severity === 'critical'; });
+            var sevColor = hasCritical ? '#ef4444' : (rows.some(function(r) { return r.severity === 'high'; }) ? '#f59e0b' : '#3b82f6');
+            var sevLabel = hasCritical ? 'CRITICAL' : (rows.some(function(r) { return r.severity === 'high'; }) ? 'HIGH' : 'URGENT');
+            var provider = first.ordering_provider || 'Unknown';
+            var collDate = first.collection_date || '';
+            var resultDate = first.result_received_at ? new Date(first.result_received_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '';
+
+            var valueRows = rows.map(function(a) {
+                var rowColor = a.severity === 'critical' ? '#ef4444' : a.severity === 'high' ? '#f59e0b' : '#3b82f6';
+                return '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--border-light);">' +
+                    '<div style="flex:1;">' +
+                        '<div style="font-size:13px; color:' + rowColor + '; font-weight:700;">' +
+                            sanitize(a.test_name) + ': ' + sanitize(a.test_value) + ' ' + sanitize(a.test_units || '') +
                         '</div>' +
-                        '<span style="font-size:10px; padding:4px 10px; border-radius:6px; background:' + sevColor + '20; color:' + sevColor + '; font-weight:700;">' + a.severity.toUpperCase() + '</span>' +
+                        '<div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">Ref range: ' + sanitize(a.reference_range || 'N/A') + '</div>' +
                     '</div>' +
-                    '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; font-size:11px; color:var(--text-tertiary);">' +
-                        '<span>👨‍⚕️ Approved by: <strong style="color:var(--text-secondary);">' + sanitize(provider) + '</strong></span>' +
-                        (collDate ? '<span>🩸 Collected: <strong style="color:var(--text-secondary);">' + sanitize(collDate) + '</strong></span>' : '') +
-                        (resultDate ? '<span>📥 Resulted: <strong style="color:var(--text-secondary);">' + resultDate + '</strong></span>' : '') +
-                        (approvedDate ? '<span>✅ Approved: <strong style="color:var(--text-secondary);">' + approvedDate + '</strong></span>' : '') +
-                    '</div>' +
-                    '<div style="display:flex; gap:8px; margin-top:10px;">' +
-                        '<button onclick="showCriticalLabActionModal(' + a.id + ', \'' + sanitize(a.patient_name).replace(/'/g, "\\'") + '\', \'' + sanitize(a.test_name).replace(/'/g, "\\'") + '\', \'' + sanitize(a.test_value) + '\')" style="flex:1; padding:10px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color:#ef4444; font-size:13px; font-weight:600; cursor:pointer;">Take Action & Sign Off</button>' +
-                        (a.patient_id ? '<button onclick="openChartPanel(\'' + a.patient_id + '\')" style="padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">Chart</button>' : '') +
-                    '</div>' +
+                    '<button onclick="showCriticalLabActionModal(' + a.id + ', \'' + sanitize(first.patient_name).replace(/'/g, "\\'") + '\', \'' + sanitize(a.test_name).replace(/'/g, "\\'") + '\', \'' + sanitize(a.test_value) + '\')" style="padding:6px 10px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; color:#ef4444; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;">Sign Off</button>' +
                 '</div>';
-            }).join('')}
-        </div>
-    `;
+            }).join('');
+
+            return '<div style="background:var(--card); border:1px solid ' + sevColor + '40; border-left:5px solid ' + sevColor + '; border-radius:10px; padding:14px; margin-bottom:10px;">' +
+                '<div style="display:flex; justify-content:space-between; align-items:start;">' +
+                    '<div style="flex:1;">' +
+                        '<div style="font-size:16px; font-weight:700; color:var(--text-primary);">' + sanitize(first.patient_name) + '</div>' +
+                        '<div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">' +
+                            '👨‍⚕️ ' + sanitize(provider) +
+                            (collDate ? ' · 🩸 Collected ' + sanitize(collDate) : '') +
+                            (resultDate ? ' · 📥 Resulted ' + resultDate : '') +
+                        '</div>' +
+                    '</div>' +
+                    '<span style="font-size:10px; padding:4px 10px; border-radius:6px; background:' + sevColor + '20; color:' + sevColor + '; font-weight:700;">' + sevLabel + ' · ' + rows.length + '</span>' +
+                '</div>' +
+                '<div style="margin-top:6px;">' + valueRows + '</div>' +
+                (first.patient_id ? '<div style="margin-top:10px;"><button onclick="openChartForPatient(\'' + first.patient_id + '\', \'' + sanitize(first.patient_name || '').replace(/\'/g, "\\\'") + '\')" style="width:100%; padding:8px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Open Chart</button></div>' : '') +
+            '</div>';
+        }).join('') +
+        '</div>';
 }
 
 // ─── CRITICAL LAB ALERTS (legacy async loader) ──────────────────────────────────
@@ -1533,27 +1865,40 @@ async function loadCriticalLabAlerts() {
     const container = document.getElementById('criticalLabAlerts');
     if (!container) return;
 
-    // Only providers see critical lab alerts (Phil + Dr. Whitten)
-    const isProvider = currentUser?.email === 'admin@nowoptimal.com' ||
+    // Only providers/admins see critical lab alerts
+    const isProvider = currentUser?.permissions?.can_view_ceo_dashboard ||
                        currentUser?.can_sign ||
                        currentUser?.role === 'admin';
     if (!isProvider) return;
 
+    let scanFailed = false;
     try {
-        // First trigger a scan for new critical values
-        await fetch('/ops/api/ipad/critical-labs/', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+        // First trigger a scan for new critical values.
+        // FIX(2026-04-22): previously .catch(()=>{}) silently swallowed scan failures,
+        // letting providers see stale "all clear" while the scanner was broken.
+        const scanResp = await fetch('/ops/api/ipad/critical-labs/', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (!scanResp.ok) {
+            scanFailed = true;
+            console.warn('[Critical Labs] scan trigger failed:', scanResp.status);
+        }
 
         // Then load pending alerts (raw fetch to avoid auth refresh cycle)
-        const alertResp = await fetch('/ops/api/ipad/critical-labs/?status=pending', { credentials: 'include' });
+        // FIX(2026-05-05): Only show 'critical' severity on Today page — providers don't need high/moderate here
+        const alertResp = await fetch('/ops/api/ipad/critical-labs/?status=pending&severity=critical', { credentials: 'include' });
         const data = alertResp.ok ? await alertResp.json() : { alerts: [] };
         const alerts = data.alerts || [];
 
-        if (alerts.length === 0) {
+        if (alerts.length === 0 && !scanFailed) {
             container.innerHTML = '';
             return;
         }
 
+        const banner = scanFailed
+            ? `<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.35); border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:12px; color:#f59e0b;">⚠️ Scanner unavailable — alerts below may be stale.</div>`
+            : '';
+
         container.innerHTML = `
+            ${banner}
             <div class="section-header">
                 <h2 style="color:#ef4444;">🚨 Critical Lab Alerts</h2>
                 <span class="section-action">${alerts.length} alerts</span>
@@ -1581,7 +1926,7 @@ async function loadCriticalLabAlerts() {
                                 style="flex:1; padding:8px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color:#ef4444; font-size:12px; font-weight:600; cursor:pointer;">
                                 Take Action
                             </button>
-                            <button onclick="openPatientChart('${a.patient_id || ''}')"
+                            <button onclick="openChartForPatient('${a.patient_id || ''}', '${sanitize(a.patient_name || '').replace(/'/g, "\\'")}')"
                                 style="padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:12px; cursor:pointer;">
                                 View Chart
                             </button>
@@ -1591,7 +1936,8 @@ async function loadCriticalLabAlerts() {
             </div>
         `;
     } catch (e) {
-        console.warn('[Critical Labs] Load error:', e);
+        console.error('[Critical Labs] Load error:', e);
+        if (typeof showToast === 'function') showToast('Critical lab alerts unavailable', 'error');
     }
 }
 
@@ -1664,7 +2010,7 @@ async function loadMyStaffTasks() {
     const container = document.getElementById('myStaffTasks');
     if (!container) return;
     const myEmail = currentUser?.email || '';
-    const isAdmin = myEmail === 'admin@nowoptimal.com';
+    const isAdmin = currentUser?.permissions?.can_view_ceo_dashboard === true;
 
     // Show cached tasks immediately if available
     let tasks = window._cachedStaffTasks || [];
@@ -1672,22 +2018,22 @@ async function loadMyStaffTasks() {
         renderStaffTasksUI(container, tasks, isAdmin);
     }
 
-    // Fetch tasks independently — DO NOT use apiFetch (it triggers auth refresh loops)
-    // Use a simple fetch with a 4-second timeout
+    // Fetch tasks assigned TO me AND tasks created BY me (so I can see what I assigned)
     try {
         const ac = new AbortController();
         const tid = setTimeout(() => ac.abort(), 4000);
-        const url = myEmail
-            ? '/ops/api/ipad/staff-tasks/?assigned_to=' + encodeURIComponent(myEmail)
-            : '/ops/api/ipad/staff-tasks/';
-        const resp = await fetch(url, { credentials: 'include', signal: ac.signal });
+        // Fetch all active tasks — filter client-side so we get both assigned + created
+        const resp = await fetch('/ops/api/ipad/staff-tasks/', { credentials: 'include', signal: ac.signal });
         clearTimeout(tid);
         if (resp.ok) {
             const data = await resp.json();
-            tasks = data.tasks || [];
+            const allTasks = data.tasks || [];
+            // Show tasks assigned to me OR created by me
+            tasks = allTasks.filter(function(t) {
+                return t.assigned_to === myEmail || t.created_by === myEmail || isAdmin;
+            });
             window._cachedStaffTasks = tasks;
         }
-        // If not ok (401 etc), just use cache/empty — don't throw
     } catch (e) {
         // Timeout or network error — use whatever we have cached
     }
@@ -1707,48 +2053,436 @@ function renderStaffTasksUI(container, tasks, isAdmin) {
             taskBadge.classList.add('hidden');
         }
     }
+    const myEmail = currentUser?.email || '';
+    // Split into tasks assigned to me vs tasks I assigned to others
+    const assignedToMe = tasks.filter(t => t.assigned_to === myEmail);
+    const assignedByMe = tasks.filter(t => t.created_by === myEmail && t.assigned_to !== myEmail);
+
     container.innerHTML = `
         <div class="section-header">
-            <h2>📋 My Tasks</h2>
+            <h2>📋 Tasks</h2>
             <div style="display:flex; gap:6px;">
                 ${isAdmin ? '<button onclick="showAllStaffTasks()" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">All Staff</button>' : ''}
                 <button onclick="showCreateTaskModal()" style="padding:6px 12px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:6px; color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">+ New Task</button>
             </div>
         </div>
-        ${tasks.length === 0 ? '<div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">No tasks assigned to you</div>' :
-            tasks.map(t => {
-                const priColor = t.priority === 'critical' ? '#ef4444' : t.priority === 'high' ? '#f59e0b' : t.priority === 'medium' ? '#3b82f6' : '#6b7280';
-                const priIcon = t.priority === 'critical' ? '🔴' : t.priority === 'high' ? '🟠' : t.priority === 'medium' ? '🔵' : '⚪';
-                const priBg = t.priority === 'critical' ? 'rgba(239,68,68,0.06)' : t.priority === 'high' ? 'rgba(245,158,11,0.04)' : 'var(--card)';
-                const dueStr = t.due_date ? formatDate(t.due_date) : '';
-                const overdue = t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed';
-                const statusLabel = t.status === 'in_progress' ? '🔄 In Progress' : '⏳ Pending';
-                return `
-                <div style="background:${priBg}; border:1px solid ${overdue ? 'rgba(239,68,68,0.4)' : priColor + '30'}; border-left:5px solid ${priColor}; border-radius:12px; padding:14px; margin-bottom:10px;">
-                    <div style="display:flex; justify-content:space-between; align-items:start;">
-                        <div style="flex:1;">
-                            <div style="font-size:15px; font-weight:700; color:var(--text-primary);">${priIcon} ${sanitize(t.title)}</div>
-                            ${t.description ? `<div style="font-size:13px; color:var(--text-secondary); margin-top:4px; line-height:1.4;">${sanitize(t.description)}</div>` : ''}
-                            <div style="font-size:11px; color:var(--text-tertiary); margin-top:6px; display:flex; flex-wrap:wrap; gap:8px;">
-                                <span>From: <strong>${sanitize(t.created_by_name || t.created_by)}</strong></span>
-                                <span style="color:${priColor};">${t.priority.toUpperCase()}</span>
-                                <span>${statusLabel}</span>
-                                ${dueStr ? `<span>Due: ${dueStr}</span>` : ''}
-                                ${overdue ? '<span style="color:#ef4444; font-weight:700;">⚠️ OVERDUE</span>' : ''}
-                            </div>
-                            ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
-                        </div>
-                        <span style="font-size:10px; padding:3px 8px; border-radius:6px; background:${priColor}15; color:${priColor}; font-weight:600; white-space:nowrap;">${t.priority.toUpperCase()}</span>
-                    </div>
-                    <div style="display:flex; gap:6px; margin-top:8px;">
-                        <button onclick="showTaskNoteModal(${t.id})" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:11px; cursor:pointer;">Add Note</button>
-                        ${t.status === 'pending' ? `<button onclick="updateStaffTask(${t.id}, 'in_progress')" style="padding:6px 10px; background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:6px; color:#3b82f6; font-size:11px; font-weight:600; cursor:pointer;">Start</button>` : ''}
-                        <button onclick="updateStaffTask(${t.id}, 'completed')" style="padding:6px 10px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.3); border-radius:6px; color:#22c55e; font-size:11px; font-weight:600; cursor:pointer;">Complete</button>
-                    </div>
-                </div>`;
-            }).join('')}
+
+        ${assignedToMe.length > 0 ? '<div style="font-size:12px; font-weight:700; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Assigned to Me (' + assignedToMe.length + ')</div>' : ''}
+        ${assignedToMe.length === 0 && assignedByMe.length === 0 ? '<div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">No active tasks</div>' : ''}
+        ${assignedToMe.map(t => renderTaskCard(t, myEmail)).join('')}
+
+        ${assignedByMe.length > 0 ? '<div style="font-size:12px; font-weight:700; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.05em; margin:12px 0 6px;">Assigned by Me (' + assignedByMe.length + ')</div>' : ''}
+        ${assignedByMe.map(t => renderTaskCard(t, myEmail)).join('')}
         `;
+
+    // Light per-task chat unread badges (one batched request, non-blocking).
+    refreshTaskChatBadges();
 }
+
+function renderTaskCard(t, myEmail) {
+    const priColor = t.priority === 'critical' ? '#ef4444' : t.priority === 'high' ? '#f59e0b' : t.priority === 'medium' ? '#3b82f6' : '#6b7280';
+    const priIcon = t.priority === 'critical' ? '🔴' : t.priority === 'high' ? '🟠' : t.priority === 'medium' ? '🔵' : '⚪';
+    const priBg = t.priority === 'critical' ? 'rgba(239,68,68,0.06)' : t.priority === 'high' ? 'rgba(245,158,11,0.04)' : 'var(--card)';
+    const dueStr = t.due_date ? formatDate(t.due_date) : '';
+    const overdue = t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed';
+    const statusLabel = t.status === 'in_progress' ? '🔄 In Progress' : '⏳ Pending';
+    // Status pill (top-right) — reflects current task state. Priority is already
+    // conveyed by the left border + the priority chip in the meta row.
+    const statusColor = t.status === 'completed' ? '#22c55e' : t.status === 'in_progress' ? '#3b82f6' : '#9ca3af';
+    const statusPill = t.status === 'in_progress' ? 'IN PROGRESS' : t.status === 'completed' ? 'DONE' : 'PENDING';
+    const isAssignedToMe = t.assigned_to === myEmail;
+    const isCreatedByMe = t.created_by === myEmail;
+
+    return `
+    <div data-task-id="${t.id}" style="background:${priBg}; border:1px solid ${overdue ? 'rgba(239,68,68,0.4)' : priColor + '30'}; border-left:5px solid ${priColor}; border-radius:12px; padding:14px; margin-bottom:10px; transition:opacity 280ms ease, transform 280ms ease, margin 280ms ease, padding 280ms ease;">
+        <div style="display:flex; justify-content:space-between; align-items:start; gap:10px;">
+            <div style="flex:1; min-width:0;">
+                <div style="font-size:15px; font-weight:700; color:var(--text-primary); overflow-wrap:anywhere; word-break:break-word;">${priIcon} ${sanitize(t.title)}</div>
+                ${t.description ? `<div style="font-size:13px; color:var(--text-secondary); margin-top:4px; line-height:1.4; overflow-wrap:anywhere; word-break:break-word;">${sanitize(t.description)}</div>` : ''}
+                <div style="font-size:11px; color:var(--text-tertiary); margin-top:6px; display:flex; flex-wrap:wrap; gap:8px;">
+                    ${isAssignedToMe ? `<span>From: <strong>${sanitize(t.created_by_name || t.created_by)}</strong></span>` : `<span>To: <strong>${sanitize(t.assigned_to_name || t.assigned_to)}</strong></span>`}
+                    <span style="color:${priColor};">${t.priority.toUpperCase()}</span>
+                    <span>${statusLabel}</span>
+                    ${dueStr ? `<span>Due: ${dueStr}</span>` : ''}
+                    ${overdue ? '<span style="color:#ef4444; font-weight:700;">⚠️ OVERDUE</span>' : ''}
+                </div>
+                ${t.staff_notes ? `<div style="font-size:12px; color:var(--cyan); margin-top:4px; padding:6px 8px; background:rgba(0,212,255,0.06); border-radius:6px; overflow-wrap:anywhere;">📝 ${sanitize(t.staff_notes)}</div>` : ''}
+                ${Array.isArray(t.attachments) && t.attachments.length ? `<div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;">${t.attachments.map(a => `<a href="${sanitize(a.download_url)}" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:5px 9px; background:rgba(0,212,255,0.08); border:1px solid rgba(0,212,255,0.28); border-radius:6px; color:var(--cyan,#22d3ee); text-decoration:none; max-width:100%; overflow:hidden;"><span>📎</span><span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sanitize(a.name)}</span></a>`).join('')}</div>` : ''}
+            </div>
+            <span style="flex:0 0 auto; font-size:10px; padding:3px 8px; border-radius:6px; background:${statusColor}1f; color:${statusColor}; font-weight:700; white-space:nowrap; letter-spacing:0.03em;">${statusPill}</span>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+            <button onclick="openTaskChatSheet(${t.id}, ${JSON.stringify(sanitize(t.title)).replace(/"/g, '&quot;')})" data-task-chat-btn="${t.id}" style="padding:6px 10px; background:rgba(0,212,255,0.10); border:1px solid rgba(0,212,255,0.30); border-radius:6px; color:var(--cyan,#22d3ee); font-size:11px; font-weight:600; cursor:pointer; position:relative;">💬 Chat<span data-task-chat-badge="${t.id}" style="display:none; margin-left:4px; min-width:16px; padding:0 5px; border-radius:8px; background:#22d3ee; color:#0a0f1a; font-size:10px; font-weight:700; line-height:14px; vertical-align:middle;"></span></button>
+            <button onclick="showTaskNoteModal(${t.id})" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:11px; cursor:pointer;">📝 Note</button>
+            <button onclick="showEditTaskModal(${t.id}, '${sanitize(t.title).replace(/'/g, '')}', '${sanitize(t.description || '').replace(/'/g, '')}', '${t.priority}', '${t.assigned_to}', '${t.due_date || ''}')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:11px; cursor:pointer;">✏️ Edit</button>
+            ${isAssignedToMe && t.status === 'pending' ? `<button onclick="updateStaffTask(${t.id}, 'in_progress')" style="padding:6px 10px; background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:6px; color:#3b82f6; font-size:11px; font-weight:600; cursor:pointer;">▶ Start</button>` : ''}
+            <button onclick="updateStaffTask(${t.id}, 'completed')" style="padding:6px 10px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.3); border-radius:6px; color:#22c55e; font-size:11px; font-weight:600; cursor:pointer;">✓ Complete</button>
+        </div>
+    </div>`;
+}
+
+// ============================================================
+// PER-TASK CHAT BOTTOM-SHEET (Wave 3a UI)
+// ─ Hannah/Michele/Whitten/Audrey tap 💬 on a task card. The sheet slides
+//   up, fetches inbox row chat_thread via /api/ipad/chat?staff_task_id=N,
+//   renders bubbles aligned by from_slug, and posts replies via
+//   POST /api/ipad/chat. Polls every 30s while open.
+// ============================================================
+let _taskChatState = {
+    staffTaskId: null,        // currently-open task id (number)
+    rowUuid: null,            // resolved inbox row_uuid
+    currentSlug: null,        // current user's staff slug (e.g. 'phil')
+    pollTimer: null,
+    lastThread: [],
+    sending: false,
+};
+
+function _taskChatEscapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+}
+
+function _taskChatInitialFor(slug) {
+    if (!slug) return '?';
+    return String(slug).trim().charAt(0).toUpperCase() || '?';
+}
+
+function _taskChatColorFor(slug) {
+    const palette = ['#22d3ee', '#a78bfa', '#f59e0b', '#ef4444', '#34d399', '#f472b6', '#60a5fa'];
+    let h = 0;
+    const s = String(slug || '');
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return palette[h % palette.length];
+}
+
+function _taskChatFormatTs(iso) {
+    if (!iso) return '';
+    try {
+        const d = new Date(iso);
+        const now = new Date();
+        const sameDay = d.toDateString() === now.toDateString();
+        const opts = sameDay
+            ? { hour: 'numeric', minute: '2-digit' }
+            : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+        return d.toLocaleString('en-US', opts);
+    } catch (e) { return ''; }
+}
+
+function _taskChatRenderBubbles(thread, mySlug) {
+    if (!thread || thread.length === 0) {
+        return '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; min-height:200px; padding:40px 20px; text-align:center; color:var(--text-tertiary);">'
+             + '<div style="font-size:36px; margin-bottom:8px;">💬</div>'
+             + '<div style="font-size:14px; font-weight:600; color:var(--text-secondary);">No messages yet</div>'
+             + '<div style="font-size:12px; margin-top:4px;">Start the thread — anyone assigned will get a Google Chat DM.</div>'
+             + '</div>';
+    }
+    // Thread arrives newest-first from /api/ipad/chat. Render oldest-first
+    // (top → bottom = old → new) so the composer pins to the most recent.
+    const ordered = [...thread].reverse();
+    return ordered.map(function(entry) {
+        const fromSlug = entry.from || 'unknown';
+        const isMe = mySlug && fromSlug === mySlug;
+        const initial = _taskChatInitialFor(fromSlug);
+        const color = _taskChatColorFor(fromSlug);
+        const ts = _taskChatFormatTs(entry.at);
+        const surface = entry.from_surface ? ' · ' + _taskChatEscapeHtml(entry.from_surface) : '';
+        const bubbleBg = isMe ? 'linear-gradient(135deg,#0891b2,#22d3ee)' : 'rgba(255,255,255,0.06)';
+        const bubbleColor = isMe ? '#0a0f1a' : 'var(--text-primary)';
+        const align = isMe ? 'flex-end' : 'flex-start';
+        const avatar = '<div style="flex:0 0 auto; width:28px; height:28px; border-radius:50%; background:' + color + '; color:#0a0f1a; font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center;">' + initial + '</div>';
+        const bubble = ''
+            + '<div style="max-width:72%; display:flex; flex-direction:column; align-items:' + align + ';">'
+            +   '<div style="padding:8px 12px; border-radius:14px; background:' + bubbleBg + '; color:' + bubbleColor + '; font-size:14px; line-height:1.4; word-wrap:break-word; white-space:pre-wrap;">' + _taskChatEscapeHtml(entry.body) + '</div>'
+            +   '<div style="font-size:10px; color:var(--text-tertiary); margin-top:3px; padding:0 4px;">' + _taskChatEscapeHtml(fromSlug) + surface + (ts ? ' · ' + _taskChatEscapeHtml(ts) : '') + '</div>'
+            + '</div>';
+        return '<div style="display:flex; gap:8px; margin:8px 0; flex-direction:' + (isMe ? 'row-reverse' : 'row') + '; align-items:flex-end;">' + avatar + bubble + '</div>';
+    }).join('');
+}
+
+function _taskChatSetBadge(staffTaskId, count) {
+    document.querySelectorAll('[data-task-chat-badge="' + staffTaskId + '"]').forEach(function(el) {
+        if (count > 0) {
+            el.textContent = count > 99 ? '99+' : String(count);
+            el.style.display = 'inline-block';
+        } else {
+            el.style.display = 'none';
+        }
+    });
+}
+
+// Per-task "seen" tracking (localStorage). Unread = current thread length minus
+// the length the current device last viewed. No server-side read receipts, so
+// this is a per-device approximation — good enough to light the 💬 badge.
+const _TASK_CHAT_SEEN_KEY = 'taskChatSeen.v1';
+function _taskChatGetSeenMap() {
+    try { return JSON.parse(localStorage.getItem(_TASK_CHAT_SEEN_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+}
+function _taskChatSetSeen(staffTaskId, len) {
+    try {
+        const m = _taskChatGetSeenMap();
+        m[String(staffTaskId)] = len;
+        localStorage.setItem(_TASK_CHAT_SEEN_KEY, JSON.stringify(m));
+    } catch (e) { /* storage full / disabled — non-fatal */ }
+}
+
+// Fetch chat thread lengths for every synced inbox row in one request and light
+// the per-task unread badges. Called after the task list renders.
+async function refreshTaskChatBadges() {
+    try {
+        const r = await fetch('/ops/api/ipad/chat/?counts=1', { credentials: 'include' });
+        const data = await r.json();
+        if (!data || !data.success || !data.counts) return;
+        const seen = _taskChatGetSeenMap();
+        Object.keys(data.counts).forEach(function(id) {
+            const total = data.counts[id] || 0;
+            const seenLen = seen[id] || 0;
+            _taskChatSetBadge(id, Math.max(0, total - seenLen));
+        });
+    } catch (e) {
+        console.warn('[task-chat] badge refresh failed:', e && e.message);
+    }
+}
+window.refreshTaskChatBadges = refreshTaskChatBadges;
+
+async function _taskChatFetchAndRender() {
+    if (_taskChatState.staffTaskId == null) return;
+    const staffTaskId = _taskChatState.staffTaskId;
+    try {
+        const r = await fetch('/ops/api/ipad/chat/?staff_task_id=' + encodeURIComponent(staffTaskId), { credentials: 'include' });
+        const data = await r.json();
+        if (!data || !data.success) {
+            console.warn('[task-chat] fetch failed:', data && data.error);
+            return;
+        }
+        // Update state.
+        _taskChatState.rowUuid = data.row_uuid;
+        _taskChatState.currentSlug = data.current_user_slug;
+        _taskChatState.lastThread = data.thread || [];
+        // Viewing the thread marks it read: persist seen-length and clear the
+        // unread badge on the source card.
+        _taskChatSetSeen(staffTaskId, (data.thread || []).length);
+        _taskChatSetBadge(staffTaskId, 0);
+        // Render only if still open and on the same task.
+        const host = document.getElementById('task-chat-thread');
+        if (host && _taskChatState.staffTaskId === staffTaskId) {
+            const wasNearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 80;
+            host.innerHTML = _taskChatRenderBubbles(data.thread || [], data.current_user_slug);
+            if (wasNearBottom) host.scrollTop = host.scrollHeight;
+        }
+        // Disable composer if the row isn't synced yet or no slug.
+        const ta = document.getElementById('task-chat-input');
+        const sendBtn = document.getElementById('task-chat-send');
+        if (ta && sendBtn) {
+            if (!data.row_uuid) {
+                ta.placeholder = 'Inbox row not synced yet — try again in a minute…';
+                ta.disabled = true;
+                sendBtn.disabled = true;
+            } else if (!data.current_user_slug) {
+                ta.placeholder = 'Your account isn’t mapped to a staff slug — chat is read-only';
+                ta.disabled = true;
+                sendBtn.disabled = true;
+            } else {
+                ta.placeholder = 'Reply…';
+                ta.disabled = false;
+                sendBtn.disabled = false;
+            }
+        }
+    } catch (e) {
+        console.warn('[task-chat] fetch error:', e && e.message);
+    }
+}
+
+async function _taskChatSend() {
+    if (_taskChatState.sending) return;
+    const ta = document.getElementById('task-chat-input');
+    if (!ta) return;
+    const body = (ta.value || '').trim();
+    if (!body) return;
+    if (_taskChatState.staffTaskId == null) return;
+    _taskChatState.sending = true;
+    const sendBtn = document.getElementById('task-chat-send');
+    if (sendBtn) sendBtn.disabled = true;
+    ta.disabled = true;
+    try {
+        const r = await fetch('/ops/api/ipad/chat/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ staff_task_id: _taskChatState.staffTaskId, body }),
+        });
+        const data = await r.json();
+        if (data && data.success) {
+            ta.value = '';
+            // Pull the fresh thread immediately.
+            await _taskChatFetchAndRender();
+            if (typeof showToast === 'function') {
+                const dm = data.dm_status === 'sent' ? ' · DM sent' : '';
+                showToast('Message sent' + dm, 'success');
+            }
+        } else {
+            if (typeof showToast === 'function') showToast('Send failed: ' + (data && data.error || 'unknown'), 'error');
+            console.error('[task-chat] send failed:', data);
+        }
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Network error sending message', 'error');
+        console.error('[task-chat] send error:', e);
+    } finally {
+        _taskChatState.sending = false;
+        ta.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
+        ta.focus();
+    }
+}
+
+function closeTaskChatSheet() {
+    if (_taskChatState.pollTimer) {
+        clearInterval(_taskChatState.pollTimer);
+        _taskChatState.pollTimer = null;
+    }
+    _taskChatState.staffTaskId = null;
+    _taskChatState.rowUuid = null;
+    const sheet = document.getElementById('task-chat-sheet');
+    const backdrop = document.getElementById('task-chat-backdrop');
+    if (sheet) {
+        sheet.style.transform = 'translateY(100%)';
+        setTimeout(function() { sheet.remove(); }, 220);
+    }
+    if (backdrop) {
+        backdrop.style.opacity = '0';
+        setTimeout(function() { backdrop.remove(); }, 220);
+    }
+}
+
+function openTaskChatSheet(staffTaskId, taskTitle) {
+    // Idempotent — close any existing instance first.
+    closeTaskChatSheet();
+    _taskChatState.staffTaskId = staffTaskId;
+    _taskChatState.lastThread = [];
+
+    const isMobile = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+    const sheetWidth = isMobile ? '100%' : 'min(640px, 92vw)';
+    const sheetMaxHeight = isMobile ? '88vh' : '78vh';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'task-chat-backdrop';
+    backdrop.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:11000; opacity:0; transition:opacity 220ms ease;';
+    backdrop.onclick = closeTaskChatSheet;
+
+    const sheet = document.createElement('div');
+    sheet.id = 'task-chat-sheet';
+    sheet.style.cssText = ''
+        + 'position:fixed; left:50%; bottom:0; transform:translate(-50%, 100%);'
+        + 'width:' + sheetWidth + '; max-width:100vw;'
+        + 'height:' + sheetMaxHeight + ';'
+        + 'background:var(--bg-primary,#0a0f1a);'
+        + 'border:1px solid rgba(100,200,255,0.18); border-bottom:none;'
+        + 'border-radius:18px 18px 0 0;'
+        + 'box-shadow:0 -20px 60px rgba(0,0,0,0.55);'
+        + 'z-index:11001;'
+        + 'display:flex; flex-direction:column;'
+        + 'transition:transform 220ms cubic-bezier(.2,.7,.2,1);'
+        + 'will-change:transform;';
+    sheet.innerHTML = ''
+        // Grab handle
+        + '<div id="task-chat-handle" style="flex:0 0 auto; padding:8px 0 6px; display:flex; justify-content:center; cursor:grab; touch-action:none;">'
+        +   '<div style="width:48px; height:5px; border-radius:3px; background:rgba(255,255,255,0.18);"></div>'
+        + '</div>'
+        // Header
+        + '<div style="flex:0 0 auto; display:flex; align-items:center; gap:10px; padding:4px 16px 12px; border-bottom:1px solid rgba(255,255,255,0.07);">'
+        +   '<div style="flex:1; min-width:0;">'
+        +     '<div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; font-weight:600;">Task chat</div>'
+        +     '<div style="font-size:15px; font-weight:700; color:var(--text-primary); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + _taskChatEscapeHtml(taskTitle || ('Task #' + staffTaskId)) + '</div>'
+        +   '</div>'
+        +   '<button onclick="closeTaskChatSheet()" aria-label="Close" style="flex:0 0 auto; width:34px; height:34px; border-radius:8px; border:1px solid var(--border-light,rgba(255,255,255,0.12)); background:var(--surface,rgba(255,255,255,0.04)); color:var(--text-secondary); font-size:18px; cursor:pointer;">✕</button>'
+        + '</div>'
+        // Thread (scrollable)
+        + '<div id="task-chat-thread" style="flex:1 1 auto; overflow-y:auto; padding:14px 16px; -webkit-overflow-scrolling:touch;">'
+        +   '<div style="display:flex; align-items:center; justify-content:center; padding:24px; color:var(--text-tertiary); font-size:13px;">Loading chat…</div>'
+        + '</div>'
+        // Composer (sticky)
+        + '<div style="flex:0 0 auto; padding:10px 12px 14px; border-top:1px solid rgba(255,255,255,0.07); background:var(--bg-primary,#0a0f1a); padding-bottom:max(14px, env(safe-area-inset-bottom));">'
+        +   '<div style="display:flex; gap:8px; align-items:flex-end;">'
+        +     '<textarea id="task-chat-input" rows="1" placeholder="Loading…" style="flex:1; resize:none; min-height:38px; max-height:140px; padding:9px 12px; border-radius:10px; border:1px solid var(--border-light,rgba(255,255,255,0.12)); background:var(--surface,rgba(255,255,255,0.04)); color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;" disabled></textarea>'
+        +     '<button id="task-chat-send" onclick="_taskChatSend()" style="flex:0 0 auto; min-width:64px; padding:10px 14px; border:none; border-radius:10px; background:linear-gradient(135deg,#0891b2,#22d3ee); color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer;" disabled>Send</button>'
+        +   '</div>'
+        + '</div>';
+
+    document.body.appendChild(backdrop);
+    document.body.appendChild(sheet);
+
+    // Slide-up animation (next frame).
+    requestAnimationFrame(function() {
+        backdrop.style.opacity = '1';
+        sheet.style.transform = 'translate(-50%, 0)';
+    });
+
+    // Textarea auto-grow + Enter-to-send (Shift+Enter = newline).
+    const ta = document.getElementById('task-chat-input');
+    if (ta) {
+        ta.addEventListener('input', function() {
+            ta.style.height = 'auto';
+            ta.style.height = Math.min(140, ta.scrollHeight) + 'px';
+        });
+        ta.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                _taskChatSend();
+            }
+        });
+    }
+
+    // Swipe-down-to-dismiss on the grab handle.
+    const handle = document.getElementById('task-chat-handle');
+    if (handle) {
+        let startY = null;
+        let dragging = false;
+        const onStart = function(e) {
+            startY = (e.touches ? e.touches[0].clientY : e.clientY);
+            dragging = true;
+            sheet.style.transition = 'none';
+        };
+        const onMove = function(e) {
+            if (!dragging || startY == null) return;
+            const y = (e.touches ? e.touches[0].clientY : e.clientY);
+            const dy = Math.max(0, y - startY);
+            sheet.style.transform = 'translate(-50%, ' + dy + 'px)';
+        };
+        const onEnd = function(e) {
+            if (!dragging) return;
+            dragging = false;
+            sheet.style.transition = 'transform 220ms cubic-bezier(.2,.7,.2,1)';
+            const y = (e.changedTouches ? e.changedTouches[0].clientY : e.clientY);
+            const dy = startY == null ? 0 : Math.max(0, y - startY);
+            if (dy > 90) {
+                closeTaskChatSheet();
+            } else {
+                sheet.style.transform = 'translate(-50%, 0)';
+            }
+            startY = null;
+        };
+        handle.addEventListener('touchstart', onStart, { passive: true });
+        handle.addEventListener('touchmove', onMove, { passive: true });
+        handle.addEventListener('touchend', onEnd);
+        handle.addEventListener('mousedown', onStart);
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onEnd);
+    }
+
+    // Initial load + 30s poll.
+    _taskChatFetchAndRender();
+    _taskChatState.pollTimer = setInterval(function() {
+        if (document.hidden) return;
+        _taskChatFetchAndRender();
+    }, 30000);
+}
+
+// Expose for inline-onclick handlers.
+window.openTaskChatSheet = openTaskChatSheet;
+window.closeTaskChatSheet = closeTaskChatSheet;
+window._taskChatSend = _taskChatSend;
+// ─── END PER-TASK CHAT BOTTOM-SHEET ─────────────────────────
 
 function showCreateTaskModal() {
     // Active staff — synced from Healthie organizationMembers (active only)
@@ -1841,14 +2575,111 @@ async function createStaffTask() {
 
 async function updateStaffTask(taskId, status) {
     try {
-        await fetch('/ops/api/ipad/staff-tasks/', {
+        const resp = await fetch('/ops/api/ipad/staff-tasks/', {
             method: 'PATCH', credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ task_id: taskId, status })
         });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
         showToast(status === 'completed' ? 'Task completed!' : 'Task updated', 'success');
+        // Completed/cancelled tasks leave the list — fade the card out, then
+        // reload so the rest of the list reflows cleanly.
+        if (status === 'completed' || status === 'cancelled') {
+            const card = document.querySelector('[data-task-id="' + taskId + '"]');
+            if (card) {
+                card.style.opacity = '0';
+                card.style.transform = 'translateX(40px)';
+                card.style.marginBottom = '0';
+                card.style.paddingTop = '0';
+                card.style.paddingBottom = '0';
+                setTimeout(loadMyStaffTasks, 300);
+                return;
+            }
+        }
         loadMyStaffTasks();
     } catch (e) { showToast('Failed to update task', 'error'); }
+}
+
+function showEditTaskModal(taskId, title, description, priority, assignedTo, dueDate) {
+    const STAFF = [
+        { email: 'admin@nowoptimal.com', name: 'Phil Schafer, NP' },
+        { email: 'drwhitten@tricitymenshealth.com', name: 'Dr. Aaron Whitten' },
+        { email: 'hannah@nowoptimal.com', name: 'Hannah Schafer, RN' },
+        { email: 'audrey@nowoptimal.com', name: 'Audrey Black' },
+        { email: 'joanne@nowoptimal.com', name: 'Joanne Finch' },
+        { email: 'michele@nowoptimal.com', name: 'Michele Meyer' },
+        { email: 'medopsllc@gmail.com', name: 'Megan Williams' },
+        { email: 'skwyard@gmail.com', name: 'Sarah Wyard' },
+    ];
+
+    document.getElementById('edit-task-modal')?.remove();
+    var modal = document.createElement('div');
+    modal.id = 'edit-task-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:10001; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML = `
+        <div style="background:var(--bg-primary, #1a1a2e); border-radius:16px; width:90%; max-width:500px; padding:24px; border:1px solid var(--border-light); max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div style="font-size:18px; font-weight:700; color:var(--text-primary);">✏️ Edit Task</div>
+                <button onclick="document.getElementById('edit-task-modal')?.remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+            </div>
+
+            <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Assign To</label>
+            <select id="editTaskAssignTo" style="width:100%; padding:12px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;">
+                ${STAFF.map(s => '<option value="' + s.email + '"' + (s.email === assignedTo ? ' selected' : '') + '>' + s.name + '</option>').join('')}
+            </select>
+
+            <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Task Title</label>
+            <input type="text" id="editTaskTitle" value="${sanitize(title)}" style="width:100%; padding:10px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;" />
+
+            <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Description</label>
+            <textarea id="editTaskDesc" rows="3" style="width:100%; padding:10px; margin:6px 0 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; box-sizing:border-box;">${sanitize(description)}</textarea>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Priority</label>
+                    <select id="editTaskPriority" style="width:100%; padding:10px; margin:6px 0 0; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;">
+                        <option value="critical" ${priority === 'critical' ? 'selected' : ''}>🔴 Critical</option>
+                        <option value="high" ${priority === 'high' ? 'selected' : ''}>🟠 High</option>
+                        <option value="medium" ${priority === 'medium' ? 'selected' : ''}>🔵 Medium</option>
+                        <option value="low" ${priority === 'low' ? 'selected' : ''}>⚪ Low</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase;">Due Date</label>
+                    <input type="date" id="editTaskDueDate" value="${dueDate || ''}" style="width:100%; padding:10px; margin:6px 0 0; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; box-sizing:border-box;" />
+                </div>
+            </div>
+
+            <div style="display:flex; gap:8px;">
+                <button onclick="saveEditedTask(${taskId})" style="flex:1; padding:14px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:10px; color:#0a0f1a; font-weight:700; font-size:15px; cursor:pointer;">Save Changes</button>
+                <button onclick="if(confirm('Cancel this task?')) { updateStaffTask(${taskId}, 'cancelled'); document.getElementById('edit-task-modal')?.remove(); }" style="padding:14px 18px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:10px; color:#ef4444; font-weight:700; font-size:14px; cursor:pointer;">Cancel Task</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function saveEditedTask(taskId) {
+    var assignToSelect = document.getElementById('editTaskAssignTo');
+    var body = {
+        task_id: taskId,
+        title: (document.getElementById('editTaskTitle')?.value || '').trim(),
+        description: (document.getElementById('editTaskDesc')?.value || '').trim(),
+        assigned_to: assignToSelect?.value,
+        assigned_to_name: assignToSelect?.options[assignToSelect.selectedIndex]?.text || assignToSelect?.value,
+        priority: document.getElementById('editTaskPriority')?.value,
+        due_date: document.getElementById('editTaskDueDate')?.value || null,
+    };
+    try {
+        await fetch('/ops/api/ipad/staff-tasks/', {
+            method: 'PATCH', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        document.getElementById('edit-task-modal')?.remove();
+        showToast('Task updated', 'success');
+        loadMyStaffTasks();
+    } catch(e) { showToast('Failed to update', 'error'); }
 }
 
 function showTaskNoteModal(taskId) {
@@ -2225,22 +3056,41 @@ function renderLabsView(container) {
         });
         return;
     }
+    // Lazy-load lab orders the first time the Labs tab is opened
+    if (!labOrdersLoaded) {
+        labOrdersLoaded = true; // prevent re-entry
+        loadLabOrders().then(success => {
+            if (currentTab === 'labs') renderCurrentTab();
+        });
+    }
 
     const allLabs = labsQueue;
     const pending = allLabs.filter(l => l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review');
     const approved = allLabs.filter(l => l.status === 'approved' || l.status === 'reviewed');
     const normalPending = pending.filter(l => !l.critical && !l.is_critical);
+    const ordersOpen = labOrders.filter(o => o.status === 'pending' || o.status === 'pending_approval' || o.status === 'submitted' || o.status === 'failed');
 
     // Apply search filter
     const labSearch = (window._labSearchQuery || '').toLowerCase();
+    const isOrderedFilter = activeLabFilter === 'ordered';
     let filteredLabs = activeLabFilter === 'pending' ? pending
         : activeLabFilter === 'approved' ? approved
-            : allLabs;
-    if (labSearch) {
+            : isOrderedFilter ? []
+                : allLabs;
+    if (labSearch && !isOrderedFilter) {
         filteredLabs = filteredLabs.filter(l => {
             const name = (l.patient_name || l.patientName || '').toLowerCase();
             const testType = (l.test_type || l.testType || l.panel_name || '').toLowerCase();
             return name.includes(labSearch) || testType.includes(labSearch);
+        });
+    }
+
+    let filteredOrders = isOrderedFilter ? ordersOpen : [];
+    if (isOrderedFilter && labSearch) {
+        filteredOrders = filteredOrders.filter(o => {
+            const name = (o.patient_name || '').toLowerCase();
+            const tests = (Array.isArray(o.test_codes) ? o.test_codes.join(' ') : '').toLowerCase();
+            return name.includes(labSearch) || tests.includes(labSearch);
         });
     }
 
@@ -2260,6 +3110,8 @@ function renderLabsView(container) {
         <div class="labs-header">
             <button class="labs-header-tab ${activeLabFilter === 'pending' ? 'active' : ''}"
                     onclick="setLabFilter('pending')">Review Queue (${pending.length})</button>
+            <button class="labs-header-tab ${activeLabFilter === 'ordered' ? 'active' : ''}"
+                    onclick="setLabFilter('ordered')">Ordered (${ordersOpen.length})</button>
             <button class="labs-header-tab ${activeLabFilter === 'approved' ? 'active' : ''}"
                     onclick="setLabFilter('approved')">Approved (${approved.length})</button>
             <button class="labs-header-tab ${activeLabFilter === 'all' ? 'active' : ''}"
@@ -2271,16 +3123,130 @@ function renderLabsView(container) {
             ` : ''}
         </div>
         <div class="stagger-in" id="labsList">
-            ${filteredLabs.map(l => renderLabCard(l)).join('')}
-            ${filteredLabs.length === 0 ? renderEmptyState('🧪',
-        labSearch ? 'No results for "' + sanitize(labSearch) + '"'
-        : activeLabFilter === 'pending' ? 'No labs pending review' : 'No lab results',
-        activeLabFilter === 'pending' && !labSearch ? 'All caught up!' : '') : ''}
+            ${isOrderedFilter
+                ? (filteredOrders.map(o => renderLabOrderCard(o)).join('')
+                    + (filteredOrders.length === 0 ? renderEmptyState('🧪',
+                        labSearch ? 'No ordered labs match "' + sanitize(labSearch) + '"' : 'No ordered labs',
+                        labSearch ? '' : 'Tap "Order Lab" to place a new order.') : ''))
+                : (filteredLabs.map(l => renderLabCard(l)).join('')
+                    + (filteredLabs.length === 0 ? renderEmptyState('🧪',
+                        labSearch ? 'No results for "' + sanitize(labSearch) + '"'
+                            : activeLabFilter === 'pending' ? 'No labs pending review' : 'No lab results',
+                        activeLabFilter === 'pending' && !labSearch ? 'All caught up!' : '') : ''))}
         </div>
     `;
     // Restore focus to search input if it was active
     const si = document.getElementById('labSearchInput');
     if (si && labSearch) { si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
+}
+
+function renderLabOrderCard(order) {
+    const patientName = sanitize(order.patient_name || 'Unknown');
+    const tests = Array.isArray(order.test_codes) ? order.test_codes : [];
+    const testsLabel = tests.length ? tests.map(t => sanitize(String(t))).join(', ') : 'No test codes';
+    const status = order.status || 'pending';
+    const priority = order.priority || 'ROUTINE';
+    const provider = sanitize(order.ordering_provider || '');
+    const created = order.created_at ? new Date(order.created_at).toLocaleString('en-US', { timeZone: 'America/Phoenix', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+    const submitted = order.submitted_at ? new Date(order.submitted_at).toLocaleString('en-US', { timeZone: 'America/Phoenix', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+    const error = order.submission_error ? sanitize(order.submission_error) : '';
+    const orderId = order.id;
+    const canViewReq = status === 'submitted';
+
+    const statusStyles = {
+        submitted: { bg: '#dcfce7', fg: '#166534', label: '✓ Submitted' },
+        failed: { bg: '#fee2e2', fg: '#991b1b', label: '✗ Failed' },
+        pending_approval: { bg: '#ffedd5', fg: '#c2410c', label: '⏳ Pending Approval' },
+        pending: { bg: '#fef3c7', fg: '#92400e', label: '⏳ Pending' },
+    };
+    const s = statusStyles[status] || { bg: '#f1f5f9', fg: '#475569', label: sanitize(status) };
+    const isStat = priority === 'STAT';
+
+    return `
+        <div class="lab-card" style="border-left:4px solid ${s.fg};">
+            <div class="lab-card-header">
+                <div class="lab-patient-info">
+                    <div class="lab-patient-name">${patientName}</div>
+                    ${provider ? `<div class="lab-patient-dob">Ordered by ${provider}</div>` : ''}
+                </div>
+                <span style="display:inline-block; padding:4px 10px; border-radius:9999px; font-size:12px; font-weight:600; background:${s.bg}; color:${s.fg};">${s.label}</span>
+            </div>
+            <div class="lab-test-row">
+                <span class="lab-test-type">${testsLabel}</span>
+                <span style="display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; background:${isStat ? '#fee2e2' : '#f1f5f9'}; color:${isStat ? '#dc2626' : '#64748b'};">${sanitize(priority)}</span>
+            </div>
+            <div style="display:flex; gap:16px; font-size:12px; color:var(--text-tertiary); margin-top:6px;">
+                ${created ? `<span>Ordered ${created}</span>` : ''}
+                ${submitted ? `<span>Submitted ${submitted}</span>` : ''}
+            </div>
+            ${error ? `<div style="margin-top:8px; padding:8px 10px; background:#fee2e2; color:#991b1b; border-radius:6px; font-size:12px;">${error}</div>` : ''}
+            <div class="lab-actions" style="margin-top:10px;">
+                ${canViewReq ? `
+                    <button class="btn-view-pdf" onclick="event.stopPropagation(); openLabRequisition(${orderId})">
+                        📄 View Requisition
+                    </button>
+                ` : `
+                    <button class="btn-view-pdf" disabled style="opacity:0.5; cursor:not-allowed;">
+                        📄 Requisition unavailable
+                    </button>
+                `}
+            </div>
+        </div>
+    `;
+}
+
+async function openLabRequisition(orderId) {
+    // Reuses the iPad's existing PDF viewer modal (#pdfViewerModal) for parity with
+    // viewLabPdf. The /requisition route returns raw PDF bytes, so we fetch as a blob
+    // and point the iframe at an object URL.
+    const modal = document.getElementById('pdfViewerModal');
+    const iframe = document.getElementById('pdfViewerFrame');
+    const title = document.getElementById('pdfViewerTitle');
+    const actions = document.getElementById('pdfViewerActions');
+    const loading = document.getElementById('pdfViewerLoading');
+    const url = `/ops/api/labs/orders/${orderId}/requisition`;
+
+    if (!modal || !iframe) {
+        window.open(url, '_blank');
+        return;
+    }
+
+    if (title) title.textContent = `Lab Requisition #${orderId}`;
+    if (actions) actions.innerHTML = '';
+    iframe.src = '';
+    iframe.style.display = 'none';
+    modal.classList.add('visible');
+    if (loading) loading.style.display = 'flex';
+
+    try {
+        const resp = await fetch(url, { credentials: 'include' });
+        if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            if (loading) {
+                loading.innerHTML = `
+                    <div class="empty-icon">📄</div>
+                    <h3>Requisition unavailable</h3>
+                    <p>${resp.status === 404 ? 'No requisition PDF on file for this order.' : 'HTTP ' + resp.status}</p>
+                `;
+            }
+            console.warn('[Lab Requisition]', resp.status, errText.substring(0, 200));
+            return;
+        }
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        iframe.src = blobUrl;
+        iframe.style.display = 'block';
+        if (loading) loading.style.display = 'none';
+    } catch (e) {
+        console.warn('[Lab Requisition] fetch failed:', e);
+        if (loading) {
+            loading.innerHTML = `
+                <div class="empty-icon">⚠️</div>
+                <h3>Error loading requisition</h3>
+                <p>${(e && e.message) || 'Network error'}</p>
+            `;
+        }
+    }
 }
 
 function setLabFilter(filter) {
@@ -2292,6 +3258,26 @@ function setLabFilter(filter) {
 // Prevents the search input from being destroyed/rebuilt on each keystroke.
 function updateLabsFiltering() {
     var labSearch = (window._labSearchQuery || '').toLowerCase();
+    var listEl = document.getElementById('labsList');
+    if (!listEl) return;
+
+    if (activeLabFilter === 'ordered') {
+        var ordersOpen = labOrders.filter(function(o) {
+            return o.status === 'pending' || o.status === 'pending_approval' || o.status === 'submitted' || o.status === 'failed';
+        });
+        if (labSearch) {
+            ordersOpen = ordersOpen.filter(function(o) {
+                var name = (o.patient_name || '').toLowerCase();
+                var tests = (Array.isArray(o.test_codes) ? o.test_codes.join(' ') : '').toLowerCase();
+                return name.includes(labSearch) || tests.includes(labSearch);
+            });
+        }
+        listEl.innerHTML = ordersOpen.map(function(o) { return renderLabOrderCard(o); }).join('')
+            + (ordersOpen.length === 0 ? renderEmptyState('🧪',
+                labSearch ? 'No ordered labs match "' + sanitize(labSearch) + '"' : 'No ordered labs', '') : '');
+        return;
+    }
+
     var allLabs = labsQueue;
     var pending = allLabs.filter(function(l) { return l.status === 'pending_review' || l.status === 'pending' || l.status === 'needs_review'; });
     var approved = allLabs.filter(function(l) { return l.status === 'approved' || l.status === 'reviewed'; });
@@ -2305,12 +3291,9 @@ function updateLabsFiltering() {
             return name.includes(labSearch) || testType.includes(labSearch);
         });
     }
-    var listEl = document.getElementById('labsList');
-    if (listEl) {
-        listEl.innerHTML = filteredLabs.map(function(l) { return renderLabCard(l); }).join('')
-            + (filteredLabs.length === 0 ? renderEmptyState('🧪',
-                labSearch ? 'No results for "' + sanitize(labSearch) + '"' : 'No lab results', '') : '');
-    }
+    listEl.innerHTML = filteredLabs.map(function(l) { return renderLabCard(l); }).join('')
+        + (filteredLabs.length === 0 ? renderEmptyState('🧪',
+            labSearch ? 'No results for "' + sanitize(labSearch) + '"' : 'No lab results', '') : '');
 }
 
 function renderLabCard(lab) {
@@ -2526,8 +3509,14 @@ function closeLabPdf() {
 async function loadScribeSessions() {
     try {
         const data = await apiFetch('/ops/api/scribe/sessions/?limit=30');
+        // FIX(2026-04-22): previously the else branch was missing, so a soft API failure
+        // ({ success:false } or non-array data) left scribeSessions stale — transcription
+        // completion notifications would never fire because the list had the old records.
         if (data?.success && Array.isArray(data.data)) {
             scribeSessions = data.data;
+        } else {
+            console.warn('[Scribe] Unexpected sessions response shape:', data);
+            scribeSessions = [];
         }
         scribeLoaded = true;
 
@@ -2756,7 +3745,7 @@ function debouncedPatientSearch(searchText) {
     
     _pickerSearchTimeout = setTimeout(async () => {
         try {
-            const resp = await fetch(`/ops/api/patients/search/?q=${encodeURIComponent(searchText)}`);
+            const resp = await fetch(`/ops/api/patients/search/?q=${encodeURIComponent(searchText)}`, { credentials: 'include' });
             const data = await resp.json();
             if (data.success && data.patients && data.patients.length > 0) {
                 renderPatientPickerList(data.patients);
@@ -3146,8 +4135,14 @@ async function beginScribeCapture() {
         recordingMimeType = getRecordingMimeType();
         const recorderOptions = recordingMimeType ? { mimeType: recordingMimeType } : {};
         mediaRecorder = new MediaRecorder(stream, recorderOptions);
-        // Update recordingMimeType to what the browser actually chose
+        // FIX(2026-04-22): Capture what the browser actually chose for MIME type.
+        // On iOS Safari, isTypeSupported may return false for all candidates but
+        // MediaRecorder still works — it picks its own type (usually audio/mp4).
+        // If mimeType is still empty, default to 'audio/mp4' on Apple devices, 'audio/webm' elsewhere.
         recordingMimeType = mediaRecorder.mimeType || recordingMimeType;
+        if (!recordingMimeType) {
+            recordingMimeType = /iPad|iPhone|Macintosh/.test(navigator.userAgent) ? 'audio/mp4' : 'audio/webm';
+        }
         console.log('[Scribe] MediaRecorder created with mimeType:', mediaRecorder.mimeType);
 
         mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
@@ -4024,7 +5019,22 @@ async function submitNoteToHealthie() {
         });
 
         if (result?.success) {
-            showToast('Note submitted to Healthie! ✅', 'success');
+            // FIX(2026-04-22): surface partial failures so providers don't see a misleading ✅
+            // when Healthie actually rejected the signature, PDF, allergies, or vitals.
+            const failures = result?.data?.partial_failures || [];
+            if (failures.length > 0) {
+                const human = failures.map(f => ({
+                    lock: 'chart lock',
+                    sign: 'provider signature',
+                    pdf: 'PDF upload',
+                    supplementary_docs: 'work/discharge docs',
+                    allergies: 'allergies',
+                    vitals: 'vitals',
+                })[f] || f).join(', ');
+                showToast(`⚠️ Note submitted — failed: ${human}. Chart may be incomplete.`, 'warning', 8000);
+            } else {
+                showToast('Note submitted to Healthie! ✅', 'success');
+            }
 
             // Auto-advance appointment to "Completed"
             var patId = activeScribeSession?.patient_id || '';
@@ -4568,8 +5578,22 @@ async function loadChartData(patientId) {
             subscriptions: healthieChart?.subscriptions || [],
             recurring_payment: healthieChart?.recurring_payment || null,
             pending_forms: healthieChart?.pending_forms || [],
+            removed_diagnoses: healthieChart?.removed_diagnoses || [],
+            confirmed_diagnoses: healthieChart?.confirmed_diagnoses || [],
         };
         renderChartPanel(content);
+
+        // BACKGROUND: Load family data (non-blocking)
+        timedFetch(`/ops/api/ipad/patient/${patientId}/`, 10000).then(patientData => {
+            var familyData = patientData?.data?.family || patientData?.family;
+            if (familyData && chartPanelPatientId === patientId && thisLoadId === _chartLoadId) {
+                chartPanelData.family = familyData;
+                var familySection = document.getElementById('chartFamilySection');
+                if (familySection) {
+                    familySection.innerHTML = renderFamilyConnectionsSection(patientId, familyData);
+                }
+            }
+        }).catch(function() {});
 
         // BACKGROUND: Load 360 data for labs/visits/alerts (non-blocking)
         timedFetch(`/ops/api/patients/${patientId}/360/`, 20000).then(local360 => {
@@ -4589,6 +5613,7 @@ async function loadChartData(patientId) {
                 chartPanelData.visits = local360.visits || [];
                 chartPanelData.alerts = local360.alerts || [];
                 chartPanelData.controlled_substances = local360.controlled_substances || [];
+                chartPanelData.family = local360.family || chartPanelData.family || null;
                 chartPanelData.healthie_id = chartPanelData.healthie_id || local360.demographics?.healthie_client_id || '';
                 // Re-render with full data if chart is still open for this patient
                 const refreshContent = document.getElementById('globalChartContent') || document.getElementById('chartPanelContent');
@@ -4800,7 +5825,9 @@ async function changePatientGroup(groupId, groupName) {
 }
 
 // Common service tags for quick-add
-const COMMON_TAGS = ['pelleting', 'weight-loss', 'peptides', 'iv-therapy', 'telehealth', 'first-responder'];
+// FIX(2026-04-16): Removed 'first-responder' — that's a patient flag (Interesting),
+// not a service tag. These tags unlock specific appointment types via service_tag_config.
+const COMMON_TAGS = ['pelleting', 'weight-loss', 'peptides', 'iv-therapy', 'telehealth'];
 
 async function showTagPicker() {
     const healthieId = getChartHealthieId();
@@ -4818,7 +5845,7 @@ async function showTagPicker() {
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
                 ${COMMON_TAGS.map(tag => `
                     <button onclick="addTagToPatient('${tag}')"
-                        style="padding:6px 12px;border-radius:6px;background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.3);color:#a855f7;font-size:11px;font-weight:500;cursor:pointer;">
+                        style="padding:6px 12px;border-radius:6px;background:rgba(0,212,255,0.12);border:1px solid rgba(0,212,255,0.4);color:#00D4FF;font-size:11px;font-weight:600;cursor:pointer;">
                         ${tag}
                     </button>
                 `).join('')}
@@ -4926,7 +5953,8 @@ async function removeTagFromPatient(tagId, tagName) {
 // Healthie portal URLs (secure.gethealthie.com/video_calls/) require Healthie login which iPad doesn't have.
 // Now uses session_id + generated_token from Healthie API with Vonage Web SDK.
 // FIX(2026-03-31): Pass patient_id to video page for chart access and scribe recording
-async function startProviderVideoCall(appointmentId, patientName, patientId) {
+// FIX(2026-03-31): Pass patient_id to video page for chart access and scribe recording
+function startProviderVideoCall(appointmentId, patientName, patientId) {
     showToast('Launching video call...', 'info');
     var encodedName = encodeURIComponent(patientName || 'Patient');
     var videoUrl = '/ops/ipad/video.html?appointment_id=' + appointmentId + '&patient_name=' + encodedName + '&patient_id=' + encodeURIComponent(patientId || '');
@@ -5090,14 +6118,27 @@ async function deleteVital(vitalId, source, btnEl, patientId, category, value, d
         const result = await resp.json();
 
         if (result.success) {
-            // Also delete the paired diastolic entry if this was a BP
+            // Also delete the paired diastolic entry if this was a BP.
+            // FIX(2026-04-22): previously .catch(()=>{}) let a failed diastolic delete
+            // pass as "✅ Removed" leaving half a BP reading in the DB. Now awaited + warned.
+            let diastolicWarning = '';
             if (diaId && diaId !== 'null' && diaId !== '') {
-                fetch(`/ops/api/ipad/vitals?id=${encodeURIComponent(diaId)}&source=${source}&patient_id=${encodeURIComponent(patientId || '')}&category=Blood Pressure Diastolic&value=`, {
-                    method: 'DELETE', credentials: 'include'
-                }).catch(() => {});
+                try {
+                    const diaResp = await fetch(`/ops/api/ipad/vitals?id=${encodeURIComponent(diaId)}&source=${source}&patient_id=${encodeURIComponent(patientId || '')}&category=Blood Pressure Diastolic&value=`, {
+                        method: 'DELETE', credentials: 'include'
+                    });
+                    if (!diaResp.ok) {
+                        diastolicWarning = ' (diastolic remained — manual cleanup needed)';
+                        console.warn('[Vital Delete] Diastolic delete failed:', diaResp.status);
+                    }
+                } catch (diaErr) {
+                    diastolicWarning = ' (diastolic delete error — manual cleanup needed)';
+                    console.warn('[Vital Delete] Diastolic delete threw:', diaErr);
+                }
             }
             const count = result.deleted_count || 1;
-            showToast(`✅ Removed ${count > 1 ? count + ' vitals (incl. duplicates)' : 'vital'}`, 'success');
+            const toastType = diastolicWarning ? 'warning' : 'success';
+            showToast(`${diastolicWarning ? '⚠️' : '✅'} Removed ${count > 1 ? count + ' vitals (incl. duplicates)' : 'vital'}${diastolicWarning}`, toastType);
             // Remove from cached data — remove all matching category+value (duplicates)
             if (chartPanelData?.healthie_vitals) {
                 if (category && value) {
@@ -5349,17 +6390,19 @@ function renderChartPanel(content) {
     content.innerHTML = `
         <!-- Patient Photo + Demographics -->
         <div style="padding:0 4px; border-bottom:1px solid rgba(255,255,255,0.08); margin-bottom:0;">
-            <div style="display:flex; align-items:center; gap:12px; padding:10px 0 6px;">
-                ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan);" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border);">\ud83d\udc64</div>`}
-                <div style="flex:1;">
-                    <div style="font-size:15px; font-weight:600; color:var(--text-primary);">${demo.full_name || 'Unknown'}</div>
+            <div style="display:flex; align-items:center; gap:12px; padding:10px 0 6px; flex-wrap:wrap;">
+                ${d.avatar_url ? `<img src="${d.avatar_url}" style="width:48px; height:48px; border-radius:50%; object-fit:cover; border:2px solid var(--cyan); flex-shrink:0;" />` : `<div style="width:48px; height:48px; border-radius:50%; background:var(--surface-2); display:flex; align-items:center; justify-content:center; font-size:20px; border:2px solid var(--border); flex-shrink:0;">\ud83d\udc64</div>`}
+                <div style="flex:1; min-width:0;">
+                    <div style="font-size:15px; font-weight:600; color:var(--text-primary); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span>${demo.full_name || 'Unknown'}</span>
+                        <button onclick="closeGlobalChart()" style="padding:2px 8px; border-radius:5px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer; flex-shrink:0; margin-left:auto;" title="Close chart">✕</button>
+                    </div>
                     <div style="font-size:11px; color:var(--text-tertiary);">${demo.dob && isNaN(Number(demo.dob)) && demo.dob.includes('-') ? `DOB: ${formatDateDisplay(demo.dob)} (${calcAge(demo.dob)}yo)` : ''} ${demo.gender ? '\u00b7 ' + demo.gender : ''} ${demo.pronouns ? '(' + demo.pronouns + ')' : ''} ${d.healthie_id ? '\u00b7 <span style="font-family:monospace; font-size:10px; opacity:0.6;">HID: ' + d.healthie_id + '</span>' : ''}</div>
                 </div>
-                <div style="display:flex; gap:6px; align-items:center;">
+                <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; width:100%;">
                     <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
                     <button onclick="showResetPasswordDialog()" style="padding:4px 10px; border-radius:6px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); color:var(--yellow); font-size:11px; font-weight:600; cursor:pointer;" title="Reset patient Healthie password">🔑 Password</button>
                     <button onclick="toggleInterestingPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.2); color:#a855f7; font-size:11px; font-weight:600; cursor:pointer;" title="Interesting facts about this patient">⭐ Interesting</button>
-                    <button onclick="closeGlobalChart()" style="padding:4px 10px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; font-weight:600; cursor:pointer;" title="Close chart">✕</button>
                 </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
@@ -5382,7 +6425,7 @@ function renderChartPanel(content) {
             </div>` : ''}
             <div id="patientTagsSection" style="padding:2px 0 6px;">
                 <div style="display:flex; flex-wrap:wrap; gap:3px; align-items:center;">
-                    ${(demo.tags || []).map(t => `<span class="patient-tag-badge" data-tag-id="${t.id}" data-tag-name="${t.name}" style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7; cursor:pointer; display:inline-flex; align-items:center; gap:3px;" onclick="confirmRemoveTag('${t.id}', '${t.name}')" title="Click to remove">${t.name} <span style="opacity:0.5;">\u00d7</span></span>`).join('')}
+                    ${(demo.tags || []).map(t => `<span class="patient-tag-badge" data-tag-id="${t.id}" data-tag-name="${t.name}" style="font-size:10px; padding:3px 8px; border-radius:5px; background:rgba(0,212,255,0.15); color:#00D4FF; cursor:pointer; display:inline-flex; align-items:center; gap:3px; font-weight:500;" onclick="confirmRemoveTag('${t.id}', '${t.name}')" title="Click to remove">${t.name} <span style="opacity:0.5;">\u00d7</span></span>`).join('')}
                     <span onclick="showTagPicker()" style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(0,212,255,0.1); color:var(--cyan); cursor:pointer; border:1px dashed rgba(0,212,255,0.3);" title="Add tag">+ Tag</span>
                 </div>
             </div>
@@ -5436,6 +6479,31 @@ function renderChartPanel(content) {
         </div>
 
         <!-- WORKING DIAGNOSES (ICD-10 codes from chart notes) -->
+        ${(() => {
+            const confirmedMap = {};
+            (d.confirmed_diagnoses || []).forEach(c => { confirmedMap[c.code] = c; });
+            function renderDxChip(dx) {
+                const conf = confirmedMap[dx.code];
+                const isVerified = dx.verified !== false;
+                const isConfirmed = !!conf;
+                const bgColor = isConfirmed ? 'rgba(34,197,94,0.15)' : isVerified ? 'rgba(168,85,247,0.15)' : 'rgba(245,158,11,0.15)';
+                const borderColor = isConfirmed ? 'rgba(34,197,94,0.3)' : isVerified ? 'rgba(168,85,247,0.2)' : 'rgba(245,158,11,0.3)';
+                const textColor = isConfirmed ? '#22c55e' : isVerified ? '#a855f7' : '#f59e0b';
+                const confDate = isConfirmed ? formatDateDisplay(conf.confirmed_at) : '';
+                const confBy = isConfirmed ? (conf.confirmed_by || 'Provider') : '';
+                const badge = isConfirmed
+                    ? '<span style="font-size:8px; padding:1px 4px; background:rgba(34,197,94,0.2); color:#22c55e; border-radius:3px; white-space:nowrap;">✓ ' + confBy + ' · ' + confDate + '</span>'
+                    : !isVerified ? '<span style="font-size:8px; padding:1px 4px; background:rgba(245,158,11,0.2); color:#f59e0b; border-radius:3px;">⚠ Unverified Code</span>' : '';
+                const safeDesc = (dx.description || '').replace(/'/g, "\\'");
+                const confirmBtn = !isConfirmed ? '<button onclick="confirmDiagnosis(\'' + dx.code + '\', \'' + safeDesc + '\')" style="background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.3); color:#22c55e; cursor:pointer; padding:3px 6px; font-size:10px; line-height:1; border-radius:4px;" title="Confirm diagnosis">✓</button>' : '';
+                const removeBtn = (currentUser?.role === 'admin' || currentUser?.is_provider) ? '<button onclick="removeDiagnosis(\'' + dx.code + '\', \'' + safeDesc + '\')" style="background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:#ef4444; cursor:pointer; padding:3px 6px; font-size:10px; line-height:1; border-radius:4px;" title="Remove diagnosis">✕</button>' : '';
+                return '<div style="font-size:11px; padding:4px 8px; border-radius:6px; background:' + bgColor + '; color:' + textColor + '; border:1px solid ' + borderColor + '; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">'
+                    + '<span><span style="font-family:monospace; font-weight:600;">' + dx.code + '</span> — ' + dx.description + '</span>'
+                    + badge
+                    + '<div style="display:flex; gap:3px; margin-left:auto;">' + confirmBtn + removeBtn + '</div>'
+                    + '</div>';
+            }
+            return `
         <div id="diagnoses-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
             <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
                 <span>\ud83c\udff7\ufe0f Working Diagnoses (${workingDiagnoses.length})</span>
@@ -5445,14 +6513,15 @@ function renderChartPanel(content) {
                 </div>
             </div>
             ${workingDiagnoses.length > 0 ? `
-            <div style="display:flex; flex-wrap:wrap; gap:4px;">
-                ${workingDiagnoses.slice(0, 3).map(dx => `<span style="font-size:11px; padding:3px 6px 3px 8px; border-radius:6px; background:rgba(168,85,247,0.15); color:#a855f7; border:1px solid rgba(168,85,247,0.2); line-height:1.4; display:inline-flex; align-items:center; gap:6px;"><span><span style="font-family:monospace; font-weight:600;">${dx.code}</span> — ${dx.description}</span>${(currentUser?.role === 'admin' || currentUser?.is_provider) ? `<button onclick="removeDiagnosis('${dx.code}', '${dx.description.replace(/'/g, "\\'")}')" style="background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:#ef4444; cursor:pointer; padding:4px 7px; font-size:11px; line-height:1; border-radius:4px; margin-left:2px; min-width:24px; min-height:24px; display:inline-flex; align-items:center; justify-content:center;" title="Remove diagnosis">✕</button>` : ''}</span>`).join('')}
+            <div style="display:flex; flex-direction:column; gap:4px;">
+                ${workingDiagnoses.slice(0, 3).map(renderDxChip).join('')}
             </div>
             ${workingDiagnoses.length > 3 ? `
-            <div id="diagnoses-expanded" class="hidden" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; padding-top:4px; border-top:1px solid rgba(168,85,247,0.1);">
-                ${workingDiagnoses.slice(3).map(dx => `<span style="font-size:11px; padding:3px 6px 3px 8px; border-radius:6px; background:rgba(168,85,247,0.15); color:#a855f7; border:1px solid rgba(168,85,247,0.2); line-height:1.4; display:inline-flex; align-items:center; gap:6px;"><span><span style="font-family:monospace; font-weight:600;">${dx.code}</span> — ${dx.description}</span>${(currentUser?.role === 'admin' || currentUser?.is_provider) ? `<button onclick="removeDiagnosis('${dx.code}', '${dx.description.replace(/'/g, "\\'")}')" style="background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:#ef4444; cursor:pointer; padding:4px 7px; font-size:11px; line-height:1; border-radius:4px; margin-left:2px; min-width:24px; min-height:24px; display:inline-flex; align-items:center; justify-content:center;" title="Remove diagnosis">✕</button>` : ''}</span>`).join('')}
+            <div id="diagnoses-expanded" class="hidden" style="display:flex; flex-direction:column; gap:4px; margin-top:4px; padding-top:4px; border-top:1px solid rgba(168,85,247,0.1);">
+                ${workingDiagnoses.slice(3).map(renderDxChip).join('')}
             </div>` : ''}` : '<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No working diagnoses</div>'}
-        </div>
+        </div>`;
+        })()}
 
         <!-- MEDICATIONS (always visible — upgraded with prescriptions + controlled substance badges) -->
         <div id="medications-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
@@ -5492,13 +6561,21 @@ function renderChartPanel(content) {
         <!-- Controlled Substance Alert (if any) -->
         ${renderControlledSubstanceAlert(d)}
 
-        <!-- Kiosk Mode: Hand iPad to Patient (chart header) -->
-        ${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? `
-        <div style="padding:6px 12px;">
-            <button class="kiosk-launch-btn" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify((d.pending_forms || []).filter(f => f.status !== 'completed')).replace(/"/g, '&quot;')}, '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="width:100%; justify-content:center; padding:10px 16px; font-size:13px;">
+        <!-- Kiosk Mode: Hand iPad to Patient + Send Forms (chart header) -->
+        <div style="padding:6px 12px; display:flex; gap:6px;">
+            ${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? `
+            <button class="kiosk-launch-btn" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify((d.pending_forms || []).filter(f => f.status !== 'completed')).replace(/"/g, '&quot;')}, '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}', ${JSON.stringify(demo || {}).replace(/"/g, '&quot;')})" style="flex:1; justify-content:center; padding:10px 16px; font-size:13px;">
                 📋 Hand iPad to Patient <span class="kiosk-badge">${(d.pending_forms || []).filter(f => f.status !== 'completed').length}</span>
+            </button>` : ''}
+            <button onclick="showSendFormsModal('${d.healthie_id || ''}', '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="${(d.pending_forms || []).filter(f => f.status !== 'completed').length > 0 ? '' : 'flex:1;'} padding:10px 16px; font-size:13px; background:rgba(0,212,255,0.12); border:1px solid rgba(0,212,255,0.35); border-radius:8px; color:var(--cyan); font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px;">
+                📨 Send Forms
             </button>
-        </div>` : ''}
+        </div>
+
+        <!-- Family Connections (loaded from 360 data) -->
+        <div id="chartFamilySection" style="padding:4px 8px;">
+            ${d.family ? renderFamilyConnectionsSection(chartPanelPatientId, d.family) : '<div class="patient-360-section" style="padding:6px 0;"><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:13px;">Family Connections</h3><button class="btn-secondary btn-sm" onclick="openLinkFamilyModal(\'' + chartPanelPatientId + '\')" style="font-size:11px;">+ Link Family Member</button></div><div style="padding:4px 0; font-size:11px; color:var(--text-tertiary);">Loading…</div></div>'}
+        </div>
 
         <!-- Consolidated Tabs -->
         <div class="chart-tab-nav" style="gap:0; padding:4px 8px;">
@@ -6130,7 +7207,12 @@ async function submitEditMedication(medId) {
         });
 
         if (resp.success) {
-            showToast('Medication updated', 'success');
+            // FIX(2026-04-23): Show warning if name/dosage were locked (DoseSpot-mirrored medication)
+            if (resp.warning) {
+                showToast(resp.warning, 'info');
+            } else {
+                showToast('Medication updated', 'success');
+            }
             document.getElementById('editMedOverlay')?.remove();
             loadChartData(chartPanelPatientId);
         } else {
@@ -6529,6 +7611,22 @@ function renderChartingTab(container, d) {
     const alerts = d.alerts || [];
     const scribeHist = d.scribe_history || [];
 
+    // FIX(2026-05-20): list BOTH past and future appointments (Phil request). The API now
+    // pulls filter:"all" from Healthie; split into upcoming (soonest first) + past (most
+    // recent first) so the chart shows the full appointment history, not just upcoming.
+    const _apptMs = (a) => { const t = new Date(a && a.date ? a.date : 0).getTime(); return isNaN(t) ? 0 : t; };
+    const _nowMs = Date.now();
+    const upcomingAppts = hAppts.filter(a => _apptMs(a) >= _nowMs).sort((a, b) => _apptMs(a) - _apptMs(b));
+    const pastAppts = hAppts.filter(a => _apptMs(a) < _nowMs).sort((a, b) => _apptMs(b) - _apptMs(a));
+    const apptCard = (a, upcoming) => `
+                    <div class="chart-visit-card"${upcoming ? ' style="border-left:2px solid var(--cyan);"' : ''}>
+                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
+                        <div style="flex:1">
+                            <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
+                            <div class="chart-med-detail">${a.provider?.full_name || ''}${a.pm_status ? ' · ' + a.pm_status : ''}</div>
+                        </div>
+                    </div>`;
+
     function fmtDate(dt) {
         if (!dt) return '—';
         try { const dd = new Date(dt); return isNaN(dd.getTime()) ? '—' : dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE }); } catch { return '—'; }
@@ -6617,6 +7715,21 @@ function renderChartingTab(container, d) {
     });
 
     container.innerHTML = `
+        <!-- Appointments — always visible, expanded, top of chart. FIX(2026-05-20): was a collapsed
+             section buried below Clinical Notes that vanished entirely when a patient had no upcoming
+             appts, so it read as "missing." Now always shown with an empty state. -->
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>📅 Appointments (${hAppts.length})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${hAppts.length > 0 ? `
+                    ${upcomingAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700; padding:2px 2px 4px;">Upcoming (${upcomingAppts.length})</div>${upcomingAppts.map(a => apptCard(a, true)).join('')}` : ''}
+                    ${pastAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; padding:10px 2px 4px;">Past (${pastAppts.length})</div>${pastAppts.slice(0, 15).map(a => apptCard(a, false)).join('')}${pastAppts.length > 15 ? `<div style="font-size:10px; color:var(--text-tertiary); padding:6px 2px;">+ ${pastAppts.length - 15} older not shown</div>` : ''}` : ''}
+                ` : '<div class="chart-empty" style="padding:12px; text-align:center; color:var(--text-tertiary);">No appointments on file</div>'}
+            </div>
+        </div>
         <!-- All Clinical Notes (unified timeline) -->
         <div class="chart-section">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
@@ -6681,26 +7794,6 @@ function renderChartingTab(container, d) {
                 }).join('') : '<div class="chart-empty" style="padding:16px; text-align:center;">No clinical notes yet. Click Record Visit to create one.</div>'}
             </div>
         </div>
-<!-- Appointments -->
-        ${hAppts.length > 0 ? `
-        <div class="chart-section collapsed">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>\ud83d\udcc5 Appointments (${hAppts.length})</span>
-                <span class="chart-chevron">\u203a</span>
-            </div>
-            <div class="chart-section-body">
-                ${hAppts.slice(0, 10).map(a => `
-                    <div class="chart-visit-card">
-                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
-                        <div style="flex:1">
-                            <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
-                            <div class="chart-med-detail">${a.provider?.full_name || ''} \u00b7 ${a.pm_status || a.status || ''}</div>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-        ` : ''}
         <!-- Alerts -->
         ${alerts.length > 0 ? `
         <div class="chart-section collapsed">
@@ -6723,6 +7816,28 @@ function renderChartingTab(container, d) {
 
 // ==================== FORMS TAB ====================
 // Shows: Patient intake/medical forms (NOT SOAP notes — those go in Charting)
+// Cancel a Healthie form for the patient. Pass requestId for pending requests, or
+// answerGroupId for completed/in-progress submissions (e.g., empty kiosk stubs).
+async function cancelPatientForm(requestId, answerGroupId, formName) {
+    const what = requestId ? 'cancel' : 'delete';
+    if (!confirm(`${what === 'cancel' ? 'Cancel' : 'Delete'} "${formName}"?\n\nThis cannot be undone.`)) return;
+    try {
+        const body = requestId ? { request_id: requestId } : { answer_group_id: answerGroupId };
+        const r = await apiFetch('/ops/api/ipad/forms/cancel/', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+        if (r.success) {
+            showToast(`${what === 'cancel' ? 'Cancelled' : 'Deleted'} ${formName}`, 'success');
+            if (chartPanelPatientId) loadChartData(chartPanelPatientId);
+        } else {
+            showToast('Failed: ' + (r.error || 'Unknown error'), 'error');
+        }
+    } catch (e) {
+        showToast('Failed: ' + (e.message || 'Network error'), 'error');
+    }
+}
+
 function renderFormsTab(container, d) {
     // Kiosk launch button in Intake Forms tab
     const pendingKioskForms = (d.pending_forms || []).filter(f => f.status !== 'completed');
@@ -6730,7 +7845,7 @@ function renderFormsTab(container, d) {
         const kioskBtnDiv = document.createElement('div');
         kioskBtnDiv.style.cssText = 'padding:8px 12px;';
         kioskBtnDiv.innerHTML = `
-            <button class="kiosk-launch-btn-large" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify(pendingKioskForms).replace(/"/g, '&quot;')}, '${((d.demographics || {}).full_name || 'Patient').replace(/'/g, "\\'")}')">
+            <button class="kiosk-launch-btn-large" onclick="launchKioskMode('${chartPanelPatientId}', '${d.healthie_id || ''}', ${JSON.stringify(pendingKioskForms).replace(/"/g, '&quot;')}, '${((d.demographics || {}).full_name || 'Patient').replace(/'/g, "\\'")}', ${JSON.stringify(d.demographics || {}).replace(/"/g, '&quot;')})">
                 📋 Hand iPad to Patient — ${pendingKioskForms.length} form${pendingKioskForms.length > 1 ? 's' : ''} pending
             </button>
         `;
@@ -6738,6 +7853,7 @@ function renderFormsTab(container, d) {
     }
 
     const allForms = d.healthie_chart_notes || [];
+    const allPending = d.pending_forms || [];
     const cleanAnswer = (txt) => (txt || '').replace(/Invalid Date/gi, '').replace(/&nbsp;/gi, ' ').replace(/<[^>]+>/g, '').replace(/\s{2,}/g, ' ').trim() || '—';
     // Filter OUT SOAP/chart notes — keep only patient-filled forms (intake, consent, history, etc.)
     const patientForms = allForms.filter(n => {
@@ -6757,18 +7873,51 @@ function renderFormsTab(container, d) {
         return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
     });
 
+    // FIX(2026-04-15): show ALL forms (filled and unfilled). No dedup — Brandy Campbell case
+    // proved that "completed" form_answer_groups can be empty stubs (kiosk bail-out artifacts),
+    // so we want to see both the pending request AND the empty completed shell so staff can
+    // cancel/clean either one.
+    const pendingForms = allPending.filter(p => p.status !== 'completed');
+    const pendingCards = pendingForms.map(p => {
+        const statusLabel = p.status === 'in_progress' ? 'IN PROGRESS' : 'NOT STARTED';
+        const statusColor = p.status === 'in_progress' ? '#f59e0b' : '#94a3b8';
+        const isOnboarding = p.source === 'onboarding';
+        const sourceLabel = isOnboarding
+            ? `<span style="font-size:9px; padding:2px 6px; border-radius:4px; background:rgba(168,85,247,0.15); color:#a855f7; font-weight:600;">${sanitize(p.flow_name || 'Onboarding')}</span>`
+            : '';
+        const dateLine = p.date ? `Sent ${formatDateDisplay(p.date)}` : (isOnboarding ? 'Onboarding flow item' : 'Requested');
+        // Cancel works only for requestedFormCompletions; onboarding items are baked into the
+        // patient's flow and removing them via API isn't supported. Hide the button there.
+        const cancelBtn = (!isOnboarding && p.request_id)
+            ? `<button onclick="event.stopPropagation(); cancelPatientForm('${p.request_id}', null, '${(p.name || 'this form').replace(/'/g, "\\'")}')" title="Cancel this form request" style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; padding:4px 8px; border-radius:5px; cursor:pointer; white-space:nowrap;">✕ Cancel</button>`
+            : '';
+        return `
+            <div class="chart-lab-card" style="margin:6px 12px; padding:12px 14px; border-radius:10px; background:var(--surface); border:1px solid ${statusColor}40; border-left:3px solid ${statusColor};">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:14px; font-weight:600; color:var(--text-primary); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">${sanitize(p.name || 'Form')} ${sourceLabel}</div>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${dateLine}</div>
+                    </div>
+                    <span style="font-size:9px; padding:3px 7px; border-radius:5px; background:${statusColor}20; color:${statusColor}; font-weight:700; white-space:nowrap;">${statusLabel}</span>
+                    ${cancelBtn}
+                </div>
+            </div>`;
+    }).join('');
+
     container.innerHTML = `
+        ${pendingCards}
         ${patientForms.length > 0 ? patientForms.slice(0, 20).map((n, idx) => {
             const intake = isIntake(n.name);
             // Auto-expand first intake form
             const expanded = intake && idx === 0;
             return `
             <div class="chart-lab-card" data-form-idx="${idx}" style="margin:6px 12px; padding:12px 14px; border-radius:10px; background:var(--surface); border:1px solid ${intake ? 'rgba(0,212,255,0.25)' : 'var(--border-light)'}; ${intake ? 'border-left:3px solid var(--cyan);' : ''} cursor:pointer;">
-                <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                    <div style="flex:1; min-width:0;">
                         <div style="font-size:14px; font-weight:600; color:${intake ? 'var(--cyan)' : 'var(--text-primary)'};">${intake ? '⭐ ' : ''}${n.name || 'Form'}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${formatDateDisplay(n.created_at)}${n.form_answers?.length ? ' · ' + n.form_answers.length + ' fields' : ''}</div>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${formatDateDisplay(n.created_at)}${n.form_answers?.length ? ' · ' + n.form_answers.length + ' fields' : ' · empty (no answers)'}</div>
                     </div>
+                    <button onclick="event.stopPropagation(); cancelPatientForm(null, '${n.id}', '${(n.name || 'this form').replace(/'/g, "\\'")}')" title="Delete this form submission" style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:11px; padding:4px 8px; border-radius:5px; cursor:pointer; white-space:nowrap;">✕</button>
                     <span style="font-size:14px; color:var(--text-tertiary); transition:transform 0.2s;" class="form-chevron">${expanded ? '▼' : '▶'}</span>
                 </div>
                 ${!expanded && n.form_answers?.length > 0 ? `<div style="margin-top:6px; font-size:12px; color:var(--text-tertiary); line-height:1.4;">${n.form_answers.slice(0, 3).map(a => '<b>' + (a.label || '') + ':</b> ' + cleanAnswer(a.displayed_answer || a.answer).substring(0, 60)).join(' · ')}${n.form_answers.length > 3 ? ' …' : ''}</div>` : ''}
@@ -6781,7 +7930,7 @@ function renderFormsTab(container, d) {
                     `).join('')}
                 </div>
             </div>`;
-        }).join('') : '<div class="chart-empty" style="padding:24px; text-align:center;">No patient forms on file</div>'}
+        }).join('') : (pendingCards ? '' : '<div class="chart-empty" style="padding:24px; text-align:center;">No patient forms on file</div>')}
     `;
 
     // Make form cards clickable to expand/collapse
@@ -6807,12 +7956,26 @@ function formatDobForEdit(isoDate) {
     return `${m[2]}/${m[3]}/${m[1]}`;
 }
 
-// Convert MM/DD/YYYY → YYYY-MM-DD for saving to DB/Healthie
+// FIX(2026-04-21): Convert MM/DD/YYYY → YYYY-MM-DD for saving to DB/Healthie.
+// Old fallback returned raw input as-is, which could send invalid formats to the API.
+// Now handles M/D/YYYY, already-ISO, and rejects anything else.
 function parseDobToISO(display) {
     if (!display) return '';
-    const m = String(display).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-    if (!m) return display; // fallback: return as-is if already ISO or unrecognized
-    return `${m[3]}-${m[1]}-${m[2]}`;
+    var s = String(display).trim();
+    if (!s) return '';
+    // Already ISO (YYYY-MM-DD)
+    var isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) return s;
+    // MM/DD/YYYY or M/D/YYYY (1-2 digit month/day)
+    var mdyMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (mdyMatch) {
+        var mm = mdyMatch[1].padStart(2, '0');
+        var dd = mdyMatch[2].padStart(2, '0');
+        return mdyMatch[3] + '-' + mm + '-' + dd;
+    }
+    // Unrecognized — return empty so the API gets null instead of garbage
+    console.warn('[parseDobToISO] Unrecognized format:', s);
+    return '';
 }
 
 // Auto-insert slashes as user types: 01 → 01/, 01/15 → 01/15/
@@ -7504,6 +8667,11 @@ function renderFinancialTab(container, d) {
             <button onclick="shipPeptidesToPatient()" style="width:100%; padding:14px; background:linear-gradient(135deg, #7c3aed, #6d28d9); color:white; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;">
                 📦 Ship Peptides to Patient
             </button>
+            ${currentUser?.email === 'admin@nowoptimal.com' ? `
+            <button onclick="orderPeptidesCompanyPaid()" style="width:100%; padding:14px; background:linear-gradient(135deg, #f59e0b, #d97706); color:white; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;">
+                🏥 Order for Patient (Company-Paid)
+            </button>
+            ` : ''}
         </div>
     `;
 }
@@ -7599,55 +8767,462 @@ function renderDispenseTab(container, d) {
 }
 
 
-function renderDocumentsTab(container, d) {
-    const hDocs = d.healthie_documents || [];
-    const labs = d.labs || {};
-    const labItems = labs.queue_items || d.queue_items || [];
-    const healthieLabs = labs.healthie_labs || d.healthie_labs || [];
+// Track how many documents are shown (for pagination)
+var _docsPageSize = 20;
+var _docsShown = 20;
+var _labDocsShown = 20;
 
-    container.innerHTML = `
-        <!-- Documents -->
-        <div class="chart-section${hDocs.length === 0 ? ' collapsed' : ''}">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>📁 Documents (${hDocs.length})</span>
-                <span class="chart-chevron">›</span>
-            </div>
-            <div class="chart-section-body">
-                ${hDocs.length > 0 ? hDocs.slice(0, 30).map(doc => {
-                    const formatDate = (d) => { try { if (!d) return ''; const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE }); } catch { return ''; } };
-                    return `<div class="chart-lab-card" style="cursor:pointer;" onclick="window.open('/ops/api/ipad/document/${doc.id}', '_blank')">
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <span style="font-size:18px;">${(doc.file_content_type || '').includes('pdf') ? '📄' : (doc.file_content_type || '').includes('image') ? '🖼️' : '📎'}</span>
-                            <div style="flex:1;">
-                                <div class="chart-lab-name">${doc.display_name || 'Document'}</div>
-                                <div class="chart-lab-detail">${doc.friendly_type || 'Document'} · ${formatDate(doc.created_at)}</div>
-                            </div>
-                        </div>
-                    </div>`;
-                }).join('') : '<div class="chart-empty">No documents</div>'}
-            </div>
-        </div>
-
-        <!-- Labs -->
-        <div class="chart-section${labItems.length + healthieLabs.length === 0 ? ' collapsed' : ''}">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>🧪 Lab Results (${labItems.length + healthieLabs.length})</span>
-                <span class="chart-chevron">›</span>
-            </div>
-            <div class="chart-section-body">
-                ${labItems.map(l => `
-                    <div class="chart-lab-card">
-                        <div class="chart-lab-name">${l.panel_names || l.lab_type || 'Lab Panel'}</div>
-                        <div class="chart-lab-detail">${l.ordered_date ? new Date(l.ordered_date).toLocaleDateString() : ''} · ${l.status || 'pending'}</div>
-                    </div>
-                `).join('')}
-                ${labItems.length === 0 && healthieLabs.length === 0 ? '<div class="chart-empty">No labs on file</div>' : ''}
-            </div>
-        </div>
-
-        ${hDocs.length === 0 && labItems.length === 0 ? '<div class="chart-empty" style="padding:24px; text-align:center;">No documents or records on file</div>' : ''}
-    `;
+// Detect if a Healthie document is a lab result by filename/description
+function isLabDocument(doc) {
+    if (doc._category === 'lab') return true;
+    if (doc._category === 'doc') return false;
+    var name = (doc.display_name || '').toLowerCase();
+    var desc = (doc.description || '').toLowerCase();
+    return name.startsWith('lab_results_') || name.startsWith('lab_result') ||
+        name.includes('lab_result') || name.includes('lab results') ||
+        desc.includes('lab results') || name.includes('pre required') ||
+        name.includes('pre_required') || /\blab\b.*\b(panel|draw|work)\b/.test(name);
 }
+
+function renderDocumentsTab(container, d) {
+    var hDocs = d.healthie_documents || [];
+    var labs = d.labs || {};
+    var labItems = labs.queue_items || d.queue_items || [];
+    var healthieLabs = labs.healthie_labs || d.healthie_labs || [];
+
+    _docsShown = _docsPageSize;
+    _labDocsShown = _docsPageSize;
+
+    var labDocs = hDocs.filter(isLabDocument);
+    var generalDocs = hDocs.filter(function(doc) { return !isLabDocument(doc); });
+    var totalLabCount = labItems.length + healthieLabs.length + labDocs.length;
+
+    var formatDocDate = function(d) { try { if (!d) return ''; var dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE }); } catch(e) { return ''; } };
+
+    function renderDocCard(doc, section) {
+        var isShared = doc.shared !== false;
+        var icon = (doc.file_content_type || '').includes('pdf') ? '📄' : (doc.file_content_type || '').includes('image') ? '🖼️' : '📎';
+        var visBtn = isShared
+            ? '<button onclick="event.stopPropagation(); toggleDocVisibility(\'' + doc.id + '\', false)" title="Hide from patient" style="padding:2px 6px; font-size:10px; font-weight:600; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.3); color:#22c55e; border-radius:4px; cursor:pointer; flex-shrink:0;">👁 Visible</button>'
+            : '<button onclick="event.stopPropagation(); toggleDocVisibility(\'' + doc.id + '\', true)" title="Share with patient" style="padding:2px 6px; font-size:10px; font-weight:600; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.3); color:#f59e0b; border-radius:4px; cursor:pointer; flex-shrink:0;">🔒 Hidden</button>';
+        var moveTarget = section === 'lab' ? 'doc' : 'lab';
+        var moveLabel = section === 'lab' ? '📁 Docs' : '🧪 Labs';
+        var moveBtn = '<button onclick="event.stopPropagation(); moveDocCategory(\'' + doc.id + '\', \'' + moveTarget + '\')" title="Move to ' + (moveTarget === 'lab' ? 'Lab Results' : 'Documents') + '" style="padding:2px 6px; font-size:10px; font-weight:600; background:rgba(99,102,241,0.12); border:1px solid rgba(99,102,241,0.3); color:#6366f1; border-radius:4px; cursor:pointer; flex-shrink:0;">' + moveLabel + '</button>';
+        return '<div class="chart-lab-card" id="doc-card-' + doc.id + '" style="cursor:pointer; display:flex; align-items:flex-start; gap:6px;">' +
+            '<input type="checkbox" class="fax-doc-checkbox" value="' + doc.id + '" data-name="' + sanitize(doc.display_name || 'Document') + '" onclick="event.stopPropagation()" style="width:16px; height:16px; accent-color:var(--cyan); flex-shrink:0; margin-top:2px;">' +
+            '<div style="flex:1; min-width:0;">' +
+                '<div onclick="window.open(\'/ops/api/ipad/document/' + doc.id + '\', \'_blank\')" style="display:flex; align-items:center; gap:8px;">' +
+                    '<span style="font-size:18px;">' + icon + '</span>' +
+                    '<div style="flex:1; min-width:0;">' +
+                        '<div class="chart-lab-name" style="word-break:break-word;">' + (doc.display_name || 'Document') + (!isShared ? ' <span style="font-size:9px; padding:1px 5px; background:rgba(245,158,11,0.15); color:#f59e0b; border-radius:4px; vertical-align:middle;">Provider Only</span>' : '') + '</div>' +
+                        '<div class="chart-lab-detail">' + (doc.friendly_type || 'Document') + ' · ' + formatDocDate(doc.created_at) + '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div style="display:flex; gap:6px; margin-top:6px; margin-left:26px;">' + moveBtn + visBtn + '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    var visibleDocs = generalDocs.slice(0, _docsShown);
+    var hasMoreDocs = generalDocs.length > _docsShown;
+    var visibleLabDocs = labDocs.slice(0, _labDocsShown);
+    var hasMoreLabDocs = labDocs.length > _labDocsShown;
+
+    container.innerHTML =
+        // Lab Results section (shown first)
+        '<div class="chart-section' + (totalLabCount === 0 ? ' collapsed' : '') + '">' +
+            '<div class="chart-section-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
+                '<span>🧪 Lab Results (' + totalLabCount + ')</span>' +
+                '<span class="chart-chevron">›</span>' +
+            '</div>' +
+            '<div class="chart-section-body" id="labDocsListContainer">' +
+                labItems.map(function(l) {
+                    return '<div class="chart-lab-card"><div class="chart-lab-name">' + (l.panel_names || l.lab_type || 'Lab Panel') + '</div><div class="chart-lab-detail">' + (l.ordered_date ? new Date(l.ordered_date).toLocaleDateString() : '') + ' · ' + (l.status || 'pending') + '</div></div>';
+                }).join('') +
+                visibleLabDocs.map(function(doc) { return renderDocCard(doc, 'lab'); }).join('') +
+                (hasMoreLabDocs ? '<button onclick="showMoreLabDocs()" style="width:100%; padding:10px; margin-top:4px; font-size:12px; font-weight:600; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; cursor:pointer;">Show More (' + (labDocs.length - _labDocsShown) + ' remaining)</button>' : '') +
+                (totalLabCount === 0 ? '<div class="chart-empty">No labs on file</div>' : '') +
+            '</div>' +
+        '</div>' +
+        // Documents section
+        '<div class="chart-section' + (generalDocs.length === 0 ? ' collapsed' : '') + '">' +
+            '<div class="chart-section-header" style="display:flex; align-items:center;" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
+                '<span>📁 Documents (' + generalDocs.length + ')</span>' +
+                (generalDocs.length > 0 ? '<button onclick="event.stopPropagation(); openFaxModal(\'' + (d.healthie_id || '') + '\', \'' + sanitize((d.demographics?.first_name || '') + ' ' + (d.demographics?.last_name || '')).replace(/'/g, '') + '\', \'' + sanitize(d.demographics?.dob || '').replace(/'/g, '') + '\')" style="margin-left:auto; margin-right:8px; padding:4px 10px; font-size:11px; font-weight:600; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); color:var(--cyan); border-radius:6px; cursor:pointer;">📠 Fax</button>' : '') +
+                '<span class="chart-chevron">›</span>' +
+            '</div>' +
+            '<div class="chart-section-body" id="docsListContainer">' +
+                (generalDocs.length > 0 ? visibleDocs.map(function(doc) { return renderDocCard(doc, 'doc'); }).join('') : '<div class="chart-empty">No documents</div>') +
+                (hasMoreDocs ? '<button onclick="showMoreDocs()" style="width:100%; padding:10px; margin-top:4px; font-size:12px; font-weight:600; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; cursor:pointer;">Show More (' + (generalDocs.length - _docsShown) + ' remaining)</button>' : '') +
+            '</div>' +
+        '</div>' +
+        (generalDocs.length === 0 && totalLabCount === 0 ? '<div class="chart-empty" style="padding:24px; text-align:center;">No documents or records on file</div>' : '');
+
+    window._currentPatientDocs = hDocs;
+    window._currentGeneralDocs = generalDocs;
+    window._currentLabDocs = labDocs;
+    window._renderDocCard = renderDocCard;
+    window._currentChartData = d;
+}
+
+function showMoreDocs() {
+    _docsShown += _docsPageSize;
+    var generalDocs = window._currentGeneralDocs || [];
+    var container = document.getElementById('docsListContainer');
+    if (!container) return;
+    var visibleDocs = generalDocs.slice(0, _docsShown);
+    var hasMore = generalDocs.length > _docsShown;
+    container.innerHTML = visibleDocs.map(function(doc) { return window._renderDocCard(doc, 'doc'); }).join('');
+    if (hasMore) {
+        container.innerHTML += '<button onclick="showMoreDocs()" style="width:100%; padding:10px; margin-top:4px; font-size:12px; font-weight:600; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; cursor:pointer;">Show More (' + (generalDocs.length - _docsShown) + ' remaining)</button>';
+    }
+}
+
+function showMoreLabDocs() {
+    _labDocsShown += _docsPageSize;
+    var labDocs = window._currentLabDocs || [];
+    var d = window._currentChartData || {};
+    var labs = d.labs || {};
+    var labItems = labs.queue_items || [];
+    var container = document.getElementById('labDocsListContainer');
+    if (!container) return;
+    var visibleLabDocs = labDocs.slice(0, _labDocsShown);
+    var hasMore = labDocs.length > _labDocsShown;
+    container.innerHTML = labItems.map(function(l) {
+        return '<div class="chart-lab-card"><div class="chart-lab-name">' + (l.panel_names || l.lab_type || 'Lab Panel') + '</div><div class="chart-lab-detail">' + (l.ordered_date ? new Date(l.ordered_date).toLocaleDateString() : '') + ' · ' + (l.status || 'pending') + '</div></div>';
+    }).join('') + visibleLabDocs.map(function(doc) { return window._renderDocCard(doc, 'lab'); }).join('');
+    if (hasMore) {
+        container.innerHTML += '<button onclick="showMoreLabDocs()" style="width:100%; padding:10px; margin-top:4px; font-size:12px; font-weight:600; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; cursor:pointer;">Show More (' + (labDocs.length - _labDocsShown) + ' remaining)</button>';
+    }
+}
+
+function moveDocCategory(docId, targetCategory) {
+    var hDocs = window._currentPatientDocs || [];
+    var doc = hDocs.find(function(d) { return d.id === docId; });
+    if (doc) {
+        doc._category = targetCategory;
+        showToast(targetCategory === 'lab' ? 'Moved to Lab Results' : 'Moved to Documents', 'success');
+        // Re-render the files tab
+        var d = window._currentChartData;
+        if (d) {
+            // Find the files sub-tab container
+            var subContainer = document.getElementById('filesSubContent');
+            if (!subContainer) {
+                // Fallback: find the parent of the first chart-section
+                var firstSection = document.querySelector('.chart-section');
+                subContainer = firstSection ? firstSection.parentElement : null;
+            }
+            if (subContainer) renderDocumentsTab(subContainer, d);
+        }
+    }
+}
+
+async function toggleDocVisibility(docId, makeVisible) {
+    try {
+        showToast(makeVisible ? 'Sharing with patient…' : 'Hiding from patient…', 'info');
+        var result = await apiFetch('/ops/api/ipad/document/' + docId + '/', {
+            method: 'PATCH',
+            body: JSON.stringify({ shared: makeVisible })
+        });
+        if (result && result.success) {
+            showToast(makeVisible ? 'Document shared with patient' : 'Document hidden from patient', 'success');
+            var hDocs = window._currentPatientDocs || [];
+            var doc = hDocs.find(function(d) { return d.id === docId; });
+            if (doc) doc.shared = makeVisible;
+            var card = document.getElementById('doc-card-' + docId);
+            if (card && window._renderDocCard) {
+                var section = isLabDocument(doc || {}) ? 'lab' : 'doc';
+                card.outerHTML = window._renderDocCard(doc || { id: docId, shared: makeVisible }, section);
+            }
+        } else {
+            showToast((result && result.error) || 'Failed to update visibility', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Failed to update visibility', 'error');
+    }
+}
+
+// ─── FAX MODAL ──────────────────────────────────
+// Send selected patient documents via Healthie's fax integration
+
+function openFaxModal(healthieId, patientName, patientDob) {
+    document.getElementById('faxModal')?.remove();
+
+    // Format DOB from YYYY-MM-DD to MM-DD-YYYY
+    var fmtDob = '';
+    if (patientDob && patientDob.includes('-') && patientDob.length >= 10) {
+        var parts = patientDob.split('-');
+        if (parts.length === 3 && parts[0].length === 4) fmtDob = parts[1] + '-' + parts[2] + '-' + parts[0];
+        else fmtDob = patientDob;
+    } else { fmtDob = patientDob || ''; }
+
+    // Gather checked documents
+    var checked = document.querySelectorAll('.fax-doc-checkbox:checked');
+    var selectedDocs = [];
+    checked.forEach(function(cb) { selectedDocs.push({ id: cb.value, name: cb.getAttribute('data-name') || 'Document' }); });
+
+    var fieldStyle = 'width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;';
+    var labelStyle = 'display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;';
+    var rowStyle = 'margin-bottom:12px;';
+
+    var modal = document.createElement('div');
+    modal.id = 'faxModal';
+    modal.className = 'modal-overlay visible';
+    modal.style.cssText = 'display:flex; z-index:10001;';
+    modal.innerHTML = `
+        <div class="modal" style="max-width:480px; padding:24px; max-height:90vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h3 style="margin:0; font-size:18px; color:var(--text-primary);">📠 Send Fax</h3>
+                <button onclick="document.getElementById('faxModal').remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+            </div>
+
+            <div style="padding:8px 12px; background:rgba(0,212,255,0.08); border:1px solid rgba(0,212,255,0.2); border-radius:8px; margin-bottom:14px; font-size:13px; color:var(--text-secondary);">
+                Patient: <strong style="color:var(--text-primary);">${sanitize(patientName)}</strong>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Selected Documents (${selectedDocs.length})</label>
+                <div style="padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; font-size:12px; color:var(--text-secondary); max-height:100px; overflow-y:auto;">
+                    ${selectedDocs.length > 0
+                        ? selectedDocs.map(function(d) { return '<div style="padding:2px 0;">📄 ' + sanitize(d.name) + '</div>'; }).join('')
+                        : '<div style="color:var(--yellow);">⚠ No documents selected — use the checkboxes next to documents first, then click Fax</div>'}
+                </div>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Recipient (Address Book)</label>
+                <div style="position:relative;">
+                    <input id="faxContactSearch" type="text" placeholder="Search providers..." oninput="searchFaxContacts(this.value)" onfocus="searchFaxContacts(this.value)" style="${fieldStyle}">
+                    <div id="faxContactResults" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:200px; overflow-y:auto; background:var(--card); border:1px solid var(--border-light); border-radius:0 0 8px 8px; z-index:10; box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
+                </div>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Destination Fax Number *</label>
+                <input id="faxNumber" type="tel" placeholder="(XXX) XXX-XXXX" style="${fieldStyle}">
+            </div>
+
+            <div style="display:flex; gap:10px; ${rowStyle}">
+                <div style="flex:1;">
+                    <label style="${labelStyle}">Recipient Name</label>
+                    <input id="faxRecipientName" type="text" placeholder="Dr. Smith" style="${fieldStyle}">
+                </div>
+                <div style="flex:1;">
+                    <label style="${labelStyle}">Recipient Company</label>
+                    <input id="faxRecipientCompany" type="text" placeholder="Valley Medical" style="${fieldStyle}">
+                </div>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Subject</label>
+                <select id="faxSubject" style="${fieldStyle}" onchange="if(this.value==='custom'){document.getElementById('faxSubjectCustom').style.display='block';this.style.display='none';document.getElementById('faxSubjectCustom').focus();}">
+                    <option value="Patient Records — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Patient Records — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Patient Referral — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Patient Referral — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Records Request — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Records Request — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Lab Results — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Lab Results — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Prior Authorization — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Prior Authorization — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Prescription/Medication — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Prescription/Medication — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="Discharge Summary — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}">Discharge Summary — ${sanitize(patientName)}${fmtDob ? ', DOB: ' + sanitize(fmtDob) : ''}</option>
+                    <option value="custom">Custom Subject...</option>
+                </select>
+                <input id="faxSubjectCustom" type="text" placeholder="Type custom subject..." style="${fieldStyle} display:none; margin-top:6px;">
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Remarks</label>
+                <textarea id="faxRemarks" rows="2" placeholder="Optional notes for cover page..." style="${fieldStyle} resize:none;"></textarea>
+            </div>
+
+            <div style="display:flex; gap:16px; ${rowStyle}">
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-secondary); cursor:pointer;">
+                    <input type="checkbox" id="faxCoverPage" checked style="accent-color:var(--cyan);"> Include cover page
+                </label>
+                <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-secondary); cursor:pointer;">
+                    <input type="checkbox" id="faxHipaa" checked style="accent-color:var(--cyan);"> HIPAA disclaimer
+                </label>
+            </div>
+
+            <div style="${rowStyle}">
+                <label style="${labelStyle}">Sending Provider</label>
+                <select id="faxProvider" style="${fieldStyle}">
+                    <option value="whitten">Dr. Aaron Whitten, NMD</option>
+                    <option value="phil">Phil Schafer, FNP-C</option>
+                </select>
+            </div>
+
+            <div id="faxError" style="display:none; padding:10px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:8px; margin-bottom:12px; font-size:12px; color:#f87171;"></div>
+
+            <button id="faxSubmitBtn" onclick="submitFax('${sanitize(healthieId)}')" ${selectedDocs.length === 0 ? 'disabled' : ''} style="width:100%; padding:14px; background:${selectedDocs.length > 0 ? 'rgba(0,212,255,0.2)' : 'rgba(100,100,100,0.2)'}; border:1px solid ${selectedDocs.length > 0 ? 'rgba(0,212,255,0.4)' : 'rgba(100,100,100,0.3)'}; border-radius:10px; color:${selectedDocs.length > 0 ? 'var(--cyan)' : 'var(--text-tertiary)'}; font-size:15px; font-weight:700; cursor:pointer; font-family:inherit;">
+                📠 Send Fax
+            </button>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+var _faxContactDebounce;
+var _faxContactCache = []; // Store contacts so onclick can reference by index
+function searchFaxContacts(q) {
+    clearTimeout(_faxContactDebounce);
+    var resultsEl = document.getElementById('faxContactResults');
+    if (!q || q.length < 1) { if (resultsEl) resultsEl.style.display = 'none'; return; }
+    _faxContactDebounce = setTimeout(async function() {
+        try {
+            var data = await apiFetch('/ops/api/faxes/address-book?q=' + encodeURIComponent(q));
+            if (!data?.contacts || data.contacts.length === 0) {
+                resultsEl.innerHTML = '<div style="padding:10px; font-size:12px; color:var(--text-tertiary);">No contacts found</div>';
+                resultsEl.style.display = 'block';
+                return;
+            }
+            _faxContactCache = data.contacts;
+            resultsEl.innerHTML = data.contacts.map(function(c, i) {
+                return '<div onclick="selectFaxContact(' + i + ')" style="padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--border); font-size:13px;" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'none\'">'
+                    + '<div style="font-weight:600; color:var(--text-primary);">' + sanitize(c.name) + '</div>'
+                    + '<div style="font-size:11px; color:var(--text-tertiary);">'
+                    + (c.fax ? '📠 ' + sanitize(c.fax) : '<span style="color:var(--yellow);">No fax number</span>')
+                    + (c.specialty ? ' · ' + sanitize(c.specialty) : '')
+                    + (c.address ? ' · ' + sanitize(c.address) : '')
+                    + '</div></div>';
+            }).join('');
+            resultsEl.style.display = 'block';
+        } catch(e) { if (e.message === 'AUTH_EXPIRED') throw e; }
+    }, 250);
+}
+
+function selectFaxContact(index) {
+    var c = _faxContactCache[index];
+    if (!c) return;
+    document.getElementById('faxContactSearch').value = c.name || '';
+    document.getElementById('faxNumber').value = c.fax || '';
+    document.getElementById('faxRecipientName').value = c.name || '';
+    document.getElementById('faxRecipientCompany').value = c.specialty || '';
+    document.getElementById('faxContactResults').style.display = 'none';
+}
+
+async function submitFax(healthieId) {
+    var btn = document.getElementById('faxSubmitBtn');
+    var errEl = document.getElementById('faxError');
+    errEl.style.display = 'none';
+
+    // Gather selected document IDs from checkboxes
+    var checked = document.querySelectorAll('.fax-doc-checkbox:checked');
+    var docIds = [];
+    checked.forEach(function(cb) { docIds.push(cb.value); });
+
+    var number = (document.getElementById('faxNumber')?.value || '').trim();
+
+    if (docIds.length === 0) {
+        errEl.textContent = 'No documents selected. Close this modal, check the documents you want to fax, then click Fax again.';
+        errEl.style.display = 'block';
+        return;
+    }
+    if (!number) {
+        errEl.textContent = 'Fax number is required.';
+        errEl.style.display = 'block';
+        return;
+    }
+
+    btn.textContent = 'Sending...';
+    btn.disabled = true;
+
+    try {
+        var body = {
+            patient_id: healthieId,
+            document_ids: docIds,
+            destination_number: number,
+            recipient_name: (document.getElementById('faxRecipientName')?.value || '').trim() || undefined,
+            recipient_company: (document.getElementById('faxRecipientCompany')?.value || '').trim() || undefined,
+            subject: (document.getElementById('faxSubjectCustom')?.style.display !== 'none' ? document.getElementById('faxSubjectCustom')?.value : document.getElementById('faxSubject')?.value || '').trim() || 'Patient Records',
+            remarks: (document.getElementById('faxRemarks')?.value || '').trim() || undefined,
+            include_cover_page: document.getElementById('faxCoverPage')?.checked !== false,
+            include_hipaa_disclaimer: document.getElementById('faxHipaa')?.checked !== false,
+            provider: document.getElementById('faxProvider')?.value || 'whitten',
+        };
+
+        var result = await apiFetch('/ops/api/faxes/send', {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+
+        if (result?.success) {
+            document.getElementById('faxModal')?.remove();
+            // Uncheck all doc checkboxes
+            document.querySelectorAll('.fax-doc-checkbox:checked').forEach(function(cb) { cb.checked = false; });
+            showToast('📠 Fax ' + (result.fax?.status_display_string || 'sent') + ' to ' + number, 'success');
+        } else {
+            errEl.textContent = result?.error || 'Fax send failed';
+            errEl.style.display = 'block';
+            btn.textContent = '📠 Send Fax';
+            btn.disabled = false;
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        errEl.textContent = e.message || 'Failed to send fax';
+        errEl.style.display = 'block';
+        btn.textContent = '📠 Send Fax';
+        btn.disabled = false;
+    }
+}
+
+// ─── SENT FAXES TRACKER ──────────────────────────
+async function loadSentFaxes(patientId) {
+    var container = document.getElementById('sentFaxesList');
+    if (!container) return;
+    try {
+        var url = '/ops/api/faxes/sent';
+        if (patientId) url += '?patient_id=' + encodeURIComponent(patientId);
+        var data = await apiFetch(url);
+        if (!data?.faxes || data.faxes.length === 0) {
+            container.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-tertiary); font-size:13px;">No sent faxes</div>';
+            return;
+        }
+        container.innerHTML = data.faxes.map(function(f) {
+            var statusColor = f.status === 'delivered' ? '#22c55e' : f.status === 'failed' ? '#ef4444' : '#f59e0b';
+            var statusLabel = f.status_display || f.status || 'Unknown';
+            var sentDate = '';
+            try { var raw = (f.sent_at || '').replace(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([+-]\d{2})(\d{2})/, '$1T$2$3:$4'); sentDate = new Date(raw).toLocaleString('en-US', { timeZone: 'America/Phoenix', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); if (sentDate === 'Invalid Date') sentDate = f.sent_at || ''; } catch(e) { sentDate = f.sent_at || ''; }
+            return '<div style="padding:12px; background:var(--card); border-radius:10px; border:1px solid var(--border); margin-bottom:8px;">'
+                + '<div style="display:flex; justify-content:space-between; align-items:center;">'
+                + '<div>'
+                + '<div style="font-size:14px; font-weight:600; color:var(--text-primary);">' + sanitize(f.patient_name || 'Unknown Patient') + '</div>'
+                + '<div style="font-size:12px; color:var(--text-tertiary);">To: ' + sanitize(f.destination || '') + ' · ' + sentDate + '</div>'
+                + '<div style="font-size:11px; color:var(--text-tertiary);">Sent by: ' + sanitize(f.sender_name || '') + ' · Fax ID: ' + sanitize(f.id) + '</div>'
+                + '</div>'
+                + '<div style="display:flex; align-items:center; gap:8px;">'
+                + '<span style="padding:4px 10px; border-radius:12px; font-size:11px; font-weight:700; background:' + statusColor + '20; color:' + statusColor + '; text-transform:uppercase;">' + sanitize(statusLabel) + '</span>'
+                + (f.resendable ? '<button onclick="resendFax(\'' + f.id + '\')" style="padding:4px 8px; font-size:11px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); border-radius:6px; cursor:pointer;">↻ Resend</button>' : '')
+                + '</div>'
+                + '</div>'
+                + '</div>';
+        }).join('');
+    } catch(e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        container.innerHTML = '<div style="padding:12px; text-align:center; color:var(--red); font-size:13px;">Failed to load faxes</div>';
+    }
+}
+
+async function resendFax(faxId) {
+    if (!confirm('Resend this fax?')) return;
+    try {
+        var result = await apiFetch('/ops/api/faxes/resend', {
+            method: 'POST',
+            body: JSON.stringify({ fax_id: faxId })
+        });
+        if (result?.success) {
+            showToast('📠 Fax resent', 'success');
+            loadSentFaxes();
+        } else {
+            showToast(result?.error || 'Resend failed', 'error');
+        }
+    } catch(e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Resend failed', 'error');
+    }
+}
+
+// Auto-load sent faxes when Today view renders
+setTimeout(function() { if (currentTab === 'today') loadSentFaxes(); }, 2000);
 
 // HTML for the chart panel (Scribe local view) -> Now deprecated to prevent zombie cache panels.
 // We strictly use the dynamic globalChartPanel for everything to bypass iPad caching.
@@ -7675,6 +9250,8 @@ function renderInventoryView(container) {
                 <button class="inv-tab ${activeInventoryTab === 'dea' ? 'active' : ''}" onclick="setInventoryTab('dea')">DEA Controlled</button>
                 <button class="inv-tab ${activeInventoryTab === 'peptides' ? 'active' : ''}" onclick="setInventoryTab('peptides')">Peptides</button>
                 <button class="inv-tab ${activeInventoryTab === 'supplies' ? 'active' : ''}" onclick="setInventoryTab('supplies')">Supplies</button>
+                <button class="inv-tab ${activeInventoryTab === 'pharmacy' ? 'active' : ''}" onclick="setInventoryTab('pharmacy')">Pharmacy</button>
+                <button class="inv-tab ${activeInventoryTab === 'invoices' ? 'active' : ''}" onclick="setInventoryTab('invoices')">Invoices</button>
             </div>
             ${renderLoadingState()}
         `;
@@ -7690,6 +9267,8 @@ function renderInventoryView(container) {
             <button class="inv-tab ${activeInventoryTab === 'dea' ? 'active' : ''}" onclick="setInventoryTab('dea')">DEA Controlled</button>
             <button class="inv-tab ${activeInventoryTab === 'peptides' ? 'active' : ''}" onclick="setInventoryTab('peptides')">Peptides</button>
             <button class="inv-tab ${activeInventoryTab === 'supplies' ? 'active' : ''}" onclick="setInventoryTab('supplies')">Supplies</button>
+            <button class="inv-tab ${activeInventoryTab === 'pharmacy' ? 'active' : ''}" onclick="setInventoryTab('pharmacy')">Pharmacy</button>
+                <button class="inv-tab ${activeInventoryTab === 'invoices' ? 'active' : ''}" onclick="setInventoryTab('invoices')">Invoices</button>
         </div>
         <div id="inventoryContent">
             ${renderInventoryContent()}
@@ -7707,6 +9286,8 @@ function renderInventoryContent() {
         case 'dea': return renderDEASection();
         case 'peptides': return renderPeptidesSection();
         case 'supplies': return renderSuppliesSection();
+        case 'pharmacy': return renderPharmacySection();
+        case 'invoices': return renderInvoicesSection();
         default: return '';
     }
 }
@@ -7758,7 +9339,17 @@ function renderDEASection() {
                     System auto-selects vial (FEFO) and creates DEA transaction
                 </p>
                 <div class="modal-field">
-                    <label>Patient</label>
+                    <label>Patient (optional)</label>
+                    <div style="display:flex; gap:8px; margin-bottom:8px;">
+                        <button onclick="selectStageDosePatient(null, 'Generic Prefill')"
+                                style="padding:8px 16px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:13px; font-weight:600; cursor:pointer; flex-shrink:0;"
+                                id="stageDoseGenericBtn">
+                            💉 Generic (No Patient)
+                        </button>
+                        <div style="flex:1; font-size:11px; color:var(--text-tertiary); display:flex; align-items:center;">
+                            or search a specific patient below
+                        </div>
+                    </div>
                     <div class="patient-search-wrapper">
                         <input type="text" id="stageDosePatientSearch" class="patient-search-input"
                                placeholder="Type 2+ letters to search patients…" autocomplete="off" />
@@ -7820,7 +9411,7 @@ function renderDEASection() {
                 </div>
                 <div class="modal-row">
                     <div class="modal-field half">
-                        <label>TopRx Vials (10mL)</label>
+                        <label>TopRx Full Vials (10mL)</label>
                         <input type="number" id="deaCheckTopRxVials" min="0" value="0">
                     </div>
                     <div class="modal-field half">
@@ -7828,6 +9419,22 @@ function renderDEASection() {
                         <input type="number" id="deaCheckTopRxPartial" step="0.5" min="0" value="0">
                     </div>
                 </div>
+                <div id="deaCheckSyringeSection" style="border-top:1px solid var(--border); margin:12px 0; padding-top:12px; display:none;">
+                    <div style="font-size:11px; color:#f59e0b; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">💉 Prefilled Syringes on Shelf</div>
+                    <div class="modal-row">
+                        <div class="modal-field half">
+                            <label>How many syringes?</label>
+                            <input type="number" id="deaCheckSyringeCount" min="0" value="0">
+                        </div>
+                        <div class="modal-field half">
+                            <label>mL per syringe</label>
+                            <input type="number" id="deaCheckSyringeDose" step="0.05" min="0" value="0.60" readonly style="opacity:0.7;">
+                            <span style="font-size:10px; color:var(--text-tertiary);">0.50 dose + 0.10 waste</span>
+                        </div>
+                    </div>
+                    <div id="deaCheckSyringeTotal" style="font-size:13px; color:#f59e0b; margin-bottom:8px;"></div>
+                </div>
+                <div id="deaCheckGrandTotal" style="font-size:15px; font-weight:bold; color:var(--primary); margin-bottom:12px; padding:8px; background:var(--bg-secondary); border-radius:8px; text-align:center;"></div>
                 <div class="modal-field">
                     <label>Notes</label>
                     <input type="text" id="deaCheckNotes" placeholder="Notes (required if discrepancy)" class="patient-search-input">
@@ -7867,10 +9474,10 @@ function openStageDoseModal() {
                     const data = await apiFetch(`/ops/api/patients/search/?q=${encodeURIComponent(q)}`);
                     if (!data?.patients?.length) { results.innerHTML = '<div class="patient-search-empty">No patients found</div>'; return; }
                     results.innerHTML = data.patients.map(p => {
-                        const n = `${p.first_name || ''} ${p.last_name || ''}`.trim();
-                        return `<div class="patient-search-item" onclick="selectStageDosePatient('${p.healthie_id || p.id}', '${n.replace(/'/g, "\\'")}')">
+                        const n = sanitize(`${p.first_name || ''} ${p.last_name || ''}`.trim());
+                        return `<div class="patient-search-item" onclick="selectStageDosePatient('${sanitize(p.healthie_id || p.id)}', '${n.replace(/'/g, "&#039;")}')">
                             <span class="patient-search-name">${n}</span>
-                            <span class="patient-search-detail">${p.dob ? 'DOB: ' + p.dob : ''}</span>
+                            <span class="patient-search-detail">${p.dob ? 'DOB: ' + sanitize(p.dob) : ''}</span>
                         </div>`;
                     }).join('');
                 } catch (e) { results.innerHTML = '<div class="patient-search-empty">Search error</div>'; }
@@ -7881,13 +9488,14 @@ function openStageDoseModal() {
 
 function selectStageDosePatient(id, name) {
     stageDosePatientId = id;
-    stageDosePatientName = name;
+    stageDosePatientName = name || 'Generic Prefill';
     const badge = document.getElementById('stageDosePatientBadge');
     const results = document.getElementById('stageDosePatientResults');
     const input = document.getElementById('stageDosePatientSearch');
     if (input) input.value = '';
     if (results) { results.innerHTML = ''; results.style.display = 'none'; }
-    if (badge) { badge.style.display = 'flex'; badge.innerHTML = `<span>👤 ${name}</span><button onclick="clearStageDosePatient()" class="patient-clear-btn">✕</button>`; }
+    const icon = id ? '👤' : '💉';
+    if (badge) { badge.style.display = 'flex'; badge.innerHTML = `<span>${icon} ${stageDosePatientName}</span><button onclick="clearStageDosePatient()" class="patient-clear-btn">✕</button>`; }
 }
 
 function clearStageDosePatient() {
@@ -7899,7 +9507,7 @@ function clearStageDosePatient() {
 function closeStageDoseModal() { document.getElementById('stageDoseModal').classList.remove('visible'); }
 
 async function submitStageDose() {
-    if (!stageDosePatientId) { showToast('Select a patient first', 'error'); return; }
+    // Patient is optional — generic staging (no patient) is allowed for prefilled syringes
     const doseMl = parseFloat(document.getElementById('stageDoseMl').value);
     const wasteMl = parseFloat(document.getElementById('stageDoseWaste').value);
     const syringeCount = parseInt(document.getElementById('stageDoseSyringes').value);
@@ -7918,8 +9526,41 @@ async function submitStageDose() {
         if (result?.success) {
             closeStageDoseModal();
             const totalMl = (doseMl + wasteMl) * syringeCount;
-            showToast(`Staged ${totalMl.toFixed(2)}mL from vial ${result.data?.vial_used || '?'} — ${result.data?.remaining_in_vial}mL remaining`, 'success');
+            const vialUsed = result.data?.vial_used || '?';
+            const remainingInVial = result.data?.remaining_in_vial;
+            showToast(`Staged ${totalMl.toFixed(2)}mL from vial ${vialUsed} — ${remainingInVial}mL remaining`, 'success');
             loadVialList();
+
+            // Prompt retire when staging drops the vial below the standard-dose threshold.
+            // Staging is the only vial-decrementing path that previously skipped this prompt,
+            // which left TopRX 10mL vials stranded at 0.4mL post-prefill (4 syringes × 2.4mL).
+            const newRemaining = remainingInVial != null ? parseFloat(remainingInVial) : NaN;
+            if (vialUsed !== '?' && newRemaining > 0 && newRemaining < 2.0) {
+                const doRetire = confirm(
+                    `Vial ${vialUsed} now has ${newRemaining.toFixed(2)} mL remaining — ` +
+                    `not enough for a standard dose.\n\nRetire this vial and document remaining as waste?`
+                );
+                if (doRetire) {
+                    try {
+                        const retireResp = await apiFetch('/ops/api/inventory/retire-vial', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ vialExternalId: vialUsed })
+                        });
+                        if (retireResp?.success) {
+                            showToast(`Vial ${vialUsed} retired — ${parseFloat(retireResp.wastedMl).toFixed(2)}mL documented as waste.`, 'success');
+                            loadVialList();
+                        } else {
+                            showToast(retireResp?.error || `Retire failed for ${vialUsed}`, 'error');
+                        }
+                    } catch (retireErr) {
+                        console.error('[iPad] Retire vial failed:', retireErr);
+                        if (retireErr?.message !== 'AUTH_EXPIRED') {
+                            showToast(`Retire failed for ${vialUsed} — check console`, 'error');
+                        }
+                    }
+                }
+            }
         } else {
             showToast(result?.error || 'Stage failed', 'error');
         }
@@ -7936,20 +9577,103 @@ async function openDEACheckModal(type) {
     document.getElementById('deaCheckModal').classList.add('visible');
     try {
         const counts = await apiFetch('/ops/api/inventory/controlled-check/?action=counts');
+        const cbVialMl = counts?.carrieboyd_total_ml || 0;
+        const trVialMl = counts?.toprx_total_ml || 0;
+        const cbStagedMl = counts?.carrieboyd_staged_ml || 0;
+        const trStagedMl = counts?.toprx_staged_ml || 0;
+        const grandTotal = cbVialMl + trVialMl + cbStagedMl + trStagedMl;
+
         document.getElementById('deaCheckSystemCounts').innerHTML = `
-            <div class="dea-expected-row"><span>Carrie Boyd (30mL):</span> <strong>${counts?.carrieboyd_full_vials || 0} full + ${(counts?.carrieboyd_partial_ml || 0).toFixed(1)}mL partial = ${(counts?.carrieboyd_total_ml || 0).toFixed(1)}mL</strong></div>
-            <div class="dea-expected-row"><span>TopRx (10mL):</span> <strong>${counts?.toprx_full_vials || 0} full + ${(counts?.toprx_partial_ml || 0).toFixed(1)}mL partial = ${(counts?.toprx_total_ml || 0).toFixed(1)}mL</strong></div>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">System Expected Counts</div>
+            <div class="dea-expected-row"><span>Carrie Boyd Vials:</span> <strong>${counts?.carrieboyd_full_vials || 0} full + ${(counts?.carrieboyd_partial_ml || 0).toFixed(1)}mL partial = ${cbVialMl.toFixed(1)}mL</strong></div>
+            <div class="dea-expected-row"><span>TopRx Vials:</span> <strong>${counts?.toprx_full_vials || 0} full + ${(counts?.toprx_partial_ml || 0).toFixed(1)}mL partial = ${trVialMl.toFixed(1)}mL</strong></div>
+            ${(cbStagedMl + trStagedMl) > 0 ? `<div class="dea-expected-row" style="color:#f59e0b;"><span>💉 Prefilled Syringes:</span> <strong>${(cbStagedMl + trStagedMl).toFixed(1)}mL in staged syringes</strong></div>` : ''}
+            <div class="dea-expected-row" style="border-top:1px solid var(--border); padding-top:8px; margin-top:8px; font-size:15px;">
+                <span>📋 TOTAL ACCOUNTABLE:</span> <strong style="color:var(--primary);">${grandTotal.toFixed(1)}mL</strong>
+            </div>
         `;
+        // Store for submit comparison
+        window._deaSystemCounts = counts;
+        // Show/hide syringe section based on whether staged doses exist
+        const syringeSection = document.getElementById('deaCheckSyringeSection');
+        if (syringeSection) {
+            syringeSection.style.display = (cbStagedMl + trStagedMl) > 0 ? 'block' : 'none';
+        }
+        // Reset inputs and attach listeners
+        const syringeInput = document.getElementById('deaCheckSyringeCount');
+        if (syringeInput) syringeInput.value = '0';
+        attachDEACheckListeners();
+        updateDEACheckTotal();
     } catch (e) {
         document.getElementById('deaCheckSystemCounts').innerHTML = '<div class="patient-search-empty">Could not load system counts</div>';
     }
 }
 
+// Live calculation as staff enters counts
+function updateDEACheckTotal() {
+    const cbFull = parseInt(document.getElementById('deaCheckCbVials')?.value) || 0;
+    const cbPartial = parseFloat(document.getElementById('deaCheckCbPartial')?.value) || 0;
+    const trFull = parseInt(document.getElementById('deaCheckTopRxVials')?.value) || 0;
+    const trPartial = parseFloat(document.getElementById('deaCheckTopRxPartial')?.value) || 0;
+
+    // Only count syringes if the section is visible (staged doses exist)
+    const syringeSection = document.getElementById('deaCheckSyringeSection');
+    const syringesVisible = syringeSection && syringeSection.style.display !== 'none';
+    const syringeCount = syringesVisible ? (parseInt(document.getElementById('deaCheckSyringeCount')?.value) || 0) : 0;
+    const syringeDose = 0.60; // fixed: 0.50 dose + 0.10 waste
+
+    const vialTotal = (cbFull * 30) + cbPartial + (trFull * 10) + trPartial;
+    const syringeTotal = syringeCount * syringeDose;
+    const grandTotal = vialTotal + syringeTotal;
+
+    const syringeTotalEl = document.getElementById('deaCheckSyringeTotal');
+    if (syringeTotalEl) {
+        if (syringeCount > 0) {
+            syringeTotalEl.style.display = 'block';
+            syringeTotalEl.textContent = `= ${syringeCount} × ${syringeDose}mL = ${syringeTotal.toFixed(1)}mL`;
+        } else {
+            syringeTotalEl.style.display = 'none';
+        }
+    }
+
+    const grandTotalEl = document.getElementById('deaCheckGrandTotal');
+    if (!grandTotalEl) return;
+
+    const systemCounts = window._deaSystemCounts;
+    if (systemCounts) {
+        const systemTotal = (systemCounts.carrieboyd_total_ml || 0) + (systemCounts.toprx_total_ml || 0) +
+                           (systemCounts.carrieboyd_staged_ml || 0) + (systemCounts.toprx_staged_ml || 0);
+        const diff = Math.abs(grandTotal - systemTotal);
+        const match = diff <= 2.0;
+        grandTotalEl.innerHTML = match
+            ? `YOUR COUNT: ${grandTotal.toFixed(1)}mL ✅ Matches system (${systemTotal.toFixed(1)}mL)`
+            : `YOUR COUNT: ${grandTotal.toFixed(1)}mL ⚠️ System expects ${systemTotal.toFixed(1)}mL (${diff.toFixed(1)}mL off)`;
+        grandTotalEl.style.color = match ? 'var(--primary)' : '#ef4444';
+    } else {
+        grandTotalEl.textContent = `YOUR COUNT: ${grandTotal.toFixed(1)}mL`;
+    }
+}
+
+// Attach live calculation to all DEA check inputs (called after modal opens)
+function attachDEACheckListeners() {
+    ['deaCheckCbVials','deaCheckCbPartial','deaCheckTopRxVials','deaCheckTopRxPartial','deaCheckSyringeCount'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.oninput = updateDEACheckTotal; // oninput avoids listener accumulation
+    });
+}
+
 async function submitDEACheck() {
+    const syringeCount = parseInt(document.getElementById('deaCheckSyringeCount').value) || 0;
+    const syringeDose = parseFloat(document.getElementById('deaCheckSyringeDose').value) || 0.60;
+    const syringeTotalMl = syringeCount * syringeDose;
+
     const data = {
         carrieboyd_full_vials: parseInt(document.getElementById('deaCheckCbVials').value) || 0,
         carrieboyd_partial_ml: parseFloat(document.getElementById('deaCheckCbPartial').value) || 0,
         toprx_vials: parseInt(document.getElementById('deaCheckTopRxVials').value) || 0,
+        toprx_partial_ml: parseFloat(document.getElementById('deaCheckTopRxPartial').value) || 0,
+        physical_syringe_count: syringeCount,
+        physical_syringe_ml: syringeTotalMl,
         check_type: deaCheckType,
         notes: document.getElementById('deaCheckNotes').value || null,
         discrepancyNotes: document.getElementById('deaCheckNotes').value || null,
@@ -8041,9 +9765,33 @@ function renderPeptidesSection() {
         return renderEmptyState('💊', 'No peptide data', 'Inventory data not yet available');
     }
 
-    return `
+    // Client-side search filter on product name + description (read-only).
+    let filtered = peptides;
+    if (peptideSearchQuery && peptideSearchQuery.trim()) {
+        const q = peptideSearchQuery.trim().toLowerCase();
+        filtered = peptides.filter(p => {
+            const name = (p.name || p.medication || p.peptide_name || '').toLowerCase();
+            const desc = (p.description || p.notes || p.category || '').toLowerCase();
+            return name.includes(q) || desc.includes(q);
+        });
+    }
+
+    const searchBar = `
+    <div style="margin-bottom:12px;">
+        <input type="text" id="peptideSearchInput" placeholder="🔍 Search peptides by name or description…"
+               value="${peptideSearchQuery.replace(/"/g, '&quot;')}"
+               oninput="setPeptideSearch(this.value)"
+               style="width:100%; padding:10px 14px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-secondary); color:var(--text-primary); font-size:14px;">
+        <div style="font-size:11px; color:var(--text-tertiary); margin-top:6px;">${filtered.length} of ${peptides.length} products</div>
+    </div>`;
+
+    if (filtered.length === 0) {
+        return searchBar + renderEmptyState('🔍', 'No matches', 'No peptides match your search');
+    }
+
+    return searchBar + `
     <div class="peptide-grid stagger-in">
-        ${peptides.map(p => {
+        ${filtered.map(p => {
         const stock = p.current_stock ?? p.stock ?? p.quantity ?? 0;
         const par = p.reorder_point ?? p.par_level ?? p.par ?? 10;
         const name = p.name || p.medication || p.peptide_name || '';
@@ -8078,6 +9826,26 @@ function extractPeptides() {
     return [];
 }
 
+// Peptide search state + debounced handler (150ms). Re-renders only the
+// inventory content so the input keeps focus while typing.
+let peptideSearchQuery = '';
+let peptideSearchTimer = null;
+function setPeptideSearch(q) {
+    peptideSearchQuery = q || '';
+    if (peptideSearchTimer) clearTimeout(peptideSearchTimer);
+    peptideSearchTimer = setTimeout(() => {
+        const container = document.getElementById('inventoryContent');
+        if (!container) { renderCurrentTab(); return; }
+        container.innerHTML = renderInventoryContent();
+        const input = document.getElementById('peptideSearchInput');
+        if (input) {
+            input.focus();
+            const v = input.value;
+            input.setSelectionRange(v.length, v.length);
+        }
+    }, 150);
+}
+
 // ─── SUPPLIES SECTION ───────────────────────────────────────
 function renderSuppliesSection() {
     const supplies = supplyItems || extractSupplies();
@@ -8104,6 +9872,20 @@ function renderSuppliesSection() {
         });
     }
 
+    // Search filter — name, manufacturer, McKesson item ID, manufacturer part #
+    if (supplySearchQuery && supplySearchQuery.trim()) {
+        const q = supplySearchQuery.trim().toLowerCase();
+        filtered = filtered.filter(s => {
+            return (s.name || '').toLowerCase().includes(q)
+                || (s.manufacturer || '').toLowerCase().includes(q)
+                || (s.mckesson_item_id || '').toLowerCase().includes(q)
+                || (s.manufacturer_part_number || '').toLowerCase().includes(q)
+                || (s.minor_category || '').toLowerCase().includes(q)
+                || (s.supplier_name || '').toLowerCase().includes(q)
+                || (s.supplier_part_number || '').toLowerCase().includes(q);
+        });
+    }
+
     const lowCount = supplies.filter(s => {
         const count = s.qty_on_hand ?? s.current_count ?? 0;
         const par = s.par_level ?? null;
@@ -8124,9 +9906,17 @@ function renderSuppliesSection() {
                         onclick="setSupplyLocation('${l.id}')">${l.label}</button>
             `).join('')}
         </div>
-        <button class="btn-primary btn-sm" onclick="openSupplyCountModal()" style="font-size:12px; padding:6px 14px;">
-            📝 Update Counts
-        </button>
+        <div style="display:flex; gap:8px;">
+            <button class="btn-primary btn-sm" onclick="openNewMckessonOrderModal()" style="font-size:12px; padding:6px 14px; background:linear-gradient(135deg, #10b981 0%, #059669 100%);" title="Place a new McKesson order from the catalog">
+                📦 New Order
+            </button>
+            <button class="btn-primary btn-sm" onclick="openMckessonMappingModal()" style="font-size:12px; padding:6px 14px; background:linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);">
+                🔗 Map to McKesson
+            </button>
+            <button class="btn-primary btn-sm" onclick="openSupplyCountModal()" style="font-size:12px; padding:6px 14px;">
+                📝 Update Counts
+            </button>
+        </div>
     </div>
 
     ${lowCount > 0 ? `
@@ -8139,38 +9929,80 @@ function renderSuppliesSection() {
         </div>
     ` : ''}
 
+    <div style="margin-bottom:8px;">
+        <input type="text" id="supplySearchInput" placeholder="🔍 Search by name, manufacturer, item #, part #, or sub-category…"
+               value="${supplySearchQuery.replace(/"/g, '&quot;')}"
+               oninput="setSupplySearch(this.value)"
+               style="width:100%; padding:10px 14px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-secondary); color:var(--text-primary); font-size:14px;">
+    </div>
+
     <div class="supply-filters" style="margin-bottom:8px;">
         ${categories.map(c => `
-            <button class="filter-pill ${activeSupplyFilter === c ? 'active' : ''}" 
+            <button class="filter-pill ${activeSupplyFilter === c ? 'active' : ''}"
                     onclick="setSupplyFilter('${c}')">${c}</button>
         `).join('')}
     </div>
+
+    <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:8px;">${filtered.length} of ${supplies.length} items</div>
 
     <div class="stagger-in">
         ${filtered.map(s => {
         const count = s.qty_on_hand ?? s.current_count ?? s.quantity ?? s.stock ?? 0;
         const par = s.par_level ?? s.par ?? null;
+        const reorderQty = s.reorder_qty ?? null;
         const name = s.name || s.supply_name || '';
         const cat = s.category || '';
+        const minorCat = s.minor_category || '';
         const ratio = par ? count / par : 1;
         const level = !par ? 'ok' : ratio > 1.2 ? 'ok' : ratio >= 0.8 ? 'warning' : 'low';
         const label = level === 'ok' ? 'In Stock' : level === 'warning' ? 'Re-order Soon' : 'LOW STOCK';
         const countedInfo = s.counted_at ? `Counted ${formatDateDisplay(s.counted_at)}${s.counted_by ? ' by ' + s.counted_by : ''}` : '';
+        // McKesson badges
+        const mckId = s.mckesson_item_id;
+        const mfg = s.manufacturer;
+        const stockStatus = s.stock_status;
+        const purchasable = s.mckesson_purchasable;
+        const buyUOM = s.mckesson_buy_unit_of_measure;
+        const buyEaches = s.mckesson_buy_eaches;
+        const stockBadgeColor = stockStatus === 'Stocked' ? 'rgba(34,197,94,0.15)'
+            : stockStatus === 'Discontinued' ? 'rgba(239,68,68,0.15)'
+            : stockStatus === 'Regionally Stocked' ? 'rgba(234,179,8,0.15)'
+            : 'rgba(107,114,128,0.15)';
+        const stockBadgeText = stockStatus === 'Stocked' ? '#22c55e'
+            : stockStatus === 'Discontinued' ? '#ef4444'
+            : stockStatus === 'Regionally Stocked' ? '#eab308'
+            : '#9ca3af';
+        const supplier = s.supplier_name;
+        const isMckessonSupplier = supplier && supplier.toLowerCase() === 'mckesson';
+        const cost = s.unit_cost != null ? Number(s.unit_cost) : null;
+        const costUom = s.unit_cost_uom;
         return `
                 <div class="supply-item">
                     <div class="supply-info">
                         <div class="supply-name">${name}</div>
-                        ${cat ? `<div class="supply-category">${cat}</div>` : ''}
+                        ${cat || minorCat ? `<div class="supply-category">${cat}${minorCat ? ' › ' + minorCat : ''}</div>` : ''}
+                        ${(mckId || mfg || stockStatus || (supplier && !isMckessonSupplier) || cost !== null) ? `
+                          <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; font-size:10px;">
+                            ${mckId ? `<span style="padding:2px 6px; background:rgba(59,130,246,0.15); color:#60a5fa; border-radius:4px;">MCK ${mckId}</span>` : ''}
+                            ${supplier && !isMckessonSupplier ? `<span style="padding:2px 6px; background:rgba(168,85,247,0.15); color:#c084fc; border-radius:4px;">📦 ${supplier}</span>` : ''}
+                            ${mfg && !supplier ? `<span style="padding:2px 6px; background:rgba(168,85,247,0.15); color:#c084fc; border-radius:4px;">${mfg}</span>` : ''}
+                            ${cost !== null ? `<span style="padding:2px 6px; background:rgba(245,158,11,0.15); color:#fbbf24; border-radius:4px;">$${cost.toFixed(2)}${costUom ? '/' + costUom : ''}</span>` : ''}
+                            ${stockStatus ? `<span style="padding:2px 6px; background:${stockBadgeColor}; color:${stockBadgeText}; border-radius:4px;">${stockStatus}</span>` : ''}
+                            ${purchasable === true ? `<span style="padding:2px 6px; background:rgba(34,197,94,0.15); color:#22c55e; border-radius:4px;">✓ Orderable</span>` : ''}
+                            ${buyUOM && buyEaches ? `<span style="padding:2px 6px; background:rgba(255,255,255,0.05); color:var(--text-tertiary); border-radius:4px;">Buy: 1 ${buyUOM} = ${buyEaches} EA</span>` : ''}
+                          </div>
+                        ` : ''}
                         ${countedInfo ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${countedInfo}</div>` : ''}
                     </div>
                     <div class="supply-count">
                         <div style="text-align:right;">
                             <span class="supply-count-value">${count}</span>
                             ${par != null ? `<span class="supply-par-value">/ ${par} par</span>` : `<span class="supply-par-value" style="color:var(--yellow);">no par set</span>`}
+                            ${reorderQty != null ? `<div style="font-size:10px; color:var(--text-tertiary);">reorder: ${reorderQty}</div>` : ''}
                         </div>
                         <span class="supply-par-indicator ${level}">${label}</span>
-                        <button onclick="event.stopPropagation(); editSupplyPar(${s.id}, '${name.replace(/'/g, "\\'")}', ${par || 0})" 
-                                style="background:none; border:1px solid var(--border-light); border-radius:6px; padding:4px 8px; color:var(--text-tertiary); font-size:10px; cursor:pointer;">✏️</button>
+                        <button onclick="event.stopPropagation(); openSupplyConfigModal(${s.id})"
+                                style="background:none; border:1px solid var(--border-light); border-radius:6px; padding:4px 8px; color:var(--text-tertiary); font-size:10px; cursor:pointer;">⚙️</button>
                     </div>
                 </div>
             `;
@@ -8179,9 +10011,25 @@ function renderSuppliesSection() {
 `;
 }
 
+function setSupplySearch(q) {
+    supplySearchQuery = q || '';
+    // Re-render only the supplies content (not the whole tab — preserves input focus).
+    const container = document.getElementById('inventoryContent');
+    if (!container) { renderCurrentTab(); return; }
+    container.innerHTML = renderInventoryContent();
+    // Restore focus + caret position to the input
+    const input = document.getElementById('supplySearchInput');
+    if (input) {
+        input.focus();
+        const v = input.value;
+        input.setSelectionRange(v.length, v.length);
+    }
+}
+
 // supplyItems declared at top with other state variables
 let activeSupplyLocation = 'mens_health';
 let showLowStockOnly = false;
+let supplySearchQuery = '';
 
 async function loadSuppliesData() {
     try {
@@ -8208,20 +10056,1270 @@ function toggleLowStock() {
 }
 
 function editSupplyPar(itemId, itemName, currentPar) {
-    const newPar = prompt(`Set PAR level for "${itemName}":`, currentPar || '');
-    if (newPar === null) return;
-    const parVal = parseInt(newPar, 10);
-    if (isNaN(parVal) || parVal < 0) { alert('Invalid PAR level'); return; }
+    // Kept for backward compat with anything that still calls it.
+    openSupplyConfigModal(itemId);
+}
+
+function openSupplyConfigModal(itemId) {
+    const supplies = supplyItems || extractSupplies();
+    const s = supplies.find(x => x.id === itemId);
+    if (!s) { showToast('Item not found'); return; }
+
+    const escName = (s.name || '').replace(/"/g, '&quot;');
+    const par = s.par_level ?? '';
+    const reorder = s.reorder_qty ?? '';
+    const mckId = s.mckesson_item_id || null;
+    const buyUOM = s.mckesson_buy_unit_of_measure;
+    const buyEaches = s.mckesson_buy_eaches;
+    const sellUOM = s.mckesson_unit_of_measure;
+    const sellEaches = s.mckesson_sell_eaches;
+    const purchasable = s.mckesson_purchasable;
+    const stockStatus = s.stock_status;
+    const replacement = s.mckesson_replacement_id;
+
+    const html = `
+    <div class="modal-overlay" id="supplyConfigModal" onclick="if(event.target===this)closeSupplyConfigModal()">
+      <div class="modal-content" style="max-width:520px;">
+        <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:12px;">
+          <h2 style="margin:0; flex:1; font-size:18px; line-height:1.3;">${s.name || 'Item'}</h2>
+          <button onclick="closeSupplyConfigModal()" style="background:none; border:none; color:var(--text-tertiary); font-size:24px; cursor:pointer; padding:0; margin-left:8px; line-height:1;">×</button>
+        </div>
+        ${(s.category || s.minor_category) ? `<div style="font-size:12px; color:var(--text-tertiary); margin-bottom:12px;">${s.category || ''}${s.minor_category ? ' › ' + s.minor_category : ''}</div>` : ''}
+
+        ${mckId ? `
+          <div style="background:var(--bg-secondary); border-radius:var(--radius-sm); padding:12px; margin-bottom:16px; font-size:12px;">
+            <div style="font-weight:600; color:var(--text-secondary); margin-bottom:8px;">McKesson Catalog</div>
+            <div style="display:grid; grid-template-columns:auto 1fr; gap:6px 12px;">
+              <span style="color:var(--text-tertiary);">Item ID:</span><span style="font-family:monospace;">${mckId}</span>
+              ${s.manufacturer ? `<span style="color:var(--text-tertiary);">Mfr:</span><span>${s.manufacturer}${s.manufacturer_part_number ? ' (' + s.manufacturer_part_number + ')' : ''}</span>` : ''}
+              ${stockStatus ? `<span style="color:var(--text-tertiary);">Status:</span><span>${stockStatus}${purchasable === false ? ' — not orderable' : ''}${purchasable === true ? ' ✓' : ''}</span>` : ''}
+              ${sellUOM ? `<span style="color:var(--text-tertiary);">Sell UOM:</span><span>${sellUOM}${sellEaches ? ' (' + sellEaches + ' each)' : ''}</span>` : ''}
+              ${buyUOM ? `<span style="color:var(--text-tertiary);">Buy UOM:</span><span>${buyUOM}${buyEaches ? ' (' + buyEaches + ' each)' : ''}</span>` : ''}
+              ${replacement ? `<span style="color:var(--text-tertiary);">Replaces:</span><span style="font-family:monospace;">${replacement}</span>` : ''}
+            </div>
+          </div>
+        ` : ''}
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;">
+          <div>
+            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">PAR level</label>
+            <input type="number" id="supplyConfigPar" value="${par}" min="0" placeholder="—"
+              style="width:100%; padding:10px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-tertiary); color:var(--text-primary); font-size:16px;">
+            <div style="font-size:10px; color:var(--text-tertiary); margin-top:4px;">Re-order when below this</div>
+          </div>
+          <div>
+            <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Re-order quantity</label>
+            <input type="number" id="supplyConfigReorder" value="${reorder}" min="0" placeholder="—"
+              style="width:100%; padding:10px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-tertiary); color:var(--text-primary); font-size:16px;">
+            <div style="font-size:10px; color:var(--text-tertiary); margin-top:4px;">${buyUOM ? 'Number of ' + buyUOM + ' to order' : 'How many to order'}</div>
+          </div>
+        </div>
+
+        <div style="border-top:1px solid var(--border-light); padding-top:14px; margin-bottom:14px;">
+          <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:10px;">Supplier &amp; Cost</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <div style="grid-column:1 / -1;">
+              <label style="display:block; font-size:11px; color:var(--text-secondary); margin-bottom:4px;">Supplier</label>
+              <input type="text" id="supplyConfigSupplier" value="${(s.supplier_name || '').replace(/"/g,'&quot;')}" placeholder="McKesson, Strive, Amazon, etc."
+                style="width:100%; padding:9px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-tertiary); color:var(--text-primary); font-size:14px;">
+            </div>
+            <div>
+              <label style="display:block; font-size:11px; color:var(--text-secondary); margin-bottom:4px;">Cost (per unit)</label>
+              <input type="number" id="supplyConfigCost" value="${s.unit_cost ?? ''}" step="0.01" min="0" placeholder="—"
+                style="width:100%; padding:9px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-tertiary); color:var(--text-primary); font-size:14px;">
+            </div>
+            <div>
+              <label style="display:block; font-size:11px; color:var(--text-secondary); margin-bottom:4px;">Cost UOM</label>
+              <input type="text" id="supplyConfigCostUom" value="${(s.unit_cost_uom || (buyUOM || sellUOM || '')).replace(/"/g,'&quot;')}" placeholder="BX, PK, EA…"
+                style="width:100%; padding:9px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-tertiary); color:var(--text-primary); font-size:14px;">
+            </div>
+            <div style="grid-column:1 / -1;">
+              <label style="display:block; font-size:11px; color:var(--text-secondary); margin-bottom:4px;">Supplier part # / SKU (optional)</label>
+              <input type="text" id="supplyConfigSupplierPart" value="${(s.supplier_part_number || '').replace(/"/g,'&quot;')}"
+                style="width:100%; padding:9px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-tertiary); color:var(--text-primary); font-size:14px;">
+            </div>
+            <div style="grid-column:1 / -1;">
+              <label style="display:block; font-size:11px; color:var(--text-secondary); margin-bottom:4px;">Supplier URL (optional)</label>
+              <input type="url" id="supplyConfigSupplierUrl" value="${(s.supplier_url || '').replace(/"/g,'&quot;')}" placeholder="https://…"
+                style="width:100%; padding:9px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-tertiary); color:var(--text-primary); font-size:14px;">
+            </div>
+            ${s.unit_cost_updated_at ? `<div style="grid-column:1 / -1; font-size:10px; color:var(--text-tertiary);">Cost last updated ${new Date(s.unit_cost_updated_at).toLocaleDateString()}${s.unit_cost_source ? ' · ' + s.unit_cost_source : ''}</div>` : ''}
+          </div>
+        </div>
+
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeSupplyConfigModal()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:var(--radius-sm); cursor:pointer;">Cancel</button>
+          <button onclick="saveSupplyConfig(${itemId})" class="btn-primary" style="flex:1; padding:10px;">Save</button>
+        </div>
+      </div>
+    </div>
+    `;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    const modal = wrap.firstElementChild;
+    document.body.appendChild(modal);
+    requestAnimationFrame(() => modal.classList.add('visible'));
+}
+
+function closeSupplyConfigModal() {
+    const m = document.getElementById('supplyConfigModal');
+    if (m) m.remove();
+}
+
+function saveSupplyConfig(itemId) {
+    const parInput = document.getElementById('supplyConfigPar');
+    const reorderInput = document.getElementById('supplyConfigReorder');
+    const supplierInput = document.getElementById('supplyConfigSupplier');
+    const costInput = document.getElementById('supplyConfigCost');
+    const costUomInput = document.getElementById('supplyConfigCostUom');
+    const supplierPartInput = document.getElementById('supplyConfigSupplierPart');
+    const supplierUrlInput = document.getElementById('supplyConfigSupplierUrl');
+    if (!parInput || !reorderInput) return;
+
+    const parRaw = parInput.value.trim();
+    const reorderRaw = reorderInput.value.trim();
+    const par_level = parRaw === '' ? null : parseInt(parRaw, 10);
+    const reorder_qty = reorderRaw === '' ? null : parseInt(reorderRaw, 10);
+
+    if ((par_level !== null && (isNaN(par_level) || par_level < 0))
+        || (reorder_qty !== null && (isNaN(reorder_qty) || reorder_qty < 0))) {
+        alert('PAR / re-order values must be 0 or greater (or blank).');
+        return;
+    }
+
+    const costRaw = (costInput?.value || '').trim();
+    const unit_cost = costRaw === '' ? null : parseFloat(costRaw);
+    if (unit_cost !== null && (isNaN(unit_cost) || unit_cost < 0)) {
+        alert('Cost must be a number ≥ 0 (or blank).');
+        return;
+    }
+
+    const payload = {
+        par_level,
+        reorder_qty,
+        supplier_name: (supplierInput?.value || '').trim() || null,
+        unit_cost,
+        unit_cost_uom: (costUomInput?.value || '').trim() || null,
+        supplier_part_number: (supplierPartInput?.value || '').trim() || null,
+        supplier_url: (supplierUrlInput?.value || '').trim() || null,
+    };
+    // Mark source as 'manual' when the user touches cost
+    if (unit_cost !== null) payload.unit_cost_source = 'manual';
 
     apiFetch(`/ops/api/supplies/${itemId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ par_level: parVal }),
+        body: JSON.stringify(payload),
     }).then(() => {
-        showToast(`PAR updated to ${parVal}`);
+        showToast('Saved');
+        closeSupplyConfigModal();
         supplyItems = null;
         loadSuppliesData();
-    }).catch(e => showToast('Failed to update PAR: ' + e.message));
+    }).catch(e => showToast('Failed to save: ' + e.message));
+}
+
+// ─── McKesson Mapping Review ─────────────────────────────────────
+let mckMappingState = null;  // { items: [...], totals: {...}, filter: 'all' }
+
+async function openMckessonMappingModal() {
+    showToast('Loading McKesson suggestions…');
+    try {
+        const data = await apiFetch('/ops/api/supplies/mapping');
+        mckMappingState = {
+            items: data.items || [],
+            skipped: data.skipped || [],
+            totals: data.totals || {},
+            filter: (data.totals?.high || 0) > 0 ? 'high' : 'non-mckesson',
+        };
+        renderMckessonMappingModal();
+    } catch (e) {
+        showToast('Failed to load suggestions: ' + e.message);
+    }
+}
+
+function renderMckessonMappingModal() {
+    if (!mckMappingState) return;
+    const { items, skipped = [], totals, filter } = mckMappingState;
+
+    const isNonMckessonView = filter === 'non-mckesson';
+    const filteredMck = isNonMckessonView
+        ? []
+        : (filter === 'all' ? items : items.filter(i => i.confidence === filter));
+
+    const existing = document.getElementById('mckMappingModal');
+    if (existing) existing.remove();
+
+    const helpText = isNonMckessonView
+        ? `These items were skipped from McKesson matching. Click <strong>Set Supplier</strong> on each to record where you actually buy it from (and optionally the cost).`
+        : `Tap a candidate to confirm the match, tap <strong>Different Supplier</strong> if you buy it elsewhere, or <strong>Skip</strong> to defer. Skipped items move to the Non-McKesson tab below.`;
+
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+    <div class="modal-overlay" id="mckMappingModal" onclick="if(event.target===this)closeMckMapping()">
+      <div class="modal-content" style="max-width:920px; max-height:90vh; overflow-y:auto; padding:0;">
+        <div style="position:sticky; top:0; background:var(--bg-primary); padding:16px 20px; border-bottom:1px solid var(--border-light); z-index:10;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <h2 style="margin:0; font-size:18px;">🔗 Map Supplies — ${isNonMckessonView ? 'Non-McKesson Suppliers' : 'McKesson Catalog'}</h2>
+            <button onclick="closeMckMapping()" style="background:none; border:none; color:var(--text-tertiary); font-size:24px; cursor:pointer;">×</button>
+          </div>
+          <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:8px;">${helpText}</div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button onclick="setMckFilter('high')" class="filter-pill ${filter==='high'?'active':''}">High (${totals.high||0})</button>
+            <button onclick="setMckFilter('medium')" class="filter-pill ${filter==='medium'?'active':''}">Medium (${totals.medium||0})</button>
+            <button onclick="setMckFilter('low')" class="filter-pill ${filter==='low'?'active':''}">Low (${totals.low||0})</button>
+            <button onclick="setMckFilter('none')" class="filter-pill ${filter==='none'?'active':''}">No match (${totals.none||0})</button>
+            <button onclick="setMckFilter('all')" class="filter-pill ${filter==='all'?'active':''}">All McKesson (${items.length})</button>
+            <span style="display:inline-block; width:1px; background:var(--border-light); margin:0 4px;"></span>
+            <button onclick="setMckFilter('non-mckesson')" class="filter-pill ${filter==='non-mckesson'?'active':''}" style="${filter==='non-mckesson'?'':'border-color:rgba(168,85,247,0.30); color:#c084fc;'}">📦 Non-McKesson (${totals.skipped||0})</button>
+          </div>
+        </div>
+
+        <div style="padding:16px 20px;">
+          ${isNonMckessonView ? renderNonMckessonView(skipped) : `
+            ${filteredMck.length === 0 ? `<div style="text-align:center; padding:40px; color:var(--text-tertiary);">No items in this bucket.</div>` : ''}
+            ${filteredMck.map(it => renderMckMappingRow(it)).join('')}
+          `}
+        </div>
+      </div>
+    </div>`;
+    const modal = wrap.firstElementChild;
+    document.body.appendChild(modal);
+    requestAnimationFrame(() => modal.classList.add('visible'));
+}
+
+function renderNonMckessonView(skipped) {
+    if (!skipped || skipped.length === 0) {
+        return `<div style="text-align:center; padding:40px; color:var(--text-tertiary);">
+          🎉 Nothing to review. Items you Skip will appear here so you can assign their actual supplier later.
+        </div>`;
+    }
+    return skipped.map(s => {
+        const cat = s.category || '';
+        return `
+        <div style="border:1px solid rgba(168,85,247,0.20); border-radius:10px; padding:14px; margin-bottom:10px; background:rgba(168,85,247,0.03);">
+          <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:10px; gap:10px;">
+            <div style="flex:1;">
+              <div style="font-size:15px; font-weight:600;">${s.name}</div>
+              <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${cat}${s.unit ? ' · unit: ' + s.unit : ''}</div>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button onclick="openDifferentSupplierPanel(${s.id})" style="padding:6px 12px; background:#a855f7; color:white; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:500;">📦 Set Supplier</button>
+              <button onclick="undoSkip(${s.id})" style="padding:6px 10px; background:transparent; color:var(--text-tertiary); border:1px solid var(--border-light); border-radius:5px; cursor:pointer; font-size:11px;" title="Move back to McKesson matching">↩ Undo Skip</button>
+            </div>
+          </div>
+          <div id="diffSupplierPanel-${s.id}" style="display:none;"></div>
+        </div>`;
+    }).join('');
+}
+
+function renderMckMappingRow(it) {
+    const cur = it.curated;
+    const cands = it.candidates || [];
+    const confColor = it.confidence === 'high' ? '#22c55e'
+        : it.confidence === 'medium' ? '#eab308'
+        : it.confidence === 'low' ? '#f97316' : '#6b7280';
+    const candHtml = cands.length === 0 ? `<div style="padding:8px; color:var(--text-tertiary); font-size:12px;">No candidates above threshold.</div>` :
+        cands.map((c, i) => {
+            const ordered = c.last_purchase_date && c.last_purchase_date !== '00000000'
+                ? `📦 last ordered ${c.last_purchase_date.slice(0,4)}-${c.last_purchase_date.slice(4,6)}-${c.last_purchase_date.slice(6,8)}` : '';
+            const stockBadgeColor = c.stock_status === 'Stocked' ? '#22c55e'
+                : c.stock_status === 'Discontinued' ? '#ef4444'
+                : c.stock_status === 'Regionally Stocked' ? '#eab308' : '#9ca3af';
+            return `
+              <div onclick="confirmMckMatch(${cur.id}, ${c.id})" style="cursor:pointer; padding:10px 12px; border-radius:8px; background:${i===0?'rgba(59,130,246,0.10)':'rgba(255,255,255,0.02)'}; border:1px solid ${i===0?'rgba(59,130,246,0.30)':'var(--border-light)'}; margin-bottom:6px; transition:background 0.15s;" onmouseenter="this.style.background='rgba(34,197,94,0.10)'" onmouseleave="this.style.background='${i===0?'rgba(59,130,246,0.10)':'rgba(255,255,255,0.02)'}'">
+                <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
+                  <div style="flex:1; min-width:0;">
+                    <div style="font-size:13px; font-weight:500; color:var(--text-primary); margin-bottom:3px;">${c.name}</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:4px; font-size:10px; align-items:center;">
+                      <span style="font-family:monospace; color:#60a5fa;">MCK ${c.mckesson_item_id}</span>
+                      ${c.manufacturer ? `<span style="color:var(--text-tertiary);">• ${c.manufacturer}</span>` : ''}
+                      ${c.stock_status ? `<span style="padding:1px 5px; background:rgba(255,255,255,0.05); color:${stockBadgeColor}; border-radius:3px;">${c.stock_status}</span>` : ''}
+                      ${c.purchasable ? `<span style="padding:1px 5px; background:rgba(34,197,94,0.15); color:#22c55e; border-radius:3px;">✓ Orderable</span>` : ''}
+                      ${c.buy_uom ? `<span style="color:var(--text-tertiary);">• Buy ${c.buy_uom}</span>` : ''}
+                      ${ordered ? `<span style="color:#a78bfa;">• ${ordered}</span>` : ''}
+                    </div>
+                  </div>
+                  <div style="text-align:right; font-size:11px;">
+                    <div style="font-weight:600; color:${i===0 ? '#60a5fa' : 'var(--text-tertiary)'};">${(c.score*100).toFixed(0)}%</div>
+                    <button onclick="event.stopPropagation(); confirmMckMatch(${cur.id}, ${c.id})" style="margin-top:4px; padding:4px 10px; background:#3b82f6; color:white; border:none; border-radius:4px; cursor:pointer; font-size:10px;">Use this</button>
+                  </div>
+                </div>
+              </div>`;
+        }).join('');
+
+    return `
+      <div style="border:1px solid var(--border-light); border-radius:10px; padding:14px; margin-bottom:14px; background:var(--bg-secondary);">
+        <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:10px; gap:10px;">
+          <div style="flex:1;">
+            <div style="font-size:15px; font-weight:600;">${cur.name}</div>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${cur.category || ''}${cur.unit ? ' · unit: ' + cur.unit : ''}</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="padding:3px 8px; background:rgba(255,255,255,0.05); color:${confColor}; border-radius:4px; font-size:10px; font-weight:600; text-transform:uppercase;">${it.confidence}</span>
+            <button onclick="openDifferentSupplierPanel(${cur.id})" style="padding:5px 10px; background:transparent; color:#a78bfa; border:1px solid rgba(168,85,247,0.30); border-radius:4px; cursor:pointer; font-size:11px;">Different Supplier</button>
+            <button onclick="skipMckMatch(${cur.id})" style="padding:5px 10px; background:transparent; color:var(--text-secondary); border:1px solid var(--border-light); border-radius:4px; cursor:pointer; font-size:11px;" title="Mark as 'no McKesson match' without recording a supplier">Skip</button>
+          </div>
+        </div>
+        <div id="diffSupplierPanel-${cur.id}" style="display:none;"></div>
+        ${candHtml}
+      </div>`;
+}
+
+function setMckFilter(f) {
+    if (!mckMappingState) return;
+    mckMappingState.filter = f;
+    renderMckessonMappingModal();
+}
+
+function closeMckMapping() {
+    const m = document.getElementById('mckMappingModal');
+    if (m) m.remove();
+    mckMappingState = null;
+}
+
+async function confirmMckMatch(curatedId, mckessonRowId) {
+    try {
+        await apiFetch('/ops/api/supplies/mapping', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ curatedId, mckessonRowId, action: 'merge' }),
+        });
+        showToast('Merged ✓');
+        // Remove from local state and re-render
+        if (mckMappingState) {
+            mckMappingState.items = mckMappingState.items.filter(i => i.curated.id !== curatedId);
+            // Recalc totals
+            const t = { high: 0, medium: 0, low: 0, none: 0 };
+            for (const i of mckMappingState.items) t[i.confidence]++;
+            mckMappingState.totals = { ...mckMappingState.totals, ...t };
+            renderMckessonMappingModal();
+        }
+        // Force supplies reload next time tab opens
+        supplyItems = null;
+    } catch (e) {
+        showToast('Merge failed: ' + e.message);
+    }
+}
+
+async function skipMckMatch(curatedId) {
+    try {
+        await apiFetch('/ops/api/supplies/mapping', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ curatedId, action: 'skip' }),
+        });
+        showToast('Skipped → moved to Non-McKesson tab');
+        if (mckMappingState) {
+            // Pull the row out of items, push minimal record into skipped, recount.
+            const removed = mckMappingState.items.find(i => i.curated.id === curatedId);
+            mckMappingState.items = mckMappingState.items.filter(i => i.curated.id !== curatedId);
+            if (removed) {
+                mckMappingState.skipped = [
+                    ...(mckMappingState.skipped || []),
+                    { id: removed.curated.id, name: removed.curated.name, category: removed.curated.category, unit: removed.curated.unit, supplier_name: null, unit_cost: null, unit_cost_uom: null, supplier_part_number: null, supplier_url: null },
+                ];
+            }
+            recountMckMappingTotals();
+            renderMckessonMappingModal();
+        }
+    } catch (e) {
+        showToast('Skip failed: ' + e.message);
+    }
+}
+
+function openDifferentSupplierPanel(curatedId) {
+    const panel = document.getElementById(`diffSupplierPanel-${curatedId}`);
+    if (!panel) return;
+    if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
+    panel.innerHTML = `
+      <div style="background:rgba(168,85,247,0.06); border:1px solid rgba(168,85,247,0.20); border-radius:8px; padding:12px; margin-bottom:10px;">
+        <div style="font-size:12px; font-weight:600; color:#c084fc; margin-bottom:8px;">📦 Where do you actually buy this from?</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+          <div style="grid-column:1 / -1;">
+            <input type="text" id="diffSupp-name-${curatedId}" placeholder="Supplier name (e.g. Strive Pharm)"
+              style="width:100%; padding:8px; border:1px solid var(--border-light); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-size:13px;">
+          </div>
+          <div>
+            <input type="number" id="diffSupp-cost-${curatedId}" step="0.01" min="0" placeholder="Cost (optional)"
+              style="width:100%; padding:8px; border:1px solid var(--border-light); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-size:13px;">
+          </div>
+          <div>
+            <input type="text" id="diffSupp-uom-${curatedId}" placeholder="UOM (e.g. PK, EA, BX)"
+              style="width:100%; padding:8px; border:1px solid var(--border-light); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-size:13px;">
+          </div>
+          <div style="grid-column:1 / -1;">
+            <input type="text" id="diffSupp-part-${curatedId}" placeholder="Their part # / SKU (optional)"
+              style="width:100%; padding:8px; border:1px solid var(--border-light); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-size:13px;">
+          </div>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:8px; justify-content:flex-end;">
+          <button onclick="document.getElementById('diffSupplierPanel-${curatedId}').style.display='none'" style="padding:5px 10px; background:transparent; color:var(--text-tertiary); border:1px solid var(--border-light); border-radius:4px; cursor:pointer; font-size:11px;">Cancel</button>
+          <button onclick="saveDifferentSupplier(${curatedId})" style="padding:5px 12px; background:#a855f7; color:white; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Save</button>
+        </div>
+      </div>`;
+    panel.style.display = 'block';
+    setTimeout(() => document.getElementById(`diffSupp-name-${curatedId}`)?.focus(), 30);
+}
+
+async function saveDifferentSupplier(curatedId) {
+    const name = document.getElementById(`diffSupp-name-${curatedId}`)?.value.trim() || '';
+    if (!name) { showToast('Supplier name is required'); return; }
+    const costRaw = document.getElementById(`diffSupp-cost-${curatedId}`)?.value.trim() || '';
+    const uom = document.getElementById(`diffSupp-uom-${curatedId}`)?.value.trim() || '';
+    const partNum = document.getElementById(`diffSupp-part-${curatedId}`)?.value.trim() || '';
+    const cost = costRaw === '' ? null : parseFloat(costRaw);
+    if (cost !== null && (isNaN(cost) || cost < 0)) { showToast('Cost must be a number ≥ 0 (or blank)'); return; }
+    try {
+        await apiFetch('/ops/api/supplies/mapping', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                curatedId,
+                action: 'different-supplier',
+                supplier_name: name,
+                unit_cost: cost,
+                unit_cost_uom: uom || null,
+                supplier_part_number: partNum || null,
+            }),
+        });
+        showToast(`Saved: ${name}${cost !== null ? ` ($${cost.toFixed(2)}${uom ? '/' + uom : ''})` : ''}`);
+        if (mckMappingState) {
+            // Remove from both McKesson-suggestions and non-McKesson lists
+            mckMappingState.items = mckMappingState.items.filter(i => i.curated.id !== curatedId);
+            mckMappingState.skipped = (mckMappingState.skipped || []).filter(s => s.id !== curatedId);
+            recountMckMappingTotals();
+            renderMckessonMappingModal();
+        }
+        supplyItems = null;
+    } catch (e) {
+        showToast('Save failed: ' + e.message);
+    }
+}
+
+function recountMckMappingTotals() {
+    if (!mckMappingState) return;
+    const t = { high: 0, medium: 0, low: 0, none: 0 };
+    for (const i of mckMappingState.items) t[i.confidence]++;
+    mckMappingState.totals = {
+        ...mckMappingState.totals,
+        ...t,
+        skipped: (mckMappingState.skipped || []).length,
+    };
+}
+
+async function undoSkip(curatedId) {
+    try {
+        await apiFetch('/ops/api/supplies/mapping', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ curatedId, action: 'undo-skip' }),
+        });
+        showToast('Restored to McKesson matching — refresh modal to recompute');
+        // Easiest correct UX: refetch the whole modal so the item shows up in the
+        // appropriate confidence bucket again with re-scored candidates.
+        const data = await apiFetch('/ops/api/supplies/mapping');
+        mckMappingState.items = data.items || [];
+        mckMappingState.skipped = data.skipped || [];
+        mckMappingState.totals = data.totals || {};
+        renderMckessonMappingModal();
+    } catch (e) {
+        showToast('Undo failed: ' + e.message);
+    }
+}
+
+// ─── INVOICES SECTION ────────────────────────────────────────────
+let invoicesData = null;        // { items: [...], totals: {...} } from /api/mckesson/invoices
+let invoicesFilter = 'all';     // 'all' | 'pending' | 'paid'
+let invoicesSearch = '';
+
+function renderInvoicesSection() {
+    if (!invoicesData) {
+        loadInvoices();
+        return renderLoadingState();
+    }
+    const list = invoicesData.items || [];
+    const totals = invoicesData.totals || {};
+    let filtered = list;
+    if (invoicesFilter === 'pending') filtered = filtered.filter(i => !i.details_fetched_at);
+    if (invoicesFilter === 'paid')    filtered = filtered.filter(i => (i.status || '').toLowerCase() === 'paid');
+    if (invoicesFilter === 'with-lines') filtered = filtered.filter(i => i.details_fetched_at);
+    if (invoicesSearch.trim()) {
+        const q = invoicesSearch.trim().toLowerCase();
+        filtered = filtered.filter(i =>
+          (i.invoice_id || '').toLowerCase().includes(q)
+          || (i.order_id || '').toLowerCase().includes(q)
+          || (i.purchase_order_number || '').toLowerCase().includes(q)
+        );
+    }
+
+    const totalNet = list.reduce((sum, i) => sum + (Number(i.net_total) || 0), 0);
+    const paidNet = list.filter(i => (i.status || '').toLowerCase() === 'paid')
+                        .reduce((sum, i) => sum + (Number(i.net_total) || 0), 0);
+
+    return `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <div style="display:flex; gap:6px;">
+        <button class="filter-pill ${invoicesFilter==='all'?'active':''}" onclick="setInvoicesFilter('all')">All (${list.length})</button>
+        <button class="filter-pill ${invoicesFilter==='pending'?'active':''}" onclick="setInvoicesFilter('pending')">Need Details (${totals.pending || 0})</button>
+        <button class="filter-pill ${invoicesFilter==='with-lines'?'active':''}" onclick="setInvoicesFilter('with-lines')">With Line Items (${totals.with_details || 0})</button>
+        <button class="filter-pill ${invoicesFilter==='paid'?'active':''}" onclick="setInvoicesFilter('paid')">Paid</button>
+      </div>
+      <button class="btn-primary btn-sm" onclick="loadInvoices(true)" style="font-size:12px; padding:6px 12px;">↻ Sync from McKesson</button>
+    </div>
+
+    <div style="margin-bottom:8px;">
+      <input type="text" placeholder="🔍 Search invoice #, order #, or PO name…" value="${invoicesSearch.replace(/"/g,'&quot;')}"
+        oninput="setInvoicesSearch(this.value)"
+        style="width:100%; padding:9px 14px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-secondary); color:var(--text-primary); font-size:13px;">
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:14px;">
+      <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;">
+        <div style="font-size:10px; color:var(--text-tertiary);">Invoices (last 90 days)</div>
+        <div style="font-size:20px; font-weight:600;">${list.length}</div>
+      </div>
+      <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;">
+        <div style="font-size:10px; color:var(--text-tertiary);">Total Net</div>
+        <div style="font-size:20px; font-weight:600;">$${totalNet.toFixed(2)}</div>
+      </div>
+      <div style="padding:12px; background:var(--bg-secondary); border-radius:8px;">
+        <div style="font-size:10px; color:var(--text-tertiary);">Paid</div>
+        <div style="font-size:20px; font-weight:600; color:#22c55e;">$${paidNet.toFixed(2)}</div>
+      </div>
+    </div>
+
+    ${filtered.length === 0 ? `<div style="text-align:center; padding:30px; color:var(--text-tertiary);">No invoices match.</div>` : ''}
+    ${filtered.map(i => renderInvoiceRow(i)).join('')}
+    `;
+}
+
+function renderInvoiceRow(i) {
+    const net = i.net_total != null ? Number(i.net_total) : null;
+    const status = i.status || (i.details_fetched_at ? '' : 'Needs details');
+    const statusColor = (status || '').toLowerCase() === 'paid' ? '#22c55e'
+        : (status || '').toLowerCase() === 'pending' ? '#eab308'
+        : (status === 'Needs details' ? '#a78bfa' : '#9ca3af');
+    return `
+      <div onclick="openInvoiceDetail(${i.id})" style="cursor:pointer; padding:12px 14px; border:1px solid var(--border-light); border-radius:8px; margin-bottom:8px; background:var(--bg-secondary); transition:background 0.15s;" onmouseenter="this.style.background='var(--bg-tertiary)'" onmouseleave="this.style.background='var(--bg-secondary)'">
+        <div style="display:flex; justify-content:space-between; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:14px; font-weight:600;">${i.purchase_order_number || '(no PO name)'}</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:3px; font-size:11px; color:var(--text-tertiary);">
+              <span style="font-family:monospace;">Inv #${i.invoice_id}</span>
+              ${i.order_id ? `<span style="font-family:monospace;">Ord #${i.order_id}</span>` : `<span style="color:#a78bfa;">no orderId yet</span>`}
+              ${i.invoice_date ? `<span>${i.invoice_date}</span>` : ''}
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:16px; font-weight:600;">${net != null ? '$' + net.toFixed(2) : '—'}</div>
+            <span style="display:inline-block; margin-top:4px; padding:2px 8px; background:rgba(255,255,255,0.05); color:${statusColor}; border-radius:4px; font-size:10px;">${status}</span>
+          </div>
+        </div>
+      </div>
+    `;
+}
+
+function setInvoicesFilter(f) {
+    invoicesFilter = f;
+    const c = document.getElementById('inventoryContent');
+    if (c) c.innerHTML = renderInvoicesSection();
+}
+function setInvoicesSearch(q) {
+    invoicesSearch = q || '';
+    const c = document.getElementById('inventoryContent');
+    if (c) c.innerHTML = renderInvoicesSection();
+    const inp = c?.querySelector('input[type="text"]');
+    if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+}
+
+async function loadInvoices(forceSync = false) {
+    try {
+        if (forceSync) showToast('Pulling latest from McKesson…');
+        const data = await apiFetch('/ops/api/mckesson/invoices');
+        invoicesData = data;
+        const c = document.getElementById('inventoryContent');
+        if (c) c.innerHTML = renderInvoicesSection();
+    } catch (e) {
+        showToast('Failed to load invoices: ' + e.message);
+    }
+}
+
+async function openInvoiceDetail(id) {
+    try {
+        const data = await apiFetch(`/ops/api/mckesson/invoices/${id}`);
+        renderInvoiceDetailModal(data);
+    } catch (e) {
+        showToast('Failed to load invoice: ' + e.message);
+    }
+}
+
+function renderInvoiceDetailModal(data) {
+    const inv = data.invoice;
+    const lines = data.lines || [];
+    const exist = document.getElementById('invoiceDetailModal');
+    if (exist) exist.remove();
+
+    const hasDetails = !!inv.details_fetched_at;
+    const total = inv.net_total != null ? Number(inv.net_total).toFixed(2) : '—';
+
+    const html = `
+    <div class="modal-overlay" id="invoiceDetailModal" onclick="if(event.target===this)closeInvoiceDetail()">
+      <div class="modal-content" style="max-width:880px; max-height:92vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:12px;">
+          <div>
+            <h2 style="margin:0; font-size:18px;">Invoice #${inv.invoice_id}</h2>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-top:3px;">
+              ${inv.purchase_order_number || '(no PO)'}
+              ${inv.order_id ? ` · Order #${inv.order_id}` : ''}
+              ${inv.invoice_date ? ` · ${inv.invoice_date}` : ''}
+              ${inv.status ? ` · ${inv.status}` : ''}
+            </div>
+          </div>
+          <button onclick="closeInvoiceDetail()" style="background:none; border:none; color:var(--text-tertiary); font-size:24px; cursor:pointer;">×</button>
+        </div>
+
+        ${hasDetails ? `
+          <div style="background:var(--bg-secondary); border-radius:8px; padding:12px; margin-bottom:14px;">
+            <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; font-size:12px;">
+              <div><div style="color:var(--text-tertiary);">Subtotal</div><div style="font-weight:600;">$${Number(inv.sub_total||0).toFixed(2)}</div></div>
+              <div><div style="color:var(--text-tertiary);">Tax</div><div style="font-weight:600;">$${Number(inv.tax_total||0).toFixed(2)}</div></div>
+              <div><div style="color:var(--text-tertiary);">Discount</div><div style="font-weight:600;">$${Number(inv.discount_total||0).toFixed(2)}</div></div>
+              <div><div style="color:var(--text-tertiary);">Net</div><div style="font-weight:700; font-size:14px;">$${total}</div></div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${!hasDetails ? `
+          <div style="background:rgba(168,85,247,0.06); border:1px solid rgba(168,85,247,0.20); border-radius:8px; padding:14px; margin-bottom:14px;">
+            <div style="font-size:13px; font-weight:600; color:#c084fc; margin-bottom:6px;">📝 Line items not yet recorded</div>
+            <div style="font-size:12px; color:var(--text-secondary); line-height:1.5;">
+              McKesson's API isn't returning details for our account yet. Either set the Order ID below if known (we'll retry the API), or use <strong>Enter Lines Manually</strong> to type them in from the McKesson web portal.
+            </div>
+            <div style="display:flex; gap:8px; margin-top:10px;">
+              <input type="text" id="invoiceOrderIdInput" placeholder="Order ID (e.g. 86634517)" value="${inv.order_id || ''}"
+                style="flex:1; padding:8px; border:1px solid var(--border-light); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-size:13px;">
+              <button onclick="saveInvoiceOrderIdAndFetch(${inv.id})" style="padding:8px 14px; background:#3b82f6; color:white; border:none; border-radius:6px; cursor:pointer; font-size:12px;">Save & Try Fetch</button>
+              <button onclick="openManualLineEntry(${inv.id})" style="padding:8px 14px; background:#a855f7; color:white; border:none; border-radius:6px; cursor:pointer; font-size:12px;">Enter Lines Manually</button>
+            </div>
+          </div>
+        ` : ''}
+
+        ${lines.length > 0 ? `
+          <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:8px;">Line Items (${lines.length})</div>
+          <div style="font-family:-apple-system,sans-serif; font-size:11px;">
+            <div style="display:grid; grid-template-columns: 100px 1fr 60px 60px 80px 80px; gap:8px; padding:6px 8px; background:var(--bg-tertiary); border-radius:6px 6px 0 0; font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">
+              <div>Item #</div><div>Description</div><div>Qty</div><div>UOM</div><div>Price</div><div>Net</div>
+            </div>
+            ${lines.map(l => `
+              <div style="display:grid; grid-template-columns: 100px 1fr 60px 60px 80px 80px; gap:8px; padding:8px; border-bottom:1px solid var(--border-light);">
+                <div style="font-family:monospace;">${l.product_id || '—'}</div>
+                <div>${l.product_description || '—'}${l.matched_supply_name ? `<div style="font-size:10px; color:#22c55e; margin-top:2px;">→ ${l.matched_supply_name}</div>` : ''}</div>
+                <div>${l.quantity_ordered ?? '—'}</div>
+                <div>${l.unit_of_measure || ''}</div>
+                <div>$${Number(l.price||0).toFixed(2)}</div>
+                <div style="font-weight:600;">$${Number(l.net_total||0).toFixed(2)}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+
+        <div style="display:flex; gap:8px; margin-top:16px; padding-top:14px; border-top:1px solid var(--border-light);">
+          <button onclick="closeInvoiceDetail()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer;">Close</button>
+          ${hasDetails ? `<button onclick="openManualLineEntry(${inv.id})" style="padding:10px 14px; background:transparent; color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer;">Edit Lines</button>` : ''}
+          ${lines.length > 0 ? `<button onclick="previewReorder(${inv.id})" class="btn-primary" style="padding:10px 16px;">📦 Reorder</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    const m = wrap.firstElementChild;
+    document.body.appendChild(m);
+    requestAnimationFrame(() => m.classList.add('visible'));
+}
+
+function closeInvoiceDetail() {
+    const m = document.getElementById('invoiceDetailModal');
+    if (m) m.remove();
+}
+
+async function saveInvoiceOrderIdAndFetch(invoiceRowId) {
+    const inp = document.getElementById('invoiceOrderIdInput');
+    const orderId = (inp?.value || '').trim();
+    if (!orderId) { showToast('Order ID required'); return; }
+    try {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ order_id: orderId }),
+        });
+        if (r.fetched_from_api) {
+            showToast('Saved & fetched ✓');
+        } else {
+            showToast(`Order ID saved. ${r.api_error ? '(McKesson API still 404 — enter lines manually.)' : ''}`);
+        }
+        // Refresh detail view
+        await openInvoiceDetail(invoiceRowId);
+    } catch (e) {
+        showToast('Save failed: ' + e.message);
+    }
+}
+
+function openManualLineEntry(invoiceRowId) {
+    closeInvoiceDetail();
+    const exist = document.getElementById('manualLineEntryModal');
+    if (exist) exist.remove();
+    const html = `
+    <div class="modal-overlay" id="manualLineEntryModal" onclick="if(event.target===this)closeManualLineEntry()">
+      <div class="modal-content" style="max-width:920px; max-height:92vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:10px;">
+          <h2 style="margin:0; font-size:17px;">Enter Invoice Line Items</h2>
+          <button onclick="closeManualLineEntry()" style="background:none; border:none; color:var(--text-tertiary); font-size:24px; cursor:pointer;">×</button>
+        </div>
+        <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:14px;">
+          One line per row. Required: Item # and price. We'll auto-link to your supply catalog and update the unit cost on matched items.
+        </div>
+        <div id="manualLineRows"></div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button onclick="addManualLineRow()" style="padding:6px 10px; background:transparent; color:#60a5fa; border:1px solid rgba(59,130,246,0.30); border-radius:5px; cursor:pointer; font-size:12px;">+ Add Line</button>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:14px; padding-top:14px; border-top:1px solid var(--border-light);">
+          <button onclick="closeManualLineEntry()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer;">Cancel</button>
+          <button onclick="saveManualLines(${invoiceRowId})" class="btn-primary" style="flex:1; padding:10px;">Save Lines</button>
+        </div>
+      </div>
+    </div>`;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    const m = wrap.firstElementChild;
+    document.body.appendChild(m);
+    requestAnimationFrame(() => m.classList.add('visible'));
+    // Start with 3 empty rows
+    addManualLineRow(); addManualLineRow(); addManualLineRow();
+}
+
+function closeManualLineEntry() {
+    const m = document.getElementById('manualLineEntryModal');
+    if (m) m.remove();
+}
+
+let _manualLineCounter = 0;
+function addManualLineRow() {
+    const container = document.getElementById('manualLineRows');
+    if (!container) return;
+    const idx = _manualLineCounter++;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid; grid-template-columns: 100px 1fr 70px 60px 90px 90px 30px; gap:6px; margin-bottom:6px; align-items:center;';
+    row.dataset.lineIdx = String(idx);
+    const ipt = (id, ph, type='text', step='') => `<input class="manual-line" data-field="${id}" type="${type}" ${step?`step="${step}"`:''} placeholder="${ph}" style="padding:7px; border:1px solid var(--border-light); border-radius:5px; background:var(--bg-tertiary); color:var(--text-primary); font-size:12px;">`;
+    row.innerHTML = `
+      ${ipt('product_id', 'Item #')}
+      ${ipt('product_description', 'Description')}
+      ${ipt('quantity_ordered', 'Qty', 'number', '0.01')}
+      ${ipt('unit_of_measure', 'UOM')}
+      ${ipt('price', '$ Unit', 'number', '0.01')}
+      ${ipt('net_total', '$ Net', 'number', '0.01')}
+      <button onclick="this.parentNode.remove()" style="background:none; border:none; color:var(--text-tertiary); cursor:pointer; font-size:18px; padding:0;">×</button>
+    `;
+    container.appendChild(row);
+}
+
+async function saveManualLines(invoiceRowId) {
+    const rows = Array.from(document.querySelectorAll('#manualLineRows > div'));
+    const lines = rows.map(r => {
+        const get = (f) => (r.querySelector(`input[data-field="${f}"]`)?.value || '').trim();
+        const num = (f) => { const v = get(f); return v === '' ? null : parseFloat(v); };
+        return {
+            product_id: get('product_id') || null,
+            product_description: get('product_description') || null,
+            quantity_ordered: num('quantity_ordered'),
+            unit_of_measure: get('unit_of_measure') || null,
+            price: num('price'),
+            net_total: num('net_total'),
+        };
+    }).filter(l => l.product_id || l.product_description || l.price);
+    if (lines.length === 0) { showToast('No line items entered'); return; }
+    try {
+        await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ manual_lines: lines }),
+        });
+        showToast(`Saved ${lines.length} line(s)`);
+        closeManualLineEntry();
+        invoicesData = null;
+        await loadInvoices();
+        // re-open detail to show
+        await openInvoiceDetail(invoiceRowId);
+    } catch (e) {
+        showToast('Save failed: ' + e.message);
+    }
+}
+
+async function previewReorder(invoiceRowId) {
+    try {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dryRun: true }),
+        });
+        if (!r.draft) { showToast('Reorder preview failed'); return; }
+        const d = r.draft.preview;
+        const lineSummary = d.items.slice(0, 10).map(i =>
+            `<div style="display:flex; justify-content:space-between; padding:4px 0; font-size:12px; border-bottom:1px solid var(--border-light);">
+              <div><span style="font-family:monospace;">${i.product_id}</span> · ${(i.description||'').slice(0,55)}</div>
+              <div>${i.quantity} ${i.uom}</div>
+            </div>`).join('');
+        const remaining = d.items.length > 10 ? `<div style="font-size:11px; color:var(--text-tertiary); padding:6px 0;">+${d.items.length - 10} more</div>` : '';
+        const html = `
+        <div class="modal-overlay" id="reorderPreviewModal" onclick="if(event.target===this)closeReorderPreview()">
+          <div class="modal-content" style="max-width:600px;">
+            <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:12px;">
+              <div>
+                <h2 style="margin:0; font-size:17px;">Reorder Draft</h2>
+                <div style="font-size:11px; color:var(--text-tertiary); margin-top:3px;">From invoice #${d.sourceInvoiceId} · PO ${d.sourcePoName || '—'}</div>
+              </div>
+              <button onclick="closeReorderPreview()" style="background:none; border:none; color:var(--text-tertiary); font-size:24px; cursor:pointer;">×</button>
+            </div>
+            <div style="background:var(--bg-secondary); border-radius:8px; padding:10px; margin-bottom:12px;">
+              <div style="display:flex; justify-content:space-between; font-size:12px;">
+                <div><div style="color:var(--text-tertiary);">Lines</div><div style="font-weight:600;">${d.lineCount}</div></div>
+                <div><div style="color:var(--text-tertiary);">Estimated total</div><div style="font-weight:600;">$${d.totalEstimate.toFixed(2)}</div></div>
+                <div><div style="color:var(--text-tertiary);">New PO #</div><div style="font-weight:600; font-family:monospace;">${r.draft.poNumber}</div></div>
+              </div>
+            </div>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:6px;">Lines:</div>
+            ${lineSummary}${remaining}
+            <div style="margin-top:14px; padding:10px; background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.20); border-radius:6px; font-size:11px; color:var(--text-secondary);">
+              ⚠️ Live submit requires <code>MCKESSON_ALLOW_PRODUCTION_ORDERS=true</code>. This is a preview only.
+            </div>
+            <div style="display:flex; gap:8px; margin-top:14px;">
+              <button onclick="closeReorderPreview()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer;">Close</button>
+              <button onclick="submitReorder(${invoiceRowId})" class="btn-primary" style="flex:1; padding:10px;">Submit Order</button>
+            </div>
+          </div>
+        </div>`;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = html;
+        const mm = wrap.firstElementChild;
+        document.body.appendChild(mm);
+        requestAnimationFrame(() => mm.classList.add('visible'));
+    } catch (e) {
+        showToast('Reorder preview failed: ' + e.message);
+    }
+}
+function closeReorderPreview() {
+    const m = document.getElementById('reorderPreviewModal');
+    if (m) m.remove();
+}
+async function submitReorder(invoiceRowId) {
+    if (!confirm('Submit a real McKesson order? This will be charged to your account.')) return;
+    try {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dryRun: false }),
+        });
+        if (r.submitted) {
+            showToast(`Order submitted ✓ orderId=${r.orderId}`);
+            closeReorderPreview();
+        } else {
+            showToast('Submit failed: ' + (r.error || 'unknown'));
+        }
+    } catch (e) {
+        showToast('Submit failed: ' + e.message);
+    }
+}
+
+// ─── New McKesson Order Modal ────────────────────────────────────
+//
+// Lets staff put together a fresh McKesson order from the catalog without
+// needing an existing invoice to reorder from. Two-step flow:
+//   1) Pick + cart → 2) PO# + dryRun preview → 3) confirm submit
+//
+// Backend route: POST /ops/api/ipad/mckesson/orders
+//   - dryRun=true (default) returns a preview only — no McKesson call.
+//   - dryRun=false requires an idempotencyKey (UUID v4) and is gated by
+//     MCKESSON_ALLOW_PRODUCTION_ORDERS in .env.local. Gate-engaged returns
+//     503 with { gateEngaged: true } — surfaced inline in the modal.
+//
+// Cart is browser-only (cleared on close). Idempotency key persists across
+// retries within a single modal session so a flaky network doesn't double-submit.
+
+let newOrderCart = [];                  // [{ mckItemId, supplyItemId, name, manufacturer, mfgPart, qty, uom, unitCost, purchasable }]
+let newOrderPreview = null;             // dryRun response from backend, null until preview is run
+let newOrderSubmitting = false;
+let newOrderIdempotencyKey = null;      // generated lazily; preserved across retries inside this modal session
+let newOrderPickerQuery = '';
+let newOrderPurchasableOnly = true;
+let newOrderPoNumber = '';
+
+function generateOrderIdempotencyKey() {
+    // RFC 4122 v4 (no external dep)
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+function defaultNewOrderPoNumber() {
+    const d = new Date();
+    const yyyymmdd = d.getFullYear().toString() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+    const rand = Math.floor(Math.random() * 36 ** 4).toString(36).toUpperCase().padStart(4, '0');
+    return `IPAD-${yyyymmdd}-${rand}`.slice(0, 30);
+}
+
+function openNewMckessonOrderModal() {
+    newOrderCart = [];
+    newOrderPreview = null;
+    newOrderSubmitting = false;
+    newOrderIdempotencyKey = null;
+    newOrderPickerQuery = '';
+    newOrderPurchasableOnly = true;
+    newOrderPoNumber = defaultNewOrderPoNumber();
+    renderNewMckessonOrderModal();
+}
+
+function closeNewMckessonOrderModal() {
+    const m = document.getElementById('newOrderModal');
+    if (m) m.remove();
+    newOrderCart = [];
+    newOrderPreview = null;
+    newOrderIdempotencyKey = null;
+}
+
+function setNewOrderPickerQuery(v) {
+    newOrderPickerQuery = (v || '').toLowerCase();
+    const list = document.getElementById('newOrderPickerList');
+    if (list) list.innerHTML = renderNewOrderPickerList();
+}
+
+function setNewOrderPurchasableOnly(v) {
+    newOrderPurchasableOnly = !!v;
+    renderNewMckessonOrderModal();
+}
+
+function setNewOrderPoNumber(v) {
+    newOrderPoNumber = (v || '').slice(0, 30);
+    // Don't full-rerender on every keystroke — just clear the preview if PO# changes after preview
+    if (newOrderPreview) {
+        newOrderPreview = null;
+        renderNewMckessonOrderModal();
+    }
+}
+
+function addNewOrderItem(supplyId) {
+    const supplies = supplyItems || extractSupplies();
+    const s = supplies.find(x => x.id === supplyId);
+    if (!s || !s.mckesson_item_id) { showToast('Item not in McKesson catalog'); return; }
+    const existing = newOrderCart.find(x => x.mckItemId === s.mckesson_item_id);
+    if (existing) {
+        existing.qty = Math.min(999, existing.qty + 1);
+    } else {
+        newOrderCart.push({
+            mckItemId: s.mckesson_item_id,
+            supplyItemId: s.id,
+            name: s.name,
+            manufacturer: s.manufacturer,
+            mfgPart: s.manufacturer_part_number,
+            qty: 1,
+            uom: s.mckesson_unit_of_measure || s.mckesson_buy_unit_of_measure || 'EA',
+            unitCost: s.unit_cost ? Number(s.unit_cost) : null,
+            purchasable: s.mckesson_purchasable,
+        });
+    }
+    // Cart change invalidates preview
+    newOrderPreview = null;
+    renderNewMckessonOrderModal();
+}
+
+function removeNewOrderItem(idx) {
+    newOrderCart.splice(idx, 1);
+    newOrderPreview = null;
+    renderNewMckessonOrderModal();
+}
+
+function setNewOrderQty(idx, v) {
+    const n = parseInt(v, 10);
+    if (!Number.isFinite(n) || n < 1) return;
+    newOrderCart[idx].qty = Math.min(999, n);
+    newOrderPreview = null;
+    // Don't re-render on every keystroke; the input keeps the value
+}
+
+async function previewNewOrder() {
+    if (newOrderCart.length === 0) { showToast('Add at least one item to preview'); return; }
+    try {
+        const body = {
+            items: newOrderCart.map(c => ({
+                mckItemId: c.mckItemId,
+                quantity: c.qty,
+                supplyItemId: c.supplyItemId,
+                unitOfMeasure: c.uom,
+            })),
+            poNumber: newOrderPoNumber || undefined,
+            dryRun: true,
+        };
+        showToast('Building preview…');
+        const r = await apiFetch('/ops/api/ipad/mckesson/orders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!r || !r.draft) { showToast('Preview failed: ' + (r?.error || 'unknown')); return; }
+        newOrderPreview = r.draft;
+        renderNewMckessonOrderModal();
+    } catch (e) {
+        showToast('Preview failed: ' + (e?.message || e));
+    }
+}
+
+async function submitNewOrder() {
+    if (!newOrderPreview) { showToast('Run preview first'); return; }
+    if (newOrderSubmitting) return;
+    if (!confirm('Submit this McKesson order? This will be charged to your account.')) return;
+    if (!newOrderIdempotencyKey) newOrderIdempotencyKey = generateOrderIdempotencyKey();
+    newOrderSubmitting = true;
+    renderNewMckessonOrderModal();
+    try {
+        const body = {
+            items: newOrderCart.map(c => ({
+                mckItemId: c.mckItemId,
+                quantity: c.qty,
+                supplyItemId: c.supplyItemId,
+                unitOfMeasure: c.uom,
+            })),
+            poNumber: newOrderPoNumber || undefined,
+            dryRun: false,
+            idempotencyKey: newOrderIdempotencyKey,
+        };
+        const r = await apiFetch('/ops/api/ipad/mckesson/orders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (r?.submitted) {
+            showToast(`Order submitted ✓ McKesson orderId=${r.orderId || '(pending)'}, PO=${r.poNumber}`);
+            closeNewMckessonOrderModal();
+            // Refresh invoices tab in case caller is viewing it
+            if (typeof loadInvoices === 'function') loadInvoices().catch(() => {});
+        } else if (r?.gateEngaged) {
+            // Gate is OFF — show inline banner, don't dismiss
+            newOrderSubmitting = false;
+            newOrderPreview = { ...newOrderPreview, _gateBanner: r.error || 'Production orders disabled' };
+            renderNewMckessonOrderModal();
+        } else {
+            showToast('Submit failed: ' + (r?.error || 'unknown'));
+            newOrderSubmitting = false;
+            renderNewMckessonOrderModal();
+        }
+    } catch (e) {
+        // apiFetch may throw on 503 with gateEngaged — try to surface that
+        const msg = e?.message || String(e);
+        if (/Production orders are disabled|gateEngaged/.test(msg)) {
+            newOrderSubmitting = false;
+            newOrderPreview = { ...newOrderPreview, _gateBanner: msg };
+            renderNewMckessonOrderModal();
+        } else {
+            showToast('Submit failed: ' + msg);
+            newOrderSubmitting = false;
+            renderNewMckessonOrderModal();
+        }
+    }
+}
+
+function renderNewOrderPickerList() {
+    const supplies = supplyItems || extractSupplies();
+    const q = newOrderPickerQuery;
+    const filtered = supplies.filter(s => {
+        if (!s.mckesson_item_id) return false;
+        if (newOrderPurchasableOnly && s.mckesson_purchasable !== true) return false;
+        if (!q) return true;
+        return (s.name || '').toLowerCase().includes(q)
+            || (s.mckesson_item_id || '').toLowerCase().includes(q)
+            || (s.manufacturer_part_number || '').toLowerCase().includes(q)
+            || (s.manufacturer || '').toLowerCase().includes(q)
+            || (s.minor_category || '').toLowerCase().includes(q);
+    }).slice(0, 50); // cap render
+    if (filtered.length === 0) {
+        return `<div style="padding:24px; text-align:center; color:var(--text-tertiary); font-size:12px;">
+            No matches.${newOrderPurchasableOnly ? ' Try unchecking "Purchasable only".' : ''}
+        </div>`;
+    }
+    return filtered.map(s => {
+        const inCart = newOrderCart.find(c => c.mckItemId === s.mckesson_item_id);
+        const purchaseBadge = s.mckesson_purchasable === true
+            ? '<span style="background:rgba(34,197,94,0.18); color:#22c55e; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:600;">PURCHASABLE</span>'
+            : s.mckesson_purchasable === false
+              ? '<span style="background:rgba(239,68,68,0.18); color:#ef4444; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:600;">NOT PURCHASABLE</span>'
+              : '';
+        const cost = s.unit_cost ? `$${Number(s.unit_cost).toFixed(2)}/${s.unit_cost_uom || 'EA'}` : '$—';
+        return `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid var(--border); ${inCart ? 'background:rgba(16,185,129,0.06);' : ''}">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:500; font-size:13px; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis;">${s.name}</div>
+                    <div style="font-size:10px; color:var(--text-tertiary); display:flex; gap:8px; align-items:center; margin-top:2px;">
+                        <span style="font-family:monospace; color:#60a5fa;">MCK ${s.mckesson_item_id}</span>
+                        ${s.manufacturer_part_number ? `<span>· ${s.manufacturer_part_number}</span>` : ''}
+                        ${s.manufacturer ? `<span>· ${s.manufacturer}</span>` : ''}
+                        <span>· ${cost}</span>
+                        ${purchaseBadge}
+                    </div>
+                </div>
+                <button onclick="addNewOrderItem(${s.id})" style="padding:6px 12px; background:${inCart ? 'var(--bg-tertiary)' : 'linear-gradient(135deg,#10b981 0%, #059669 100%)'}; color:${inCart ? 'var(--text-secondary)' : 'white'}; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">
+                    ${inCart ? `+1 (in cart: ${inCart.qty})` : '+ Add'}
+                </button>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderNewOrderCart() {
+    if (newOrderCart.length === 0) {
+        return `<div style="padding:20px; text-align:center; color:var(--text-tertiary); font-size:12px;">Cart is empty. Pick items from the catalog above.</div>`;
+    }
+    return newOrderCart.map((c, idx) => {
+        const notPurch = c.purchasable === false ? '<span style="color:#ef4444; font-size:10px; font-weight:600;">⚠ NOT PURCHASABLE</span>' : '';
+        const lineTotal = (c.unitCost || 0) * c.qty;
+        return `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:500; font-size:13px;">${c.name}</div>
+                    <div style="font-size:10px; color:var(--text-tertiary);">MCK ${c.mckItemId} · ${c.uom}${c.unitCost ? ` · $${c.unitCost.toFixed(2)}` : ''} ${notPurch}</div>
+                </div>
+                <input type="number" min="1" max="999" value="${c.qty}" onchange="setNewOrderQty(${idx}, this.value)"
+                       style="width:64px; padding:6px; background:var(--surface); border:1px solid var(--border-light); border-radius:5px; color:var(--text-primary); text-align:center; font-size:14px; font-weight:600;">
+                <div style="font-size:12px; color:var(--text-secondary); min-width:60px; text-align:right;">${c.unitCost ? '$' + lineTotal.toFixed(2) : '—'}</div>
+                <button onclick="removeNewOrderItem(${idx})" style="background:none; border:none; color:#ef4444; cursor:pointer; font-size:18px; padding:0 4px;" title="Remove">×</button>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderNewMckessonOrderModal() {
+    let modal = document.getElementById('newOrderModal');
+    const hasPreview = !!newOrderPreview;
+    const gateBanner = newOrderPreview?._gateBanner;
+    const subtotal = newOrderCart.reduce((s, c) => s + ((c.unitCost || 0) * c.qty), 0);
+    const previewItems = hasPreview ? (newOrderPreview.preview?.items || []) : [];
+    const previewWarnings = hasPreview ? (newOrderPreview.preview?.warnings || []) : [];
+    const previewGateEngaged = hasPreview ? newOrderPreview.preview?.gateEngaged : false;
+    const submitDisabled = !hasPreview || newOrderSubmitting || newOrderCart.length === 0;
+
+    const html = `
+        <div class="modal-overlay" id="newOrderModal" onclick="if(event.target===this)closeNewMckessonOrderModal()">
+            <div class="modal-content" style="max-width:920px; width:95vw; max-height:90vh; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <div>
+                        <h2 style="margin:0; font-size:18px;">📦 New McKesson Order</h2>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">
+                            Pick items → preview (dryRun) → confirm submit. Idempotency key generated automatically.
+                        </div>
+                    </div>
+                    <button onclick="closeNewMckessonOrderModal()" style="background:none; border:none; color:var(--text-tertiary); font-size:24px; cursor:pointer;">×</button>
+                </div>
+
+                ${gateBanner ? `
+                    <div style="margin-bottom:12px; padding:10px 14px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.30); border-radius:6px; color:#ef4444; font-size:12px;">
+                        ⚠ <strong>Production orders are disabled.</strong> Set <code>MCKESSON_ALLOW_PRODUCTION_ORDERS=true</code> in <code>.env.local</code> and restart the dashboard to enable live ordering. Preview still works.
+                        <div style="color:var(--text-tertiary); font-size:10px; margin-top:4px;">Backend response: ${gateBanner.replace(/</g,'&lt;')}</div>
+                    </div>
+                ` : ''}
+
+                <!-- Step 1: picker -->
+                <div style="margin-bottom:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <div style="font-weight:600; color:var(--text-secondary); font-size:13px;">1. Pick items from McKesson catalog</div>
+                        <label style="font-size:11px; color:var(--text-tertiary); display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" ${newOrderPurchasableOnly ? 'checked' : ''} onchange="setNewOrderPurchasableOnly(this.checked)">
+                            Purchasable only
+                        </label>
+                    </div>
+                    <input type="text" placeholder="🔍 Search by name, MCK #, part #, manufacturer, category…"
+                           value="${newOrderPickerQuery.replace(/"/g,'&quot;')}"
+                           oninput="setNewOrderPickerQuery(this.value)"
+                           style="width:100%; padding:9px 12px; border:1px solid var(--border-light); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); font-size:13px;">
+                    <div id="newOrderPickerList" style="margin-top:8px; max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:6px;">
+                        ${renderNewOrderPickerList()}
+                    </div>
+                </div>
+
+                <!-- Step 2: cart -->
+                <div style="margin-bottom:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <div style="font-weight:600; color:var(--text-secondary); font-size:13px;">2. Your cart (${newOrderCart.length} item${newOrderCart.length === 1 ? '' : 's'})</div>
+                        ${subtotal > 0 ? `<div style="font-size:12px; color:var(--text-secondary);">Estimated subtotal: <strong style="color:#22c55e;">$${subtotal.toFixed(2)}</strong></div>` : ''}
+                    </div>
+                    <div style="max-height:200px; overflow-y:auto; padding:0 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg-secondary);">
+                        ${renderNewOrderCart()}
+                    </div>
+                </div>
+
+                <!-- Step 3: order details -->
+                <div style="margin-bottom:14px; display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div>
+                        <label style="font-size:11px; color:var(--text-tertiary); display:block; margin-bottom:4px;">PO Number (max 30 chars)</label>
+                        <input type="text" maxlength="30" value="${newOrderPoNumber.replace(/"/g,'&quot;')}"
+                               oninput="setNewOrderPoNumber(this.value)"
+                               style="width:100%; padding:8px 10px; border:1px solid var(--border-light); border-radius:5px; background:var(--bg-secondary); color:var(--text-primary); font-size:13px; font-family:monospace;">
+                    </div>
+                    <div>
+                        <label style="font-size:11px; color:var(--text-tertiary); display:block; margin-bottom:4px;">Ship-To (env default — TRI CITY MEDICAL)</label>
+                        <input type="text" disabled value="215 N McCormick St — Bill-To 62477188 / Ship-To 62477191"
+                               style="width:100%; padding:8px 10px; border:1px solid var(--border-light); border-radius:5px; background:var(--bg-tertiary); color:var(--text-tertiary); font-size:11px;">
+                    </div>
+                </div>
+
+                <!-- Action: preview -->
+                ${!hasPreview ? `
+                    <div style="display:flex; gap:8px; margin-top:14px;">
+                        <button onclick="closeNewMckessonOrderModal()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer; font-size:13px;">Cancel</button>
+                        <button onclick="previewNewOrder()" ${newOrderCart.length === 0 ? 'disabled' : ''}
+                                style="flex:2; padding:10px; background:${newOrderCart.length === 0 ? 'var(--bg-tertiary)' : 'linear-gradient(135deg,#3b82f6 0%, #1d4ed8 100%)'}; color:${newOrderCart.length === 0 ? 'var(--text-tertiary)' : 'white'}; border:none; border-radius:6px; cursor:${newOrderCart.length === 0 ? 'not-allowed' : 'pointer'}; font-size:13px; font-weight:600;">
+                            ▶ Preview Order (dryRun)
+                        </button>
+                    </div>
+                ` : `
+                    <!-- Step 4: preview + confirm submit -->
+                    <div style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.25); border-radius:6px; padding:12px; margin-top:14px;">
+                        <div style="font-weight:600; font-size:13px; margin-bottom:8px; color:#60a5fa;">✓ Preview (NOT submitted to McKesson)</div>
+                        <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:8px;">
+                            ${previewItems.length} line${previewItems.length === 1 ? '' : 's'} ·
+                            estimated total: <strong style="color:var(--text-secondary);">$${(newOrderPreview.preview?.totalEstimate || 0).toFixed(2)}</strong>
+                            · PO: <code>${newOrderPreview.poNumber || '(none)'}</code>
+                            ${previewGateEngaged ? ' · <span style="color:#ef4444;">⚠ Gate engaged</span>' : ''}
+                        </div>
+                        <div style="max-height:160px; overflow-y:auto; font-size:11px; font-family:monospace; color:var(--text-secondary);">
+                            ${previewItems.map(l => `
+                                <div style="padding:3px 0;">${l.product_id} × ${l.quantity} ${l.uom} — ${l.name}${l.unit_cost ? ` ($${l.line_total.toFixed(2)})` : ''}</div>
+                            `).join('')}
+                        </div>
+                        ${previewWarnings.length > 0 ? `
+                            <div style="margin-top:8px; padding:8px; background:rgba(234,179,8,0.10); border-left:3px solid #eab308; font-size:11px; color:#eab308;">
+                                ${previewWarnings.map(w => `<div>⚠ ${w}</div>`).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                    <div style="display:flex; gap:8px; margin-top:12px;">
+                        <button onclick="closeNewMckessonOrderModal()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer; font-size:13px;">Cancel</button>
+                        <button onclick="previewNewOrder()" style="flex:1; padding:10px; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-light); border-radius:6px; cursor:pointer; font-size:13px;">↻ Re-preview</button>
+                        <button onclick="submitNewOrder()" ${submitDisabled ? 'disabled' : ''}
+                                style="flex:2; padding:10px; background:${submitDisabled ? 'var(--bg-tertiary)' : 'linear-gradient(135deg,#10b981 0%, #059669 100%)'}; color:${submitDisabled ? 'var(--text-tertiary)' : 'white'}; border:none; border-radius:6px; cursor:${submitDisabled ? 'not-allowed' : 'pointer'}; font-size:13px; font-weight:600;">
+                            ${newOrderSubmitting ? '⏳ Submitting…' : '✓ Submit Order'}
+                        </button>
+                    </div>
+                `}
+            </div>
+        </div>
+    `;
+    if (modal) {
+        modal.outerHTML = html;
+    } else {
+        document.body.insertAdjacentHTML('beforeend', html);
+    }
 }
 
 function openSupplyCountModal() {
@@ -8369,8 +11467,8 @@ function renderPatientsView(container) {
         const color = p.avatar_color || getAvatarColor(name);
         const pType = formatClientType(p.client_type_key || p.client_type || '');
         return `
-                        <div class="recent-patient-card" onclick="openChartPanel('${p.healthie_client_id || p.healthie_id || p.id || p.patient_id}')">
-                            ${p.avatar_url ? `<div class="patient-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>`}
+                        <div class="recent-patient-card" onclick="openChartForPatient('${p.healthie_client_id || p.healthie_id || p.id || p.patient_id}', '${(name || '').replace(/'/g, "\\'")}')">
+                            ${p.avatar_url ? `<div class="patient-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${safeInitials(name)}'"/></div>` : `<div class="patient-avatar" style="background:${color}">${getInitials(name)}</div>`}
                             <div class="recent-patient-name">${name}</div>
                             ${pType ? `<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${pType}</div>` : ''}
                         </div>
@@ -8437,6 +11535,34 @@ function formatClientType(raw) {
     return map[raw] || raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+// Signal dot colors mirror /ops/patients/ (lib/patientSignals.ts)
+const SIGNAL_DOT_COLORS = {
+    good: '#16a34a',
+    warn: '#d97706',
+    bad: '#dc2626',
+    na: '#cbd5e1',
+    none: '#94a3b8'
+};
+
+function renderSignalDot(state, title) {
+    const color = SIGNAL_DOT_COLORS[state] || SIGNAL_DOT_COLORS.none;
+    return `<span title="${(title||'').replace(/"/g,'&quot;')}" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:3px;vertical-align:middle;"></span>`;
+}
+
+function renderSignalDots(sig) {
+    if (!sig) return '';
+    // 5 dots: Intake (placeholder for Phase 5b), Consents, App, Labs, Last Visit
+    return `
+        <span style="margin-left:6px; white-space:nowrap; vertical-align:middle;" title="📋 Intake: (coming Phase 5b)&#10;✍️ ${sig.consents?.label||'—'}&#10;📱 ${sig.app?.label||'—'}&#10;🔬 ${sig.labs?.label||'—'}&#10;📅 ${sig.lastVisit?.label||'—'}">
+            ${renderSignalDot('na', '📋 Intake: coming soon')}
+            ${renderSignalDot(sig.consents?.state || 'none', '✍️ ' + (sig.consents?.label || ''))}
+            ${renderSignalDot(sig.app?.state || 'none', '📱 ' + (sig.app?.label || ''))}
+            ${renderSignalDot(sig.labs?.state || 'none', '🔬 ' + (sig.labs?.label || ''))}
+            ${renderSignalDot(sig.lastVisit?.state || 'none', '📅 ' + (sig.lastVisit?.label || ''))}
+        </span>
+    `;
+}
+
 function renderPatientListItem(p) {
     const name = p.name || p.patient_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
     const color = p.avatar_color || getAvatarColor(name);
@@ -8447,9 +11573,12 @@ function renderPatientListItem(p) {
     const hasHealthie = !!(p.healthie_client_id || p.healthie_id);
 
     const pid = p.healthie_client_id || p.healthie_id || p.id || p.patient_id;
+    // Signals keyed by local patient_id (UUID). Fall back across naming.
+    const signalsKey = p.patient_id || p.id;
+    const signals = (patientSignalsCache && signalsKey) ? patientSignalsCache[signalsKey] : null;
     return `
-        <div class="patient-list-item" onclick="openChartPanel('${pid}')" style="cursor:pointer;">
-            ${p.avatar_url ? `<div class="patient-list-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>`}
+        <div class="patient-list-item" onclick="openChartForPatient('${pid}', '${(name || '').replace(/'/g, "\\'")}')" style="cursor:pointer;">
+            ${p.avatar_url ? `<div class="patient-list-avatar" style="background:${color}; overflow:hidden; padding:0;"><img src="${p.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${safeInitials(name)}'"/></div>` : `<div class="patient-list-avatar" style="background:${color}">${getInitials(name)}</div>`}
             <div class="patient-list-info">
                 <div class="patient-list-name">${sanitize(name)}
                     ${hasHealthie ? '<span style="font-size:9px; margin-left:4px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:#22c55e; font-weight:500;">✓</span>' : ''}
@@ -8460,6 +11589,7 @@ function renderPatientListItem(p) {
                 </div>
             </div>
             <span class="patient-status-badge" style="color:${statusColor}; border-color:${statusColor}40; background:${statusColor}10;">${label}</span>
+            ${hasHealthie ? `<button onclick="event.stopPropagation(); showMessagePatientModal('${pid}', '${(name || '').replace(/'/g, "\\'")}', '')" title="Send message to patient" style="margin-left:6px; padding:4px 8px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:11px; border-radius:5px; cursor:pointer; white-space:nowrap;">💬</button>` : ''}
         </div>
     `;
 }
@@ -8546,7 +11676,7 @@ async function selectPatient(id) {
     detail.innerHTML = `
         <div class="patient-detail">
             <div class="patient-detail-header">
-                ${patient.avatar_url ? `<div class="patient-detail-avatar" style="background:${color}; overflow:hidden; padding:0;" id="patientAvatar-${id}"><img src="${patient.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(name)}'"/></div>` : `<div class="patient-detail-avatar" style="background:${color}" id="patientAvatar-${id}">${getInitials(name)}</div>`}
+                ${patient.avatar_url ? `<div class="patient-detail-avatar" style="background:${color}; overflow:hidden; padding:0;" id="patientAvatar-${id}"><img src="${patient.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.textContent='${safeInitials(name)}'"/></div>` : `<div class="patient-detail-avatar" style="background:${color}" id="patientAvatar-${id}">${getInitials(name)}</div>`}
                 <div style="flex:1">
                     <div class="patient-detail-name">${sanitize(name)}</div>
                     ${patient.dob ? `<div class="patient-detail-dob">DOB: ${formatDateDisplay(patient.dob)}</div>` : ''}
@@ -8555,7 +11685,7 @@ async function selectPatient(id) {
                         ${patient.healthie_client_id ? '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ Healthie</span>' : '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(239,68,68,0.12); color:#ef4444;">❌ Not linked</span>'}
                     </div>
                 </div>
-                <button onclick="openChartPanel('${patient.healthie_client_id || id}')" style="padding:6px 14px; border-radius:8px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; color:#0a0f1a; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap;">Open Chart</button>
+                <button onclick="openChartForPatient('${patient.healthie_client_id || id}', '${(name || '').replace(/'/g, "\\'")}')" style="padding:6px 14px; border-radius:8px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; color:#0a0f1a; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap;">Open Chart</button>
             </div>
             <div id="patient360Data">
                 <div class="patient-360-loading">
@@ -8765,7 +11895,7 @@ function renderPatient360(data, patient, patientId) {
     if (healthiePhoto) {
         const avatarEl = document.getElementById(`patientAvatar-${patientId}`);
         if (avatarEl) {
-            avatarEl.innerHTML = `<img src="${healthiePhoto}" style="width:100%; height:100%; border-radius:inherit; object-fit:cover;" onerror="this.parentElement.textContent='${getInitials(demo.full_name || '')}'"/>`;
+            avatarEl.innerHTML = `<img src="${healthiePhoto}" style="width:100%; height:100%; border-radius:inherit; object-fit:cover;" onerror="this.parentElement.textContent='${safeInitials(demo.full_name || '')}'"/>`;
         }
     }
 
@@ -8796,6 +11926,10 @@ function renderPatient360(data, patient, patientId) {
                     <div class="patient-info-label">Client Type</div>
                     <div class="patient-info-value">${demo.client_type_key.replace(/_/g, ' ')}</div>
                 </div>` : ''}
+                <div class="patient-info-item">
+                    <div class="patient-info-label">Patient Type</div>
+                    <div class="patient-info-value">${(demo.patient_type || 'member') === 'visit' ? 'Visit' : (demo.patient_type || 'member') === 'intermittent' ? 'Intermittent' : 'Member'}</div>
+                </div>
                 ${demo.phone_primary ? `
                 <div class="patient-info-item">
                     <div class="patient-info-label">Phone</div>
@@ -8834,6 +11968,9 @@ function renderPatient360(data, patient, patientId) {
             </div>
         </div>
     `;
+
+    // ─── Family Connections ───
+    html += renderFamilyConnectionsSection(patientId, data.family);
 
     // ─── Inline Clinical Sections (collapsible) ───
     html += renderInlineAllergiesSection(data);
@@ -8987,6 +12124,9 @@ function renderPatient360(data, patient, patientId) {
             <button class="quick-action-btn" onclick="openStatusChangeModal('${patientId}', '${demo.status_key || 'Active'}')">
                 🔄 <span>Change Status</span>
             </button>
+            <button class="quick-action-btn" onclick="openPatientTypeModal('${patientId}', '${demo.patient_type || 'member'}')">
+                🏷️ <span>Change Type</span>
+            </button>
             <button class="quick-action-btn" onclick="window.open('https://app.gethealthie.com/users/${demo.healthie_client_id || patientId}', '_blank')">
                 🔗 <span>View in Healthie</span>
             </button>
@@ -9019,6 +12159,258 @@ function renderPatient360(data, patient, patientId) {
     loadPatientLabData(patientId);
     // Async: load payment data from Healthie
     loadPatientPaymentData(patientId);
+}
+
+// ─── FAMILY CONNECTIONS ──────────────────────────────────────
+function renderFamilyConnectionsSection(patientId, family) {
+    var fam = family || {};
+    var html = '<div class="patient-360-section">';
+    html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">';
+    html += '<h3 style="margin:0;">Family Connections</h3>';
+    html += '<button class="btn-secondary btn-sm" onclick="openLinkFamilyModal(\'' + patientId + '\')" style="font-size:11px;">+ Link Family Member</button>';
+    html += '</div>';
+    html += '<div id="familyConnectionsList-' + patientId + '">';
+
+    var hasAny = false;
+
+    // Support both old format (parent/spouse single) and new format (parents/spouses arrays)
+    var parents = fam.parents || (fam.parent ? [fam.parent] : []);
+    var spouses = fam.spouses || (fam.spouse ? [fam.spouse] : []);
+    var dependents = fam.dependents || [];
+    var others = fam.others || [];
+
+    parents.forEach(function(p) {
+        hasAny = true;
+        html += renderFamilyCard(p, 'Parent', 'parent', patientId);
+    });
+    spouses.forEach(function(s) {
+        hasAny = true;
+        html += renderFamilyCard(s, 'Spouse', 'spouse', patientId);
+    });
+    dependents.forEach(function(d) {
+        hasAny = true;
+        html += renderFamilyCard(d, 'Dependent', 'dependent', patientId);
+    });
+    others.forEach(function(o) {
+        hasAny = true;
+        var typeLabel = (o.relationship_type || 'family_member').replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+        html += renderFamilyCard(o, typeLabel, o.relationship_type || 'other', patientId);
+    });
+
+    if (!hasAny) {
+        html += '<div style="padding:8px 0; font-size:12px; color:var(--text-tertiary);">No family connections linked</div>';
+    }
+
+    html += '</div></div>';
+    return html;
+}
+
+function renderFamilyCard(member, label, relType, currentPatientId) {
+    var name = sanitize(member.full_name || 'Unknown');
+    var dob = member.dob ? formatDateDisplay(member.dob) : '';
+    var healthieBadge = member.healthie_client_id
+        ? '<span style="font-size:9px; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.12); color:#22c55e;">Healthie</span>'
+        : '<span style="font-size:9px; padding:1px 5px; border-radius:3px; background:rgba(239,68,68,0.12); color:#ef4444;">No Healthie</span>';
+
+    var relColors = { parent: '#8b5cf6', spouse: '#0ea5e9', dependent: '#22c55e' };
+    var borderColor = relColors[relType] || '#6b7280';
+    var initials = (member.full_name || '?').split(' ').map(function(w) { return w.charAt(0).toUpperCase(); }).slice(0, 2).join('');
+    var avatarOnClick = member.patient_id ? ' onclick="openChartForPatient(\'' + member.patient_id + '\', \'' + sanitize(member.full_name || '').replace(/'/g, "\\'") + '\')" title="Open chart"' : '';
+    var hasRealAvatar = member.avatar_url && !member.avatar_url.includes('missing.png') && member.avatar_url.startsWith('http');
+    var avatarHtml = hasRealAvatar
+        ? '<img src="' + member.avatar_url + '" style="width:36px; height:36px; border-radius:50%; object-fit:cover; border:2px solid ' + borderColor + '; flex-shrink:0; cursor:pointer;"' + avatarOnClick + ' onerror="this.outerHTML=this.dataset.fallback" data-fallback=\'<div style="width:36px;height:36px;border-radius:50%;background:' + borderColor + '22;border:2px solid ' + borderColor + ';display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' + borderColor + ';flex-shrink:0;">' + initials + '</div>\' />'
+        : '<div' + avatarOnClick + ' style="width:36px; height:36px; border-radius:50%; background:' + borderColor + '22; border:2px solid ' + borderColor + '; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:' + borderColor + '; flex-shrink:0; cursor:pointer;">' + initials + '</div>';
+
+    var relLabel = label + ': ' + name;
+
+    return '<div style="display:flex; align-items:center; gap:10px; padding:8px 12px; margin-bottom:6px; background:var(--surface); border-radius:8px; border-left:3px solid ' + borderColor + ';">'
+        + avatarHtml
+        + '<div style="flex:1; min-width:0;">'
+        + '<div style="font-size:13px; font-weight:600; color:var(--text-primary);">' + relLabel + '</div>'
+        + '<div style="font-size:11px; color:var(--text-secondary); display:flex; align-items:center; gap:6px;">'
+        + (dob ? '<span>' + dob + '</span><span style="opacity:0.4;">·</span>' : '')
+        + healthieBadge
+        + '</div>'
+        + '</div>'
+        + '<button onclick="unlinkFamilyMember(\'' + currentPatientId + '\', \'' + member.patient_id + '\', \'' + relType + '\')" '
+        + 'style="font-size:10px; padding:3px 8px; border-radius:4px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); color:#ef4444; cursor:pointer; flex-shrink:0;" '
+        + 'title="Remove connection">Unlink</button>'
+        + '</div>';
+}
+
+var _familySearchTimeout = null;
+var _familySelectedPatient = null;
+
+function openLinkFamilyModal(patientId) {
+    _familySelectedPatient = null;
+    var modal = document.createElement('div');
+    modal.className = 'modal-overlay visible';
+    modal.id = 'familyLinkModal';
+    modal.innerHTML = '<div class="modal modal-large" style="max-width:480px;">'
+        + '<h3>Link Family Member</h3>'
+        + '<div class="modal-field">'
+        + '<label>Search Patient</label>'
+        + '<input type="text" id="familySearchInput" placeholder="Search by name..." '
+        + 'oninput="searchPatientsForFamily(this.value, \'' + patientId + '\')" '
+        + 'style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; outline:none; box-sizing:border-box;">'
+        + '</div>'
+        + '<div id="familySearchResults" style="max-height:200px; overflow-y:auto; margin-bottom:12px;"></div>'
+        + '<div id="familySelectedInfo" style="display:none; padding:10px; background:rgba(139,92,246,0.08); border:1px solid rgba(139,92,246,0.2); border-radius:8px; margin-bottom:12px;">'
+        + '<div id="familySelectedName" style="font-weight:600; font-size:14px; color:var(--text-primary);"></div>'
+        + '</div>'
+        + '<div id="familyRelTypeSection" style="display:none;">'
+        + '<div class="modal-field">'
+        + '<label>Relationship</label>'
+        + '<select id="familyRelType" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px;">'
+        + '<option value="spouse">Spouse</option>'
+        + '<option value="parent">This patient is a dependent of selected</option>'
+        + '<option value="child">Selected is a dependent of this patient</option>'
+        + '<option value="caregiver">Caregiver</option>'
+        + '<option value="legal_guardian">Legal Guardian</option>'
+        + '<option value="family_member">Family Member</option>'
+        + '<option value="other">Other</option>'
+        + '</select>'
+        + '</div>'
+        + '</div>'
+        + '<div class="modal-actions">'
+        + '<button class="btn-cancel" onclick="document.getElementById(\'familyLinkModal\').remove()">Cancel</button>'
+        + '<button class="btn-primary" id="familyLinkBtn" onclick="submitFamilyLink(\'' + patientId + '\')" disabled>Link</button>'
+        + '</div>'
+        + '</div>';
+    document.body.appendChild(modal);
+    setTimeout(function() { document.getElementById('familySearchInput')?.focus(); }, 100);
+}
+
+function searchPatientsForFamily(searchQuery, currentPatientId) {
+    clearTimeout(_familySearchTimeout);
+    var resultsEl = document.getElementById('familySearchResults');
+    if (!searchQuery || searchQuery.length < 2) { if (resultsEl) resultsEl.innerHTML = ''; return; }
+    if (resultsEl) resultsEl.innerHTML = '<div style="padding:8px; font-size:12px; color:var(--text-tertiary);">Searching...</div>';
+    _familySearchTimeout = setTimeout(async function() {
+        try {
+            var resp = await fetch('/ops/api/patients/search/?q=' + encodeURIComponent(searchQuery), { credentials: 'include' });
+            var data = resp.ok ? await resp.json() : null;
+            if (!resultsEl) resultsEl = document.getElementById('familySearchResults');
+            if (!resultsEl) return;
+            var pts = (data && data.patients) ? data.patients : [];
+            // Filter out current patient
+            pts = pts.filter(function(p) { return String(p.patient_id || p.id) !== String(currentPatientId); });
+            if (pts.length === 0) {
+                resultsEl.innerHTML = '<div style="padding:8px; font-size:12px; color:var(--text-tertiary);">No matching patients</div>';
+                return;
+            }
+            resultsEl.innerHTML = pts.map(function(p) {
+                var pid = p.patient_id || p.id || '';
+                var name = p.full_name || ((p.first_name || '') + ' ' + (p.last_name || '')).trim();
+                var email = p.email || '';
+                var hid = p.healthie_id || p.healthie_client_id || '';
+                var safeName = sanitize(name).replace(/'/g, "\\'");
+                var safeEmail = sanitize(email).replace(/'/g, "\\'");
+                return '<div onclick="selectPatientForFamily(\'' + pid + '\', \'' + safeName + '\', \'' + safeEmail + '\', \'' + hid + '\')" '
+                    + 'style="padding:8px 12px; cursor:pointer; border-radius:6px; font-size:13px; color:var(--text-primary); border-bottom:1px solid var(--border-light);" '
+                    + 'onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">'
+                    + '<div style="font-weight:500;">' + sanitize(name) + '</div>'
+                    + (email ? '<div style="font-size:11px; color:var(--text-tertiary);">' + sanitize(email) + '</div>' : '')
+                    + '</div>';
+            }).join('');
+        } catch (e) {
+            if (resultsEl) resultsEl.innerHTML = '<div style="padding:8px; font-size:12px; color:#ef4444;">Search failed</div>';
+        }
+    }, 300);
+}
+
+function selectPatientForFamily(patientId, name, email, healthieId) {
+    _familySelectedPatient = { patient_id: patientId, full_name: name, email: email, healthie_id: healthieId };
+    var resultsEl = document.getElementById('familySearchResults');
+    if (resultsEl) resultsEl.innerHTML = '';
+    var infoEl = document.getElementById('familySelectedInfo');
+    if (infoEl) {
+        infoEl.style.display = 'block';
+        document.getElementById('familySelectedName').textContent = name + (email ? ' (' + email + ')' : '');
+    }
+    var relSection = document.getElementById('familyRelTypeSection');
+    if (relSection) relSection.style.display = 'block';
+    var linkBtn = document.getElementById('familyLinkBtn');
+    if (linkBtn) linkBtn.disabled = false;
+}
+
+// Refresh the family section in the chart panel (if open) after link/unlink
+function refreshChartFamilySection(patientId) {
+    var familySection = document.getElementById('chartFamilySection');
+    if (!familySection) return;
+    timedFetch('/ops/api/ipad/patient/' + patientId + '/', 10000).then(function(patientData) {
+        var familyData = patientData?.data?.family || patientData?.family;
+        if (familyData && chartPanelPatientId === patientId) {
+            chartPanelData.family = familyData;
+            familySection.innerHTML = renderFamilyConnectionsSection(patientId, familyData);
+        }
+    }).catch(function() {});
+}
+
+async function submitFamilyLink(currentPatientId) {
+    if (!_familySelectedPatient) return;
+    var relType = document.getElementById('familyRelType')?.value;
+    if (!relType) return;
+    var linkBtn = document.getElementById('familyLinkBtn');
+    if (linkBtn) { linkBtn.disabled = true; linkBtn.textContent = 'Linking...'; }
+
+    try {
+        var result = await apiFetch('/ops/api/ipad/patient/' + currentPatientId + '/family/', {
+            method: 'POST',
+            body: JSON.stringify({
+                relatedPatientId: _familySelectedPatient.patient_id,
+                relationshipType: relType
+            })
+        });
+        if (result.success) {
+            if (result.data && result.data.healthie_linked) {
+                showToast('Family member linked in Dashboard + Healthie!', 'success');
+            } else if (result.data && result.data.healthie_error) {
+                showToast('Linked locally but Healthie link failed: ' + result.data.healthie_error, 'warning');
+            } else {
+                showToast('Family member linked!', 'success');
+            }
+            document.getElementById('familyLinkModal')?.remove();
+            invalidatePatientCache(currentPatientId);
+            if (_familySelectedPatient.patient_id) invalidatePatientCache(_familySelectedPatient.patient_id);
+            if (_familySelectedPatient.healthie_id) invalidatePatientCache(_familySelectedPatient.healthie_id);
+            selectPatient(currentPatientId);
+            refreshChartFamilySection(currentPatientId);
+        } else {
+            showToast(result.error || 'Link failed', 'error');
+            if (linkBtn) { linkBtn.disabled = false; linkBtn.textContent = 'Link'; }
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Failed to link family member', 'error');
+        if (linkBtn) { linkBtn.disabled = false; linkBtn.textContent = 'Link'; }
+    }
+}
+
+async function unlinkFamilyMember(currentPatientId, relatedPatientId, relType) {
+    if (!confirm('Remove this family connection?')) return;
+    try {
+        showToast('Unlinking...', 'info');
+        var result = await apiFetch('/ops/api/ipad/patient/' + currentPatientId + '/family/', {
+            method: 'DELETE',
+            body: JSON.stringify({
+                relatedPatientId: relatedPatientId,
+                relationshipType: relType
+            })
+        });
+        if (result.success) {
+            showToast('Family member unlinked', 'success');
+            invalidatePatientCache(currentPatientId);
+            invalidatePatientCache(relatedPatientId);
+            selectPatient(currentPatientId);
+            refreshChartFamilySection(currentPatientId);
+        } else {
+            showToast(result.error || 'Unlink failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Failed to unlink', 'error');
+    }
 }
 
 // ─── STATUS CHANGE MODAL ────────────────────────────────────
@@ -9081,6 +12473,56 @@ async function submitStatusChange(patientId) {
     } catch (e) {
         if (e.message === 'AUTH_EXPIRED') throw e;
         showToast('Status update failed', 'error');
+    }
+}
+
+// ─── PATIENT TYPE CHANGE MODAL ──────────────────────────────
+function openPatientTypeModal(patientId, currentType) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay visible';
+    modal.id = 'patientTypeModal';
+    modal.innerHTML = `
+        <div class="modal modal-large">
+            <h3>Change Patient Type</h3>
+            <div class="modal-field">
+                <label>Patient Type</label>
+                <select id="newPatientTypeSelect">
+                    <option value="member" ${currentType === 'member' ? 'selected' : ''}>Member (Recurring)</option>
+                    <option value="intermittent" ${currentType === 'intermittent' ? 'selected' : ''}>Intermittent</option>
+                    <option value="visit" ${currentType === 'visit' ? 'selected' : ''}>Visit (One-time)</option>
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="document.getElementById('patientTypeModal').remove()">Cancel</button>
+                <button class="btn-primary" onclick="submitPatientTypeChange('${patientId}')">Save</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function submitPatientTypeChange(patientId) {
+    const newType = document.getElementById('newPatientTypeSelect')?.value;
+    if (!newType) return;
+
+    try {
+        showToast('Updating patient type…', 'info');
+        const result = await apiFetch(`/ops/api/patients/${patientId}/`, {
+            method: 'PATCH',
+            body: JSON.stringify({ patientType: newType })
+        });
+        if (result?.data || result?.success !== false) {
+            showToast('Patient type updated!', 'success');
+            const p = allPatients.find(p => String(p.id || p.patient_id) === String(patientId));
+            if (p) { p.patient_type = newType; }
+            document.getElementById('patientTypeModal')?.remove();
+            selectPatient(patientId);
+        } else {
+            showToast(result?.error || 'Patient type update failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Patient type update failed', 'error');
     }
 }
 
@@ -9360,36 +12802,76 @@ async function submitLabOrder(patientId) {
 }
 
 // ─── LAB PRINT MODAL (after successful order) ──────────────
+// Auto-prints: labels → Zebra, requisition → HP. No extra clicks needed.
 function showLabPrintModal(orderId, hasRequisition) {
+    // AUTO-PRINT immediately — no button clicks required
+    var labelsStatus = '🏷️ Sending 3 specimen labels → Zebra...';
+    var reqStatus = hasRequisition ? '🖨️ Sending requisition → HP...' : '';
+
     const modal = document.createElement('div');
     modal.className = 'modal-overlay visible';
     modal.id = 'labPrintModal';
+
+    function updateModal(labMsg, reqMsg) {
+        var statusEl = document.getElementById('labPrintStatus');
+        if (statusEl) statusEl.innerHTML = labMsg + (reqMsg ? '<br>' + reqMsg : '');
+    }
+
     modal.innerHTML = `
         <div class="modal" style="text-align:center; max-width:420px;">
             <div style="font-size:48px; margin-bottom:8px;">✅</div>
             <h3 style="margin-bottom:4px;">Lab Order Submitted</h3>
-            <p style="color:var(--text-secondary); font-size:14px; margin-bottom:24px;">Order #${orderId}</p>
+            <p style="color:var(--text-secondary); font-size:14px; margin-bottom:12px;">Order #${orderId}</p>
 
-            <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px;">
-                ${hasRequisition ? `
-                <button onclick="window.open('/ops/api/labs/orders/${orderId}/requisition/', '_blank')"
-                    style="padding:14px 20px; background:#2563EB; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
-                    🖨️ Print Requisition (Canon)
-                </button>` : ''}
+            <div id="labPrintStatus" style="font-size:14px; color:var(--cyan); margin-bottom:16px; min-height:40px;">
+                ${labelsStatus}${reqStatus ? '<br>' + reqStatus : ''}
+            </div>
 
-                <button onclick="window.open('/ops/api/labs/orders/${orderId}/labels/', '_blank')"
-                    style="padding:14px 20px; background:#10B981; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
-                    🏷️ Print 3 Specimen Labels (Dymo)
+            <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
+                <button onclick="printLabLabelsToClinic('${orderId}', '')" style="padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer; font-family:inherit;">
+                    🏷️ Reprint Labels → Zebra
                 </button>
+                ${hasRequisition ? `<button onclick="printRequisitionToClinic('${orderId}')" style="padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer; font-family:inherit;">
+                    🖨️ Reprint Requisition → HP
+                </button>` : ''}
             </div>
 
             <button onclick="document.getElementById('labPrintModal').remove(); loadLabsQueue().then(() => { if(currentTab==='labs') renderCurrentTab(); })"
-                style="padding:10px 24px; background:transparent; border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">
+                style="padding:10px 24px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:8px; color:#0a0f1a; font-size:14px; font-weight:700; cursor:pointer; font-family:inherit;">
                 Done
             </button>
         </div>
     `;
     document.body.appendChild(modal);
+
+    // Fire both print jobs in parallel — no waiting, no extra clicks
+    (async function() {
+        try {
+            var result = await apiFetch('/ops/api/labels/print/', {
+                method: 'POST',
+                body: JSON.stringify({ label_type: 'lab', printer: 'zebra', params: { orderId: orderId } })
+            });
+            updateModal('✅ 3 specimen labels sent to Zebra (Job #' + result.job_id + ')', document.getElementById('labPrintStatus')?.innerHTML.split('<br>')[1] || '');
+        } catch (e) {
+            updateModal('❌ Zebra labels failed: ' + (e.message || 'error'), document.getElementById('labPrintStatus')?.innerHTML.split('<br>')[1] || '');
+        }
+    })();
+
+    if (hasRequisition) {
+        (async function() {
+            try {
+                var result = await apiFetch('/ops/api/labels/print/', {
+                    method: 'POST',
+                    body: JSON.stringify({ label_type: 'requisition', printer: 'hp', params: { orderId: orderId } })
+                });
+                var parts = (document.getElementById('labPrintStatus')?.innerHTML || '').split('<br>');
+                updateModal(parts[0] || '', '✅ Requisition sent to HP (Job #' + result.job_id + ')');
+            } catch (e) {
+                var parts = (document.getElementById('labPrintStatus')?.innerHTML || '').split('<br>');
+                updateModal(parts[0] || '', '❌ HP requisition failed: ' + (e.message || 'error'));
+            }
+        })();
+    }
 }
 
 // ─── LAB ORDER FROM LABS TAB (patient picker) ───────────────
@@ -9480,7 +12962,11 @@ async function openPeptideDispenseModal(patientId, patientName) {
                 </div>
             </div>
             <div class="modal-field">
-                <label>Notes</label>
+                <label>Expected Dispense Date <span style="color:var(--text-tertiary); font-weight:normal;">(when patient picks up)</span></label>
+                <input type="date" id="peptideDispenseDate" value="${new Date().toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE })}">
+            </div>
+            <div class="modal-field">
+                <label>Notes <span style="color:var(--text-tertiary); font-weight:normal;">(defaults to "auto created")</span></label>
                 <input type="text" id="peptideNotes" placeholder="Optional notes…">
             </div>
             <div class="modal-actions">
@@ -9510,7 +12996,10 @@ async function submitPeptideDispense(patientId, patientName) {
     const productId = prodSelect?.value;
     const productName = prodSelect?.selectedOptions[0]?.dataset?.name || '';
     const qty = parseInt(document.getElementById('peptideQty')?.value || '1');
-    const notes = document.getElementById('peptideNotes')?.value || '';
+    const notesRaw = (document.getElementById('peptideNotes')?.value || '').trim();
+    const notes = notesRaw || 'auto created';
+    const expectedDispenseDate = document.getElementById('peptideDispenseDate')?.value || '';
+    const orderDate = new Date().toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE });
     const unitPrice = parseFloat(prodSelect?.selectedOptions[0]?.dataset?.price || '0');
 
     if (!productId) {
@@ -9535,6 +13024,8 @@ async function submitPeptideDispense(patientId, patientName) {
                 quantity: qty,
                 unit_price: unitPrice,
                 total_price: unitPrice * qty,
+                order_date: orderDate,
+                received_date: expectedDispenseDate || null,
                 notes
             })
         });
@@ -9602,7 +13093,1020 @@ function printLabel(patientId, patientName, medication, options = {}) {
         amountDispensed: options.amountDispensed || '',
         expDate: expDate,
     });
+    // Option 1: Open PDF in browser (AirPrint)
     window.open(`/ops/api/labels/generate/?${params.toString()}`, '_blank');
+}
+
+// Send label directly to clinic Zebra printer via server print queue
+async function printLabelToClinic(patientId, patientName, medication, options = {}) {
+    var med = medication || 'Testosterone Cypionate';
+    var type = options.type || (med.toLowerCase().includes('testosterone') ? 'testosterone' : 'peptide');
+    var labelMed = med;
+    if (type === 'testosterone' && !med.includes('200mg') && !med.includes('200 mg')) {
+        labelMed = 'Testosterone Cypionate 200mg/ml';
+    }
+    var p360 = patient360Cache[patientId];
+    var demo = p360?.demographics || {};
+    var patientData = allPatients.find(function(p) { return String(p.id || p.patient_id) === String(patientId); }) || {};
+    var dob = options.dob || demo.dob || demo.date_of_birth || patientData.dob || patientData.date_of_birth || '';
+    var formattedDob = dob ? formatDateDisplay(dob) : '';
+    var expDate = options.expDate ? formatDateDisplay(options.expDate) : '';
+    var dosage = options.dosage || '';
+    if (!dosage && type === 'testosterone') {
+        var regimen = demo.regimen || patientData.regimen || '';
+        dosage = regimen || (options.amountDispensed ? options.amountDispensed + 'mL SUBQ Weekly' : 'Use as directed');
+    }
+
+    showToast('Sending to clinic printer...', 'info');
+    try {
+        var result = await apiFetch('/ops/api/labels/print/', {
+            method: 'POST',
+            body: JSON.stringify({
+                label_type: type,
+                printer: 'zebra',
+                params: {
+                    type: type,
+                    patientName: patientName || '',
+                    patientDob: formattedDob,
+                    medication: labelMed,
+                    dosage: dosage,
+                    provider: 'Dr. Aaron Whitten NMD - DEA: MW6359574',
+                    dateDispensed: new Date().toLocaleDateString('en-US', { timeZone: CLINIC_TIMEZONE }),
+                    lotNumber: options.lotNumber || '',
+                    volume: options.volume || '',
+                    vialNumber: options.vialNumber || '',
+                    amountDispensed: options.amountDispensed || '',
+                    expDate: expDate,
+                }
+            })
+        });
+        showToast('Label sent to Zebra printer (Job #' + result.job_id + ')', 'success');
+    } catch (e) {
+        console.error('[Print] Clinic print failed:', e);
+        showToast('Printer queue failed: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// ─── CEO AGENT STATUS ───────────────────────────────────────
+let ceoAgentData = null;
+
+async function loadAgentStatus() {
+    try {
+        const resp = await fetch('/ops/api/ipad/ceo/agent-status', { credentials: 'include' });
+        if (!resp.ok) return;
+        ceoAgentData = await resp.json();
+        renderAgentCards();
+    } catch (e) {
+        console.warn('[CEO] Agent status load failed:', e);
+    }
+}
+
+async function resolveDecision(decisionId, action) {
+    try {
+        const resp = await fetch('/ops/api/ipad/ceo/resolve-decision', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ decision_id: decisionId, action })
+        });
+        if (resp.ok) {
+            showToast(action === 'resolved' ? 'Decision resolved' : 'Decision dismissed', 'success');
+            loadAgentStatus();
+        }
+    } catch (e) {
+        showToast('Failed to resolve', 'error');
+    }
+}
+
+function renderAgentCards() {
+    const container = document.getElementById('ceoAgentCards');
+    if (!container || !ceoAgentData) return;
+
+    const decisions = ceoAgentData.pending_decisions || [];
+    const summary = ceoAgentData.today_summary || {};
+    const sysStatus = ceoAgentData.system_status;
+
+    let html = '';
+
+    // Card 1: Needs Your Decision (only shows if there are pending items)
+    if (decisions.length > 0) {
+        html += `
+        <div style="background:var(--card); border:1px solid rgba(239,68,68,0.3); border-left:4px solid #ef4444; border-radius:12px; padding:16px; margin-bottom:12px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                <div style="font-size:15px; font-weight:700; color:#ef4444;">Needs Your Decision</div>
+                <span style="font-size:11px; padding:2px 8px; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; font-weight:600;">${decisions.length}</span>
+            </div>
+            ${decisions.map(d => {
+                const timeAgo = getTimeAgo(d.created_at);
+                const catLabel = (d.category || '').replace(/_/g, ' ');
+                return `
+                <div style="padding:10px 0; border-top:1px solid var(--border-light);">
+                    <div style="font-size:13px; color:var(--text-primary); margin-bottom:4px;">${sanitize(d.summary)}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:8px;">${sanitize(d.agent_name.replace(/_/g, ' '))} · ${catLabel} · ${timeAgo}</div>
+                    <div style="display:flex; gap:8px;">
+                        <button onclick="resolveDecision(${d.id}, 'resolved')" style="padding:6px 14px; background:#22c55e; border:none; border-radius:6px; color:#fff; font-size:12px; font-weight:600; cursor:pointer;">Resolve</button>
+                        <button onclick="resolveDecision(${d.id}, 'dismissed')" style="padding:6px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Dismiss</button>
+                    </div>
+                </div>`;
+            }).join('')}
+        </div>`;
+    }
+
+    // Card 2: System Status (single line, always visible)
+    if (sysStatus) {
+        const isHealthy = sysStatus.action_type !== 'error';
+        const statusColor = isHealthy ? '#22c55e' : '#ef4444';
+        const statusText = isHealthy ? 'All systems healthy' : (sysStatus.summary || 'Issues detected');
+        const statusTime = getTimeAgo(sysStatus.created_at);
+        html += `
+        <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:14px 16px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:10px; height:10px; border-radius:50%; background:${statusColor}; box-shadow:0 0 6px ${statusColor}80;"></div>
+                <span style="font-size:13px; color:var(--text-primary); font-weight:500;">${sanitize(statusText)}</span>
+            </div>
+            <span style="font-size:11px; color:var(--text-tertiary);">${statusTime}</span>
+        </div>`;
+    }
+
+    // Card 3: Agent Activity (collapsible, default collapsed)
+    if (summary.total > 0) {
+        const fixLabel = summary.auto_fixes > 0 ? `${summary.auto_fixes} auto-fixed` : '';
+        const errLabel = summary.errors > 0 ? `${summary.errors} errors` : '';
+        const parts = [fixLabel, errLabel].filter(Boolean).join(', ');
+        const summaryLine = parts ? `${summary.total} actions today (${parts})` : `${summary.total} actions today`;
+
+        html += `
+        <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; margin-bottom:20px; overflow:hidden;">
+            <div onclick="toggleAgentLog()" style="padding:14px 16px; display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
+                <span style="font-size:13px; color:var(--text-secondary); font-weight:500;">${summaryLine}</span>
+                <span id="agentLogToggle" style="font-size:11px; color:var(--text-tertiary);">show ▾</span>
+            </div>
+            <div id="agentLogDetail" style="display:none; border-top:1px solid var(--border-light); padding:0 16px;">
+                ${(ceoAgentData.today_activity || []).map(a => `
+                    <div style="padding:8px 0; border-bottom:1px solid var(--border-light); display:flex; align-items:flex-start; gap:8px;">
+                        <span style="font-size:11px; margin-top:2px;">${a.action_type === 'auto_fix' ? '🔧' : a.action_type === 'error' ? '⚠' : 'ℹ'}</span>
+                        <div>
+                            <div style="font-size:12px; color:var(--text-primary);">${sanitize(a.summary)}</div>
+                            <div style="font-size:11px; color:var(--text-tertiary);">${sanitize(a.agent_name.replace(/_/g, ' '))} · ${getTimeAgo(a.created_at)}</div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+}
+
+function toggleAgentLog() {
+    const detail = document.getElementById('agentLogDetail');
+    const toggle = document.getElementById('agentLogToggle');
+    if (!detail) return;
+    if (detail.style.display === 'none') {
+        detail.style.display = 'block';
+        if (toggle) toggle.textContent = 'hide ▴';
+    } else {
+        detail.style.display = 'none';
+        if (toggle) toggle.textContent = 'show ▾';
+    }
+}
+
+function getTimeAgo(isoStr) {
+    if (!isoStr) return '';
+    const diff = Date.now() - new Date(isoStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    return Math.floor(hrs / 24) + 'd ago';
+}
+
+async function resolveFailedCharge(source, id) {
+    const modal = document.createElement('div');
+    modal.id = 'resolve-charge-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:10001; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML = `
+        <div style="background:var(--bg-primary, #1a1a2e); border-radius:16px; width:90%; max-width:400px; padding:24px; border:1px solid var(--border-light);">
+            <div style="font-size:16px; font-weight:700; color:var(--text-primary); margin-bottom:16px;">Resolve Charge</div>
+            <select id="resolveAction" style="width:100%; padding:10px; margin-bottom:12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px;">
+                <option value="resolved">Resolved — payment collected</option>
+                <option value="dismissed">Dismissed — written off</option>
+                <option value="retried">Retried — re-charged successfully</option>
+            </select>
+            <textarea id="resolveNotes" rows="2" placeholder="Notes (optional)"
+                style="width:100%; padding:10px; margin-bottom:16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; box-sizing:border-box;"></textarea>
+            <div style="display:flex; gap:10px;">
+                <button onclick="document.getElementById('resolve-charge-modal')?.remove()"
+                    style="flex:1; padding:12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>
+                <button onclick="submitResolveCharge('${source}', '${id}')"
+                    style="flex:2; padding:12px; background:#22c55e; border:none; border-radius:10px; color:white; font-weight:700; font-size:14px; cursor:pointer;">Clear Charge</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function submitResolveCharge(source, id) {
+    const action = document.getElementById('resolveAction')?.value;
+    const notes = document.getElementById('resolveNotes')?.value;
+    try {
+        const resp = await fetch('/ops/api/ipad/ceo/resolve-charge', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source, id, action, notes })
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status }));
+            showToast('Failed: ' + (err.error || resp.status), 'error');
+            return;
+        }
+        const result = await resp.json();
+        if (result.success) {
+            document.getElementById('resolve-charge-modal')?.remove();
+            showToast('Charge cleared', 'success');
+            loadAllData();
+        } else {
+            showToast('Failed: ' + (result.error || 'Unknown'), 'error');
+        }
+    } catch (e) {
+        showToast('Error: ' + (e.message || 'Connection failed'), 'error');
+    }
+}
+
+async function showCEODrillDown(card, extraParams) {
+    const modal = document.createElement('div');
+    modal.id = 'ceo-drill-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10001; display:flex; align-items:flex-start; justify-content:center; padding-top:60px; backdrop-filter:blur(4px); overflow-y:auto;';
+    modal.innerHTML = '<div style="color:var(--text-tertiary); font-size:14px; padding:40px;">Loading...</div>';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    document.body.appendChild(modal);
+
+    try {
+        let url = '/ops/api/ipad/ceo/drill-down?card=' + encodeURIComponent(card);
+        if (extraParams) url += '&' + extraParams;
+        const resp = await fetch(url, { credentials: 'include' });
+        if (!resp.ok) throw new Error('Failed to load');
+        const result = await resp.json();
+        const items = result.data || [];
+
+        let rows = '';
+        if (items.length === 0) {
+            rows = '<div style="color:var(--text-tertiary); padding:20px; text-align:center;">No data found</div>';
+        } else {
+            rows = items.map(function(item) {
+                const name = item.patient_name || item.vial_id || item.note || '—';
+                const amount = item.amount != null ? '$' + Number(item.amount).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0}) : '';
+                const desc = item.description || item.vendor || item.type || '';
+                const detail = item.date || '';
+                const extra = item.remaining_ml != null ? item.remaining_ml + 'mL remaining' : (item.phone || '');
+                return '<div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid #1f2937;">' +
+                    '<div style="flex:1; min-width:0;">' +
+                        '<div style="font-size:14px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + sanitize(name) + '</div>' +
+                        '<div style="font-size:11px; color:var(--text-tertiary);">' + sanitize(desc) + (detail ? ' · ' + sanitize(String(detail)) : '') + (extra ? ' · ' + sanitize(extra) : '') + '</div>' +
+                    '</div>' +
+                    (amount ? '<div style="font-size:14px; font-weight:600; color:#22d3ee; flex-shrink:0; margin-left:12px;">' + amount + '</div>' : '') +
+                '</div>';
+            }).join('');
+        }
+
+        const total = items.reduce(function(s, i) { return s + (parseFloat(i.amount) || 0); }, 0);
+        const totalLine = total > 0 ? '<div style="text-align:right; padding:12px 0; font-size:16px; font-weight:700; color:#22c55e;">Total: $' + total.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + '</div>' : '';
+
+        modal.innerHTML = '<div style="background:var(--bg-primary, #0C141D); border-radius:16px; width:92%; max-width:550px; max-height:80vh; overflow-y:auto; border:1px solid rgba(100,200,255,0.15);">' +
+            '<div style="padding:20px; border-bottom:1px solid #1f2937; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; background:var(--bg-primary, #0C141D); z-index:1;">' +
+                '<div><div style="font-size:16px; font-weight:700; color:var(--text-primary);">' + sanitize(result.title || card) + '</div>' +
+                '<div style="font-size:12px; color:var(--text-tertiary);">' + items.length + ' items</div></div>' +
+                '<button onclick="document.getElementById(\'ceo-drill-modal\')?.remove()" style="background:none; border:none; color:#6b7280; font-size:22px; cursor:pointer; padding:8px;">✕</button>' +
+            '</div>' +
+            '<div style="padding:0 20px;">' + rows + totalLine + '</div>' +
+            '<div style="height:20px;"></div>' +
+        '</div>';
+    } catch (e) {
+        modal.innerHTML = '<div style="background:var(--bg-primary); border-radius:16px; padding:24px; width:90%; max-width:400px;">' +
+            '<div style="color:#ef4444;">Failed to load data</div>' +
+            '<button onclick="document.getElementById(\'ceo-drill-modal\')?.remove()" style="margin-top:12px; padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); cursor:pointer;">Close</button>' +
+        '</div>';
+    }
+}
+
+function renderDataWarnings() {
+    const container = document.getElementById('ceoDataWarnings');
+    if (!container) return;
+    const ceo = (dashboardData || {}).ceo || {};
+    const warnings = ceo.data_warnings || [];
+    const cronHealth = ceo.cron_health || {};
+    const revenueSource = (dashboardData || {}).revenue_source || 'unknown';
+
+    let html = '';
+
+    if (warnings.length > 0) {
+        html += `
+        <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-left:4px solid #ef4444; border-radius:12px; padding:14px 16px; margin-bottom:12px;">
+            <div style="font-size:13px; font-weight:700; color:#ef4444; margin-bottom:8px;">Data Warnings</div>
+            ${warnings.map(w => `<div style="font-size:12px; color:var(--text-secondary); padding:3px 0;">• ${sanitize(w)}</div>`).join('')}
+        </div>`;
+    }
+
+    if (revenueSource && revenueSource !== 'healthie+stripe') {
+        html += `
+        <div style="background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.25); border-radius:8px; padding:8px 12px; margin-bottom:12px; font-size:11px; color:var(--text-tertiary);">
+            Revenue source: ${sanitize(revenueSource === 'stripe_only' ? 'Direct Stripe only (Healthie cache missing)' : revenueSource === 'healthie_only' ? 'Healthie only (Stripe query failed)' : revenueSource)}
+        </div>`;
+    }
+
+    container.innerHTML = html;
+}
+
+// ─── STATUS ACTIVITY (Phase 1.4 chokepoint widget) ──────────
+const STATUS_KEY_LABELS = {
+    'active': 'Active',
+    'active_pending': 'Active (Pending Lab)',
+    'hold_payment_research': 'Hold — Payment',
+    'hold_patient_research': 'Hold — Patient',
+    'hold_service_change': 'Hold — Service Change',
+    'hold_contract_renewal': 'Hold — Contract',
+    'inactive_payment_research': 'Inactive — Payment',
+    'inactive': 'Inactive',
+};
+
+// ─── VIDEO WAITING ROOM (Schedule) ────────────────────────────
+var videoWaitingPatients = [];
+var videoWaitingPollTimer = null;
+
+function startVideoWaitingPoll() {
+    if (videoWaitingPollTimer) return;
+    pollVideoWaiting();
+    videoWaitingPollTimer = setInterval(pollVideoWaiting, 10000); // every 10s
+}
+
+function stopVideoWaitingPoll() {
+    if (videoWaitingPollTimer) { clearInterval(videoWaitingPollTimer); videoWaitingPollTimer = null; }
+}
+
+function pollVideoWaiting() {
+    apiFetch('/ops/api/video/waiting/').then(function(data) {
+        var prev = videoWaitingPatients.map(function(w) { return w.appointmentId; }).sort().join(',');
+        videoWaitingPatients = data.waiting || [];
+        var curr = videoWaitingPatients.map(function(w) { return w.appointmentId; }).sort().join(',');
+        // New patient arrived — show toast
+        if (curr !== prev && videoWaitingPatients.length > 0) {
+            var newest = videoWaitingPatients[0];
+            showToast(newest.patientName + ' is waiting in the video lobby', 'info');
+        }
+        // Update any visible waiting badges on the schedule
+        updateWaitingBadges();
+    }).catch(function() {});
+}
+
+function updateWaitingBadges() {
+    // Remove old badges
+    document.querySelectorAll('.video-waiting-badge').forEach(function(el) { el.remove(); });
+    // Add badges to matching appointment buttons
+    videoWaitingPatients.forEach(function(w) {
+        var btn = document.querySelector('button[onclick*="' + w.appointmentId + '"][title="Start video call"]');
+        if (!btn) return;
+        var badge = document.createElement('span');
+        badge.className = 'video-waiting-badge';
+        badge.style.cssText = 'display:inline-block; margin-left:4px; padding:1px 5px; border-radius:4px; background:#22c55e; color:#fff; font-size:8px; font-weight:700; animation:pulse 1.5s ease-in-out infinite;';
+        badge.textContent = 'WAITING ' + (w.waitingMinutes > 0 ? w.waitingMinutes + 'm' : '');
+        btn.parentElement.appendChild(badge);
+    });
+}
+
+// ─── PUSH NOTIFICATIONS (CEO Dashboard) ───────────────────────
+const PUSH_GROUP_NAMES = {
+    '75522': 'NOW Men\'s Health',
+    '75523': 'NOW Primary Care',
+    '82532': 'NOW Longevity',
+    '82533': 'NOW Mental Health',
+    '82534': 'ABXTAC',
+};
+
+function loadPushStats() {
+    apiFetch('/ops/api/push/send/').then(data => {
+        if (!data?.stats) return;
+        const s = data.stats;
+        var el = document.getElementById('pushStats');
+        if (el) el.textContent = s.totalActiveTokens + ' patient' + (s.totalActiveTokens === 1 ? '' : 's') + ' with push enabled' +
+            (s.byGroup?.length ? ' (' + s.byGroup.map(g => (PUSH_GROUP_NAMES[g.user_group_id] || 'Other') + ': ' + g.count).join(', ') + ')' : '');
+        // Recent sends
+        var recentEl = document.getElementById('pushRecentSends');
+        if (recentEl && s.recentSends?.length > 0) {
+            recentEl.innerHTML = '<div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; margin-bottom:6px;">Recent Sends (7d)</div>' +
+                s.recentSends.map(r => {
+                    var when = r.sent_at ? new Date(r.sent_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+                    var badge = r.category === 'promotions' ? '<span style="background:rgba(251,191,36,0.15); color:#f59e0b; font-size:9px; padding:1px 5px; border-radius:4px;">PROMO</span>' :
+                        '<span style="background:rgba(34,211,238,0.12); color:#22d3ee; font-size:9px; padding:1px 5px; border-radius:4px;">ANNOUNCE</span>';
+                    return '<div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid var(--border-light);">' +
+                        '<div style="font-size:12px; color:var(--text-primary);">' + sanitize(r.title || '(no title)') + ' ' + badge + ' <span style="color:var(--text-tertiary);">x' + r.count + '</span></div>' +
+                        '<div style="font-size:10px; color:var(--text-tertiary);">' + when + '</div></div>';
+                }).join('');
+        }
+    }).catch(function() {});
+}
+
+// ─── PEPTIDE PIPELINE (WC + In-House) ──────────────────────────────────────
+function loadPeptidePipeline() {
+    // CEO tab uses the same staff endpoint as Today so the action buttons
+    // (Mark Picked Up, Reship, Mark Handled, Refund) render here too.
+    apiFetch('/ops/api/ipad/peptide-pipeline/').then(data => {
+        const el = document.getElementById('ceoPeptidePipeline');
+        if (!el || !data?.success) return;
+        window._todayPipelineCache = data;
+        el.innerHTML = renderTodayPeptidePipeline(data);
+    }).catch(function() {});
+}
+
+// Auto-refresh the pipeline panels every 30s while either tab is active,
+// and on visibility change so iPhone Safari reloads it when you return.
+function _pipelineAutoRefreshTick() {
+    if (document.hidden) return;
+    if (currentTab === 'ceo' && document.getElementById('ceoPeptidePipeline')) {
+        loadPeptidePipeline();
+    }
+    if (currentTab === 'today' && document.getElementById('todayPeptidePipelineHost')) {
+        if (typeof loadTodayPeptidePipeline === 'function') loadTodayPeptidePipeline();
+    }
+}
+if (!window._pipelinePollStarted) {
+    window._pipelinePollStarted = true;
+    setInterval(_pipelineAutoRefreshTick, 30000);
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) _pipelineAutoRefreshTick();
+    });
+}
+
+function renderPeptidePipelinePanels(data) {
+    const woo = data.woo || { summary: {}, stuck: [], in_progress: [], completed: [] };
+    const inhouse = data.inhouse || { summary: {}, stuck: [], in_progress: [], completed: [] };
+    const synced = data.last_synced ? new Date(data.last_synced).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
+
+    return `
+        <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <div style="font-size:14px; font-weight:700; color:var(--text-primary);">📦 WooCommerce Peptides (30d)</div>
+                <div style="font-size:10px; color:var(--text-tertiary);">synced ${synced}</div>
+            </div>
+            ${renderPipelineStrip(woo.summary, 'woo')}
+            ${renderStuckRows(woo.stuck, 'woo')}
+            ${renderShippedRows(woo.completed.slice(0, 8))}
+        </div>
+        <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:16px; margin-bottom:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <div style="font-size:14px; font-weight:700; color:var(--text-primary);">💉 In-House Peptides (30d)</div>
+                <div style="font-size:10px; color:var(--text-tertiary);">synced ${synced}</div>
+            </div>
+            ${renderPipelineStrip(inhouse.summary, 'inhouse')}
+            ${renderStuckRows(inhouse.stuck, 'inhouse')}
+        </div>
+    `;
+}
+
+function renderPipelineStrip(summary, channel) {
+    const s = summary || {};
+    const stuckColor = (s.stuck || 0) > 0 ? '#ef4444' : 'var(--text-primary)';
+    return `
+        <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin-bottom:12px;">
+            <div onclick="showPipelineDrill('${channel}','stuck')" style="background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.2); border-radius:8px; padding:10px; text-align:center; cursor:pointer;">
+                <div style="font-size:22px; font-weight:700; color:${stuckColor};">${s.stuck || 0}</div>
+                <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Stuck</div>
+            </div>
+            <div onclick="showPipelineDrill('${channel}','in_progress')" style="background:var(--surface); border:1px solid var(--border-light); border-radius:8px; padding:10px; text-align:center; cursor:pointer;">
+                <div style="font-size:22px; font-weight:700; color:#f59e0b;">${s.in_progress || 0}</div>
+                <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">In&nbsp;Progress</div>
+            </div>
+            <div onclick="showPipelineDrill('${channel}','completed')" style="background:var(--surface); border:1px solid var(--border-light); border-radius:8px; padding:10px; text-align:center; cursor:pointer;">
+                <div style="font-size:22px; font-weight:700; color:#22c55e;">${s.completed || 0}</div>
+                <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">${channel === 'woo' ? 'Shipped' : 'Picked&nbsp;Up'}</div>
+            </div>
+            <div style="background:var(--surface); border:1px solid var(--border-light); border-radius:8px; padding:10px; text-align:center;">
+                <div style="font-size:22px; font-weight:700; color:var(--text-primary);">${s.total || 0}</div>
+                <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Total</div>
+            </div>
+        </div>
+    `;
+}
+
+function renderStuckRows(rows, channel) {
+    if (!rows || rows.length === 0) return '';
+    return `
+        <div style="background:rgba(239,68,68,0.04); border:1px solid rgba(239,68,68,0.2); border-radius:8px; padding:10px; margin-bottom:10px;">
+            <div style="font-size:11px; color:#ef4444; text-transform:uppercase; font-weight:700; margin-bottom:6px;">⚠ Stuck — needs attention</div>
+            ${rows.map(r => `
+                <div onclick="showPipelineRow('${r.tracking_id}')" style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); cursor:pointer; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:13px; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sanitize(r.patient_name || 'Unknown')}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary);">${pipelineStuckLabel(r.stuck_reason)} · ${r.age_hours}h ago · $${Number(r.amount || 0).toFixed(2)}</div>
+                    </div>
+                    <div style="font-size:10px; color:#ef4444; font-weight:600; flex-shrink:0;">${pipelineActionLabel(channel, r.stuck_reason)}</div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderShippedRows(rows) {
+    if (!rows || rows.length === 0) return '';
+    return `
+        <div style="background:var(--surface); border-radius:8px; padding:8px;">
+            <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; font-weight:600; margin-bottom:6px;">Recent shipments</div>
+            ${rows.map(r => `
+                <div onclick="showPipelineRow('${r.tracking_id}')" style="display:flex; justify-content:space-between; padding:5px 0; cursor:pointer;">
+                    <div style="font-size:12px; color:var(--text-primary); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sanitize(r.patient_name || 'Unknown')}</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); flex-shrink:0;">${r.tracking_number ? '📮 ' + sanitize(String(r.tracking_number).slice(0, 14)) : (r.wc_status || '—')}</div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function pipelineStuckLabel(reason) {
+    return ({
+        no_wc_order_24h: 'Charged but no WC order',
+        wc_processing_48h: 'WC stuck in processing',
+        no_tracking_72h: 'Shipped but no tracking',
+        no_dispense_3d: 'Charged but not dispensed',
+    })[reason] || (reason || 'Stuck');
+}
+
+function pipelineActionLabel(channel, reason) {
+    if (channel === 'woo' && reason === 'no_wc_order_24h') return 'RESHIP';
+    if (channel === 'woo' && reason === 'wc_processing_48h') return 'CHECK WC';
+    if (channel === 'woo' && reason === 'no_tracking_72h') return 'CHECK SHIP';
+    if (channel === 'inhouse') return 'DISPENSE';
+    return 'REVIEW';
+}
+
+window._peptidePipelineCache = null;
+function showPipelineDrill(channel, bucket) {
+    apiFetch('/ops/api/ipad/ceo/peptide-pipeline/').then(data => {
+        if (!data?.success) return;
+        window._peptidePipelineCache = data;
+        const rows = (data[channel] || {})[bucket] || [];
+        const title = (channel === 'woo' ? 'WooCommerce' : 'In-House') + ' — ' + bucket.replace('_', ' ');
+        showPipelineModal(title, rows, channel);
+    });
+}
+
+function showPipelineRow(trackingId) {
+    const cache = window._peptidePipelineCache;
+    if (!cache) { loadPeptidePipeline(); return; }
+    const all = [...(cache.woo?.stuck||[]), ...(cache.woo?.in_progress||[]), ...(cache.woo?.completed||[]),
+                 ...(cache.inhouse?.stuck||[]), ...(cache.inhouse?.in_progress||[]), ...(cache.inhouse?.completed||[])];
+    const r = all.find(x => x.tracking_id === trackingId);
+    if (r) showPipelineModal(r.patient_name || 'Order', [r], r.channel);
+}
+
+function showPipelineModal(title, rows, channel) {
+    document.getElementById('pipeline-modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'pipeline-modal';
+    modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center; padding:20px;';
+    modal.innerHTML = `
+        <div style="background:var(--card); border-radius:12px; max-width:700px; width:100%; max-height:85vh; overflow-y:auto; padding:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <div style="font-size:16px; font-weight:700; color:var(--text-primary);">${sanitize(title)}</div>
+                <button onclick="document.getElementById('pipeline-modal')?.remove()" style="background:none; border:none; color:#6b7280; font-size:22px; cursor:pointer;">✕</button>
+            </div>
+            ${rows.length === 0 ? '<div style="color:var(--text-tertiary); font-size:13px; padding:20px; text-align:center;">No orders.</div>' :
+                rows.map(r => `
+                <div style="border:1px solid var(--border-light); border-radius:8px; padding:12px; margin-bottom:10px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                        <div style="font-weight:600; color:var(--text-primary);">${sanitize(r.patient_name || 'Unknown')}</div>
+                        <div style="color:var(--text-tertiary); font-size:12px;">$${Number(r.amount || 0).toFixed(2)} · ${r.age_hours}h ago</div>
+                    </div>
+                    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:6px;">${sanitize(r.description || '')}</div>
+                    <div style="display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:12px;">
+                        <div style="color:var(--text-tertiary);">Stage:</div><div style="color:var(--text-primary);">${r.stage}${r.stuck_reason ? ' (' + pipelineStuckLabel(r.stuck_reason) + ')' : ''}</div>
+                        <div style="color:var(--text-tertiary);">Stripe:</div><div style="color:var(--text-primary); font-family:monospace; font-size:11px;">${sanitize(r.stripe_charge_id || '—')}</div>
+                        ${r.wc_order_id ? `<div style="color:var(--text-tertiary);">WC Order:</div><div style="color:var(--text-primary);"><a href="https://abxtac.com/wp-admin/post.php?post=${r.wc_order_id}&action=edit" target="_blank" style="color:#22d3ee;">#${r.wc_order_number || r.wc_order_id}</a> · ${sanitize(r.wc_status || '')}</div>` : ''}
+                        ${r.tracking_number ? `<div style="color:var(--text-tertiary);">Tracking:</div><div style="color:var(--text-primary);">${r.tracking_url ? `<a href="${sanitize(r.tracking_url)}" target="_blank" style="color:#22d3ee;">${sanitize(r.tracking_number)}</a>` : sanitize(r.tracking_number)} ${r.tracking_carrier ? '(' + sanitize(r.tracking_carrier) + ')' : ''}</div>` : ''}
+                        ${r.shipped_at ? `<div style="color:var(--text-tertiary);">Shipped:</div><div style="color:var(--text-primary);">${new Date(r.shipped_at).toLocaleString()}</div>` : ''}
+                        ${(r.dispense_ids && r.dispense_ids.length) ? `<div style="color:var(--text-tertiary);">Dispenses:</div><div style="color:var(--text-primary);">#${r.dispense_ids.join(', #')}</div>` : ''}
+                        ${r.education_complete != null && r.channel === 'inhouse' ? `<div style="color:var(--text-tertiary);">Education:</div><div style="color:${r.education_complete ? '#22c55e' : '#f59e0b'};">${r.education_complete ? '✓ complete' : 'incomplete'}</div>` : ''}
+                        ${r.received_date ? `<div style="color:var(--text-tertiary);">Picked up:</div><div style="color:var(--text-primary);">${r.received_date}</div>` : ''}
+                    </div>
+                </div>
+                `).join('')}
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+// ─── TODAY-TAB PEPTIDE PIPELINE ─────────────────────────────────────────────
+// Staff-visible panel. Fetches /api/ipad/peptide-pipeline (read role),
+// shows actionable buckets (stuck / ready-for-pickup / awaiting-education /
+// wc-pending) with inline action buttons. Refund button only renders for admins.
+
+window._todayPipelineCache = null;
+
+function loadTodayPeptidePipeline() {
+    var host = document.getElementById('todayPeptidePipelineHost');
+    if (!host) return;
+    apiFetch('/ops/api/ipad/peptide-pipeline/').then(function(data) {
+        if (!data || !data.success) { host.innerHTML = ''; return; }
+        window._todayPipelineCache = data;
+        host.innerHTML = renderTodayPeptidePipeline(data);
+    }).catch(function() { host.innerHTML = ''; });
+}
+
+function renderTodayPeptidePipeline(data) {
+    var woo = data.woo || {};
+    var ih = data.inhouse || {};
+    // Stash the cross-cutting recent-dispenses list so renderTodayPipelineChannel can use it.
+    window._recentInhouseDispenses = data.recent_inhouse_dispenses || [];
+    var wooSum = woo.summary || {}, ihSum = ih.summary || {};
+    var totalActionable = (wooSum.stuck || 0) + (wooSum.wc_pending || 0)
+                       + (ihSum.stuck || 0) + (ihSum.ready_for_pickup || 0) + (ihSum.awaiting_education || 0);
+    if (totalActionable === 0 && (wooSum.total || 0) === 0 && (ihSum.total || 0) === 0) return '';
+
+    var synced = data.last_synced ? new Date(data.last_synced).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : 'never';
+
+    return ''
+        + '<div style="max-width:100%; overflow:hidden;">'
+        +     '<div class="section-header" style="flex-wrap:wrap; gap:6px;">'
+        +         '<h2>💊 Peptide Order Pipeline</h2>'
+        +         '<span class="section-action">' + totalActionable + ' need attention · synced ' + synced + '</span>'
+        +     '</div>'
+        +     '<div style="display:grid; grid-template-columns:1fr; gap:12px; margin-bottom:14px; min-width:0;">'
+        +         renderTodayPipelineChannel('woo', '📦 ABXTac (ships to home)', woo)
+        +         renderTodayPipelineChannel('inhouse', '💉 In-house (clinic pickup)', ih)
+        +     '</div>'
+        + '</div>';
+}
+
+function renderTodayPipelineChannel(channel, title, b) {
+    var s = b.summary || {};
+    var totalActionable = channel === 'woo'
+        ? (s.stuck || 0) + (s.wc_pending || 0)
+        : (s.stuck || 0) + (s.ready_for_pickup || 0) + (s.awaiting_education || 0);
+
+    var sections = '';
+    if ((b.stuck || []).length) sections += renderTodayPipelineBucket('Stuck — needs attention', b.stuck, channel, 'stuck', '#ef4444');
+    if (channel === 'inhouse' && (b.ready_for_pickup || []).length) sections += renderTodayPipelineBucket('Ready for pickup', b.ready_for_pickup, channel, 'ready_for_pickup', '#22c55e');
+    if (channel === 'inhouse' && (b.awaiting_education || []).length) sections += renderTodayPipelineBucket('Awaiting education sign-off', b.awaiting_education, channel, 'awaiting_education', '#f59e0b');
+    if (channel === 'woo' && (b.wc_pending || []).length) sections += renderTodayPipelineBucket('WooCommerce processing', b.wc_pending, channel, 'wc_pending', '#f59e0b');
+
+    var completedSection = renderCompletedDropdown(channel, b.completed || []);
+    var refundedSection = (b.refunded || []).length ? renderRefundedDropdown(channel, b.refunded) : '';
+    var recentDispensesSection = (channel === 'inhouse' && (window._recentInhouseDispenses || []).length)
+        ? renderRecentInhouseDispensesDropdown(window._recentInhouseDispenses)
+        : '';
+
+    var headerColor = totalActionable > 0 ? '#f59e0b' : '#22c55e';
+
+    return ''
+        + '<div style="background:var(--card); border:1px solid var(--border-light); border-left:4px solid ' + headerColor + '; border-radius:10px; padding:12px; max-width:100%; overflow:hidden;">'
+        +     '<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px;">'
+        +         '<div style="font-size:14px; font-weight:700; color:var(--text-primary);">' + title + '</div>'
+        +         '<div style="font-size:11px; color:var(--text-tertiary); white-space:nowrap;">'
+        +             (s.completed || 0) + ' ' + (channel === 'woo' ? 'shipped' : 'picked up') + ' · ' + (s.total || 0) + ' total'
+        +         '</div>'
+        +     '</div>'
+        +     (sections || '<div style="font-size:12px; color:var(--text-tertiary); padding:6px 0;">All caught up. ✓</div>')
+        +     completedSection
+        +     refundedSection
+        +     recentDispensesSection
+        + '</div>';
+}
+
+function renderRecentInhouseDispensesDropdown(rows) {
+    return ''
+        + '<details style="margin-top:8px; border-top:1px solid var(--border-light); padding-top:8px;">'
+        +     '<summary style="cursor:pointer; font-size:11px; font-weight:700; text-transform:uppercase; color:#22d3ee; user-select:none; list-style:none;">'
+        +         '▸ Last ' + rows.length + ' dispenses (all in-house)'
+        +     '</summary>'
+        +     '<div style="margin-top:8px;">'
+        +         rows.map(renderRecentDispenseRow).join('')
+        +     '</div>'
+        + '</details>';
+}
+
+function renderRecentDispenseRow(d) {
+    var sale = d.sale_date ? new Date(d.sale_date + 'T00:00').toLocaleDateString('en-US', { month:'short', day:'numeric' }) : '—';
+    var pickup = d.received_date ? new Date(d.received_date + 'T00:00').toLocaleDateString('en-US', { month:'short', day:'numeric' }) : null;
+    var amt = d.amount_charged != null ? '$' + Number(d.amount_charged).toFixed(2) : '';
+    var statusBadge = d.paid ? '<span style="color:#22c55e;">✓ paid</span>' : '<span style="color:#f59e0b;">unpaid</span>';
+    var pickupLine = pickup
+        ? '<span style="color:#22c55e;">picks up ' + pickup + '</span>'
+        : '<span style="color:var(--text-tertiary);">no pickup date</span>';
+    var notesLine = (d.notes && d.notes !== 'auto created')
+        ? '<div style="font-size:10px; color:var(--text-secondary); margin-top:3px; word-break:break-word;">📝 ' + sanitize(d.notes) + '</div>'
+        : '';
+    return ''
+        + '<div style="padding:8px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; margin-bottom:4px; min-width:0;">'
+        +     '<div style="font-size:12px; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'
+        +         sanitize(d.patient_name || 'Unknown')
+        +         (amt ? ' <span style="color:var(--text-tertiary); font-weight:400;">' + amt + '</span>' : '')
+        +     '</div>'
+        +     '<div style="font-size:10px; color:var(--text-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'
+        +         sanitize(d.product_name || 'Peptide') + (d.quantity > 1 ? ' ×' + d.quantity : '')
+        +         ' · ordered ' + sale + ' · ' + pickupLine + ' · ' + statusBadge
+        +     '</div>'
+        +     notesLine
+        + '</div>';
+}
+
+function renderCompletedDropdown(channel, rows) {
+    if (!rows || !rows.length) return '';
+    var label = channel === 'woo' ? 'Shipped' : 'Picked up';
+    var summary = label + ' (' + rows.length + ')';
+    return ''
+        + '<details style="margin-top:10px; border-top:1px solid var(--border-light); padding-top:10px;">'
+        +     '<summary style="cursor:pointer; font-size:11px; font-weight:700; text-transform:uppercase; color:#22c55e; user-select:none; list-style:none;">'
+        +         '▸ ' + summary
+        +     '</summary>'
+        +     '<div style="margin-top:8px;">'
+        +         rows.map(function(r) { return renderCompletedRow(r, channel); }).join('')
+        +     '</div>'
+        + '</details>';
+}
+
+function renderRefundedDropdown(channel, rows) {
+    return ''
+        + '<details style="margin-top:8px; border-top:1px solid var(--border-light); padding-top:8px;">'
+        +     '<summary style="cursor:pointer; font-size:11px; font-weight:700; text-transform:uppercase; color:#94a3b8; user-select:none; list-style:none;">'
+        +         '▸ Refunded (' + rows.length + ')'
+        +     '</summary>'
+        +     '<div style="margin-top:8px;">'
+        +         rows.map(function(r) { return renderCompletedRow(r, channel); }).join('')
+        +     '</div>'
+        + '</details>';
+}
+
+function renderCompletedRow(r, channel) {
+    var ageLabel = r.age_hours >= 48 ? Math.floor(r.age_hours / 24) + 'd ago' : r.age_hours + 'h ago';
+    var trackingLine = '';
+    if (channel === 'woo') {
+        if (r.tracking_number) {
+            var trk = sanitize(String(r.tracking_number));
+            var carrier = r.tracking_carrier ? sanitize(r.tracking_carrier) : '';
+            var shippedDate = r.shipped_at ? new Date(r.shipped_at).toLocaleDateString() : '';
+            var link = r.tracking_url
+                ? '<a href="' + sanitize(r.tracking_url) + '" target="_blank" style="color:#22d3ee; text-decoration:none; word-break:break-all;">📮 ' + trk + '</a>'
+                : '📮 ' + trk;
+            trackingLine = '<div style="font-size:10px; color:var(--text-secondary); margin-top:3px; word-break:break-all;">'
+                + link
+                + (carrier ? ' <span style="color:var(--text-tertiary);">· ' + carrier + (shippedDate ? ' · ' + shippedDate : '') + '</span>' : '')
+                + '</div>';
+        } else {
+            trackingLine = '<div style="font-size:10px; color:var(--text-tertiary); margin-top:3px;">' + sanitize(r.wc_status || 'shipped') + '</div>';
+        }
+    } else {
+        trackingLine = '<div style="font-size:10px; color:var(--text-secondary); margin-top:3px;">'
+            + (r.received_date ? '✓ ' + r.received_date : '✓ picked up')
+            + '</div>';
+    }
+
+    return ''
+        + '<div onclick="showPipelineRow(\'' + r.tracking_id + '\')" style="padding:8px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; margin-bottom:4px; cursor:pointer; min-width:0;">'
+        +     '<div style="font-size:12px; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + sanitize(r.patient_name || 'Unknown') + ' <span style="color:var(--text-tertiary); font-weight:400;">$' + Number(r.amount || 0).toFixed(2) + '</span></div>'
+        +     '<div style="font-size:10px; color:var(--text-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + sanitize(r.description || '') + ' · ' + ageLabel + (r.wc_order_number ? ' · WC #' + sanitize(r.wc_order_number) : '') + '</div>'
+        +     trackingLine
+        + '</div>';
+}
+
+function renderTodayPipelineBucket(label, rows, channel, kind, color) {
+    var html = ''
+        + '<div style="margin-bottom:10px;">'
+        +     '<div style="font-size:11px; font-weight:700; text-transform:uppercase; color:' + color + '; margin-bottom:6px;">' + label + ' · ' + rows.length + '</div>';
+    rows.forEach(function(r) { html += renderTodayPipelineRow(r, channel, kind); });
+    html += '</div>';
+    return html;
+}
+
+function renderTodayPipelineRow(r, channel, kind) {
+    var ageLabel = r.age_hours >= 48 ? Math.floor(r.age_hours / 24) + 'd ago' : r.age_hours + 'h ago';
+    var subtitleParts = [];
+    if (kind === 'stuck' && r.stuck_reason) subtitleParts.push(pipelineStuckLabel(r.stuck_reason));
+    subtitleParts.push(ageLabel);
+    subtitleParts.push('$' + Number(r.amount || 0).toFixed(2));
+    if (r.tracking_number) subtitleParts.push('📮 ' + String(r.tracking_number).slice(0, 16));
+
+    var actionsHtml = renderTodayPipelineActions(r, channel, kind);
+    return ''
+        + '<div style="display:flex; flex-direction:column; gap:8px; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; margin-bottom:6px;">'
+        +     '<div style="cursor:pointer; min-width:0;" onclick="showPipelineRow(\'' + r.tracking_id + '\')">'
+        +         '<div style="font-size:13px; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + sanitize(r.patient_name || 'Unknown') + '</div>'
+        +         '<div style="font-size:11px; color:var(--text-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + sanitize(r.description || '') + '</div>'
+        +         '<div style="font-size:10px; color:var(--text-tertiary); margin-top:2px; word-break:break-word;">' + subtitleParts.join(' · ') + '</div>'
+        +     '</div>'
+        +     (actionsHtml ? '<div style="display:flex; flex-wrap:wrap; gap:6px;">' + actionsHtml + '</div>' : '')
+        + '</div>';
+}
+
+function renderTodayPipelineActions(r, channel, kind) {
+    var btns = [];
+    var tid = r.tracking_id;
+
+    // Mark Picked Up — only for in-house "ready_for_pickup"
+    if (channel === 'inhouse' && kind === 'ready_for_pickup') {
+        btns.push(pipelineBtn('✓ Picked Up', '#22c55e', "resolvePipeline('" + tid + "', 'mark_picked_up')"));
+    }
+
+    // Reship — only for woo silent-failure (no_wc_order_24h)
+    if (channel === 'woo' && kind === 'stuck' && r.stuck_reason === 'no_wc_order_24h') {
+        btns.push(pipelineBtn('🔁 Reship', '#3b82f6', "resolvePipeline('" + tid + "', 'reship')"));
+    }
+
+    // Mark Handled — universal "I dealt with this offline"
+    if (kind === 'stuck' || kind === 'awaiting_education' || kind === 'wc_pending') {
+        btns.push(pipelineBtn('✓ Handled', '#64748b', "resolvePipeline('" + tid + "', 'handled_internally')"));
+    }
+
+    // Refund — admin only, only for stuck or wc_pending charges
+    if (r.can_refund && (kind === 'stuck' || kind === 'wc_pending')) {
+        btns.push(pipelineBtn('↩ Refund', '#ef4444', "resolvePipeline('" + tid + "', 'refund')"));
+    }
+
+    return btns.join('');
+}
+
+function pipelineBtn(label, color, onclick) {
+    return '<button onclick="' + onclick + '" style="padding:7px 12px; background:' + color + '15; border:1px solid ' + color + '40; border-radius:6px; color:' + color + '; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; min-height:34px;">' + label + '</button>';
+}
+
+function resolvePipeline(trackingId, action) {
+    var cache = window._todayPipelineCache;
+    var row = null;
+    if (cache) {
+        var pools = [cache.woo?.stuck, cache.woo?.wc_pending, cache.inhouse?.stuck, cache.inhouse?.ready_for_pickup, cache.inhouse?.awaiting_education];
+        pools.forEach(function(arr) { (arr || []).forEach(function(r) { if (r.tracking_id === trackingId) row = r; }); });
+    }
+
+    var prompts = {
+        mark_picked_up: { verb: 'Mark picked up', body: 'Sets received_date on the dispense record so it leaves the queue.' },
+        reship: { verb: 'Mark reshipped', body: 'Records that you created a replacement order in the iPad ship-to-patient workflow. Open that workflow now if you have not already.' },
+        handled_internally: { verb: 'Mark handled internally', body: 'Removes from the queue. Use when you dealt with it offline (already shipped, picked up in person, etc.).' },
+        refund: { verb: 'REFUND', body: 'Cancels the WooCommerce order, refunds Stripe, reverses the dispense record, and uploads a refund receipt to Healthie. NOT REVERSIBLE.' },
+    };
+    var p = prompts[action];
+    if (!p) return;
+
+    var noteRequired = action === 'refund';
+    var notes = window.prompt(
+        p.verb + (row ? ' — ' + (row.patient_name || 'Unknown') + ' ($' + Number(row.amount || 0).toFixed(2) + ')' : '')
+        + '\n\n' + p.body
+        + (noteRequired ? '\n\nReason (REQUIRED):' : '\n\nNotes (optional):'),
+        ''
+    );
+    if (notes === null) return; // cancelled
+    if (noteRequired && !notes.trim()) { alert('A reason is required for refunds.'); return; }
+
+    if (action === 'refund' && !confirm('Final confirmation: refund $' + Number(row?.amount || 0).toFixed(2) + ' and cancel the WooCommerce order? This cannot be undone.')) {
+        return;
+    }
+
+    apiFetch('/ops/api/ipad/peptide-pipeline/resolve/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracking_id: trackingId, action: action, notes: notes || '' }),
+    }).then(function(res) {
+        if (!res || res.error) { alert('Failed: ' + (res?.error || 'unknown error')); return; }
+        var msg = '✓ ' + p.verb + ' done.';
+        if (action === 'refund') {
+            msg += '\n\nRefund: $' + Number(res.refund_amount || 0).toFixed(2);
+            if (res.wc_cancelled) msg += '\nWooCommerce order #' + res.wc_order_id + ' cancelled.';
+            if (res.dispenses_reversed) msg += '\nDispenses reversed: ' + res.dispenses_reversed;
+            if (res.already_refunded) msg += '\n(was already refunded — record updated)';
+        }
+        alert(msg);
+        if (typeof loadTodayPeptidePipeline === 'function') loadTodayPeptidePipeline();
+        if (typeof loadPeptidePipeline === 'function') loadPeptidePipeline();
+    }).catch(function(err) {
+        alert('Failed: ' + (err?.message || err));
+    });
+}
+
+function onPushTargetChange() {
+    // placeholder for future patient search
+}
+
+async function sendPushNotification() {
+    var title = (document.getElementById('pushTitle') || {}).value?.trim();
+    var body = (document.getElementById('pushBody') || {}).value?.trim();
+    var targetVal = (document.getElementById('pushTarget') || {}).value || 'all';
+    var category = (document.getElementById('pushCategory') || {}).value || 'announcements';
+    var resultEl = document.getElementById('pushResult');
+    var btn = document.getElementById('pushSendBtn');
+
+    if (!title || !body) { showToast('Title and message are required', 'error'); return; }
+
+    // Parse target
+    var target = 'all';
+    var groupId = null;
+    if (targetVal.startsWith('group:')) {
+        target = 'group';
+        groupId = targetVal.split(':')[1];
+    }
+
+    var targetLabel = targetVal === 'all' ? 'ALL patients' : PUSH_GROUP_NAMES[groupId] || groupId;
+    var catLabel = category === 'promotions' ? 'PROMOTION (opt-in only)' : 'ANNOUNCEMENT';
+
+    if (!confirm('Send ' + catLabel + ' to ' + targetLabel + '?\n\nTitle: ' + title + '\nMessage: ' + body)) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    btn.style.opacity = '0.6';
+
+    try {
+        var payload = { title: title, body: body, category: category, target: target };
+        if (groupId) payload.groupId = groupId;
+
+        var resp = await apiFetch('/ops/api/push/send/', { method: 'POST', body: JSON.stringify(payload) });
+
+        if (resultEl) {
+            resultEl.style.display = 'block';
+            if (resp.sent > 0) {
+                resultEl.style.background = 'rgba(34,197,94,0.1)';
+                resultEl.style.color = '#22c55e';
+                resultEl.textContent = 'Sent to ' + resp.sent + ' device(s). ' + (resp.skippedDuplicate > 0 ? resp.skippedDuplicate + ' skipped (duplicate). ' : '') + (resp.failed > 0 ? resp.failed + ' failed.' : '');
+            } else if (resp.failed > 0) {
+                resultEl.style.background = 'rgba(239,68,68,0.1)';
+                resultEl.style.color = '#ef4444';
+                resultEl.textContent = resp.failed + ' push(es) failed — check APNs/FCM credentials in Expo. ' + (resp.deviceNotRegistered > 0 ? resp.deviceNotRegistered + ' device(s) unregistered.' : '');
+            } else {
+                resultEl.style.background = 'rgba(251,191,36,0.1)';
+                resultEl.style.color = '#f59e0b';
+                resultEl.textContent = resp.message || 'No devices to send to. ' + (resp.totalTokens || 0) + ' token(s) found, ' + (resp.eligibleTokens || 0) + ' opted in.';
+            }
+        }
+        // Clear form
+        document.getElementById('pushTitle').value = '';
+        document.getElementById('pushBody').value = '';
+        showToast('Push sent: ' + (resp.sent || 0) + ' device(s)', 'success');
+        loadPushStats();
+    } catch (e) {
+        if (resultEl) {
+            resultEl.style.display = 'block';
+            resultEl.style.background = 'rgba(239,68,68,0.1)';
+            resultEl.style.color = '#ef4444';
+            resultEl.textContent = 'Error: ' + (e.message || 'Failed to send');
+        }
+        showToast('Push send failed', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '📣 Send Notification';
+        btn.style.opacity = '1';
+    }
+}
+
+function renderStatusActivityCard() {
+    const sa = statusActivity;
+    if (!sa) return '';
+    const days = sa.windowDays || 7;
+    const total = sa.totalApplied || 0;
+    const blocked = sa.totalBlocked || 0;
+    const byTo = sa.byToStatus || {};
+    const recent = Array.isArray(sa.recent) ? sa.recent : [];
+
+    const sortedKeys = Object.keys(byTo).sort((a, b) => byTo[b] - byTo[a]);
+    const tiles = sortedKeys.length === 0
+        ? '<div style="grid-column: 1 / -1; text-align:center; color:var(--text-tertiary); font-size:12px; padding:8px 0;">No status changes in the last ' + days + ' days</div>'
+        : sortedKeys.map(k => {
+            const label = STATUS_KEY_LABELS[k] || k;
+            const isInactive = k.startsWith('inactive');
+            const isHold = k.startsWith('hold');
+            const color = isInactive ? '#ef4444' : isHold ? '#f59e0b' : '#22c55e';
+            return `
+                <div style="background:var(--surface); border-radius:8px; padding:10px 12px; min-width:0;">
+                    <div style="font-size:20px; font-weight:700; color:${color}; line-height:1;">${byTo[k]}</div>
+                    <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">→ ${sanitize(label)}</div>
+                </div>`;
+        }).join('');
+
+    const recentRows = recent.slice(0, 5).map(r => {
+        const when = r.createdAt ? new Date(r.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+        const arrow = r.fromStatus ? `${STATUS_KEY_LABELS[r.fromStatus] || r.fromStatus} → ${STATUS_KEY_LABELS[r.toStatus] || r.toStatus || '?'}` : (STATUS_KEY_LABELS[r.toStatus] || r.toStatus || '?');
+        const blockedBadge = r.blocked ? '<span style="background:rgba(239,68,68,0.15); color:#ef4444; font-size:9px; font-weight:700; padding:1px 5px; border-radius:4px; margin-left:6px;">BLOCKED</span>' : '';
+        return `
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; padding:6px 0; border-bottom:1px solid var(--border-light); gap:10px;">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-size:12px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${sanitize(r.patientName || r.patientId.slice(0, 8))}${blockedBadge}</div>
+                    <div style="font-size:10px; color:var(--text-tertiary); margin-top:2px;">${sanitize(arrow)} · ${sanitize(r.source)}${r.actor ? ' · ' + sanitize(r.actor) : ''}</div>
+                </div>
+                <div style="font-size:10px; color:var(--text-tertiary); white-space:nowrap;">${sanitize(when)}</div>
+            </div>`;
+    }).join('');
+
+    return `
+        <div style="background:var(--card); border:1px solid ${blocked > 0 ? 'rgba(239,68,68,0.3)' : 'var(--border-light)'}; border-radius:12px; padding:20px; margin-bottom:20px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                <h3 style="font-size:16px; margin:0; color:var(--text-primary);">🔀 Status Activity (${days}d)</h3>
+                <div style="font-size:12px; color:var(--text-tertiary);">${total} change${total === 1 ? '' : 's'}${blocked > 0 ? ` · <span style="color:#ef4444;">${blocked} blocked</span>` : ''}</div>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px; margin-bottom:${recent.length > 0 ? '14' : '0'}px;">
+                ${tiles}
+            </div>
+            ${recent.length > 0 ? `
+                <div style="margin-top:6px; padding-top:8px; border-top:1px solid var(--border-light);">
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; margin-bottom:4px;">Recent</div>
+                    ${recentRows}
+                </div>
+            ` : ''}
+        </div>`;
 }
 
 // ─── CEO DASHBOARD ──────────────────────────────────────────
@@ -9636,27 +14140,51 @@ function renderCEODashboard(container) {
                 <button onclick="loadAllData()" style="padding:8px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>
             </div>
 
-            <!-- Revenue Banner (tap for breakdown) -->
-            <div onclick="showRevenueBreakdown()" style="background:linear-gradient(135deg, #0C141D 0%, #1a2744 50%, #0f2027 100%); border:1px solid rgba(0,212,255,0.15); border-radius:16px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden; cursor:pointer;">
+            <!-- Data Warnings (shown if API detects problems) -->
+            <div id="ceoDataWarnings"></div>
+
+            <!-- Agent Status Cards (loaded async) -->
+            <div id="ceoAgentCards"></div>
+
+            <!-- Revenue Banner -->
+            <div style="background:linear-gradient(135deg, #0C141D 0%, #1a2744 50%, #0f2027 100%); border:1px solid rgba(0,212,255,0.15); border-radius:16px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden;">
                 <div style="position:absolute; top:-20px; right:-20px; width:120px; height:120px; background:radial-gradient(circle, rgba(0,212,255,0.08) 0%, transparent 70%); pointer-events:none;"></div>
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                    <div style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.1em; font-weight:600;">Revenue Overview</div>
-                    <div style="font-size:10px; color:var(--text-tertiary);">Tap for breakdown →</div>
+
+                <!-- Combined Total Row -->
+                <div onclick="showRevenueBreakdown('month')" style="cursor:pointer; margin-bottom:16px;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <div style="font-size:12px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.1em; font-weight:600;">Combined Revenue</div>
+                        <div style="font-size:10px; color:var(--text-tertiary);">Tap for full breakdown</div>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap;">
+                        <div onclick="event.stopPropagation(); showRevenueBreakdown('today')" style="flex:1; min-width:0; cursor:pointer;">
+                            <div style="font-size:10px; color:#22d3ee; font-weight:600; margin-bottom:4px;">TODAY</div>
+                            <div style="font-size:clamp(18px, 5vw, 28px); font-weight:800; color:#22d3ee; line-height:1; overflow:hidden; text-overflow:ellipsis;">$${Number(revenue.today || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+                        </div>
+                        <div style="width:1px; height:36px; background:rgba(255,255,255,0.08); flex-shrink:0;"></div>
+                        <div onclick="event.stopPropagation(); showRevenueBreakdown('week')" style="flex:1; min-width:0; cursor:pointer;">
+                            <div style="font-size:10px; color:#a855f7; font-weight:600; margin-bottom:4px;">7 DAYS</div>
+                            <div style="font-size:clamp(16px, 4vw, 22px); font-weight:700; color:#a855f7; line-height:1; overflow:hidden; text-overflow:ellipsis;">$${Number(revenue.week || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+                        </div>
+                        <div style="width:1px; height:36px; background:rgba(255,255,255,0.08); flex-shrink:0;"></div>
+                        <div onclick="event.stopPropagation(); showRevenueBreakdown('month')" style="flex:1; min-width:0; cursor:pointer;">
+                            <div style="font-size:10px; color:#22c55e; font-weight:600; margin-bottom:4px;">30 DAYS</div>
+                            <div style="font-size:clamp(16px, 4vw, 22px); font-weight:700; color:#22c55e; line-height:1; overflow:hidden; text-overflow:ellipsis;">$${Number(revenue.month || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+                        </div>
+                    </div>
                 </div>
-                <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap;">
-                    <div style="flex:1; min-width:90px;">
-                        <div style="font-size:11px; color:#22d3ee; font-weight:600; margin-bottom:4px;">TODAY</div>
-                        <div style="font-size:32px; font-weight:800; color:#22d3ee; line-height:1;">$${Number(revenue.today || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+
+                <!-- Source Breakdown Row -->
+                <div style="border-top:1px solid rgba(255,255,255,0.06); padding-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div onclick="showCEODrillDown('stripe_transactions')" style="background:rgba(255,255,255,0.03); border-radius:8px; padding:10px 12px; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:10px; color:#f59e0b; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">iPad Stripe</div>
+                        <div style="font-size:18px; font-weight:700; color:#f59e0b;">$${Number(dd.stripe_today || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary);">30d: $${Number(dd.stripe_month || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
                     </div>
-                    <div style="width:1px; height:40px; background:rgba(255,255,255,0.08);"></div>
-                    <div style="flex:1; min-width:90px;">
-                        <div style="font-size:11px; color:#a855f7; font-weight:600; margin-bottom:4px;">THIS WEEK</div>
-                        <div style="font-size:24px; font-weight:700; color:#a855f7; line-height:1;">$${Number(revenue.week || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
-                    </div>
-                    <div style="width:1px; height:40px; background:rgba(255,255,255,0.08);"></div>
-                    <div style="flex:1; min-width:90px;">
-                        <div style="font-size:11px; color:#22c55e; font-weight:600; margin-bottom:4px;">THIS MONTH</div>
-                        <div style="font-size:24px; font-weight:700; color:#22c55e; line-height:1;">$${Number(revenue.month || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}</div>
+                    <div onclick="showCEODrillDown('healthie_succeeded')" style="background:rgba(255,255,255,0.03); border-radius:8px; padding:10px 12px; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:10px; color:#10b981; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">Healthie Billing</div>
+                        <div style="font-size:18px; font-weight:700; color:#10b981;">$${Number(dd.healthie_today || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary);">30d: $${Number(dd.healthie_month || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
                     </div>
                 </div>
             </div>
@@ -9677,13 +14205,54 @@ function renderCEODashboard(container) {
                 </div>
                 <div onclick="scrollToSection('ceoAccountsReceivable')" style="background:var(--card); border:1px solid ${acctReceivable.length > 0 ? 'rgba(239,68,68,0.3)' : 'var(--border-light)'}; border-radius:12px; padding:16px; text-align:center; cursor:pointer;">
                     <div style="font-size:32px; font-weight:700; color:${acctReceivable.length > 0 ? '#ef4444' : 'var(--text-primary)'};">${acctReceivable.length}</div>
-                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Failed Charges</div>
+                    <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Unpaid</div>
                 </div>
             </div>
 
+            <!-- Push Notifications -->
+            <div style="background:var(--card); border:1px solid rgba(168,85,247,0.2); border-radius:12px; padding:20px; margin-bottom:20px;">
+                <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">📣 Send Push Notification</h3>
+                <div id="pushStats" style="font-size:11px; color:var(--text-tertiary); margin-bottom:12px;">Loading push stats...</div>
+                <div style="display:flex; flex-direction:column; gap:10px;">
+                    <input id="pushTitle" type="text" placeholder="Notification title" maxlength="100"
+                        style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; outline:none;" />
+                    <textarea id="pushBody" placeholder="Message body" rows="3" maxlength="500"
+                        style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; outline:none; resize:vertical; font-family:inherit;" ></textarea>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <div>
+                            <label style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.05em; display:block; margin-bottom:4px;">Target</label>
+                            <select id="pushTarget" onchange="onPushTargetChange()"
+                                style="width:100%; padding:8px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:13px;">
+                                <option value="all">All Patients</option>
+                                <option value="group:75522">NOW Men's Health</option>
+                                <option value="group:75523">NOW Primary Care</option>
+                                <option value="group:82532">NOW Longevity</option>
+                                <option value="group:82533">NOW Mental Health</option>
+                                <option value="group:82534">ABXTAC</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.05em; display:block; margin-bottom:4px;">Type</label>
+                            <select id="pushCategory"
+                                style="width:100%; padding:8px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:13px;">
+                                <option value="announcements">Announcement (default ON)</option>
+                                <option value="promotions">Promotion (opt-in only)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button id="pushSendBtn" onclick="sendPushNotification()"
+                        style="padding:12px; background:linear-gradient(135deg, #a855f7, #6366f1); border:none; border-radius:8px; color:white; font-size:14px; font-weight:600; cursor:pointer; letter-spacing:0.02em;">
+                        📣 Send Notification
+                    </button>
+                    <div id="pushResult" style="display:none; font-size:12px; padding:10px; border-radius:8px;"></div>
+                </div>
+                <!-- Recent sends -->
+                <div id="pushRecentSends" style="margin-top:14px;"></div>
+            </div>
+
             <!-- Testosterone Inventory -->
-            <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px;">
-                <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">💉 Testosterone Inventory</h3>
+            <div onclick="showCEODrillDown('testosterone_vials')" style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px; cursor:pointer;">
+                <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">💉 Testosterone Inventory <span style="font-size:10px; color:var(--text-tertiary); font-weight:400;">tap for detail</span></h3>
                 ${tInventory.length === 0 ? '<p style="color:var(--text-tertiary); font-size:14px;">No inventory data available</p>' :
                 tInventory.map(v => {
                     const shortVendor = v.vendor.includes('Carrie Boyd') ? 'Carrie Boyd (30mL)' : v.vendor.includes('TopRX') ? 'TopRX (10mL)' : v.vendor;
@@ -9707,17 +14276,32 @@ function renderCEODashboard(container) {
             <!-- Peptide Sales -->
             <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px;">
                 <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">📦 Peptide Sales</h3>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-                    <div style="background:var(--surface); border-radius:8px; padding:14px; text-align:center;">
-                        <div style="font-size:24px; font-weight:700; color:#22d3ee;">$${Number(peptideSales.today_peptide_revenue || 0).toFixed(0)}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Today's Peptide Revenue</div>
+                <div style="font-size:12px; color:var(--text-tertiary); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.05em;">Today</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
+                    <div onclick="showCEODrillDown('peptides_inhouse')" style="background:var(--surface); border-radius:8px; padding:12px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:22px; font-weight:700; color:#22d3ee;">$${Number(peptideSales.today_inhouse_revenue || 0).toFixed(0)}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">In-House (${peptideSales.today_inhouse_orders || 0})</div>
                     </div>
-                    <div style="background:var(--surface); border-radius:8px; padding:14px; text-align:center;">
-                        <div style="font-size:24px; font-weight:700; color:#a855f7;">${peptideSales.today_peptide_orders || 0}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Orders Shipped Today</div>
+                    <div onclick="showCEODrillDown('peptides_shipped')" style="background:var(--surface); border-radius:8px; padding:12px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:22px; font-weight:700; color:#a855f7;">$${Number(peptideSales.today_shipped_revenue || 0).toFixed(0)}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Shipped (${peptideSales.today_shipped_orders || 0})</div>
+                    </div>
+                </div>
+                <div style="font-size:12px; color:var(--text-tertiary); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.05em;">Last 30 Days</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div onclick="showCEODrillDown('peptides_inhouse')" style="background:var(--surface); border-radius:8px; padding:12px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:22px; font-weight:700; color:#22d3ee;">$${Number(peptideSales.month_inhouse_revenue || 0).toFixed(0)}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">In-House (${peptideSales.month_inhouse_orders || 0})</div>
+                    </div>
+                    <div onclick="showCEODrillDown('peptides_shipped')" style="background:var(--surface); border-radius:8px; padding:12px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:22px; font-weight:700; color:#a855f7;">$${Number(peptideSales.month_shipped_revenue || 0).toFixed(0)}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Shipped (${peptideSales.month_shipped_orders || 0})</div>
                     </div>
                 </div>
             </div>
+
+            <!-- Peptide Pipeline (WC + In-House) — populated by loadPeptidePipeline() -->
+            <div id="ceoPeptidePipeline"></div>
 
             <!-- Provider Performance -->
             <div style="background:var(--card); border:1px solid var(--border-light); border-radius:12px; padding:20px; margin-bottom:20px;">
@@ -9731,34 +14315,52 @@ function renderCEODashboard(container) {
                 `).join('')}
             </div>
 
+            ${renderStatusActivityCard()}
+
             <!-- Patient Retention -->
-            <div style="background:var(--card); border:1px solid ${(retention.expiring_contracts > 0 || retention.no_recent_visit > 0) ? 'rgba(251,191,36,0.3)' : 'var(--border-light)'}; border-radius:12px; padding:20px; margin-bottom:20px;">
+            <div style="background:var(--card); border:1px solid ${(retention.expiring_contracts > 0 || (retention.expired_contracts || 0) > 0 || retention.no_recent_visit > 0) ? 'rgba(251,191,36,0.3)' : 'var(--border-light)'}; border-radius:12px; padding:20px; margin-bottom:20px;">
                 <h3 style="font-size:16px; margin:0 0 14px; color:var(--text-primary);">📊 Patient Retention</h3>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-                    <div style="background:var(--surface); border-radius:8px; padding:14px; text-align:center;">
+                <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;">
+                    <div onclick="showCEODrillDown('retention_expiring')" style="background:var(--surface); border-radius:8px; padding:14px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
                         <div style="font-size:24px; font-weight:700; color:${retention.expiring_contracts > 0 ? '#f59e0b' : 'var(--text-primary)'};">${retention.expiring_contracts}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">Contracts Expiring (30d)</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Expiring (30d)</div>
                     </div>
-                    <div style="background:var(--surface); border-radius:8px; padding:14px; text-align:center;">
-                        <div style="font-size:24px; font-weight:700; color:${retention.no_recent_visit > 0 ? '#ef4444' : 'var(--text-primary)'};">${retention.no_recent_visit}</div>
-                        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase;">No Visit in 60+ Days</div>
+                    <div onclick="showCEODrillDown('retention_expired')" style="background:var(--surface); border-radius:8px; padding:14px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:24px; font-weight:700; color:${(retention.expired_contracts || 0) > 0 ? '#ef4444' : 'var(--text-primary)'};">${retention.expired_contracts || 0}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">Expired</div>
+                    </div>
+                    <div onclick="showCEODrillDown('retention_no_lab')" style="background:var(--surface); border-radius:8px; padding:14px; text-align:center; cursor:pointer;" ontouchstart="this.style.opacity='0.7'" ontouchend="this.style.opacity='1'">
+                        <div style="font-size:24px; font-weight:700; color:${retention.no_recent_visit > 0 ? '#f59e0b' : 'var(--text-primary)'};">${retention.no_recent_visit}</div>
+                        <div style="font-size:10px; color:var(--text-tertiary); text-transform:uppercase;">No Lab 90d+</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Accounts Receivable (replaces broken Payment Issues) -->
+            <!-- Accounts Receivable — All Sources -->
             <div id="ceoAccountsReceivable" style="background:var(--card); border:1px solid ${acctReceivable.length > 0 ? 'rgba(239,68,68,0.2)' : 'var(--border-light)'}; border-radius:12px; padding:20px; margin-bottom:20px;">
-                <h3 style="font-size:16px; margin:0 0 14px; color:${acctReceivable.length > 0 ? '#ef4444' : 'var(--text-primary)'};">💳 Accounts Receivable</h3>
-                ${acctReceivable.length === 0 ? '<p style="color:var(--text-tertiary); font-size:14px;">No failed charges in the last 30 days</p>' :
-                acctReceivable.slice(0, 10).map(ar => `
-                    <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">
-                        <div>
-                            <div style="font-size:14px; color:var(--text-primary);">${sanitize(ar.patient_name)}</div>
-                            <div style="font-size:11px; color:var(--text-tertiary);">${ar.description || 'Charge'} · ${ar.days_ago}d ago</div>
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+                    <h3 style="font-size:16px; margin:0; color:${acctReceivable.length > 0 ? '#ef4444' : 'var(--text-primary)'};">💳 Failed & Unpaid Charges</h3>
+                    <span style="font-size:12px; color:var(--text-tertiary);">${acctReceivable.length} items · $${acctReceivable.reduce((s,a) => s + parseFloat(a.amount || 0), 0).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})}</span>
+                </div>
+                ${acctReceivable.length === 0 ? '<p style="color:var(--text-tertiary); font-size:14px;">No outstanding charges</p>' :
+                acctReceivable.slice(0, 15).map(ar => {
+                    const isMissingRecurring = ar.source === 'payment_issues' && (ar.status === 'membership_delinquent' || ar.description === 'membership_delinquent');
+                    const sourceLabel = isMissingRecurring ? 'Missing Recurring' : ar.source === 'healthie_billing' ? 'Healthie Billing' : ar.source === 'payment_issues' ? 'Legacy AR' : 'iPad Stripe';
+                    const sourceColor = isMissingRecurring ? '#f97316' : ar.source === 'healthie_billing' ? '#10b981' : ar.source === 'payment_issues' ? '#8b5cf6' : '#f59e0b';
+                    return `
+                    <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-light);">
+                        <div onclick="${ar.patient_id ? `openChartForPatient('${ar.patient_id}', '${sanitize(ar.patient_name).replace(/'/g, "\\'")}')` : ''}" style="flex:1; min-width:0; ${ar.patient_id ? 'cursor:pointer;' : ''}">
+                            <div style="font-size:14px; color:var(--text-primary);">${sanitize(ar.patient_name)} ${ar.patient_id ? '<span style="font-size:10px; color:var(--text-tertiary);">→ chart</span>' : ''}</div>
+                            <div style="font-size:11px; color:var(--text-tertiary);">
+                                <span style="color:${sourceColor}; font-weight:600;">${sourceLabel}</span> · ${sanitize(ar.description || ar.status || 'Charge')} · ${ar.days_ago}d ago
+                            </div>
                         </div>
-                        <span style="font-size:13px; font-weight:600; color:#ef4444;">$${parseFloat(ar.amount || 0).toFixed(2)}</span>
-                    </div>
-                `).join('')}
+                        <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+                            <span style="font-size:13px; font-weight:600; color:#ef4444;">$${parseFloat(ar.amount || 0).toFixed(0)}</span>
+                            <button onclick="resolveFailedCharge('${ar.source}', '${ar.id}')" style="padding:4px 10px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.3); border-radius:6px; color:#22c55e; font-size:10px; font-weight:600; cursor:pointer;">Clear</button>
+                        </div>
+                    </div>`;
+                }).join('')}
             </div>
 
             <!-- Recent Receipts -->
@@ -9775,17 +14377,19 @@ function renderCEODashboard(container) {
     `;
 
     loadRecentReceipts();
+    loadAgentStatus();
+    renderDataWarnings();
 }
 
 // ─── LOAD RECENT RECEIPTS FOR CEO DASHBOARD ────────────────
-async function showRevenueBreakdown() {
+async function showRevenueBreakdown(initialPeriod) {
     const modal = document.createElement('div');
     modal.id = 'revenue-breakdown-modal';
     modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10001; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(4px);';
     modal.innerHTML = '<div style="color:var(--text-tertiary); font-size:14px;">Loading revenue data...</div>';
     document.body.appendChild(modal);
 
-    let period = 'month';
+    let period = initialPeriod || 'month';
 
     async function loadBreakdown(p, specificDate) {
         if (p) period = p;
@@ -10004,10 +14608,13 @@ async function loadRecentReceipts() {
             var dt = '';
             try { dt = new Date(receipt.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); } catch(e) {}
             var statusColor = receipt.status === 'succeeded' ? '#4ade80' : receipt.status === 'failed' ? '#ef4444' : '#94a3b8';
+            var companyBadge = receipt.chargedTo === 'company'
+                ? '<span style="margin-left:6px; padding:2px 6px; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.3); border-radius:4px; color:#f59e0b; font-size:10px; font-weight:600; vertical-align:middle;">Company-Paid</span>'
+                : '';
             return `
             <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-light);">
                 <div style="flex:1; min-width:0;">
-                    <div style="font-size:14px; color:var(--text-primary); font-weight:500;">${receipt.patientName || 'Unknown Patient'}</div>
+                    <div style="font-size:14px; color:var(--text-primary); font-weight:500;">${receipt.patientName || 'Unknown Patient'}${companyBadge}</div>
                     <div style="font-size:12px; color:var(--text-tertiary); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                         ${receipt.description || 'Payment'} · ${dt}
                     </div>
@@ -10019,8 +14626,8 @@ async function loadRecentReceipts() {
                     <div style="font-size:10px; color:${statusColor};">${receipt.status || 'pending'}</div>
                     ${receipt.receiptNumber ? `<div style="font-size:10px; color:var(--text-tertiary);">${receipt.receiptNumber}</div>` : ''}
                 </div>
-                ${receipt.healthieDocumentId && receipt.healthieClientId ? `
-                    <button onclick="window.open('https://secure.gethealthie.com/client_portal/clients/${receipt.healthieClientId}/documents/${receipt.healthieDocumentId}', '_blank')"
+                ${receipt.healthieDocumentId ? `
+                    <button onclick="window.open('/ops/api/ipad/document/' + '${receipt.healthieDocumentId}', '_blank')"
                         style="margin-left:8px; padding:6px 10px; background:rgba(0,212,255,0.15); color:var(--cyan); border:1px solid rgba(0,212,255,0.3); border-radius:6px; font-size:11px; cursor:pointer; flex-shrink:0;">
                         View
                     </button>
@@ -10039,7 +14646,23 @@ var scheduleProviderFilter = 'all';
 var scheduleShowCancelled = false; // Hide cancelled by default
 // scheduleAllData declared at top with other state variables
 var scheduleViewMode = 'day';
-var scheduleSelectedDate = new Date();
+// Persist across page reloads so hitting browser refresh doesn't snap you
+// back to today. sessionStorage auto-clears on tab close, which is the right
+// default — long-term "stuck" dates would be more confusing than helpful.
+var scheduleSelectedDate = (function() {
+    try {
+        var saved = sessionStorage.getItem('scheduleSelectedDate');
+        if (saved) {
+            var d = new Date(saved);
+            if (!isNaN(d.getTime())) return d;
+        }
+    } catch (e) {}
+    return new Date();
+})();
+
+function saveScheduleSelectedDate() {
+    try { sessionStorage.setItem('scheduleSelectedDate', scheduleSelectedDate.toISOString()); } catch (e) {}
+}
 var scheduleAppointmentTypes = [];
 var _moveAppt = null; // appointment being moved: { id, name, time, date, provider_id }
 
@@ -10111,15 +14734,20 @@ async function renderScheduleView(container) {
 
     console.log('[Schedule] renderScheduleView - mode:', scheduleViewMode);
     container.innerHTML = '<div style="padding: 0 4px;">' +
-        // Header row
-        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">' +
-        '<div><h1 style="font-size:24px; margin:0; color:var(--text-primary);">Schedule</h1>' +
-        '<p id="scheduleDateLabel" style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;"></p></div>' +
-        '<div style="display:flex; gap:6px;">' +
-        '<button onclick="showAddToScheduleModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ Book Appt</button>' +
-        '<button onclick="showNewPatientModal()" style="padding:8px 14px; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.3); border-radius:8px; color:#22c55e; font-size:13px; font-weight:600; cursor:pointer;">+ New Patient</button>' +
-        '<button onclick="loadScheduleForRange(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻</button>' +
-        '</div></div>' +
+        // Title row — title on left, refresh tucked right
+        '<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px;">' +
+        '<div style="min-width:0;">' +
+        '<h1 style="font-size:24px; margin:0; color:var(--text-primary); line-height:1.2;">Schedule</h1>' +
+        '<p id="scheduleDateLabel" style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;"></p>' +
+        '</div>' +
+        '<button onclick="loadScheduleForRange(true)" aria-label="Refresh" title="Refresh" style="flex-shrink:0; width:36px; height:36px; display:inline-flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:16px; cursor:pointer;">↻</button>' +
+        '</div>' +
+        // Action row — one primary (Book Appt), two secondaries (Patient / Break)
+        '<div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">' +
+        '<button onclick="showAddToScheduleModal()" style="flex:1 1 160px; min-height:40px; padding:10px 14px; background:var(--cyan); border:1px solid var(--cyan); border-radius:8px; color:#0f172a; font-size:13px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:4px;">+ Book Appointment</button>' +
+        '<button onclick="showNewPatientModal()" style="flex:0 1 auto; min-height:40px; padding:10px 12px; background:transparent; border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:4px;"><span style="color:#22c55e;">+</span> Patient</button>' +
+        '<button onclick="showBreakModal()" style="flex:0 1 auto; min-height:40px; padding:10px 12px; background:transparent; border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">⏸ Break</button>' +
+        '</div>' +
         // View mode toggle + date nav
         '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">' +
         '<div style="display:flex; gap:4px;">' +
@@ -10201,6 +14829,7 @@ function scheduleNavPrev() {
     if (scheduleViewMode === 'day') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() - 1);
     else if (scheduleViewMode === 'week') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() - 7);
     else scheduleSelectedDate.setMonth(scheduleSelectedDate.getMonth() - 1);
+    saveScheduleSelectedDate();
     updateScheduleDateLabel();
     loadScheduleForRange(true);
 }
@@ -10209,12 +14838,14 @@ function scheduleNavNext() {
     if (scheduleViewMode === 'day') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() + 1);
     else if (scheduleViewMode === 'week') scheduleSelectedDate.setDate(scheduleSelectedDate.getDate() + 7);
     else scheduleSelectedDate.setMonth(scheduleSelectedDate.getMonth() + 1);
+    saveScheduleSelectedDate();
     updateScheduleDateLabel();
     loadScheduleForRange(true);
 }
 
 function scheduleNavToday() {
     scheduleSelectedDate = new Date();
+    saveScheduleSelectedDate();
     updateScheduleDateLabel();
     loadScheduleForRange(true);
 }
@@ -10244,6 +14875,9 @@ async function loadScheduleForRange(forceRefresh) {
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         var data = await resp.json();
         scheduleAllData = data.patients || [];
+        scheduleAllBlocks = data.blocks || [];
+        // Pull pending appointment requests (lightweight, separate endpoint)
+        try { await loadPendingApptRequests(); } catch (e) { /* non-fatal */ }
         // Also update global for Today tab if viewing today
         var todayStr = getPhoenixDateStr(new Date());
         if (startDate === todayStr && endDate === todayStr && scheduleAllData.length > 0) {
@@ -10287,14 +14921,14 @@ function renderScheduleWeekView(contentEl) {
         byDate[getPhoenixDateStr(d)] = [];
     }
     filtered.forEach(function(p) {
-        // Healthie dates: "2026-03-25 09:15:00 -0700" — extract YYYY-MM-DD
+        // FIX(2026-05-19): p.date is strict ISO UTC after the May 12 server
+        // normalization. A bare YYYY-MM-DD slice off the front returns the UTC
+        // day, which shifts evening Phoenix appointments to the next day
+        // (e.g. 6pm AZ on May 18 = 01:00 UTC May 19, would land in May 19).
         var apptDate = '';
         if (p.date) {
-            var match = p.date.match(/^(\d{4}-\d{2}-\d{2})/);
-            apptDate = match ? match[1] : '';
-            if (!apptDate) {
-                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE }); } catch(e) {}
-            }
+            var pp = getPhoenixBlockParts(p.date);
+            apptDate = pp ? pp.dateStr : '';
         }
         if (byDate[apptDate] !== undefined) {
             byDate[apptDate].push(p);
@@ -10313,6 +14947,8 @@ function renderScheduleWeekView(contentEl) {
         html += '<div style="font-size:13px; font-weight:600; color:' + (isToday ? 'var(--cyan)' : 'var(--text-primary)') + ';">' + dayLabel + (isToday ? ' (Today)' : '') + '</div>';
         html += '<span style="font-size:11px; color:var(--text-tertiary);">' + dayAppts.length + ' appt' + (dayAppts.length !== 1 ? 's' : '') + '</span>';
         html += '</div>';
+        // Insert any blocks for this day
+        html += renderBlockBanner(dateStr, { compact: true });
         if (dayAppts.length === 0) {
             html += '<div style="font-size:12px; color:var(--text-tertiary); padding:4px 0;">No appointments</div>';
         } else {
@@ -10320,11 +14956,20 @@ function renderScheduleWeekView(contentEl) {
             dayAppts.forEach(function(p) {
                 var st = getApptStatusStyle(p.appointment_status || 'Pending');
                 var pid = p.patient_id || p.healthie_id || '';
-                html += '<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-top:1px solid rgba(255,255,255,0.04);">';
+                var _wkDefLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+                var _wkIsCustomDur = !!(p.length && _wkDefLen && p.length !== _wkDefLen);
+                html += '<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-top:1px solid rgba(255,255,255,0.04);' + (_wkIsCustomDur ? ' border-left:2px solid #fbbf24; padding-left:6px;' : '') + '">';
                 html += '<div style="display:flex; align-items:center; gap:8px; min-width:0; flex:1;">';
                 html += '<span style="font-size:12px; font-weight:500; color:var(--text-primary); min-width:52px;">' + (p.time || 'TBD') + '</span>';
                 html += '<span style="font-size:13px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.full_name || 'Unknown') + '</span>';
                 html += '<span style="font-size:11px; color:var(--text-tertiary);">' + (p.appointment_type || '') + '</span>';
+                if (p.length) {
+                    if (_wkIsCustomDur) {
+                        html += '<span style="font-size:10px; padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.18); color:#fbbf24; border:1px solid rgba(251,191,36,0.4); font-weight:600; white-space:nowrap;" title="Duration changed from default ' + _wkDefLen + 'm">⏱ ' + p.length + 'm · default ' + _wkDefLen + 'm</span>';
+                    } else {
+                        html += '<span style="font-size:10px; color:var(--text-tertiary);">' + p.length + 'm</span>';
+                    }
+                }
                 html += '</div>';
                 html += '<div style="display:flex; align-items:center; gap:4px; flex-shrink:0;">';
                 if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\'' + pid + '\', \'' + (p.full_name || '').replace(/'/g, '') + '\')" style="padding:3px 8px; border-radius:5px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:10px; cursor:pointer;">📋</button>';
@@ -10346,13 +14991,12 @@ function renderScheduleMonthView(contentEl) {
     // Group by date
     var byDate = {};
     filtered.forEach(function(p) {
+        // FIX(2026-05-19): same UTC-ISO bug as week view — Phoenix-local date,
+        // not the leading YYYY-MM-DD of the UTC string.
         var apptDate = '';
         if (p.date) {
-            var match = p.date.match(/^(\d{4}-\d{2}-\d{2})/);
-            apptDate = match ? match[1] : '';
-            if (!apptDate) {
-                try { apptDate = parseHealthieDate(p.date).toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE }); } catch(e) {}
-            }
+            var pp = getPhoenixBlockParts(p.date);
+            apptDate = pp ? pp.dateStr : '';
         }
         if (!byDate[apptDate]) byDate[apptDate] = [];
         byDate[apptDate].push(p);
@@ -10427,6 +15071,9 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
                 body: JSON.stringify({ action: 'get_appointment_types' })
             });
             scheduleAppointmentTypes = data.appointment_types || [];
+            // Build name→default-length lookup so the grid can flag custom-duration appts.
+            window._apptTypeDefaultLen = {};
+            scheduleAppointmentTypes.forEach(function(t) { window._apptTypeDefaultLen[t.name] = t.length || 30; });
         } catch (e) {
             console.error('[Schedule] Failed to load appointment types:', e);
         }
@@ -10489,7 +15136,14 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
         typeOptions += '</optgroup>';
     });
 
-    var providerOptions = '<option value="12088269"' + (prefillProviderId === '12088269' ? ' selected' : '') + '>Phil Schafer NP</option><option value="12093125"' + (prefillProviderId === '12093125' ? ' selected' : '') + '>Dr. Aaron Whitten</option>';
+    // When no provider was prefilled (header "+ Book" or single-view slot click),
+    // force staff to explicitly pick — silent Phil-default caused mis-bookings.
+    var providerOptions = '';
+    if (!prefillProviderId) {
+        providerOptions += '<option value="" selected disabled>— Select Provider —</option>';
+    }
+    providerOptions += '<option value="12088269"' + (prefillProviderId === '12088269' ? ' selected' : '') + '>Phil Schafer NP</option>';
+    providerOptions += '<option value="12093125"' + (prefillProviderId === '12093125' ? ' selected' : '') + '>Dr. Aaron Whitten</option>';
     // Default location based on provider
     var defaultLocation = prefillProviderId === '12093125'
         ? 'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301'
@@ -10527,6 +15181,21 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
                         <option value="">Select type...</option>
                         ${typeOptions}
                     </select>
+                </div>
+
+                <!-- Duration (custom override; defaults to type's length, capped 5–120) -->
+                <div style="margin-bottom:14px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Duration <span id="addSchedDurDefault" style="color:var(--text-tertiary); text-transform:none; letter-spacing:0; font-size:10px;"></span></label>
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <button type="button" data-dur="15" onclick="setSchedDuration(15)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">15</button>
+                        <button type="button" data-dur="30" onclick="setSchedDuration(30)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">30</button>
+                        <button type="button" data-dur="45" onclick="setSchedDuration(45)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">45</button>
+                        <button type="button" data-dur="60" onclick="setSchedDuration(60)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">60</button>
+                        <button type="button" data-dur="90" onclick="setSchedDuration(90)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">90</button>
+                        <button type="button" data-dur="120" onclick="setSchedDuration(120)" class="dur-chip" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:12px; cursor:pointer; font-family:inherit;">120</button>
+                        <input id="addSchedDuration" type="number" min="5" max="120" step="5" placeholder="min" oninput="onSchedDurationInput()" style="width:64px; padding:6px 8px; border-radius:6px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:12px; font-family:inherit;">
+                    </div>
+                    <div id="addSchedDurWarn" style="display:none; margin-top:6px; padding:6px 10px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; color:#f87171; font-size:11px;"></div>
                 </div>
 
                 <!-- Date & Time -->
@@ -10585,6 +15254,423 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
             if (this.value === '12093125') locSel.value = 'NowMensHealth.Care - 215 N. McCormick, Prescott, AZ 86301';
             else locSel.value = 'NowPrimary.Care - 404 S. Montezuma, Prescott, AZ 86303 - Room 1';
         });
+    }
+
+    // Duration defaults to selected appointment type's length; updates whenever type changes.
+    var typeSel = document.getElementById('addSchedType');
+    if (typeSel) {
+        typeSel.addEventListener('change', function() {
+            var def = parseInt(this.selectedOptions[0]?.dataset?.length || '30', 10);
+            setSchedDuration(def);
+            var lbl = document.getElementById('addSchedDurDefault');
+            if (lbl) lbl.textContent = '(type default: ' + def + ' min)';
+        });
+    }
+    setSchedDuration(30); // initial paint
+}
+
+// Duration chip + input handlers (Add to Schedule modal)
+function setSchedDuration(min) {
+    var input = document.getElementById('addSchedDuration');
+    if (input) input.value = String(min);
+    var chips = document.querySelectorAll('#addScheduleModal .dur-chip');
+    chips.forEach(function(c) {
+        var sel = parseInt(c.getAttribute('data-dur'), 10) === min;
+        c.style.background = sel ? 'rgba(0,212,255,0.15)' : 'var(--surface)';
+        c.style.borderColor = sel ? 'var(--cyan)' : 'var(--border-light)';
+        c.style.color = sel ? 'var(--cyan)' : 'var(--text-secondary)';
+        c.style.fontWeight = sel ? '700' : '400';
+    });
+    validateSchedDuration();
+}
+function onSchedDurationInput() {
+    var v = parseInt(document.getElementById('addSchedDuration').value || '0', 10);
+    var chips = document.querySelectorAll('#addScheduleModal .dur-chip');
+    chips.forEach(function(c) {
+        var sel = parseInt(c.getAttribute('data-dur'), 10) === v;
+        c.style.background = sel ? 'rgba(0,212,255,0.15)' : 'var(--surface)';
+        c.style.borderColor = sel ? 'var(--cyan)' : 'var(--border-light)';
+        c.style.color = sel ? 'var(--cyan)' : 'var(--text-secondary)';
+        c.style.fontWeight = sel ? '700' : '400';
+    });
+    validateSchedDuration();
+}
+// Hard-block ONLY out-of-range duration (5–120). Overlaps now show a warning but DO NOT block booking.
+// Provider availability windows are enforced server-side by Healthie.
+// Returns: true=OK, false=hard-blocked (range only). Overlap is signaled via dataset.warnOverlap.
+function validateSchedDuration() {
+    var warn = document.getElementById('addSchedDurWarn');
+    var dur = parseInt(document.getElementById('addSchedDuration')?.value || '0', 10);
+    var dateVal = document.getElementById('addSchedDate')?.value;
+    var timeVal = document.getElementById('addSchedTime')?.value;
+    var provId = document.getElementById('addSchedProvider')?.value;
+    if (!warn) return true;
+    warn.style.display = 'none'; warn.textContent = ''; warn.dataset.warnOverlap = '';
+    warn.style.background = 'rgba(239,68,68,0.1)'; warn.style.borderColor = 'rgba(239,68,68,0.3)'; warn.style.color = '#f87171';
+    if (!dur || dur < 5 || dur > 120) {
+        warn.textContent = 'Duration must be 5–120 min'; warn.style.display = 'block'; return false;
+    }
+    if (!dateVal || !timeVal || !provId || typeof scheduleAllData === 'undefined' || !Array.isArray(scheduleAllData)) return true;
+    // Compute requested window in minutes-of-day
+    var hh = parseInt(timeVal.split(':')[0], 10), mm = parseInt(timeVal.split(':')[1], 10);
+    var reqStart = hh * 60 + mm, reqEnd = reqStart + dur;
+    for (var i = 0; i < scheduleAllData.length; i++) {
+        var a = scheduleAllData[i];
+        if (!a || a.provider_id !== provId || !a.date) continue;
+        // FIX(2026-05-19): a.date is strict ISO UTC after the May 12 server
+        // normalization. Compare Phoenix-local hours, otherwise a 7am AZ
+        // appointment looks like a 14:00 overlap (or no overlap at all).
+        var ap = getPhoenixBlockParts(a.date);
+        if (!ap || ap.dateStr !== dateVal) continue;
+        var aStart = ap.hour * 60 + ap.minute;
+        var aEnd = aStart + (a.length || 30);
+        if (reqStart < aEnd && reqEnd > aStart) {
+            // SOFT warning: surface the overlap but allow staff to book anyway.
+            warn.textContent = '⚠ Overlaps existing appt at ' + (a.time || (padTwo(ap.hour) + ':' + padTwo(ap.minute))) + ' (' + (a.full_name || 'patient') + '). You can still book.';
+            warn.style.background = 'rgba(251,191,36,0.1)';
+            warn.style.borderColor = 'rgba(251,191,36,0.3)';
+            warn.style.color = '#fbbf24';
+            warn.style.display = 'block';
+            warn.dataset.warnOverlap = '1';
+            return true;
+        }
+    }
+    return true;
+}
+
+// Make the appointment-type default-length lookup available to the calendar
+// renderers. Previously this was only populated when the "Add to Schedule"
+// modal opened, so the custom-duration indicator never showed on first paint.
+async function ensureAppointmentTypeDefaults() {
+    if (window._apptTypeDefaultLen && Object.keys(window._apptTypeDefaultLen).length) return;
+    try {
+        var data = await apiFetch('/ops/api/ipad/schedule/', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'get_appointment_types' })
+        });
+        if (data && Array.isArray(data.appointment_types)) {
+            scheduleAppointmentTypes = data.appointment_types;
+            window._apptTypeDefaultLen = {};
+            scheduleAppointmentTypes.forEach(function(t) { window._apptTypeDefaultLen[t.name] = t.length || 30; });
+        }
+    } catch (e) {
+        console.warn('[Schedule] Failed to preload appointment-type defaults:', e);
+    }
+}
+
+// Edit duration of an existing appointment (Hannah-flow item).
+async function editApptDuration(apptId, currentLen, defaultLen, patientName) {
+    var cur = currentLen || defaultLen || 30;
+    var input = window.prompt('Edit duration for ' + (patientName || 'appointment') + ' (5–120 min). Type default: ' + (defaultLen || '?') + ' min.', String(cur));
+    if (input === null) return;
+    var n = parseInt(input, 10);
+    if (isNaN(n) || n < 5 || n > 120) { showToast('Duration must be 5–120 min', 'error'); return; }
+    if (n === currentLen) return;
+    try {
+        await apiFetch('/ops/api/ipad/schedule/', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'update_length', appointment_id: apptId, length: n })
+        });
+        showToast('Duration updated to ' + n + ' min', 'success');
+        await loadScheduleForRange(true);
+    } catch (e) {
+        showToast('Failed: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// FIX(2026-05-11): Replaces the prior tile-button forest (⏱ duration, ↔ move) with a single
+// click-the-tile-to-edit modal. The schedule render paths now push each appointment into
+// window._schedApptCache so this modal can pull the full record without trying to encode the
+// whole object inside an inline onclick string.
+window._schedApptCache = window._schedApptCache || {};
+
+async function showEditAppointmentModal(apptId) {
+    var appt = (window._schedApptCache || {})[apptId];
+    if (!appt) { showToast('Could not load appointment details', 'error'); return; }
+
+    var prev = document.getElementById('editApptModal');
+    if (prev) prev.remove();
+
+    // Pull unique providers from the visible schedule data — that's the realistic set
+    // of providers Phil schedules on. Selected provider always appears even if it's filtered out.
+    var providers = [];
+    var seenProv = {};
+    (scheduleAllData || []).forEach(function(a) {
+        var pid = a.provider_id || '';
+        if (!pid || seenProv[pid]) return;
+        seenProv[pid] = true;
+        providers.push({ id: pid, name: a.provider || 'Unknown' });
+    });
+    if (appt.provider_id && !seenProv[appt.provider_id]) {
+        providers.push({ id: appt.provider_id, name: appt.provider || 'Current provider' });
+    }
+    providers.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+
+    // Make sure appointment-type list is loaded before we render the dropdown.
+    try { await ensureAppointmentTypeDefaults(); } catch (_) {}
+    var apptTypes = Array.isArray(scheduleAppointmentTypes) ? scheduleAppointmentTypes.slice() : [];
+    apptTypes.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+
+    // FIX(2026-05-19): appt.date is strict ISO UTC ("...Z") after the May 12
+    // pgTimestampToUTCISO server normalization. A naive substring of the first
+    // 10+5 chars yields UTC, not Phoenix — e.g. 7am AZ appt shows as 14:00 in
+    // the edit modal. Use the shared Phoenix-local parser so the date/time
+    // inputs prefill with the times Phil actually sees on the grid.
+    var curDateStr = '';
+    var curTimeStr = '';
+    if (appt.date) {
+        var bp = getPhoenixBlockParts(appt.date);
+        if (bp) {
+            curDateStr = bp.dateStr;
+            curTimeStr = padTwo(bp.hour) + ':' + padTwo(bp.minute);
+        }
+    }
+    if (!curTimeStr && appt.time) {
+        // Fall back to the human-readable time (e.g. "7:30 AM") → "07:30".
+        var hm = String(appt.time).match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+        if (hm) {
+            var hh = parseInt(hm[1], 10);
+            var mm = hm[2];
+            var ampm = (hm[3] || '').toUpperCase();
+            if (ampm === 'PM' && hh < 12) hh += 12;
+            if (ampm === 'AM' && hh === 12) hh = 0;
+            curTimeStr = (hh < 10 ? '0' : '') + hh + ':' + mm;
+        }
+    }
+
+    var curContact = (function() {
+        var ct = (appt.contact_type || appt.location || '').toLowerCase();
+        if (ct.indexOf('phone') !== -1) return 'Phone Call';
+        if (ct.indexOf('video') !== -1 || ct.indexOf('tele') !== -1) return 'Healthie Video Call';
+        return 'In Person';
+    })();
+    var curLength = appt.length || (window._apptTypeDefaultLen || {})[appt.appointment_type] || 30;
+
+    var fieldStyle = 'width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box;';
+    var labelStyle = 'display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;';
+    var rowStyle = 'margin-bottom:12px;';
+
+    // Currently selected appointment-type ID (best-effort match by name).
+    var curApptTypeId = '';
+    apptTypes.forEach(function(t) { if (t.name === appt.appointment_type) curApptTypeId = String(t.id); });
+
+    function segBtn(value, label, active) {
+        var bg = active ? 'rgba(0,212,255,0.18)' : 'rgba(255,255,255,0.03)';
+        var bd = active ? 'rgba(0,212,255,0.55)' : 'var(--border-light)';
+        var col = active ? 'var(--cyan)' : 'var(--text-secondary)';
+        return '<button type="button" data-contact-type="' + value + '" onclick="selectEditApptContactType(this)" style="flex:1; padding:10px 8px; background:' + bg + '; border:1px solid ' + bd + '; border-radius:8px; color:' + col + '; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit;">' + label + '</button>';
+    }
+
+    var providerOptsHtml = providers.map(function(p) {
+        var sel = (String(p.id) === String(appt.provider_id || '')) ? ' selected' : '';
+        return '<option value="' + sanitize(String(p.id)) + '"' + sel + '>' + sanitize(p.name) + '</option>';
+    }).join('');
+
+    var typeOptsHtml = apptTypes.length
+        ? apptTypes.map(function(t) {
+              var sel = (String(t.id) === curApptTypeId) ? ' selected' : '';
+              return '<option value="' + sanitize(String(t.id)) + '" data-len="' + sanitize(String(t.length || '')) + '"' + sel + '>' + sanitize(t.name) + (t.length ? ' (' + t.length + 'm)' : '') + '</option>';
+          }).join('')
+        : '<option value="">' + sanitize(appt.appointment_type || 'Loading…') + '</option>';
+
+    var nameSafe = sanitize(appt.full_name || 'Appointment');
+
+    document.body.insertAdjacentHTML('beforeend', `
+        <div id="editApptModal" class="modal-overlay visible" style="display:flex; z-index:10002;">
+            <div class="modal" style="max-width:520px; padding:24px; max-height:92vh; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <h3 style="margin:0; font-size:18px; color:var(--text-primary);">Edit Appointment</h3>
+                    <button onclick="document.getElementById('editApptModal').remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:22px; cursor:pointer;">✕</button>
+                </div>
+                <div style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">${nameSafe}${appt.appointment_status ? ' · <span style="color:var(--text-tertiary);">' + sanitize(appt.appointment_status) + '</span>' : ''}</div>
+
+                <input type="hidden" id="eaApptId" value="${sanitize(String(apptId))}">
+                <input type="hidden" id="eaContactType" value="${sanitize(curContact)}">
+
+                <div style="display:flex; gap:10px; ${rowStyle}">
+                    <div style="flex:1;">
+                        <label style="${labelStyle}">Date</label>
+                        <input id="eaDate" type="date" value="${sanitize(curDateStr)}" style="${fieldStyle}">
+                    </div>
+                    <div style="flex:1;">
+                        <label style="${labelStyle}">Time</label>
+                        <input id="eaTime" type="time" value="${sanitize(curTimeStr)}" style="${fieldStyle}">
+                    </div>
+                </div>
+
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">Provider</label>
+                    <select id="eaProvider" style="${fieldStyle}">${providerOptsHtml}</select>
+                </div>
+
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">Appointment Type</label>
+                    <select id="eaType" onchange="syncEditApptLengthFromType()" style="${fieldStyle}">${typeOptsHtml}</select>
+                </div>
+
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">Visit type</label>
+                    <div style="display:flex; gap:6px;">
+                        ${segBtn('In Person', '🏢 In Person', curContact === 'In Person')}
+                        ${segBtn('Healthie Video Call', '📹 Telehealth', curContact === 'Healthie Video Call')}
+                        ${segBtn('Phone Call', '📞 Phone', curContact === 'Phone Call')}
+                    </div>
+                </div>
+
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">Length (minutes)</label>
+                    <input id="eaLength" type="number" min="5" max="120" step="5" value="${sanitize(String(curLength))}" style="${fieldStyle}">
+                </div>
+
+                <div style="${rowStyle}">
+                    <label style="${labelStyle}">Notes</label>
+                    <textarea id="eaNotes" rows="3" placeholder="Optional notes for this appointment…" style="${fieldStyle} resize:vertical;">${sanitize(appt.notes || '')}</textarea>
+                </div>
+
+                <div style="display:flex; gap:10px; margin-top:8px;">
+                    <button id="eaSubmitBtn" onclick="submitEditAppointment()" style="flex:1; padding:14px; background:rgba(0,212,255,0.2); border:1px solid rgba(0,212,255,0.4); border-radius:10px; color:var(--cyan); font-size:15px; font-weight:700; cursor:pointer; font-family:inherit;">Save Changes</button>
+                    <button onclick="document.getElementById('editApptModal').remove()" style="padding:14px 20px; background:transparent; border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:14px; font-weight:600; cursor:pointer; font-family:inherit;">Cancel</button>
+                </div>
+            </div>
+        </div>
+    `);
+}
+
+function selectEditApptContactType(btn) {
+    var value = btn.getAttribute('data-contact-type');
+    document.getElementById('eaContactType').value = value;
+    var siblings = btn.parentElement.querySelectorAll('button[data-contact-type]');
+    siblings.forEach(function(b) {
+        var active = (b === btn);
+        b.style.background = active ? 'rgba(0,212,255,0.18)' : 'rgba(255,255,255,0.03)';
+        b.style.borderColor = active ? 'rgba(0,212,255,0.55)' : 'var(--border-light)';
+        b.style.color = active ? 'var(--cyan)' : 'var(--text-secondary)';
+    });
+}
+
+function syncEditApptLengthFromType() {
+    var sel = document.getElementById('eaType');
+    if (!sel) return;
+    var opt = sel.options[sel.selectedIndex];
+    if (!opt) return;
+    var defLen = parseInt(opt.getAttribute('data-len') || '', 10);
+    if (!isNaN(defLen) && defLen > 0) {
+        var lenEl = document.getElementById('eaLength');
+        if (lenEl) lenEl.value = String(defLen);
+    }
+}
+
+async function submitEditAppointment() {
+    var apptId = (document.getElementById('eaApptId') || {}).value;
+    if (!apptId) { showToast('Missing appointment id', 'error'); return; }
+    var original = (window._schedApptCache || {})[apptId] || {};
+
+    var dateStr = (document.getElementById('eaDate') || {}).value || '';
+    var timeStr = (document.getElementById('eaTime') || {}).value || '';
+    var providerId = (document.getElementById('eaProvider') || {}).value || '';
+    var typeId = (document.getElementById('eaType') || {}).value || '';
+    var contactType = (document.getElementById('eaContactType') || {}).value || '';
+    var lengthRaw = (document.getElementById('eaLength') || {}).value || '';
+    var notes = (document.getElementById('eaNotes') || {}).value || '';
+    var lengthNum = parseInt(lengthRaw, 10);
+
+    if (!dateStr || !timeStr) { showToast('Date and time are required', 'error'); return; }
+    if (isNaN(lengthNum) || lengthNum < 5 || lengthNum > 120) { showToast('Length must be 5–120 min', 'error'); return; }
+
+    // Build a Phoenix-localized ISO (no DST → UTC-07 year-round).
+    var datetimeIso = dateStr + 'T' + timeStr + ':00-07:00';
+
+    // Only send fields the user actually changed — keeps the Healthie input minimal.
+    // FIX(2026-05-19): match the showEditAppointmentModal change — original.date
+    // is strict ISO UTC, so the change-detection must compare Phoenix-local times.
+    // Otherwise an unchanged time still looks "changed" (UTC vs Phoenix) and we
+    // re-send the appointment with a wrong datetime to Healthie.
+    var origDateStr = '';
+    var origTimeStr = '';
+    if (original.date) {
+        var op = getPhoenixBlockParts(original.date);
+        if (op) {
+            origDateStr = op.dateStr;
+            origTimeStr = padTwo(op.hour) + ':' + padTwo(op.minute);
+        }
+    }
+    var origContactType = (function() {
+        var ct = (original.contact_type || original.location || '').toLowerCase();
+        if (ct.indexOf('phone') !== -1) return 'Phone Call';
+        if (ct.indexOf('video') !== -1 || ct.indexOf('tele') !== -1) return 'Healthie Video Call';
+        return 'In Person';
+    })();
+    var origLength = original.length || null;
+    var origNotes = original.notes || '';
+    var origProviderId = String(original.provider_id || '');
+    var origTypeId = (function() {
+        var match = '';
+        (scheduleAppointmentTypes || []).forEach(function(t) { if (t.name === original.appointment_type) match = String(t.id); });
+        return match;
+    })();
+
+    var payload = { appointment_id: apptId };
+    var changed = [];
+    if (dateStr !== origDateStr || timeStr !== origTimeStr) {
+        payload.datetime = datetimeIso;
+        changed.push('time');
+    }
+    if (providerId && providerId !== origProviderId) {
+        payload.provider_id = providerId;
+        changed.push('provider');
+    }
+    if (typeId && typeId !== origTypeId) {
+        payload.appointment_type_id = typeId;
+        changed.push('type');
+    }
+    if (contactType && contactType !== origContactType) {
+        payload.contact_type = contactType;
+        // When flipping to telehealth, also clear the in-person location label so the
+        // calendar's isTelehealthAppt detection stays consistent on next render.
+        if (contactType === 'Healthie Video Call' || contactType === 'Phone Call') {
+            payload.location = contactType;
+        }
+        changed.push('visit-type');
+    }
+    if (lengthNum !== origLength) {
+        payload.length = lengthNum;
+        // length needs a start anchor on the server side — always include datetime when length changes.
+        if (!payload.datetime) payload.datetime = datetimeIso;
+        changed.push('length');
+    }
+    if ((notes || '') !== (origNotes || '')) {
+        payload.notes = notes;
+        changed.push('notes');
+    }
+
+    if (changed.length === 0) {
+        showToast('No changes to save', 'info');
+        document.getElementById('editApptModal').remove();
+        return;
+    }
+
+    var btn = document.getElementById('eaSubmitBtn');
+    if (btn) { btn.textContent = 'Saving…'; btn.disabled = true; }
+
+    try {
+        var resp = await fetch('/ops/api/ipad/appointment-status/', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        var data = await resp.json().catch(function() { return {}; });
+        if (!resp.ok || !data.success) {
+            throw new Error(data.error || ('HTTP ' + resp.status));
+        }
+
+        showToast('✅ Updated: ' + changed.join(', '), 'success');
+        document.getElementById('editApptModal').remove();
+        await loadScheduleForRange(true);
+    } catch (e) {
+        console.error('[EditAppt] Error:', e);
+        showToast('Failed: ' + (e.message || 'Unknown error'), 'error');
+        if (btn) { btn.textContent = 'Save Changes'; btn.disabled = false; }
     }
 }
 
@@ -10664,11 +15750,85 @@ async function submitAddToSchedule() {
     var location = document.getElementById('addSchedLocation')?.value || '';
 
     if (!patientId) { showToast('Please select a patient', 'error'); return; }
+    if (!providerId) { showToast('Please select a provider', 'error'); return; }
     if (!typeId) { showToast('Please select appointment type', 'error'); return; }
     if (!dateVal || !timeVal) { showToast('Please select date and time', 'error'); return; }
 
+    // Custom duration (HARD-block on overlap or out-of-range)
+    var durationVal = parseInt(document.getElementById('addSchedDuration')?.value || '0', 10);
+    if (!validateSchedDuration()) { showToast('Fix the duration warning before booking', 'error'); return; }
+
     // Construct datetime in Phoenix timezone (MST = UTC-7)
     var datetime = dateVal + 'T' + timeVal + ':00-07:00';
+
+    // Check for a provider block conflict — if so, route to approval-request flow
+    var slotH = parseInt(timeVal.split(':')[0], 10);
+    var slotM = parseInt(timeVal.split(':')[1], 10);
+    var conflictBlock = null;
+    try {
+        conflictBlock = getSlotBlock(slotH, slotM, providerId);
+    } catch (e) { conflictBlock = null; }
+    // getSlotBlock only looks at the currently-loaded schedule date. If the
+    // requested date differs from what's loaded, we can still check it by
+    // scanning scheduleAllBlocks directly.
+    if (!conflictBlock && typeof scheduleAllBlocks !== 'undefined' && scheduleAllBlocks) {
+        var slotStart = slotH * 60 + slotM;
+        var slotEnd = slotStart + 30;
+        for (var i = 0; i < scheduleAllBlocks.length; i++) {
+            var b = scheduleAllBlocks[i];
+            if (!b.date || b.provider_id !== providerId) continue;
+            // FIX(2026-05-17): b.date is strict ISO UTC after the May 12 server
+            // normalization. Use the shared Phoenix-local parser.
+            var bp2 = getPhoenixBlockParts(b.date);
+            if (!bp2 || bp2.dateStr !== dateVal) continue;
+            var bStart = bp2.hour * 60 + bp2.minute;
+            var bEnd = bStart + (b.length || 0);
+            if (slotStart < bEnd && slotEnd > bStart) { conflictBlock = b; break; }
+        }
+    }
+
+    if (conflictBlock) {
+        var reason = (conflictBlock.notes && conflictBlock.notes !== 'Blocked time') ? conflictBlock.notes : 'Blocked';
+        var provName = conflictBlock.provider_name || 'the provider';
+        var confirmMsg = 'This time is blocked by ' + provName + ': "' + reason + '".\n\n'
+                      + 'The appointment will NOT be booked immediately. A request will be sent to '
+                      + provName + ' for approval. Continue?';
+        if (!confirm(confirmMsg)) return;
+
+        var btn = document.getElementById('addSchedBtn');
+        btn.textContent = 'Sending request...'; btn.disabled = true;
+
+        // Collect display names for the request record
+        var patientNameEl = document.getElementById('addSchedPatientLabel');
+        var typeEl = document.getElementById('addSchedType');
+        try {
+            await apiFetch('/ops/api/ipad/schedule/request/', {
+                method: 'POST',
+                body: JSON.stringify({
+                    patient_healthie_id: patientId,
+                    patient_name: patientNameEl ? patientNameEl.textContent.trim() : '',
+                    provider_id: providerId,
+                    provider_name: provName,
+                    appointment_type_id: typeId,
+                    appointment_type_name: typeEl && typeEl.selectedOptions[0] ? typeEl.selectedOptions[0].textContent.trim() : '',
+                    datetime: datetime,
+                    length_minutes: 30,
+                    contact_type: contactType,
+                    location: location,
+                    block_id: conflictBlock.id,
+                    block_reason: reason,
+                })
+            });
+            document.getElementById('addScheduleModal')?.remove();
+            showToast('Request sent to ' + provName + ' for approval.', 'success');
+            await loadScheduleForRange(true);
+        } catch (e) {
+            console.error('[Schedule] Request error:', e);
+            showToast('Request failed: ' + (e.message || 'Error'), 'error');
+            btn.textContent = 'Add to Schedule'; btn.disabled = false;
+        }
+        return;
+    }
 
     var btn = document.getElementById('addSchedBtn');
     btn.textContent = 'Scheduling...'; btn.disabled = true;
@@ -10682,8 +15842,15 @@ async function submitAddToSchedule() {
                 provider_id: providerId,
                 appointment_type_id: typeId,
                 datetime: datetime,
+                length: durationVal || null,
                 contact_type: contactType,
-                location: location
+                location: location,
+                // iPad is staff-only and the provider dropdown is now a required explicit pick.
+                // Trust the operator verbatim — fixes the May 17 bug where MensHealth-branded
+                // types (e.g. 504736 NMH General TRT Telemedicine) silently rerouted Phil → Whitten.
+                // Public surfaces (ABXTAC website, chatbot, GHL webhook) omit this flag and remain
+                // subject to lib/appointmentRouting.ts guardrails.
+                staff_override: true
             })
         });
         document.getElementById('addScheduleModal')?.remove();
@@ -10697,7 +15864,949 @@ async function submitAddToSchedule() {
     }
 }
 
+// ─── Pending Peptide Orders (GLP Staff Approval) ────────────────────
+
+window._pendingPeptideOrders = [];
+
+async function loadPendingPeptideOrders() {
+    try {
+        var resp = await fetch('/ops/api/ipad/pending-orders/?status=pending', { credentials: 'include' });
+        if (!resp.ok) return;
+        var data = await resp.json();
+        window._pendingPeptideOrders = data.orders || [];
+        var host = document.getElementById('pendingPeptideOrdersHost');
+        if (host) host.innerHTML = renderPendingPeptideOrdersCard();
+    } catch (e) {
+        console.warn('[pending-peptide] Load failed:', e);
+    }
+}
+
+function renderPendingPeptideOrdersCard() {
+    var orders = window._pendingPeptideOrders || [];
+    if (orders.length === 0) return '';
+
+    var html = '<div class="section-header" style="margin-top:16px;">' +
+        '<h2>⚖️ Pending GLP Orders (' + orders.length + ')</h2>' +
+        '<span class="section-action" style="color:#f59e0b;">Requires Staff Approval</span>' +
+    '</div>';
+
+    orders.forEach(function(order) {
+        var items = order.items || [];
+        var addr = order.shipping_address || {};
+        var addrStr = [addr.address_line1, addr.city, addr.state, addr.postal_code].filter(Boolean).join(', ');
+        var timeAgo = getTimeAgo(order.created_at);
+
+        // Initialize all items as checked (approved) by default
+        if (!window._pendingItemSelections) window._pendingItemSelections = {};
+        if (!window._pendingItemSelections[order.id]) {
+            window._pendingItemSelections[order.id] = {};
+            items.forEach(function(i) { window._pendingItemSelections[order.id][i.sku] = true; });
+        }
+
+        var selectedSkus = window._pendingItemSelections[order.id];
+        var approvedTotal = 0;
+        items.forEach(function(i) { if (selectedSkus[i.sku]) approvedTotal += i.unit_price * i.quantity; });
+        var shippingCost = approvedTotal >= 400 ? 0 : 20;
+        var chargeTotal = approvedTotal > 0 ? approvedTotal + shippingCost : 0;
+        var approvedCount = Object.values(selectedSkus).filter(Boolean).length;
+
+        html += '<div style="background:var(--surface); border:1px solid rgba(245,158,11,0.3); border-radius:10px; padding:14px; margin:8px 0;">' +
+            '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">' +
+                '<div>' +
+                    '<div style="font-size:14px; font-weight:600; color:var(--text-primary);">' + sanitize(order.patient_name || 'Unknown') + '</div>' +
+                    '<div style="font-size:11px; color:var(--text-tertiary); margin-top:4px;">' +
+                        'Ship to: ' + sanitize(addrStr) +
+                        ' · ' + (order.discount_tier || 'retail') + ' tier' +
+                        ' · ' + timeAgo +
+                    '</div>' +
+                '</div>' +
+                '<div style="text-align:right;">' +
+                    '<div style="font-size:16px; font-weight:700; color:' + (approvedCount === items.length ? '#f59e0b' : '#8b5cf6') + ';">$' + chargeTotal.toFixed(2) + '</div>' +
+                    '<div style="font-size:10px; color:var(--text-tertiary);">' + approvedCount + '/' + items.length + ' items</div>' +
+                '</div>' +
+            '</div>' +
+            // Per-item checkboxes
+            '<div style="border-top:1px solid rgba(255,255,255,0.06); padding-top:8px;">';
+
+        items.forEach(function(item) {
+            var checked = selectedSkus[item.sku];
+            var checkColor = checked ? '#10b981' : '#ef4444';
+            var checkBg = checked ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.1)';
+            var textColor = checked ? 'var(--text-primary)' : 'var(--text-tertiary)';
+            var textDecor = checked ? 'none' : 'line-through';
+
+            html += '<div onclick="togglePendingItem(\'' + order.id + '\',\'' + item.sku + '\')" style="display:flex; align-items:center; gap:10px; padding:8px 6px; cursor:pointer; border-radius:6px; margin:2px 0; background:' + checkBg + ';">' +
+                '<div style="width:22px; height:22px; border-radius:5px; border:2px solid ' + checkColor + '; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:14px; color:' + checkColor + ';">' + (checked ? '✓' : '') + '</div>' +
+                '<div style="flex:1; min-width:0;">' +
+                    '<div style="font-size:13px; font-weight:500; color:' + textColor + '; text-decoration:' + textDecor + ';">' + sanitize(item.name) + ' x' + item.quantity + '</div>' +
+                    '<div style="font-size:11px; color:var(--text-tertiary);">' + item.sku + '</div>' +
+                '</div>' +
+                '<div style="font-size:13px; font-weight:600; color:' + textColor + '; text-decoration:' + textDecor + ';">$' + (item.unit_price * item.quantity).toFixed(2) + '</div>' +
+            '</div>';
+        });
+
+        html += '</div>' +
+            '<div style="display:flex; gap:8px; margin-top:12px; justify-content:flex-end; align-items:center;">' +
+                '<button onclick="denyPendingPeptideOrder(\'' + order.id + '\')" style="padding:8px 16px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4); border-radius:6px; color:#ef4444; font-size:12px; font-weight:600; cursor:pointer;">Deny All</button>' +
+                '<button onclick="resolvePendingPeptideOrder(\'' + order.id + '\')" style="padding:8px 16px; background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.4); border-radius:6px; color:#10b981; font-size:12px; font-weight:600; cursor:pointer;">' +
+                    (approvedCount === items.length ? 'Approve All & Charge $' + chargeTotal.toFixed(2) : 'Approve Selected (' + approvedCount + ') · $' + chargeTotal.toFixed(2)) +
+                '</button>' +
+            '</div>' +
+        '</div>';
+    });
+
+    return html;
+}
+
+function togglePendingItem(orderId, sku) {
+    if (!window._pendingItemSelections) window._pendingItemSelections = {};
+    if (!window._pendingItemSelections[orderId]) return;
+    window._pendingItemSelections[orderId][sku] = !window._pendingItemSelections[orderId][sku];
+    // Re-render just the pending orders section
+    var host = document.getElementById('pendingPeptideOrdersHost');
+    if (host) host.innerHTML = renderPendingPeptideOrdersCard();
+}
+
+async function resolvePendingPeptideOrder(orderId) {
+    var order = (window._pendingPeptideOrders || []).find(function(o) { return o.id === orderId; });
+    if (!order) return;
+
+    var selections = window._pendingItemSelections[orderId] || {};
+    var items = order.items || [];
+    var approvedSkus = Object.keys(selections).filter(function(sku) { return selections[sku]; });
+    var deniedSkus = Object.keys(selections).filter(function(sku) { return !selections[sku]; });
+    var approvedItems = items.filter(function(i) { return selections[i.sku]; });
+    var deniedItems = items.filter(function(i) { return !selections[i.sku]; });
+
+    if (approvedSkus.length === 0) {
+        if (!confirm('No items selected. Deny this entire order?')) return;
+        denyPendingPeptideOrder(orderId);
+        return;
+    }
+
+    // Build confirmation message
+    var approvedTotal = approvedItems.reduce(function(s, i) { return s + i.unit_price * i.quantity; }, 0);
+    var shipping = approvedTotal >= 400 ? 0 : 20;
+    var chargeAmount = approvedTotal + shipping;
+    var msg = 'Charge $' + chargeAmount.toFixed(2) + ' to ' + order.patient_name + '?\n\n';
+    msg += 'APPROVE & SHIP:\n';
+    approvedItems.forEach(function(i) { msg += '  ✓ ' + i.name + ' x' + i.quantity + ' ($' + (i.unit_price * i.quantity).toFixed(2) + ')\n'; });
+    if (deniedItems.length > 0) {
+        msg += '\nDENY (will not ship):\n';
+        deniedItems.forEach(function(i) { msg += '  ✗ ' + i.name + ' x' + i.quantity + '\n'; });
+        msg += '\nPatient will be notified of denied items.';
+    }
+
+    if (!confirm(msg)) return;
+
+    // Get denial reason if any items are denied
+    var denialReason = '';
+    if (deniedItems.length > 0) {
+        denialReason = prompt('Reason for denied items (optional):') || '';
+    }
+
+    showToast('Processing order...', 'info');
+    try {
+        var action = (approvedSkus.length === items.length) ? 'approve' : 'resolve';
+        var resp = await fetch('/ops/api/ipad/pending-orders/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                order_id: orderId,
+                action: action,
+                approved_skus: approvedSkus,
+                denial_reason: denialReason || undefined,
+            })
+        });
+        var data = await resp.json();
+        if (data.success) {
+            var approvedNames = (data.approved_items || []).join(', ');
+            var deniedNames = (data.denied_items || []).join(', ');
+            if (deniedNames) {
+                showToast('Partial approval — Shipped: ' + approvedNames + '. Denied: ' + deniedNames + '. Charged $' + data.charge.amount.toFixed(2), 'success');
+            } else {
+                showToast('Order approved! Charged $' + data.charge.amount.toFixed(2) + ' to card ending ' + data.charge.card_last4, 'success');
+            }
+            delete window._pendingItemSelections[orderId];
+            loadPendingPeptideOrders();
+        } else {
+            showToast('Approval failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (err) {
+        console.error('[pending-peptide] Resolve error:', err);
+        showToast('Network error processing order', 'error');
+    }
+}
+
+async function denyPendingPeptideOrder(orderId) {
+    var reason = prompt('Reason for denial (optional):');
+    if (reason === null) return;
+
+    showToast('Denying order...', 'info');
+    try {
+        var resp = await fetch('/ops/api/ipad/pending-orders/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ order_id: orderId, action: 'deny', denial_reason: reason || 'Staff denied' })
+        });
+        var data = await resp.json();
+        if (data.success) {
+            showToast('Order denied. Patient has been notified.', 'success');
+            delete window._pendingItemSelections[orderId];
+            loadPendingPeptideOrders();
+        } else {
+            showToast('Deny failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (err) {
+        console.error('[pending-peptide] Deny error:', err);
+        showToast('Network error denying order', 'error');
+    }
+}
+
+// ─── Pending Appointment Requests (approval workflow) ────────────────
+window._pendingApptRequests = [];
+
+async function loadPendingApptRequests() {
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/request/?status=pending', { credentials: 'include' });
+        if (!resp.ok) return [];
+        var data = await resp.json();
+        window._pendingApptRequests = data.requests || [];
+        return window._pendingApptRequests;
+    } catch (e) {
+        console.warn('[appt-request] Load failed:', e);
+        return [];
+    }
+}
+
+function renderPendingRequestsCard() {
+    var list = window._pendingApptRequests || [];
+    // Filter to the logged-in provider's requests if they're a provider; otherwise show all
+    var mine = list;
+    if (currentUser && currentUser.is_provider && currentUser.healthie_provider_id) {
+        mine = list.filter(function(r) { return r.provider_id === currentUser.healthie_provider_id; });
+    }
+    if (mine.length === 0) return '';
+    var html = '<div style="margin-top:18px;">';
+    html += '<div class="section-header"><h2>⏸ Pending Appointment Approvals <span style="font-size:12px; padding:3px 8px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.4); border-radius:6px; color:#eab308; font-weight:700; margin-left:8px;">' + mine.length + '</span></h2></div>';
+    mine.forEach(function(r) {
+        var when = new Date(r.datetime);
+        var whenStr = when.toLocaleString('en-US', { timeZone: 'America/Phoenix', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        html += '<div style="background:var(--card); border:1px solid rgba(234,179,8,0.35); border-left:4px solid #eab308; border-radius:10px; padding:14px; margin-bottom:10px;">';
+        html += '<div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">';
+        html += '<div style="flex:1; min-width:0;">';
+        html += '<div style="font-size:15px; font-weight:600; color:var(--text-primary); margin-bottom:4px;">' + (r.patient_name || r.patient_healthie_id) + '</div>';
+        html += '<div style="font-size:13px; color:var(--text-secondary); margin-bottom:3px;">' + whenStr + ' &middot; ' + (r.appointment_type_name || 'Appt') + '</div>';
+        html += '<div style="font-size:12px; color:var(--text-tertiary);">Blocked: "' + (r.block_reason || 'Blocked time') + '" &middot; Requested by ' + (r.requested_by || 'staff') + '</div>';
+        html += '</div>';
+        html += '<div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">';
+        html += '<button onclick="decideApptRequest(\x27' + r.request_id + '\x27, \x27approve\x27)" style="padding:8px 16px; background:rgba(34,197,94,0.18); border:1px solid rgba(34,197,94,0.4); border-radius:6px; color:#22c55e; font-size:13px; font-weight:700; cursor:pointer;">✓ Approve</button>';
+        html += '<button onclick="decideApptRequest(\x27' + r.request_id + '\x27, \x27deny\x27)" style="padding:8px 16px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.4); border-radius:6px; color:#ef4444; font-size:13px; font-weight:700; cursor:pointer;">✗ Deny</button>';
+        html += '</div></div></div>';
+    });
+    html += '</div>';
+    return html;
+}
+
+async function decideApptRequest(requestId, decision) {
+    if (!requestId || !decision) return;
+    var verb = decision === 'approve' ? 'approve' : 'deny';
+    if (!confirm('Are you sure you want to ' + verb + ' this request?')) return;
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/request/decide/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ request_id: requestId, decision: decision }),
+        });
+        var data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'Decision failed');
+        showToast('Request ' + data.decision + (decision === 'approve' ? ' — appointment booked' : ''), 'success');
+        await loadPendingApptRequests();
+        // Re-render the pending section on Today view if visible
+        var todayHost = document.getElementById('pendingApptRequestsHost');
+        if (todayHost) todayHost.innerHTML = renderPendingRequestsCard();
+        // Refresh schedule if on that tab
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+    } catch (e) {
+        console.error('[appt-request] Decide error:', e);
+        showToast('Failed: ' + (e.message || 'Error'), 'error');
+    }
+}
+
 // ─── NEW PATIENT MODAL ──────────────────────────
+// ─── Break / Block Time ──────────────────────────────────────────────
+// Creates a Healthie blocker appointment (is_blocker=true). Honored by ALL
+// connected systems: abxtac.com booking, nowoptimal.com booking, Google
+// Calendar sync, Healthie patient portal. iPad is the SOT for availability.
+
+function showBreakModal() {
+    var existing = document.getElementById('breakModal');
+    if (existing) existing.remove();
+
+    // Default: whichever day the schedule is currently viewing (falls back to today)
+    var tz = 'America/Phoenix';
+    var defaultDate = (typeof scheduleSelectedDate !== 'undefined' && scheduleSelectedDate)
+        ? (typeof getPhoenixDateStr === 'function' ? getPhoenixDateStr(scheduleSelectedDate) : new Date(scheduleSelectedDate).toLocaleDateString('en-CA', { timeZone: tz }))
+        : new Date().toLocaleDateString('en-CA', { timeZone: tz });
+    var todayStr = defaultDate;
+
+    var providers = [
+        { id: '12088269', name: 'Phil Schafer NP' },
+        { id: '12093125', name: 'Aaron Whitten NMD' },
+    ];
+    var defaultProv = (currentUser && currentUser.is_provider && currentUser.healthie_provider_id) || providers[0].id;
+
+    var providerOpts = providers.map(function(p) {
+        return '<option value="' + p.id + '"' + (p.id === defaultProv ? ' selected' : '') + '>' + p.name + '</option>';
+    }).join('');
+
+    var modal = document.createElement('div');
+    modal.id = 'breakModal';
+    modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML =
+        '<div style="background:var(--bg); border:1px solid var(--border-light); border-radius:14px; padding:24px; width:480px; max-width:92vw; color:var(--text-primary);">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">' +
+        '<h3 style="margin:0; font-size:18px;">⏸ Block time on schedule</h3>' +
+        '<button onclick="document.getElementById(\'breakModal\').remove()" style="background:none; border:none; color:var(--text-secondary); font-size:22px; cursor:pointer;">&times;</button>' +
+        '</div>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Provider</label>' +
+        '<select id="breakProvider" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); margin-bottom:12px;">' + providerOpts + '</select>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Date</label>' +
+        '<input type="date" id="breakDate" value="' + todayStr + '" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); margin-bottom:12px;">' +
+
+        '<div style="display:flex; gap:12px; margin-bottom:12px;">' +
+        '<div style="flex:1;"><label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Start</label>' +
+        '<input type="time" id="breakStart" value="12:00" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary);"></div>' +
+        '<div style="flex:1;"><label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">End</label>' +
+        '<input type="time" id="breakEnd" value="13:00" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary);"></div>' +
+        '</div>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Quick set</label>' +
+        '<div style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;">' +
+        '<button type="button" onclick="setBreakDuration(30)" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">30 min</button>' +
+        '<button type="button" onclick="setBreakDuration(60)" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">1 hour</button>' +
+        '<button type="button" onclick="setBreakDuration(120)" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">2 hours</button>' +
+        '<button type="button" onclick="setBreakPreset(\'lunch\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Lunch (12–1)</button>' +
+        '<button type="button" onclick="setBreakPreset(\'admin\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-secondary); font-size:12px; cursor:pointer;">Admin AM</button>' +
+        '<button type="button" onclick="setBreakPreset(\'fullday\')" style="padding:6px 10px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.45); border-radius:6px; color:#eab308; font-size:12px; font-weight:600; cursor:pointer;">⏸ Full Day</button>' +
+        '</div>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Repeat</label>' +
+        '<div style="display:flex; gap:8px; margin-bottom:12px;">' +
+        '<select id="breakRepeat" style="flex:1; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary);">' +
+        '<option value="">Does not repeat</option>' +
+        '<option value="Daily">Daily</option>' +
+        '<option value="Weekly">Weekly</option>' +
+        '<option value="Monthly">Monthly</option>' +
+        '</select>' +
+        '<input type="number" id="breakRepeatTimes" min="2" max="52" value="4" placeholder="times" style="width:100px; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary);">' +
+        '</div>' +
+
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Reason (optional)</label>' +
+        '<input type="text" id="breakNotes" placeholder="Lunch, admin time, etc." maxlength="200" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); margin-bottom:16px;">' +
+
+        '<div style="display:flex; gap:8px; justify-content:flex-end;">' +
+        '<button onclick="document.getElementById(\'breakModal\').remove()" style="padding:10px 18px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>' +
+        '<button id="breakSubmitBtn" onclick="submitBreak()" style="padding:10px 18px; background:#eab308; border:none; border-radius:8px; color:#000; font-size:14px; font-weight:600; cursor:pointer;">Block time</button>' +
+        '</div>' +
+        '</div>';
+    document.body.appendChild(modal);
+}
+
+function setBreakDuration(mins) {
+    var s = document.getElementById('breakStart').value || '12:00';
+    var parts = s.split(':');
+    var start = new Date(2000, 0, 1, parseInt(parts[0], 10), parseInt(parts[1], 10));
+    var end = new Date(start.getTime() + mins * 60000);
+    var hh = String(end.getHours()).padStart(2, '0');
+    var mm = String(end.getMinutes()).padStart(2, '0');
+    document.getElementById('breakEnd').value = hh + ':' + mm;
+}
+
+function setBreakPreset(kind) {
+    if (kind === 'lunch') {
+        document.getElementById('breakStart').value = '12:00';
+        document.getElementById('breakEnd').value = '13:00';
+        document.getElementById('breakNotes').value = 'Lunch';
+    } else if (kind === 'admin') {
+        document.getElementById('breakStart').value = '08:00';
+        document.getElementById('breakEnd').value = '09:00';
+        document.getElementById('breakNotes').value = 'Admin time';
+    } else if (kind === 'fullday') {
+        document.getElementById('breakStart').value = '07:00';
+        document.getElementById('breakEnd').value = '19:00';
+        if (!document.getElementById('breakNotes').value) {
+            document.getElementById('breakNotes').value = 'Out of office';
+        }
+    }
+}
+
+async function submitBreak() {
+    var btn = document.getElementById('breakSubmitBtn');
+    var providerId = document.getElementById('breakProvider').value;
+    var date = document.getElementById('breakDate').value;
+    var startTime = document.getElementById('breakStart').value;
+    var endTime = document.getElementById('breakEnd').value;
+    var notes = document.getElementById('breakNotes').value || 'Blocked time';
+    var repeat = document.getElementById('breakRepeat').value;
+    var repeatTimes = parseInt(document.getElementById('breakRepeatTimes').value, 10) || 4;
+
+    if (!providerId || !date || !startTime || !endTime) {
+        alert('Please fill in provider, date, start, and end.');
+        return;
+    }
+    if (endTime <= startTime) {
+        alert('End time must be after start time.');
+        return;
+    }
+
+    // ─── Warn if appointments already exist during the proposed block ───
+    // Scan currently-loaded schedule data. If the target date isn't loaded,
+    // we skip the check (blocks are non-destructive — existing appointments
+    // are preserved either way, so this is just a warning convenience).
+    var conflicts = [];
+    if (Array.isArray(scheduleAllData) && scheduleAllData.length > 0) {
+        var sh = parseInt(startTime.split(':')[0], 10);
+        var sm = parseInt(startTime.split(':')[1], 10);
+        var eh = parseInt(endTime.split(':')[0], 10);
+        var em = parseInt(endTime.split(':')[1], 10);
+        var blockStart = sh * 60 + sm;
+        var blockEnd = eh * 60 + em;
+
+        scheduleAllData.forEach(function(a) {
+            if (!a.date) return;
+            if (a.provider_id && a.provider_id !== providerId) return;
+            // FIX(2026-05-17): a.date is strict ISO UTC after the May 12 server
+            // normalization. Use Phoenix-local parts, not the old space-format regex.
+            var ap = getPhoenixBlockParts(a.date);
+            if (!ap || ap.dateStr !== date) return;
+            var apptMin = ap.hour * 60 + ap.minute;
+            var apptEnd = apptMin + (a.length || 30);
+            if (apptMin < blockEnd && apptEnd > blockStart) {
+                conflicts.push(a);
+            }
+        });
+    }
+
+    if (conflicts.length > 0) {
+        conflicts.sort(function(a, b) { return (a.date || '').localeCompare(b.date || ''); });
+        var list = conflicts.map(function(a) {
+            var nm = a.full_name || 'Unknown';
+            var tm = a.time || '';
+            var tp = a.appointment_type ? ' — ' + a.appointment_type : '';
+            return '  • ' + tm + '  ' + nm + tp;
+        }).join('\n');
+        var msg = 'Heads up — ' + conflicts.length + ' appointment'
+                + (conflicts.length === 1 ? '' : 's')
+                + ' already booked during this time:\n\n' + list
+                + '\n\nBlocking this time WILL NOT cancel or move these appointments. '
+                + 'They stay on the schedule; only NEW bookings will be blocked.\n\n'
+                + 'Block anyway?';
+        if (!confirm(msg)) return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Blocking…';
+
+    var body = {
+        provider_id: providerId,
+        start: date + 'T' + startTime,
+        end: date + 'T' + endTime,
+        notes: notes,
+    };
+    if (repeat) {
+        body.recurring = { interval: repeat, times: Math.max(2, Math.min(52, repeatTimes)) };
+    }
+
+    try {
+        var res = await fetch('/ops/api/ipad/schedule/block/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(body),
+        });
+        var data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error(data.error || 'Block failed');
+        }
+        document.getElementById('breakModal').remove();
+        if (data.pending_approval) {
+            showToast('Break request submitted — awaiting admin approval', 'success');
+            // Refresh pending list for the admin's Today view (no-op for non-admin)
+            if (typeof loadPendingBlockRequests === 'function') loadPendingBlockRequests();
+        } else {
+            if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+            else if (typeof loadScheduleData === 'function') loadScheduleData();
+            console.log('[Break] Block created:', data.block?.id, body.recurring ? '(recurring)' : '');
+        }
+    } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Block time';
+        alert('Could not create block: ' + (err.message || err));
+    }
+}
+
+// ─── Pending Block Requests (admin approval workflow) ──────────────
+window._pendingBlockRequests = [];
+
+async function loadPendingBlockRequests() {
+    if (!currentUser || currentUser.role !== 'admin') {
+        window._pendingBlockRequests = [];
+        return [];
+    }
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/block/request/?status=pending', { credentials: 'include' });
+        if (!resp.ok) return [];
+        var data = await resp.json();
+        window._pendingBlockRequests = data.requests || [];
+        return window._pendingBlockRequests;
+    } catch (e) {
+        console.warn('[block-request] Load failed:', e);
+        return [];
+    }
+}
+
+function renderPendingBlockRequestsCard() {
+    if (!currentUser || currentUser.role !== 'admin') return '';
+    var list = window._pendingBlockRequests || [];
+    if (list.length === 0) return '';
+    var html = '<div style="margin-top:18px;">';
+    html += '<div class="section-header"><h2>⏸ Pending Break Requests <span style="font-size:12px; padding:3px 8px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.4); border-radius:6px; color:#eab308; font-weight:700; margin-left:8px;">' + list.length + '</span></h2></div>';
+    list.forEach(function(r) {
+        var start = new Date(r.start_datetime);
+        var startStr = start.toLocaleString('en-US', { timeZone: 'America/Phoenix', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        var endStr = r.end_time;
+        var provName = r.provider_name || ('Provider ' + r.provider_id);
+        var recur = r.repeat_interval && r.repeat_times ? ' &middot; repeats ' + r.repeat_interval.toLowerCase() + ' ×' + r.repeat_times : '';
+        html += '<div style="background:var(--card); border:1px solid rgba(234,179,8,0.35); border-left:4px solid #eab308; border-radius:10px; padding:14px; margin-bottom:10px;">';
+        html += '<div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">';
+        html += '<div style="flex:1; min-width:0;">';
+        html += '<div style="font-size:15px; font-weight:600; color:var(--text-primary); margin-bottom:4px;">' + provName + ' — "' + (r.notes || 'Blocked time') + '"</div>';
+        html += '<div style="font-size:13px; color:var(--text-secondary); margin-bottom:3px;">' + startStr + ' – ' + endStr + recur + '</div>';
+        html += '<div style="font-size:12px; color:var(--text-tertiary);">Requested by ' + (r.requested_by || 'staff') + '</div>';
+        html += '</div>';
+        html += '<div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">';
+        html += '<button onclick="decideBlockRequest(\x27' + r.request_id + '\x27, \x27approve\x27)" style="padding:8px 16px; background:rgba(34,197,94,0.18); border:1px solid rgba(34,197,94,0.4); border-radius:6px; color:#22c55e; font-size:13px; font-weight:700; cursor:pointer;">✓ Approve</button>';
+        html += '<button onclick="decideBlockRequest(\x27' + r.request_id + '\x27, \x27deny\x27)" style="padding:8px 16px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.4); border-radius:6px; color:#ef4444; font-size:13px; font-weight:700; cursor:pointer;">✗ Deny</button>';
+        html += '</div></div></div>';
+    });
+    html += '</div>';
+    return html;
+}
+
+async function decideBlockRequest(requestId, decision) {
+    if (!requestId || !decision) return;
+    if (!confirm('Are you sure you want to ' + decision + ' this break request?')) return;
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/block/request/decide/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ request_id: requestId, decision: decision }),
+        });
+        var data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'Decision failed');
+        showToast('Break request ' + data.decision + (decision === 'approve' ? ' — blocker active in Healthie' : ''), 'success');
+        await loadPendingBlockRequests();
+        var host = document.getElementById('pendingBlockRequestsHost');
+        if (host) host.innerHTML = renderPendingBlockRequestsCard();
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+    } catch (e) {
+        console.error('[block-request] Decide error:', e);
+        showToast('Failed: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// FIX(2026-05-17): Block dates come back as strict ISO UTC ("...Z") after the
+// May 12 pgTimestampToUTCISO normalization on the server, so the old regex
+// that expected "YYYY-MM-DD HH:MM:SS -0700" no longer matched (or matched the
+// UTC hours, showing a 7am block as 2pm). Parse via parseHealthieDate and
+// pull Phoenix-local fields from Intl.DateTimeFormat instead.
+function getPhoenixBlockParts(dateStr) {
+    var d = parseHealthieDate(dateStr);
+    if (isNaN(d.getTime())) return null;
+    var parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Phoenix',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(d).reduce(function(o, p) { o[p.type] = p.value; return o; }, {});
+    var hour = parts.hour === '24' ? 0 : parseInt(parts.hour, 10);
+    return {
+        dateStr: parts.year + '-' + parts.month + '-' + parts.day,
+        hour: hour,
+        minute: parseInt(parts.minute, 10),
+    };
+}
+
+// Return the block covering (slotHour:slotMin) for the given provider on
+// scheduleSelectedDate, or null if the 30-min slot is not blocked.
+// providerMatch can be provider_id OR provider_name OR null for any-provider.
+function getSlotBlock(slotHour, slotMin, providerMatch) {
+    if (typeof scheduleAllBlocks === 'undefined' || !scheduleAllBlocks || !scheduleAllBlocks.length) return null;
+    var dayStr = getPhoenixDateStr(scheduleSelectedDate);
+    var slotStart = slotHour * 60 + slotMin;
+    var slotEnd = slotStart + 30;
+    for (var i = 0; i < scheduleAllBlocks.length; i++) {
+        var b = scheduleAllBlocks[i];
+        if (!b.date) continue;
+        var bp = getPhoenixBlockParts(b.date);
+        if (!bp || bp.dateStr !== dayStr) continue;
+        if (providerMatch && b.provider_id !== providerMatch && b.provider_name !== providerMatch) continue;
+        var bStart = bp.hour * 60 + bp.minute;
+        var bEnd = bStart + (b.length || 0);
+        if (slotStart < bEnd && slotEnd > bStart) return b;
+    }
+    return null;
+}
+
+// Return pending appointment-requests that fall inside the given 30-min slot
+// for the given provider on the currently-viewed schedule date.
+function getPendingRequestsForSlot(slotHour, slotMin, providerId) {
+    var list = window._pendingApptRequests || [];
+    if (!list.length) return [];
+    var dayStr = getPhoenixDateStr(scheduleSelectedDate);
+    var slotStart = slotHour * 60 + slotMin;
+    var slotEnd = slotStart + 30;
+    return list.filter(function(r) {
+        if (r.provider_id !== providerId) return false;
+        if (r.status !== 'pending') return false;
+        if (!r.datetime) return false;
+        // FIX(2026-05-19): r.datetime serializes from a Postgres TIMESTAMPTZ
+        // as strict ISO UTC ("...Z"). The previous hand-rolled offset math and
+        // the /T(\d{2}):(\d{2})/ regex both extracted UTC hours, so requests
+        // for 7am AZ landed in the 14:00 slot. Parse Phoenix-local fields via
+        // the shared helper.
+        var pp = getPhoenixBlockParts(r.datetime);
+        if (!pp || pp.dateStr !== dayStr) return false;
+        var start = pp.hour * 60 + pp.minute;
+        var end = start + (r.length_minutes || 30);
+        return start < slotEnd && end > slotStart;
+    });
+}
+
+// Render the yellow block banner(s) for a given date, respecting provider filter.
+// Used by day list, day grid, and week views so blocks are visible everywhere.
+function renderBlockBanner(forDate, opts) {
+    opts = opts || {};
+    if (typeof scheduleAllBlocks === 'undefined' || !scheduleAllBlocks || scheduleAllBlocks.length === 0) return '';
+    var targetStr = typeof forDate === 'string' ? forDate : getPhoenixDateStr(forDate);
+    var blocks = scheduleAllBlocks.filter(function(b) {
+        if (!b.date) return false;
+        // FIX(2026-05-17): compare Phoenix date, not the raw leading YYYY-MM-DD.
+        // For ISO UTC strings, a late-evening Phoenix block (e.g. 6pm AZ = 01:00 UTC
+        // next day) would otherwise be filed under the wrong day.
+        var bp = getPhoenixBlockParts(b.date);
+        if (!bp || bp.dateStr !== targetStr) return false;
+        if (scheduleProviderFilter !== 'all' && b.provider_name !== scheduleProviderFilter) return false;
+        return true;
+    });
+    if (blocks.length === 0) return '';
+    blocks.sort(function(a, b) { return (a.date || '').localeCompare(b.date || ''); });
+    var fmt12 = function(h, mi) {
+        var suf = h >= 12 ? 'PM' : 'AM';
+        var h12 = ((h + 11) % 12) + 1;
+        return h12 + ':' + String(mi).padStart(2, '0') + ' ' + suf;
+    };
+    var out = '';
+    blocks.forEach(function(b) {
+        // FIX(2026-05-17): use Phoenix-local parts, not a naive regex on the
+        // ISO UTC string (which would render 7am AZ as 2pm).
+        var bp = getPhoenixBlockParts(b.date);
+        var startH = bp ? bp.hour : 0;
+        var startM = bp ? bp.minute : 0;
+        var startTime = fmt12(startH, startM);
+        var totalEnd = startH * 60 + startM + (b.length || 0);
+        var endTime = fmt12(Math.floor(totalEnd / 60) % 24, totalEnd % 60);
+        var lbl = (b.notes && b.notes !== 'Blocked time') ? b.notes : 'Blocked';
+        var fullDay = (b.length || 0) >= 600;
+        out += '<div style="background:rgba(234,179,8,' + (fullDay ? '0.18' : '0.12') + '); border:1px solid rgba(234,179,8,0.4); border-left:4px solid #eab308; border-radius:10px; padding:' + (opts.compact ? '8px 12px' : '12px 14px') + '; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:10px;">';
+        out += '<div style="display:flex; align-items:center; gap:12px;">';
+        out += '<div style="font-size:' + (opts.compact ? '18px' : '22px') + ';">⏸</div>';
+        out += '<div>';
+        out += '<div style="font-size:' + (opts.compact ? '13px' : '14px') + '; font-weight:600; color:#eab308;">' + lbl + (fullDay ? ' — FULL DAY' : '') + '</div>';
+        out += '<div style="font-size:12px; color:var(--text-secondary);">' + startTime + ' – ' + endTime + ' &middot; ' + (b.length || 0) + ' min';
+        if (scheduleProviderFilter === 'all' && b.provider_name) out += ' &middot; ' + b.provider_name;
+        out += '</div></div></div>';
+        out += '<div style="display:flex; gap:4px;">';
+        out += '<button onclick="editBreak(\x27' + b.id + '\x27)" style="padding:6px 12px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.3); color:var(--cyan); font-size:12px; font-weight:600; cursor:pointer;">Edit</button>';
+        out += '<button onclick="removeBreak(\x27' + b.id + '\x27)" style="padding:6px 12px; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#ef4444; font-size:12px; font-weight:600; cursor:pointer;">Remove</button>';
+        out += '</div></div>';
+    });
+    return out;
+}
+
+// Open the Break modal in edit mode for an existing block
+function editBreak(blockId) {
+    if (!blockId) return;
+    var block = (scheduleAllBlocks || []).find(function(b) { return b.id === blockId; });
+    if (!block) { alert('Block not found — refresh and try again.'); return; }
+    // FIX(2026-05-17): block.date is strict ISO UTC after the May 12 server
+    // normalization. Parse via the shared helper so we get Phoenix-local fields.
+    var bp = getPhoenixBlockParts(block.date);
+    if (!bp) return;
+    var dateStr = bp.dateStr;
+    var startH = String(bp.hour).padStart(2, '0');
+    var startM = String(bp.minute).padStart(2, '0');
+    var totalEnd = bp.hour * 60 + bp.minute + (block.length || 30);
+    var endH = String(Math.floor(totalEnd / 60) % 24).padStart(2, '0');
+    var endM = String(totalEnd % 60).padStart(2, '0');
+
+    // Open the modal, then override fields + submit handler
+    showBreakModal();
+    setTimeout(function() {
+        var providerSel = document.getElementById('breakProvider');
+        if (providerSel && block.provider_id) providerSel.value = block.provider_id;
+        document.getElementById('breakDate').value = dateStr;
+        document.getElementById('breakStart').value = startH + ':' + startM;
+        document.getElementById('breakEnd').value = endH + ':' + endM;
+        document.getElementById('breakNotes').value = (block.notes && block.notes !== 'Blocked time') ? block.notes : '';
+        // Hide repeat row — can't easily change recurrence on an existing series
+        var repeatSel = document.getElementById('breakRepeat');
+        if (repeatSel) {
+            var repeatRow = repeatSel.closest('div');
+            var label = repeatRow && repeatRow.previousElementSibling;
+            if (repeatRow) repeatRow.style.display = 'none';
+            if (label && label.textContent && label.textContent.trim() === 'Repeat') label.style.display = 'none';
+        }
+        var heading = document.querySelector('#breakModal h3');
+        if (heading) heading.textContent = '✎ Edit blocked time';
+        var submitBtn = document.getElementById('breakSubmitBtn');
+        if (submitBtn) {
+            submitBtn.textContent = 'Save changes';
+            submitBtn.setAttribute('data-edit-id', blockId);
+            submitBtn.setAttribute('onclick', 'submitEditBreak()');
+        }
+    }, 0);
+}
+
+async function submitEditBreak() {
+    var btn = document.getElementById('breakSubmitBtn');
+    var id = btn && btn.getAttribute('data-edit-id');
+    if (!id) return;
+    var providerId = document.getElementById('breakProvider').value;
+    var date = document.getElementById('breakDate').value;
+    var startTime = document.getElementById('breakStart').value;
+    var endTime = document.getElementById('breakEnd').value;
+    var notes = document.getElementById('breakNotes').value || 'Blocked time';
+    if (!providerId || !date || !startTime || !endTime) { alert('Fill in provider, date, start, and end.'); return; }
+    if (endTime <= startTime) { alert('End time must be after start time.'); return; }
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+        var res = await fetch('/ops/api/ipad/schedule/block/', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                id: id,
+                provider_id: providerId,
+                start: date + 'T' + startTime,
+                end: date + 'T' + endTime,
+                notes: notes,
+            }),
+        });
+        var data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Update failed');
+        document.getElementById('breakModal').remove();
+        showToast('Block updated', 'success');
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+    } catch (err) {
+        btn.disabled = false; btn.textContent = 'Save changes';
+        alert('Could not update block: ' + (err.message || err));
+    }
+}
+
+// ─── Message Patient (SMS via GHL) ─────────────────────────────────
+async function showMessagePatientModal(patientId, patientName, appointmentType) {
+    if (!patientId) return;
+    var existing = document.getElementById('msgPatientModal');
+    if (existing) existing.remove();
+
+    var modal = document.createElement('div');
+    modal.id = 'msgPatientModal';
+    modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML =
+        '<div style="background:var(--bg); border:1px solid var(--border-light); border-radius:14px; padding:24px; width:480px; max-width:92vw; color:var(--text-primary);">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">' +
+        '<h3 style="margin:0; font-size:18px;">💬 Message ' + (patientName || 'patient') + '</h3>' +
+        '<button onclick="document.getElementById(\'msgPatientModal\').remove()" style="background:none; border:none; color:var(--text-secondary); font-size:22px; cursor:pointer;">&times;</button>' +
+        '</div>' +
+        '<div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">' +
+        '<label style="font-size:12px; color:var(--text-secondary); white-space:nowrap;">Send via:</label>' +
+        '<select id="msgPatientAccount" onchange="onMsgAccountChange()" style="flex:1; padding:8px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:6px; color:var(--text-primary); font-size:13px;">' +
+        '<option value="">Loading…</option>' +
+        '</select>' +
+        '</div>' +
+        '<div id="msgPatientChannel" style="padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; font-size:12px; color:var(--text-secondary); margin-bottom:6px;">Checking channel…</div>' +
+        '<label style="font-size:11px; color:var(--text-tertiary); display:flex; align-items:center; gap:6px; cursor:pointer; margin-bottom:12px;"><input type="checkbox" id="msgPatientSaveOverride" style="margin:0;"> Remember this choice for future messages to this patient</label>' +
+        '<label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Message</label>' +
+        '<textarea id="msgPatientBody" rows="5" maxlength="1600" placeholder="Type your message…" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-family:inherit; resize:vertical; margin-bottom:6px;"></textarea>' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">' +
+        '<div id="msgPatientCount" style="font-size:11px; color:var(--text-tertiary);">0 / 1600</div>' +
+        '</div>' +
+        '<div style="display:flex; gap:8px; justify-content:flex-end;">' +
+        '<button onclick="document.getElementById(\'msgPatientModal\').remove()" style="padding:10px 18px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>' +
+        '<button id="msgPatientSendBtn" disabled data-patient-id="' + patientId + '" data-appt-type="' + (appointmentType || '').replace(/"/g, '&quot;') + '" onclick="sendPatientMessage()" style="padding:10px 18px; background:#c084fc; border:none; border-radius:8px; color:#000; font-size:14px; font-weight:600; cursor:pointer; opacity:0.5;">Send</button>' +
+        '</div>' +
+        '</div>';
+    document.body.appendChild(modal);
+
+    // Live char count
+    var ta = document.getElementById('msgPatientBody');
+    var countEl = document.getElementById('msgPatientCount');
+    var sendBtn = document.getElementById('msgPatientSendBtn');
+    ta.addEventListener('input', function() {
+        var len = ta.value.length;
+        countEl.textContent = len + ' / 1600';
+        var canSend = len > 0 && !sendBtn.getAttribute('data-no-channel');
+        sendBtn.disabled = !canSend;
+        sendBtn.style.opacity = canSend ? '1' : '0.5';
+    });
+
+    // Fetch channel — pass appointment type so server can rank sub-accounts
+    try {
+        var qs = 'patient_id=' + encodeURIComponent(patientId)
+               + (appointmentType ? '&appointment_type=' + encodeURIComponent(appointmentType) : '');
+        var resp = await fetch('/ops/api/ipad/schedule/message/?' + qs, { credentials: 'include' });
+        var data = await resp.json();
+        var chEl = document.getElementById('msgPatientChannel');
+        if (!chEl) return;
+        // Populate the account dropdown; the selected value IS the channel that will be used.
+        var accountSel = document.getElementById('msgPatientAccount');
+        var currentOverride = data.patient?.messaging_account_override || '';
+        var suggested = data.channel?.channel && data.channel.channel !== 'unavailable' ? data.channel.channel : '';
+        if (accountSel && data.available_accounts) {
+            accountSel.innerHTML = ''; // clear "Loading…"
+            data.available_accounts.forEach(function(a) {
+                var opt = document.createElement('option');
+                opt.value = a.key;
+                var tags = [];
+                if (a.key === currentOverride) tags.push('saved');
+                if (a.key === suggested && a.key !== currentOverride) tags.push('auto-detected');
+                opt.textContent = a.label + (tags.length ? ' — ' + tags.join(', ') : '');
+                accountSel.appendChild(opt);
+            });
+            // Prefer saved override, then auto-detected suggestion, else first option
+            accountSel.value = currentOverride || suggested || accountSel.options[0].value;
+            // If patient's saved override differs from the auto-suggestion, pre-check
+            // "remember" so if staff changes it, saving is the default.
+            var saveCb = document.getElementById('msgPatientSaveOverride');
+            if (saveCb && currentOverride) saveCb.checked = true;
+        }
+
+        // Render channel info for the CURRENTLY-selected account (may differ from server suggestion).
+        renderMsgChannelInfo(accountSel?.value, data, resp.ok);
+    } catch (err) {
+        var chEl2 = document.getElementById('msgPatientChannel');
+        if (chEl2) { chEl2.textContent = 'Could not check channel: ' + (err.message || err); }
+    }
+}
+
+// Cached GET response so re-rendering the channel info line doesn't re-fetch.
+window._msgModalLastData = null;
+
+function renderMsgChannelInfo(accountKey, data, respOk) {
+    var chEl = document.getElementById('msgPatientChannel');
+    if (!chEl) return;
+    window._msgModalLastData = data;
+    var acct = (data?.available_accounts || []).find(function(a){ return a.key === accountKey; });
+    var label = acct ? acct.label : 'Unknown';
+    var serverSub = data?.channel?.channel;
+    var serverFoundContact = respOk && data?.success && serverSub !== 'unavailable';
+    var currentOverride = data?.patient?.messaging_account_override || '';
+    var phone = data?.channel?.phone || '';
+
+    // Case 1: the account they picked matches the one the server successfully probed.
+    if (serverFoundContact && accountKey === serverSub) {
+        chEl.style.background = 'rgba(34,197,94,0.08)';
+        chEl.style.borderColor = 'rgba(34,197,94,0.3)';
+        chEl.style.color = '#4ade80';
+        chEl.innerHTML = '✅ Will send to <strong style="color:var(--text-primary);">' + label + '</strong>' + (phone ? ' &middot; ' + phone : '');
+        return;
+    }
+    // Case 2: user picked a different account than what the server probed.
+    // We can't be 100% sure the contact exists there without a re-probe; show a neutral note.
+    if (accountKey && accountKey !== serverSub) {
+        chEl.style.background = 'rgba(251,191,36,0.08)';
+        chEl.style.borderColor = 'rgba(251,191,36,0.3)';
+        chEl.style.color = '#fbbf24';
+        chEl.innerHTML = '⚠ Will try <strong style="color:var(--text-primary);">' + label + '</strong>. If the patient\'s contact isn\'t in this account, send will fail — check "Remember" before sending to save this choice.';
+        return;
+    }
+    // Case 3: server said unavailable and user hasn\'t picked anything yet
+    chEl.style.background = 'rgba(239,68,68,0.08)';
+    chEl.style.borderColor = 'rgba(239,68,68,0.3)';
+    chEl.style.color = '#ef4444';
+    chEl.innerHTML = '❌ No contact auto-located — pick an account above.';
+}
+
+function onMsgAccountChange() {
+    var sel = document.getElementById('msgPatientAccount');
+    var data = window._msgModalLastData;
+    if (!sel || !data) return;
+    renderMsgChannelInfo(sel.value, data, true);
+    // Auto-check "Remember" when staff picks something different from the saved override
+    var saveCb = document.getElementById('msgPatientSaveOverride');
+    var currentOverride = data?.patient?.messaging_account_override || '';
+    if (saveCb && sel.value !== currentOverride) saveCb.checked = true;
+}
+
+async function sendPatientMessage() {
+    var btn = document.getElementById('msgPatientSendBtn');
+    var ta = document.getElementById('msgPatientBody');
+    if (!btn || !ta) return;
+    var patientId = btn.getAttribute('data-patient-id');
+    var apptType = btn.getAttribute('data-appt-type') || '';
+    var body = (ta.value || '').trim();
+    if (!patientId || !body) return;
+    if (!confirm('Send this message now?')) return;
+
+    btn.disabled = true; btn.textContent = 'Sending…'; btn.style.opacity = '0.7';
+    // Always send the selected account so the server probes THAT one (not auto-routing).
+    // If "Remember" is checked, also persist it as an override for future messages.
+    var accountChoice = document.getElementById('msgPatientAccount')?.value || '';
+    var saveOverride = document.getElementById('msgPatientSaveOverride')?.checked;
+    var payload = { patient_id: patientId, body: body, appointment_type: apptType };
+    if (accountChoice && saveOverride) payload.save_account_override = accountChoice;
+    else if (accountChoice) payload.use_account_for_send = accountChoice;
+    try {
+        var resp = await fetch('/ops/api/ipad/schedule/message/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(payload),
+        });
+        var data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'Send failed');
+        document.getElementById('msgPatientModal').remove();
+        showToast('Message sent to ' + (data.sent_to || 'patient') + ' via ' + (data.channel?.label || 'SMS'), 'success');
+    } catch (err) {
+        btn.disabled = false; btn.textContent = 'Send'; btn.style.opacity = '1';
+        alert('Could not send: ' + (err.message || err));
+    }
+}
+
+async function removeBreak(blockId) {
+    if (!blockId) return;
+    if (!confirm('Remove this blocked time?')) return;
+    try {
+        var res = await fetch('/ops/api/ipad/schedule/block/?id=' + encodeURIComponent(blockId), {
+            method: 'DELETE',
+            credentials: 'include',
+        });
+        var data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Delete failed');
+        if (typeof loadScheduleForRange === 'function') loadScheduleForRange(true);
+        else if (typeof loadScheduleData === 'function') loadScheduleData();
+    } catch (err) {
+        alert('Could not remove block: ' + (err.message || err));
+    }
+}
+
 // FIX(2026-04-08): Allow creating brand new patients from iPad.
 // Creates in: GMH Dashboard DB → Healthie → GHL (same as dashboard Add Patient form)
 
@@ -10760,6 +16869,7 @@ function showNewPatientModal() {
                         <label style="${labelStyle}">Patient Type</label>
                         <select id="npPatientType" style="${fieldStyle}">
                             <option value="member">Member (Recurring)</option>
+                            <option value="intermittent">Intermittent</option>
                             <option value="visit">Visit (One-time)</option>
                         </select>
                     </div>
@@ -10776,7 +16886,7 @@ function showNewPatientModal() {
                     </div>
                     <div style="flex:1;">
                         <label style="${labelStyle}">Clinic</label>
-                        <select id="npClinic" style="${fieldStyle}" onchange="updateClinicFromType()">
+                        <select id="npClinic" style="${fieldStyle}">
                             <option value="nowprimary.care">NowPrimary.Care</option>
                             <option value="nowmenshealth.care">NowMensHealth.Care</option>
                         </select>
@@ -10832,7 +16942,17 @@ function showNewPatientModal() {
     document.getElementById('npServiceStart').value = today;
 }
 
-async function submitNewPatient(forceCreate) {
+// FIX(2026-05-11): The previous version called apiFetch, which throws on any non-2xx — so the
+// server's 409 duplicate response (with duplicateMatches + existingHealthieId) was being swallowed
+// and the user saw only a vague toast. Now we use raw fetch so the 409 body reaches the UI, and we
+// render explicit "Link to existing Healthie" / "Open existing GMH patient" actions per match.
+async function submitNewPatient(opts) {
+    // Back-compat: original signature was submitNewPatient(forceCreate: boolean).
+    if (typeof opts === 'boolean') opts = { forceCreate: opts };
+    opts = opts || {};
+    var forceCreate = !!opts.forceCreate;
+    var linkToHealthieId = opts.linkToHealthieId || null;
+
     var name = document.getElementById('npName').value.trim();
     var dob = document.getElementById('npDob').value;
     var phone = document.getElementById('npPhone').value.trim();
@@ -10855,7 +16975,8 @@ async function submitNewPatient(forceCreate) {
     if (!clientType) { showToast('Client type / brand is required', 'error'); return; }
 
     var btn = document.getElementById('npSubmitBtn');
-    btn.textContent = 'Creating...'; btn.disabled = true;
+    var actionLabel = linkToHealthieId ? 'Linking…' : 'Creating…';
+    btn.textContent = actionLabel; btn.disabled = true;
 
     try {
         var body = {
@@ -10874,37 +16995,44 @@ async function submitNewPatient(forceCreate) {
             nextLab: nextLab || null,
             serviceStartDate: serviceStart || null,
             patientNotes: notes || null,
-            forceCreate: forceCreate || false
+            forceCreate: forceCreate,
+            linkToHealthieId: linkToHealthieId
         };
 
-        var data = await apiFetch('/ops/api/patients/', {
+        var resp = await fetch('/ops/api/patients/', {
             method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
 
-        if (data.error) {
-            // Handle duplicate warning
-            if (data.duplicateWarnings) {
-                var warnEl = document.getElementById('npDuplicateWarning');
-                warnEl.style.display = 'block';
-                // FIX(2026-04-08): duplicateWarnings from API are plain strings, not objects
-                warnEl.innerHTML = '<strong>Possible duplicates found:</strong><br>' +
-                    data.duplicateWarnings.map(function(d) {
-                        if (typeof d === 'string') return '• ' + sanitize(d);
-                        return '• ' + sanitize(d.full_name || d.name || 'Unknown') + (d.email ? ' (' + sanitize(d.email) + ')' : '');
-                    }).join('<br>') +
-                    '<br><br><button onclick="submitNewPatient(true)" style="padding:6px 14px; background:rgba(245,158,11,0.2); border:1px solid rgba(245,158,11,0.4); border-radius:6px; color:#f59e0b; font-size:12px; cursor:pointer; font-family:inherit;">Create Anyway (Link to Existing)</button>';
-                btn.textContent = 'Create Patient'; btn.disabled = false;
-                return;
-            }
-            throw new Error(data.error);
+        // Duplicate detected — render structured options instead of failing silently.
+        if (resp.status === 409) {
+            var dupData = await resp.json().catch(function() { return {}; });
+            renderNewPatientDuplicateOptions(dupData);
+            btn.textContent = 'Create Patient'; btn.disabled = false;
+            return;
         }
+
+        if (!resp.ok) {
+            var errTxt = await resp.text().catch(function() { return ''; });
+            var errMsg = '';
+            try { errMsg = (JSON.parse(errTxt) || {}).error || ''; } catch (_) {}
+            throw new Error(errMsg || ('HTTP ' + resp.status));
+        }
+
+        var data = await resp.json();
 
         document.getElementById('newPatientModal').remove();
 
         var integrations = data.integrations || {};
-        var msgs = ['Patient created in GMH Dashboard'];
-        if (integrations.healthie === 'success') msgs.push('Synced to Healthie');
+        var msgs = [];
+        if (linkToHealthieId || integrations.healthie === 'linked') {
+            msgs.push('Linked to existing Healthie patient');
+        } else {
+            msgs.push('Patient created in GMH Dashboard');
+            if (integrations.healthie === 'created') msgs.push('Created in Healthie');
+        }
         if (integrations.ghl === 'processing') msgs.push('GHL sync started');
 
         showToast('✅ ' + msgs.join(' • '), 'success');
@@ -10917,6 +17045,75 @@ async function submitNewPatient(forceCreate) {
         showToast('Failed: ' + (e.message || 'Unknown error'), 'error');
         btn.textContent = 'Create Patient'; btn.disabled = false;
     }
+}
+
+// Render the duplicate-warning panel inside the New Patient modal with explicit actions:
+//  • Link to existing Healthie patient (server skips Healthie create, just maps the IDs)
+//  • Open the existing GMH patient chart (no new patient created)
+// Falls back to the plain string list if the server didn't include structured matches.
+function renderNewPatientDuplicateOptions(data) {
+    var warnEl = document.getElementById('npDuplicateWarning');
+    if (!warnEl) return;
+
+    var matches = Array.isArray(data && data.duplicateMatches) ? data.duplicateMatches : [];
+    var warnings = Array.isArray(data && data.duplicateWarnings) ? data.duplicateWarnings : [];
+
+    var matchHtml = '';
+    if (matches.length > 0) {
+        matchHtml = matches.map(function(m) {
+            if (m.source === 'healthie') {
+                var hid = String(m.healthieClientId || '').replace(/'/g, '');
+                return '' +
+                    '<div style="padding:10px;background:rgba(0,0,0,0.25);border:1px solid rgba(245,158,11,0.25);border-radius:8px;margin:8px 0;">' +
+                        '<div style="font-size:12px;color:#e5e7eb;margin-bottom:6px;">' +
+                            '<span style="display:inline-block;font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(34,197,94,0.15);color:#22c55e;margin-right:6px;">HEALTHIE</span>' +
+                            '<strong>' + sanitize(m.fullName || 'Unknown') + '</strong>' +
+                            ' <span style="color:#9ca3af;">(ID: ' + sanitize(m.healthieClientId || '') + ')</span>' +
+                        '</div>' +
+                        '<button onclick="submitNewPatient({linkToHealthieId:\'' + hid + '\'})" ' +
+                            'style="padding:8px 14px;background:rgba(34,197,94,0.2);border:1px solid rgba(34,197,94,0.45);border-radius:6px;color:#22c55e;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">' +
+                            'Link this Healthie patient to a new GMH record' +
+                        '</button>' +
+                    '</div>';
+            }
+            if (m.source === 'gmh') {
+                var openTarget = String(m.healthieClientId || m.patientId || '').replace(/'/g, '');
+                var openName = String(m.fullName || 'Patient').replace(/'/g, "\\'");
+                var hasOpen = !!openTarget;
+                var meta = [];
+                if (m.email) meta.push(sanitize(m.email));
+                if (m.phone) meta.push(sanitize(m.phone));
+                return '' +
+                    '<div style="padding:10px;background:rgba(0,0,0,0.25);border:1px solid rgba(59,130,246,0.25);border-radius:8px;margin:8px 0;">' +
+                        '<div style="font-size:12px;color:#e5e7eb;margin-bottom:6px;">' +
+                            '<span style="display:inline-block;font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(59,130,246,0.15);color:#3b82f6;margin-right:6px;">GMH</span>' +
+                            '<strong>' + sanitize(m.fullName || 'Unknown') + '</strong>' +
+                            (meta.length ? ' <span style="color:#9ca3af;">(' + meta.join(' · ') + ')</span>' : '') +
+                            (m.healthieClientId ? ' <span style="font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(34,197,94,0.12);color:#22c55e;margin-left:4px;">linked</span>' : '') +
+                        '</div>' +
+                        (hasOpen
+                            ? '<button onclick="document.getElementById(\'newPatientModal\').remove(); openChartForPatient(\'' + openTarget + '\', \'' + openName + '\')" ' +
+                                'style="padding:8px 14px;background:rgba(59,130,246,0.2);border:1px solid rgba(59,130,246,0.45);border-radius:6px;color:#3b82f6;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">' +
+                                'Open this existing patient' +
+                              '</button>'
+                            : '<span style="font-size:11px;color:#9ca3af;">This GMH patient has no Healthie link yet — open it from the patient list to merge manually.</span>'
+                        ) +
+                    '</div>';
+            }
+            return '';
+        }).join('');
+    } else if (warnings.length > 0) {
+        // Fallback for older responses that only sent string warnings.
+        matchHtml = '<div style="font-size:12px;color:#e5e7eb;">' +
+            warnings.map(function(w) { return '• ' + sanitize(String(w)); }).join('<br>') +
+            '</div>';
+    }
+
+    warnEl.style.display = 'block';
+    warnEl.innerHTML =
+        '<div style="font-size:13px;color:#f59e0b;font-weight:700;margin-bottom:6px;">⚠️ Possible duplicates found</div>' +
+        '<div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">Pick one of the options below — or close this modal if you meant a different patient.</div>' +
+        matchHtml;
 }
 
 async function loadScheduleData(forceRefresh) {
@@ -10953,6 +17150,9 @@ async function loadScheduleData(forceRefresh) {
         var provMap = new Map();
         scheduleAllData.forEach(function(p) { provMap.set(p.provider || 'Unknown', { name: p.provider || 'Unknown', id: p.provider_id || '' }); });
         renderProviderTabs([...provMap.values()]);
+        // Make sure the per-type default-length lookup is loaded so the
+        // calendar can flag custom-duration appts even when reusing cached data.
+        await ensureAppointmentTypeDefaults();
         renderScheduleContent(contentEl);
         return;
     }
@@ -10984,6 +17184,10 @@ async function loadScheduleData(forceRefresh) {
 
         scheduleAllData = data.patients || [];
         console.log('[Schedule] scheduleAllData set to', scheduleAllData.length, 'appointments');
+
+        // Make sure the per-type default-length lookup is loaded so the
+        // calendar can flag custom-duration appts on the very first render.
+        await ensureAppointmentTypeDefaults();
 
         // Also update the global so Today tab stays in sync
         if (scheduleAllData.length > 0) {
@@ -11167,6 +17371,37 @@ function renderScheduleDayGrid(contentEl) {
         return map;
     }
 
+    // Build a set of "covered" slot keys per provider — slots that an earlier
+    // appointment visually extends into based on its length. Lets the renderer
+    // grow the tile to span its true duration and suppress the empty "+" cell
+    // beneath it. Default 30 min when length is missing.
+    function buildCoveredSet(appts) {
+        var covered = new Set();
+        appts.forEach(function(p) {
+            if (!p.date) return;
+            var d = parseHealthieDate(p.date);
+            if (isNaN(d.getTime())) return;
+            var len = parseInt(p.length, 10) || 30;
+            var spans = Math.max(1, Math.ceil(len / 30));
+            if (spans <= 1) return;
+            var startH = d.getHours();
+            var startBucket = d.getMinutes() < 30 ? 0 : 30;
+            for (var i = 1; i < spans; i++) {
+                var totalMin = startH * 60 + startBucket + i * 30;
+                var nh = Math.floor(totalMin / 60);
+                var nm = totalMin % 60;
+                covered.add(padTwo(nh) + ':' + padTwo(nm));
+            }
+        });
+        return covered;
+    }
+
+    // How many 30-min slots an appointment should visually occupy.
+    function apptSlotsSpan(p) {
+        var len = parseInt(p && p.length, 10) || 30;
+        return Math.max(1, Math.ceil(len / 30));
+    }
+
     var now = new Date();
     var nowHr = now.getHours(), nowMn = now.getMinutes();
     var dateStr = getPhoenixDateStr(scheduleSelectedDate);
@@ -11199,10 +17434,10 @@ function renderScheduleDayGrid(contentEl) {
         // ─── SPLIT VIEW: two provider columns ───
         var provData = PROVIDERS.map(function(prov) {
             var appts = allFiltered.filter(function(p) { return (p.provider_id || '') === prov.id; });
-            return { prov: prov, appts: appts, slotMap: buildSlotMap(appts) };
+            return { prov: prov, appts: appts, slotMap: buildSlotMap(appts), coveredSet: buildCoveredSet(appts) };
         });
 
-        html += '<div style="display:flex; gap:0; border:1px solid var(--border-light); border-radius:10px; overflow:hidden;">';
+        html += '<div style="display:flex; gap:0; border:1px solid var(--border-light); border-radius:10px;">';
         // Time column
         html += '<div style="flex-shrink:0; width:55px;">';
         html += '<div style="height:36px; border-bottom:1px solid var(--border-light); border-right:1px solid var(--border-light);"></div>';
@@ -11233,8 +17468,64 @@ function renderScheduleDayGrid(contentEl) {
                 var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
                 var isPast = isToday && (slot.hour < nowHr || (slot.hour === nowHr && slot.min + 30 <= nowMn));
                 var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
+                var isCovered = pd.coveredSet && pd.coveredSet.has(key) && appts.length === 0;
+                var blockCell = getSlotBlock(slot.hour, slot.min, pd.prov.id);
+                // Detect the first slot of the block (show label only once)
+                // FIX(2026-05-19): blockCell.date is ISO UTC; the old HH:MM:SS
+                // regex pulled UTC hour, so the label rendered on the wrong row
+                // (e.g. 7am AZ block would never satisfy slot.hour === bStartH).
+                var blockIsFirst = false;
+                if (blockCell) {
+                    var bp = getPhoenixBlockParts(blockCell.date);
+                    if (bp) blockIsFirst = (slot.hour === bp.hour && slot.min === (bp.minute < 30 ? 0 : 30));
+                }
+                // When an appointment occupies a blocked slot, suppress the
+                // yellow bg so the appointment tile stands out. Keep the left
+                // edge marker so you can still tell the time is blocked.
+                var hasAppt = appts.length > 0;
+                var blockBg = blockCell && !hasAppt ? ' background:rgba(234,179,8,0.18);' : '';
+                var blockBorder = blockCell ? ' border-left:3px solid #eab308;' : '';
 
-                html += '<div style="min-height:56px; padding:3px 5px; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + '; display:flex; flex-direction:column; justify-content:center; gap:2px;' + (isCur ? ' background:rgba(0,212,255,0.04);' : '') + (isPast ? ' opacity:0.45;' : '') + '">';
+                // Slot wrapper is fixed at 56px so the parallel time column
+                // stays aligned. Tiles that span multiple slots overflow visually
+                // (overflow:visible) and the covered slots below render quiet so
+                // the tile reads as one continuous block.
+                if (isCovered && !blockCell) {
+                    html += '<div style="height:56px; padding:0 5px;' + (isCur ? ' background:rgba(0,212,255,0.04);' : '') + (isPast ? ' opacity:0.45;' : '') + '"></div>';
+                    return;
+                }
+
+                // Hide the cell's bottom border when an appointment in this
+                // slot spans into the next slots — otherwise the line cuts
+                // through the multi-slot tile.
+                var _slotHasMultiSpan = appts.some(function(_p) { return apptSlotsSpan(_p) > 1; });
+                var _slotBorderBottom = _slotHasMultiSpan
+                    ? 'transparent'
+                    : (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)');
+
+                html += '<div style="height:56px; padding:3px 5px; border-bottom:1px solid ' + _slotBorderBottom + '; display:flex; flex-direction:column; justify-content:center; gap:2px; overflow:visible; position:relative;' + (isCur ? ' background:rgba(0,212,255,0.04);' : blockBg) + blockBorder + (isPast ? ' opacity:0.45;' : '') + '">';
+
+                if (blockCell && blockIsFirst) {
+                    var lbl = (blockCell.notes && blockCell.notes !== 'Blocked time') ? blockCell.notes : 'Blocked';
+                    html += '<div style="display:flex; align-items:center; gap:5px; padding:3px 6px; border-radius:5px; background:rgba(234,179,8,0.15); border:1px solid rgba(234,179,8,0.4);">';
+                    html += '<span style="font-size:11px;">⏸</span>';
+                    html += '<span style="font-size:10px; font-weight:700; color:#eab308; flex:1;">' + lbl + '</span>';
+                    html += '<button onclick="event.stopPropagation(); editBreak(\x27' + blockCell.id + '\x27)" style="padding:1px 5px; border-radius:3px; background:transparent; border:1px solid rgba(0,212,255,0.4); color:var(--cyan); font-size:9px; cursor:pointer;">Edit</button>';
+                    html += '<button onclick="event.stopPropagation(); removeBreak(\x27' + blockCell.id + '\x27)" style="padding:1px 5px; border-radius:3px; background:transparent; border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:9px; cursor:pointer;">Remove</button>';
+                    html += '</div>';
+                }
+                // Show any pending approval requests inside this slot
+                var reqs = getPendingRequestsForSlot(slot.hour, slot.min, pd.prov.id);
+                if (reqs.length > 0) {
+                    reqs.forEach(function(r) {
+                        html += '<div style="display:flex; align-items:center; gap:5px; padding:3px 6px; border-radius:5px; background:rgba(251,146,60,0.18); border:1px solid rgba(251,146,60,0.5);">';
+                        html += '<span style="font-size:11px;">?</span>';
+                        html += '<span style="font-size:10px; font-weight:700; color:#fb923c; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (r.patient_name || 'Request') + '</span>';
+                        html += '<button onclick="event.stopPropagation(); decideApptRequest(\x27' + r.request_id + '\x27, \x27approve\x27)" style="padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.4); color:#22c55e; font-size:9px; cursor:pointer;">✓</button>';
+                        html += '<button onclick="event.stopPropagation(); decideApptRequest(\x27' + r.request_id + '\x27, \x27deny\x27)" style="padding:1px 5px; border-radius:3px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:9px; cursor:pointer;">✗</button>';
+                        html += '</div>';
+                    });
+                }
 
                 if (appts.length > 0) {
                     appts.forEach(function(p) {
@@ -11246,8 +17537,19 @@ function renderScheduleDayGrid(contentEl) {
                         var lc = getLocationColor(p.location, p.appointment_type);
                         var isNew = isNewPatientAppt(p.appointment_type);
                         var isTele = isTelehealthAppt(p.location, p.contact_type);
+                        var _defLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+                        var _isCustomDur = !!(p.length && _defLen && p.length !== _defLen);
+                        // Visual span: 30-min slot = 56px row. Tile grows so the
+                        // calendar reflects the real appointment duration.
+                        var _spans = apptSlotsSpan(p);
+                        var _tileMinH = (_spans * 56 - 6);
+                        var _leftBorderColor = _isCustomDur ? '#fbbf24'
+                            : (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : lc.border));
 
-                        html += '<div style="display:flex; align-items:center; gap:4px; padding:3px 6px; border-radius:6px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border-left:3px solid ' + (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : lc.border)) + '; min-width:0; cursor:default;' + (isFinal ? ' opacity:0.6;' : '') + '">';
+                        if (apptId) window._schedApptCache[apptId] = p;
+                        var _canEdit = !isFinal && apptId;
+                        var _tileClick = _canEdit ? ' onclick="showEditAppointmentModal(\x27' + apptId + '\x27)"' : '';
+                        html += '<div' + _tileClick + ' style="display:flex; align-items:flex-start; gap:4px; padding:3px 6px; border-radius:6px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border-left:3px solid ' + _leftBorderColor + ';' + (_isCustomDur ? ' box-shadow:inset 0 0 0 1px rgba(251,191,36,0.45);' : '') + ' min-width:0; cursor:' + (_canEdit ? 'pointer' : 'default') + '; min-height:' + _tileMinH + 'px; position:relative; z-index:2;' + (isFinal ? ' opacity:0.6;' : '') + '">';
                         // Name + badges
                         html += '<div style="flex:1; min-width:0; overflow:hidden;">';
                         html += '<div style="display:flex; align-items:center; gap:4px;">';
@@ -11255,17 +17557,26 @@ function renderScheduleDayGrid(contentEl) {
                         if (isTele) html += '<span style="font-size:8px; flex-shrink:0;">📹</span>';
                         html += '<span style="font-size:12px; font-weight:600; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + sanitize(p.full_name || '?') + '</span>';
                         html += '</div>';
-                        html += '<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.time || '') + ' · ' + abbreviateType(p.appointment_type) + '</div>';
+                        html += '<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (p.time || '') + ' · ' + abbreviateType(p.appointment_type) + (p.length ? ' · ' + p.length + 'm' : '') + '</div>';
+                        if (_isCustomDur) {
+                            html += '<div style="display:inline-block; margin-top:2px; font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.18); color:#fbbf24; border:1px solid rgba(251,191,36,0.4);" title="Duration changed from default ' + _defLen + 'm">⏱ ' + p.length + 'm · default ' + _defLen + 'm</div>';
+                        }
                         html += '</div>';
-                        // Action buttons
+                        // Action buttons (⏱ duration + ↔ move removed 2026-05-11 — click the tile to edit everything)
                         html += '<div style="display:flex; gap:3px; flex-shrink:0;">';
-                        if (!isFinal && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + dateStr + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:9px; cursor:pointer;" title="Move/reschedule">↔</button>';
+                        if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:9px; cursor:pointer;" title="Message patient">💬</button>';
                         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:2px 5px; border-radius:4px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:9px; cursor:pointer;">📋</button>';
                         if (isTele && !isFinal && apptId) html += '<button onclick="event.stopPropagation(); startProviderVideoCall(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + pid + '\x27)" style="padding:2px 6px; border-radius:4px; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.35); color:#60a5fa; font-size:9px; font-weight:600; cursor:pointer;" title="Start video call">📹 Video</button>';
                         if (!isFinal && apptId) {
+                            // Near the bottom of the grid, open the dropdown upward so it
+                            // doesn't get cut off (e.g. 5:30 PM row with END_HOUR = 18).
+                            var openUp = (slot.hour >= (END_HOUR - 2));
+                            var menuPos = openUp
+                                ? 'bottom:100%; margin-bottom:4px;'
+                                : 'top:100%; margin-top:4px;';
                             html += '<div style="position:relative; display:inline-block;">';
                             html += '<span onclick="event.stopPropagation(); toggleStatusMenu(\x27sm_' + apptId + '\x27)" style="font-size:9px; padding:2px 6px; border-radius:4px; background:' + sty.bg + '; color:' + sty.color + '; font-weight:600; cursor:pointer;">' + abbreviateStatus(st) + ' ▾</span>';
-                            html += '<div id="sm_' + apptId + '" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:var(--card); border:1px solid var(--border-light); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.3); z-index:100; min-width:120px;">';
+                            html += '<div id="sm_' + apptId + '" style="display:none; position:absolute; right:0; ' + menuPos + ' background:var(--card); border:1px solid var(--border-light); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.3); z-index:100; min-width:140px; overflow:hidden;">';
                             [{ l:'✅ Check In',v:'Checked In',s:st==='Scheduled'||st==='Confirmed'},
                              { l:'🟣 In Progress',v:'In Progress',s:st==='Checked In'},
                              { l:'✅ Done',v:'Completed',s:st==='In Progress'||st==='Checked In'},
@@ -11298,7 +17609,8 @@ function renderScheduleDayGrid(contentEl) {
     } else {
         // ─── SINGLE PROVIDER VIEW ───
         var slotMap = buildSlotMap(allFiltered);
-        html += '<div style="border:1px solid var(--border-light); border-radius:10px; overflow:hidden;">';
+        var coveredSet = buildCoveredSet(allFiltered);
+        html += '<div style="border:1px solid var(--border-light); border-radius:10px;">';
         slots.forEach(function(slot) {
             var key = padTwo(slot.hour) + ':' + padTwo(slot.min);
             var appts = slotMap[key] || [];
@@ -11306,10 +17618,43 @@ function renderScheduleDayGrid(contentEl) {
             var isCur = isToday && slot.hour === nowHr && ((slot.min === 0 && nowMn < 30) || (slot.min === 30 && nowMn >= 30));
             var isPast = isToday && (slot.hour < nowHr || (slot.hour === nowHr && slot.min + 30 <= nowMn));
             var timeKey = padTwo(slot.hour) + ':' + padTwo(slot.min);
+            var isCovered = coveredSet.has(key) && appts.length === 0;
+            var blockCell = getSlotBlock(slot.hour, slot.min, scheduleProviderFilter);
+            // FIX(2026-05-19): same UTC-vs-Phoenix fix as the split view above.
+            var blockIsFirst = false;
+            if (blockCell) {
+                var bp = getPhoenixBlockParts(blockCell.date);
+                if (bp) blockIsFirst = (slot.hour === bp.hour && slot.min === (bp.minute < 30 ? 0 : 30));
+            }
+            // Suppress yellow bg when an appointment is present so the tile's
+            // buttons stay prominent. Keep the left edge marker.
+            var hasApptsInSlot = (slotMap[key] || []).length > 0;
+            var rowBg = isCur ? ' background:rgba(0,212,255,0.06);'
+                      : (blockCell && !hasApptsInSlot) ? ' background:rgba(234,179,8,0.15);'
+                      : '';
 
-            html += '<div style="display:flex; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + ';' + (isCur ? ' background:rgba(0,212,255,0.06);' : '') + (isPast ? ' opacity:0.5;' : '') + '">';
+            // Covered tail of a longer appointment: keep the time gutter aligned
+            // but render an empty body so the tile above visually extends down.
+            if (isCovered && !blockCell) {
+                html += '<div style="display:flex;' + rowBg + (isPast ? ' opacity:0.5;' : '') + '">';
+                html += '<div style="width:60px; padding:6px 8px; font-size:11px; font-weight:' + (isHalf ? '400' : '600') + '; color:' + (isCur ? 'var(--cyan)' : 'var(--text-tertiary)') + '; border-right:1px solid var(--border-light); display:flex; align-items:center;">' + (isHalf ? '' : slot.label) + '</div>';
+                html += '<div style="flex:1; min-height:44px;"></div>';
+                html += '</div>';
+                return;
+            }
+
+            html += '<div style="display:flex; border-bottom:1px solid ' + (isHalf ? 'rgba(255,255,255,0.03)' : 'var(--border-light)') + ';' + rowBg + (blockCell ? ' border-left:3px solid #eab308;' : '') + (isPast ? ' opacity:0.5;' : '') + '">';
             html += '<div style="width:60px; padding:6px 8px; font-size:11px; font-weight:' + (isHalf ? '400' : '600') + '; color:' + (isCur ? 'var(--cyan)' : 'var(--text-tertiary)') + '; border-right:1px solid var(--border-light); display:flex; align-items:center;">' + (isHalf ? '' : slot.label) + '</div>';
             html += '<div style="flex:1; min-height:44px; padding:3px 6px; display:flex; flex-direction:column; gap:2px; justify-content:center;">';
+            if (blockCell && blockIsFirst) {
+                var sLbl = (blockCell.notes && blockCell.notes !== 'Blocked time') ? blockCell.notes : 'Blocked';
+                html += '<div style="display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:6px; background:rgba(234,179,8,0.2); border:1px solid rgba(234,179,8,0.45);">';
+                html += '<span style="font-size:14px;">⏸</span>';
+                html += '<span style="font-size:12px; font-weight:700; color:#eab308; flex:1;">' + sLbl + ' — ' + (blockCell.length || 0) + ' min</span>';
+                html += '<button onclick="event.stopPropagation(); editBreak(\x27' + blockCell.id + '\x27)" style="padding:2px 8px; border-radius:4px; background:transparent; border:1px solid rgba(0,212,255,0.4); color:var(--cyan); font-size:10px; cursor:pointer;">Edit</button>';
+                html += '<button onclick="event.stopPropagation(); removeBreak(\x27' + blockCell.id + '\x27)" style="padding:2px 8px; border-radius:4px; background:transparent; border:1px solid rgba(239,68,68,0.4); color:#ef4444; font-size:10px; cursor:pointer;">Remove</button>';
+                html += '</div>';
+            }
             if (appts.length > 0) {
                 appts.forEach(function(p) {
                     var st = p.appointment_status || 'Scheduled';
@@ -11321,17 +17666,29 @@ function renderScheduleDayGrid(contentEl) {
                     var lc = getLocationColor(p.location, p.appointment_type);
                     var isNew = isNewPatientAppt(p.appointment_type);
                     var isTele = isTelehealthAppt(p.location, p.contact_type);
+                    var _defLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+                    var _isCustomDur = !!(p.length && _defLen && p.length !== _defLen);
+                    // Visual span: each 30-min slot is ~56px tall; subtract a
+                    // little so consecutive tiles don't crowd the seam.
+                    var _spans = apptSlotsSpan(p);
+                    var _tileMinH = (_spans * 56 - 14);
+                    var _leftBorder = _isCustomDur ? '#fbbf24' : (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : pc.border));
 
-                    html += '<div style="display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:8px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border:1px solid ' + (isFinal ? 'rgba(255,255,255,0.06)' : (isTele ? 'rgba(59,130,246,0.3)' : lc.border)) + '; border-left:3px solid ' + (isFinal ? 'rgba(255,255,255,0.1)' : (isTele ? '#3b82f6' : pc.border)) + ';">';
+                    if (apptId) window._schedApptCache[apptId] = p;
+                    var _canEditSp = !isFinal && apptId;
+                    var _tileClickSp = _canEditSp ? ' onclick="showEditAppointmentModal(\x27' + apptId + '\x27)"' : '';
+                    html += '<div' + _tileClickSp + ' style="display:flex; align-items:flex-start; gap:6px; padding:5px 8px; border-radius:8px; background:' + (isFinal ? 'var(--surface)' : (isTele ? 'rgba(59,130,246,0.08)' : lc.bg)) + '; border:1px solid ' + (_isCustomDur ? 'rgba(251,191,36,0.5)' : (isFinal ? 'rgba(255,255,255,0.06)' : (isTele ? 'rgba(59,130,246,0.3)' : lc.border))) + '; border-left:3px solid ' + _leftBorder + '; min-height:' + _tileMinH + 'px; cursor:' + (_canEditSp ? 'pointer' : 'default') + ';">';
                     html += '<div style="flex:1; min-width:0;">';
-                    html += '<div style="display:flex; align-items:center; gap:4px;">';
+                    html += '<div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">';
                     if (isNew) html += '<span style="font-size:8px; font-weight:700; padding:1px 4px; border-radius:3px; background:rgba(251,191,36,0.2); color:#fbbf24;">NEW</span>';
                     if (isTele) html += '<span style="font-size:9px;">📹</span>';
                     html += '<span style="font-size:13px; font-weight:600; color:var(--text-primary);">' + sanitize(p.full_name || '?') + '</span>';
+                    if (_isCustomDur) html += '<span style="font-size:9px; font-weight:700; padding:1px 6px; border-radius:3px; background:rgba(251,191,36,0.18); color:#fbbf24; border:1px solid rgba(251,191,36,0.4);" title="Duration changed from default ' + _defLen + 'm">⏱ ' + p.length + 'm · default ' + _defLen + 'm</span>';
                     html += '</div>';
-                    html += '<div style="font-size:10px; color:var(--text-tertiary);">' + (p.time || '') + ' · ' + (p.appointment_type || '') + '</div>';
+                    html += '<div style="font-size:10px; color:var(--text-tertiary);">' + (p.time || '') + ' · ' + (p.appointment_type || '') + (p.length && !_isCustomDur ? ' · ' + p.length + 'm' : '') + '</div>';
                     html += '</div>';
                     html += '<div style="display:flex; gap:4px; flex-shrink:0;">';
+                    if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:10px; cursor:pointer;" title="Message patient">💬</button>';
                     if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:10px; cursor:pointer;">📋</button>';
                     html += '<span style="font-size:10px; padding:3px 8px; border-radius:5px; background:' + sty.bg + '; color:' + sty.color + '; font-weight:600;">' + st + '</span>';
                     html += '</div></div>';
@@ -11349,7 +17706,7 @@ function renderScheduleDayGrid(contentEl) {
         html += '</div>';
     }
 
-    contentEl.innerHTML = html;
+    contentEl.innerHTML = renderBlockBanner(scheduleSelectedDate) + html;
 }
 
 // Location color coding for schedule
@@ -11457,6 +17814,8 @@ function renderScheduleList(contentEl) {
     if (cancelledCount > 0) html += '<button onclick="scheduleShowCancelled=!scheduleShowCancelled; renderScheduleContent()" style="font-size:11px; padding:3px 10px; border-radius:6px; background:' + (scheduleShowCancelled ? 'rgba(239,68,68,0.15)' : 'rgba(239,68,68,0.06)') + '; color:#ef4444; border:1px solid rgba(239,68,68,0.2); cursor:pointer;">' + (scheduleShowCancelled ? 'Hide' : 'Show') + ' Cancelled (' + cancelledCount + ')</button>';
     html += '</div>';
 
+    html += renderBlockBanner(scheduleSelectedDate);
+
     filtered.forEach(function(p) {
         var st = p.appointment_status || 'Pending';
         var s = getApptStatusStyle(st);
@@ -11468,19 +17827,31 @@ function renderScheduleList(contentEl) {
         var cardBg = isFinalStatus ? 'var(--card)' : allTasksDone ? 'rgba(34,197,94,0.08)' : 'var(--card)';
         var cardBorder = isFinalStatus ? 'var(--border-light)' : allTasksDone ? 'rgba(34,197,94,0.3)' : 'var(--border-light)';
 
-        html += '<div style="background:' + cardBg + '; border:1px solid ' + cardBorder + '; border-radius:12px; padding:14px 16px; margin-bottom:8px;' + (allTasksDone && !isFinalStatus ? ' border-left:3px solid #22c55e;' : '') + '">';
+        if (apptId) window._schedApptCache[apptId] = p;
+        var _canEditList = !isFinalStatus && apptId;
+        var _listTileClick = _canEditList ? ' onclick="showEditAppointmentModal(\x27' + apptId + '\x27)"' : '';
+        html += '<div' + _listTileClick + ' style="background:' + cardBg + '; border:1px solid ' + cardBorder + '; border-radius:12px; padding:14px 16px; margin-bottom:8px; cursor:' + (_canEditList ? 'pointer' : 'default') + ';' + (allTasksDone && !isFinalStatus ? ' border-left:3px solid #22c55e;' : '') + '">';
         html += '<div style="display:flex; align-items:center; justify-content:space-between;">';
         html += '<div style="display:flex; align-items:center; gap:12px; flex:1; min-width:0;">';
         html += '<div style="width:42px; height:42px; border-radius:10px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--text-primary); flex-shrink:0;">' + getInitials(p.full_name) + '</div>';
         html += '<div style="min-width:0; flex:1;">';
+        var _listDefLen = (window._apptTypeDefaultLen || {})[p.appointment_type] || null;
+        var _listIsCustomDur = !!(p.length && _listDefLen && p.length !== _listDefLen);
         html += '<div style="font-size:15px; font-weight:600; color:var(--text-primary);">' + (p.full_name || 'Unknown') + '</div>';
         html += '<div style="font-size:12px; color:var(--text-tertiary);"><span style="color:var(--text-primary); font-weight:500;">' + (p.time || 'TBD') + '</span>';
-        if (p.length) html += ' &middot; ' + p.length + 'min';
+        if (p.length) {
+            if (_listIsCustomDur) {
+                html += ' &middot; <span style="color:#fbbf24; font-weight:600;" title="Duration changed from default ' + _listDefLen + 'm">⏱ ' + p.length + 'min · default ' + _listDefLen + 'm</span>';
+            } else {
+                html += ' &middot; ' + p.length + 'min';
+            }
+        }
         html += ' &middot; ' + (p.appointment_type || 'Appt');
         if (showProv && p.provider) html += ' &middot; <span style="color:var(--text-secondary);">' + p.provider + '</span>';
         html += '</div></div></div>';
         html += '<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">';
-        if (!isFinalStatus && apptId && !_moveAppt) html += '<button onclick="event.stopPropagation(); startMoveAppt(\x27' + apptId + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.time || '') + '\x27, \x27' + getPhoenixDateStr(scheduleSelectedDate) + '\x27, \x27' + (p.provider_id || '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:11px; font-weight:600; cursor:pointer;" title="Move/reschedule">↔ Move</button>';
+        // ⏱ duration + ↔ move buttons removed 2026-05-11 — click the appointment row to edit any field.
+        if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:11px; font-weight:600; cursor:pointer;" title="Message patient">💬 Msg</button>';
         if (pid) html += '<button onclick="event.stopPropagation(); openChartForPatient(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Open chart">📋 Chart</button>';
         // Status badge + dropdown for status changes
         var isFinal = st === 'Completed' || st === 'No Show' || st === 'Cancelled';
@@ -11638,6 +18009,12 @@ function openVitalsModal(patientId, patientName) {
     html += '<div style="font-size:13px; color:var(--text-tertiary); margin-bottom:14px;">Patient: <strong style="color:var(--text-primary);">' + patientName + '</strong></div>';
 
     var selectStyle = 'width:100%; padding:10px 8px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-primary); font-size:13px; font-family:inherit;';
+
+    // Dictation row (Hannah → Phil task #15) — speak vitals, auto-fills the fields below
+    html += '<div style="display:flex; gap:8px; margin-bottom:14px; align-items:center;">';
+    html += '<button id="vitalsDictateBtn" type="button" onclick="toggleVitalsDictation()" style="padding:10px 14px; border-radius:8px; border:1px solid var(--border-light); background:var(--surface); color:var(--text-secondary); font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">🎤 Dictate</button>';
+    html += '<input id="vitalsDictateInput" type="text" placeholder="e.g. \'BP 120 over 80, pulse 72, temp 98.6, sat 98, weight 185\'" style="' + formStyle + '" oninput="parseDictatedVitalsToFields(this.value)">';
+    html += '</div>';
 
     // Row 1: Blood Pressure + Method
     html += '<div style="display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap;">';
@@ -12499,9 +18876,15 @@ async function submitQuickDispense() {
                         });
                         if (retireResp?.success) {
                             successEl.textContent += ` | Vial ${vialExternalId} retired (${parseFloat(newRemaining).toFixed(2)} mL waste documented).`;
+                            showToast(`Vial ${vialExternalId} retired — ${parseFloat(newRemaining).toFixed(2)}mL documented as waste.`, 'success');
+                        } else {
+                            showToast(retireResp?.error || `Retire failed for ${vialExternalId}`, 'error');
                         }
                     } catch (retireErr) {
                         console.error('[iPad] Retire vial failed:', retireErr);
+                        if (retireErr?.message !== 'AUTH_EXPIRED') {
+                            showToast(`Retire failed for ${vialExternalId} — check console`, 'error');
+                        }
                     }
                 }
             }
@@ -12639,14 +19022,22 @@ async function submitQuickDispense() {
                 );
                 if (doRetire) {
                     try {
-                        await apiFetch('/ops/api/inventory/retire-vial', {
+                        const retireResp = await apiFetch('/ops/api/inventory/retire-vial', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ vialExternalId: nextVialExternalId })
                         });
-                        successEl.innerHTML += `<br>🗑️ Vial ${nextVialExternalId} retired (${parseFloat(newRemaining2).toFixed(2)} mL waste documented).`;
+                        if (retireResp?.success) {
+                            successEl.innerHTML += `<br>🗑️ Vial ${nextVialExternalId} retired (${parseFloat(newRemaining2).toFixed(2)} mL waste documented).`;
+                            showToast(`Vial ${nextVialExternalId} retired — ${parseFloat(newRemaining2).toFixed(2)}mL documented as waste.`, 'success');
+                        } else {
+                            showToast(retireResp?.error || `Retire failed for ${nextVialExternalId}`, 'error');
+                        }
                     } catch (retireErr) {
                         console.error('[iPad] Retire vial failed:', retireErr);
+                        if (retireErr?.message !== 'AUTH_EXPIRED') {
+                            showToast(`Retire failed for ${nextVialExternalId} — check console`, 'error');
+                        }
                     }
                 }
             }
@@ -12691,9 +19082,10 @@ function promptPrintLabel(info) {
                         ${sanitize(info.patientName)} — ${info.totalDose}mL ${sanitize(info.drugName)}
                     </div>
                 </div>
-                <div style="display:flex; gap:10px; justify-content:center;">
-                    <button onclick="document.getElementById('printLabelPrompt').remove()" class="btn-cancel" style="flex:1;">No Thanks</button>
-                    <button onclick="(function(i){ printLabel(window._qdPatientId, i.patientName, i.drugName, { volume: String(i.totalDose), vialNumber: i.vialExternalId, amountDispensed: String(i.totalDose), lotNumber: i.lotNumber || '', expDate: i.expDate || '' }); document.getElementById('printLabelPrompt').remove(); })(window._lastDispenseInfo)" class="btn-primary" style="flex:1; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);">🖨️ Print Label</button>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <button onclick="(function(i){ printLabelToClinic(window._qdPatientId, i.patientName, i.drugName, { volume: String(i.totalDose), vialNumber: i.vialExternalId, amountDispensed: String(i.totalDose), lotNumber: i.lotNumber || '', expDate: i.expDate || '' }); document.getElementById('printLabelPrompt').remove(); })(window._lastDispenseInfo)" class="btn-primary" style="width:100%; background:linear-gradient(135deg, #0891b2 0%, #22d3ee 100%); font-weight:700;">🖨️ Print to Zebra (Clinic)</button>
+                    <button onclick="(function(i){ printLabel(window._qdPatientId, i.patientName, i.drugName, { volume: String(i.totalDose), vialNumber: i.vialExternalId, amountDispensed: String(i.totalDose), lotNumber: i.lotNumber || '', expDate: i.expDate || '' }); document.getElementById('printLabelPrompt').remove(); })(window._lastDispenseInfo)" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer; font-family:inherit;">Open as PDF (AirPrint)</button>
+                    <button onclick="document.getElementById('printLabelPrompt').remove()" style="width:100%; padding:8px; background:none; border:none; color:var(--text-tertiary); font-size:12px; cursor:pointer; font-family:inherit;">No Thanks</button>
                 </div>
             </div>
         </div>
@@ -12829,8 +19221,11 @@ async function submitDemographicsEdit(patientId) {
         successEl.style.display = 'block';
 
         btn.textContent = '✅ Saved';
-        // Clear cache and reload
-        delete patient360Cache[patientId];
+        // Clear cache and reload.
+        // FIX(2026-04-22): now uses invalidatePatientCache() which clears both the
+        // data map AND the TTL map. Raw `delete patient360Cache[...]` left a stale
+        // timestamp that could re-suppress a refresh.
+        invalidatePatientCache(patientId);
         setTimeout(() => {
             document.getElementById('editDemoModal')?.remove();
             invalidatePatientCache(patientId);
@@ -12858,7 +19253,7 @@ async function searchICD10(query) {
 
     icd10SearchTimeout = setTimeout(async () => {
         try {
-            const resp = await fetch(`/ops/api/ipad/icd10-search/?q=${encodeURIComponent(query)}`);
+            const resp = await fetch(`/ops/api/ipad/icd10-search/?q=${encodeURIComponent(query)}`, { credentials: 'include' });
             const data = await resp.json();
 
             if (!data.success || !data.results || data.results.length === 0) {
@@ -12868,12 +19263,12 @@ async function searchICD10(query) {
             }
 
             resultsDiv.innerHTML = data.results.map(item => `
-                <div onclick="selectICD10('${item.code}', '${item.description.replace(/'/g, "\\'")}')"
+                <div onclick="selectICD10('${sanitize(item.code)}', '${sanitize(item.description).replace(/'/g, "&#039;")}')"
                      style="padding:8px; cursor:pointer; border-bottom:1px solid var(--border); transition:background 0.15s;"
                      onmouseover="this.style.background='rgba(168,85,247,0.1)'"
                      onmouseout="this.style.background='transparent'">
-                    <div style="font-size:12px; color:var(--text-primary); font-weight:500;">${item.code}</div>
-                    <div style="font-size:10px; color:var(--text-secondary); margin-top:2px;">${item.description}</div>
+                    <div style="font-size:12px; color:var(--text-primary); font-weight:500;">${sanitize(item.code)}</div>
+                    <div style="font-size:10px; color:var(--text-secondary); margin-top:2px;">${sanitize(item.description)}</div>
                 </div>
             `).join('');
             resultsDiv.style.display = 'block';
@@ -12901,6 +19296,37 @@ function selectICD10(code, description) {
     submitBtn.disabled = false;
     submitBtn.style.opacity = '1';
     submitText.textContent = 'Add Diagnosis';
+}
+
+async function confirmDiagnosis(code, description) {
+    var healthieId = chartPanelData?.healthie_id || chartPanelPatientId;
+    if (!healthieId) { showToast('No patient selected', 'error'); return; }
+
+    showToast('Confirming diagnosis…', 'info');
+    try {
+        var resp = await fetch('/ops/api/ipad/patient-data/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                action: 'confirm_diagnosis',
+                healthie_id: healthieId,
+                code: code,
+                description: description,
+                confirmed_by: currentUser?.display_name || currentUser?.email || 'Provider'
+            })
+        });
+        var data = await resp.json();
+        if (data.success) {
+            showToast('Diagnosis confirmed ✓', 'success');
+            if (chartPanelPatientId) await loadChartData(chartPanelPatientId);
+        } else {
+            showToast('Failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        console.error('[Confirm Diagnosis] Error:', error);
+        showToast('Failed to confirm diagnosis', 'error');
+    }
 }
 
 async function removeDiagnosis(code, description) {
@@ -13110,12 +19536,16 @@ async function manageDualStripeCards() {
 
     // Listen for success message from popup
     window.addEventListener('message', async function handler(event) {
-        if (event.data.type === 'card_added' && event.data.success) {
+        if (event.data && event.data.type === 'card_added' && event.data.success) {
             window.removeEventListener('message', handler);
             showToast('✅ Card added to Direct Stripe!', 'success');
             // Reload patient chart
-            if (chartPanelData?.demographics?.patient_id) {
-                await loadChartData(chartPanelData.demographics.patient_id);
+            try {
+                if (chartPanelData?.demographics?.patient_id) {
+                    await loadChartData(chartPanelData.demographics.patient_id);
+                }
+            } catch (e) {
+                console.error('[Card] Failed to reload chart after card add:', e);
             }
         }
     });
@@ -13449,6 +19879,19 @@ async function selectProduct(product) {
     const patient = window._currentChargePatient;
     if (!patient) return;
 
+    // FIX(2026-04-22): Check if this product already exists in a pending consent (ship flow).
+    // Warns staff to prevent double-charging the same item through both billing and ship paths.
+    try {
+        var consentCheck = await fetch('/ops/api/ipad/billing/pending-consent/?patient_id=' + encodeURIComponent(patient.patientId || patient.healthieId), { credentials: 'include' }).then(function(r) { return r.json(); }).catch(function() { return null; });
+        if (consentCheck && consentCheck.has_consent && consentCheck.items) {
+            var matchingSku = consentCheck.items.find(function(ci) { return ci.name === product.name; });
+            if (matchingSku) {
+                var proceed = confirm('⚠️ "' + product.name + '" is already in a ' + (consentCheck.consent_status || 'pending') + ' consent/ship order for this patient (by ' + (consentCheck.created_by || 'staff') + '). Adding it to the billing cart may result in a double charge.\n\nContinue anyway?');
+                if (!proceed) return;
+            }
+        }
+    } catch (e) { /* non-blocking */ }
+
     // Save to server
     try {
         await fetch('/ops/api/ipad/billing/cart/', {
@@ -13503,7 +19946,8 @@ async function loadServerCart() {
                 amount: parseFloat(item.price) * item.quantity,
                 quantity: item.quantity,
                 current_stock: parseInt(item.current_stock) || 0,
-                added_by: item.added_by
+                added_by: item.added_by,
+                created_at: item.created_at || null
             }));
         } else {
             window._billingCart = [];
@@ -13526,7 +19970,7 @@ function renderCart() {
 
     cartArea.style.display = 'block';
     const subtotal = cart.reduce((sum, item) => sum + item.amount, 0);
-    const isPhil = currentUser && currentUser.email === 'admin@nowoptimal.com';
+    const isPhil = currentUser?.permissions?.can_view_ceo_dashboard === true;
 
     cartArea.innerHTML = `
         <div style="font-size: 12px; font-weight: 600; color: var(--text-secondary, #aaa); text-transform: uppercase; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
@@ -13546,6 +19990,13 @@ function renderCart() {
                             ${item.current_stock > 0 ? item.current_stock + ' in stock' : 'Out of stock'}
                         </span>
                         ${item.added_by ? '<span style="color: var(--text-tertiary, #555);">by ' + item.added_by.split('@')[0] + '</span>' : ''}
+                        ${(function() {
+                            if (!item.created_at) return '';
+                            var ageMs = Date.now() - new Date(item.created_at + 'Z').getTime();
+                            var ageHrs = Math.round(ageMs / 3600000);
+                            if (ageHrs >= 1) return '<span style="padding:1px 4px; border-radius:3px; background:rgba(245,158,11,0.15); color:#f59e0b; font-weight:600;">' + ageHrs + 'h old</span>';
+                            return '';
+                        })()}
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
@@ -13669,6 +20120,12 @@ async function checkoutCart() {
         buttons.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
     }
 
+    // Per-attempt idempotency key for cart checkout (Coby Cook pattern protection)
+    const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('cart-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
+    let result = null;
     try {
         showToast('Processing charge...', 'info');
         const response = await fetch('/ops/api/ipad/billing/charge/', {
@@ -13685,11 +20142,12 @@ async function checkoutCart() {
                     name: item.name,
                     amount: Math.round(item.amount * (1 - discountPct / 100) * 100) / 100,
                     quantity: item.quantity
-                }))
+                })),
+                idempotency_key: idempotencyKey
             })
         });
 
-        const result = await response.json();
+        result = await response.json();
 
         if (result.success) {
             // Clear server cart for this patient
@@ -13729,12 +20187,62 @@ async function checkoutCart() {
         }
     } catch (err) {
         console.error('Cart charge error:', err);
-        showToast('Network error - check before retrying.', 'error');
+        showToast('Connection lost — checking if charge succeeded…', 'info');
+        const recovered = await pollChargeRecovery(idempotencyKey, 30000);
+        if (recovered && recovered.status === 'succeeded') {
+            // Clear server cart for this patient
+            try {
+                await fetch('/ops/api/ipad/billing/cart/?patient_id=' + encodeURIComponent(patient.healthieId || patient.patientId), {
+                    method: 'DELETE', credentials: 'include'
+                });
+            } catch (e) { /* ignore */ }
+            modal?.remove();
+            window._billingCart = [];
+            window._cartDiscountPct = 0;
+            showChargeSuccess({
+                patientName: patient.patientName,
+                amount: recovered.amount || total,
+                description: desc,
+                chargeId: recovered.charge_id,
+                productId: cart[0]?.product_id,
+                itemCount: cart.length,
+            });
+            showToast('Charge recovered after network drop — confirmed succeeded.', 'success');
+            if (typeof loadPatientPaymentData === 'function') {
+                loadPatientPaymentData(patient.healthieId || patient.patientId);
+            }
+            return;
+        }
+        if (recovered && recovered.status === 'failed') {
+            showToast('Charge failed: ' + (recovered.error_message || 'see recovery record'), 'error');
+        } else {
+            showToast('Network error — charge did NOT go through. Safe to retry.', 'error');
+        }
         if (modal) {
             const buttons = modal.querySelectorAll('button');
             buttons.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
         }
     }
+}
+
+// Recovery poller for cart/processCharge — same pattern as ship-order.
+async function pollChargeRecovery(idempotencyKey, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 30000);
+    let attempt = 0;
+    while (Date.now() < deadline) {
+        attempt++;
+        try {
+            const r = await fetch('/ops/api/ipad/billing/recovery/?idempotency_key=' + encodeURIComponent(idempotencyKey), {
+                credentials: 'include'
+            });
+            if (r.ok) {
+                const data = await r.json();
+                if (data.found && data.transaction) return data.transaction;
+            }
+        } catch (e) { /* keep polling */ }
+        await new Promise(res => setTimeout(res, Math.min(2000 + attempt * 1000, 5000)));
+    }
+    return null;
 }
 
 function showCustomChargeForm(patientId, healthieId, patientName) {
@@ -13846,6 +20354,13 @@ async function processCharge({ patientId, healthieId, patientName, amount, descr
         buttons.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
     }
 
+    // Per-attempt idempotency key — server replays prior result if same key arrives twice,
+    // and we can use /recovery to recover state if the iPad's fetch loses the response.
+    const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('charge-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
+    let result = null;
     try {
         showToast('Processing charge...', 'info');
         const response = await fetch('/ops/api/ipad/billing/charge/', {
@@ -13857,11 +20372,12 @@ async function processCharge({ patientId, healthieId, patientName, amount, descr
                 amount: amount,
                 description: description,
                 stripe_account: stripeAccount,
-                product_id: productId
+                product_id: productId,
+                idempotency_key: idempotencyKey
             })
         });
 
-        const result = await response.json();
+        result = await response.json();
 
         if (result.success) {
             modal?.remove();
@@ -13890,7 +20406,30 @@ async function processCharge({ patientId, healthieId, patientName, amount, descr
         }
     } catch (err) {
         console.error('Charge error:', err);
-        showToast('Network error - charge may not have processed. Check before retrying.', 'error');
+        // Network drop: poll /recovery to see if the charge actually went through
+        showToast('Connection lost — checking if charge succeeded…', 'info');
+        const recovered = await pollChargeRecovery(idempotencyKey, 30000);
+        if (recovered && recovered.status === 'succeeded') {
+            modal?.remove();
+            showChargeSuccess({
+                patientName,
+                amount: recovered.amount || amount,
+                description,
+                chargeId: recovered.charge_id,
+                productId,
+                paymentMethod: undefined,
+            });
+            showToast('Charge recovered after network drop — confirmed succeeded.', 'success');
+            if (typeof loadPatientPaymentData === 'function') {
+                loadPatientPaymentData(healthieId || patientId);
+            }
+            return;
+        }
+        if (recovered && recovered.status === 'failed') {
+            showToast('Charge failed: ' + (recovered.error_message || 'see recovery record'), 'error');
+        } else {
+            showToast('Network error — charge did NOT go through. Safe to retry.', 'error');
+        }
         if (modal) {
             const buttons = modal.querySelectorAll('button');
             buttons.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
@@ -13937,7 +20476,22 @@ function showChargeSuccess({ patientName, amount, description, chargeId, product
                         font-size: 12px; color: var(--text-secondary, #aaa);
                     ">
                         Peptide inventory updated automatically<br/>
-                        ${allDispenseIds.length} dispense${allDispenseIds.length > 1 ? 's' : ''} logged for ${patientName}
+                        ${allDispenseIds.length} dispense${allDispenseIds.length > 1 ? 's' : ''} logged for ${patientName} (Date Ordered = today)
+                    </div>
+                    <div style="text-align:left; background: var(--bg-secondary, #16162a); border:1px solid rgba(240, 147, 251, 0.25); border-radius:10px; padding:12px; margin-bottom:12px;">
+                        <div style="font-size:12px; font-weight:600; color: var(--text-primary, #fff); margin-bottom:8px;">When will the patient pick up?</div>
+                        <input type="date" id="post-charge-dispense-date" value="${new Date().toLocaleDateString('en-CA', { timeZone: CLINIC_TIMEZONE })}" style="width:100%; padding:10px; background:var(--bg-primary, #1a1a2e); border:1px solid var(--border-color, #2d2d4a); border-radius:8px; color:var(--text-primary, #fff); font-size:14px; margin-bottom:8px;">
+                        <div style="font-size:12px; font-weight:600; color: var(--text-primary, #fff); margin-bottom:6px;">Notes <span style="font-weight:400; color:var(--text-tertiary, #888);">(optional — defaults to "auto created")</span></div>
+                        <input type="text" id="post-charge-dispense-notes" placeholder="e.g. patient on vacation until 5/3" style="width:100%; padding:10px; background:var(--bg-primary, #1a1a2e); border:1px solid var(--border-color, #2d2d4a); border-radius:8px; color:var(--text-primary, #fff); font-size:14px; margin-bottom:10px;">
+                        <button onclick="savePostChargeDispenseDetails(${JSON.stringify(allDispenseIds).replace(/"/g,'&quot;')}, this)" style="
+                            width:100%; padding:12px;
+                            background:linear-gradient(135deg, #10b981, #059669);
+                            border:none; border-radius:8px;
+                            color:white; font-size:13px; font-weight:700; cursor:pointer;
+                        ">
+                            Save Dispense Date &amp; Notes
+                        </button>
+                        <div id="post-charge-save-status" style="font-size:11px; color:var(--text-tertiary, #888); margin-top:6px; min-height:14px;"></div>
                     </div>
                     ${allDispenseIds.map(did => `
                         <button onclick="printPeptideLabel(${did})" style="
@@ -13967,14 +20521,112 @@ function showChargeSuccess({ patientName, amount, description, chargeId, product
     document.body.appendChild(successModal);
 }
 
+async function savePostChargeDispenseDetails(dispenseIds, btn) {
+    var dateEl = document.getElementById('post-charge-dispense-date');
+    var notesEl = document.getElementById('post-charge-dispense-notes');
+    var statusEl = document.getElementById('post-charge-save-status');
+    var receivedDate = dateEl ? dateEl.value : '';
+    var notesRaw = (notesEl ? notesEl.value : '').trim();
+    var notes = notesRaw || 'auto created';
+    if (!receivedDate) {
+        if (statusEl) statusEl.textContent = 'Pick a dispense date first.';
+        return;
+    }
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.textContent = 'Saving…'; }
+    try {
+        var ids = Array.isArray(dispenseIds) ? dispenseIds : [];
+        await Promise.all(ids.map(function(did) {
+            return apiFetch('/ops/api/peptides/dispenses/', {
+                method: 'PATCH',
+                body: JSON.stringify({ dispense_id: did, received_date: receivedDate, notes: notes }),
+            });
+        }));
+        if (statusEl) statusEl.textContent = '✓ Saved.';
+        if (btn) btn.textContent = '✓ Saved';
+        showToast('Dispense details saved', 'success');
+    } catch (e) {
+        if (statusEl) statusEl.textContent = 'Save failed — try again.';
+        if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.textContent = 'Save Dispense Date & Notes'; }
+        showToast('Could not save dispense details', 'error');
+    }
+}
+
 async function printPeptideLabel(dispenseId) {
     if (!dispenseId) {
         showToast('No dispense ID - cannot generate label', 'error');
         return;
     }
-    const labelUrl = '/ops/api/ipad/billing/label/?dispense_id=' + dispenseId;
-    window.open(labelUrl, '_blank');
-    showToast('Label opened - print from new tab', 'success');
+    // Show choice: browser PDF or clinic printer
+    var modal = document.createElement('div');
+    modal.className = 'modal-overlay visible';
+    modal.style.cssText = 'display:flex; z-index:10001;';
+    modal.innerHTML = '<div class="modal" style="max-width:340px; padding:24px; text-align:center;">' +
+        '<h3 style="margin:0 0 12px; font-size:17px; color:var(--text-primary);">Print Label</h3>' +
+        '<p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">Choose how to print this dispensing label</p>' +
+        '<button onclick="this.closest(\'.modal-overlay\').remove(); window.open(\'/ops/api/ipad/billing/label/?dispense_id=' + dispenseId + '\', \'_blank\'); showToast(\'Label opened in new tab\', \'success\');" style="width:100%; padding:12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-weight:600; cursor:pointer; margin-bottom:8px; font-family:inherit;">Open as PDF (AirPrint)</button>' +
+        '<button onclick="this.closest(\'.modal-overlay\').remove(); printPeptideLabelToClinic(\'' + dispenseId + '\');" style="width:100%; padding:12px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:8px; color:#0a0f1a; font-size:14px; font-weight:700; cursor:pointer; font-family:inherit;">Print to Zebra (Clinic)</button>' +
+        '<button onclick="this.closest(\'.modal-overlay\').remove();" style="width:100%; padding:8px; background:none; border:none; color:var(--text-tertiary); font-size:13px; cursor:pointer; margin-top:4px; font-family:inherit;">Cancel</button>' +
+        '</div>';
+    document.body.appendChild(modal);
+}
+
+// Send lab specimen labels to clinic Zebra printer via print queue
+async function printLabLabelsToClinic(orderId, patientName) {
+    showToast('Sending specimen labels to Zebra...', 'info');
+    try {
+        var result = await apiFetch('/ops/api/labels/print/', {
+            method: 'POST',
+            body: JSON.stringify({
+                label_type: 'lab',
+                printer: 'zebra',
+                params: {
+                    orderId: orderId,
+                    patientName: patientName || '',
+                }
+            })
+        });
+        showToast('3 specimen labels sent to Zebra (Job #' + result.job_id + ')', 'success');
+    } catch (e) {
+        console.error('[Print] Zebra lab labels failed:', e);
+        showToast('Zebra print failed: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// Send requisition to clinic HP printer via print queue
+async function printRequisitionToClinic(orderId) {
+    showToast('Sending requisition to HP printer...', 'info');
+    try {
+        var result = await apiFetch('/ops/api/labels/print/', {
+            method: 'POST',
+            body: JSON.stringify({
+                label_type: 'requisition',
+                printer: 'hp',
+                params: { orderId: orderId }
+            })
+        });
+        showToast('Requisition sent to HP printer (Job #' + result.job_id + ')', 'success');
+    } catch (e) {
+        console.error('[Print] Requisition print failed:', e);
+        showToast('Print failed: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+async function printPeptideLabelToClinic(dispenseId) {
+    showToast('Sending to clinic Zebra printer...', 'info');
+    try {
+        var result = await apiFetch('/ops/api/labels/print/', {
+            method: 'POST',
+            body: JSON.stringify({
+                label_type: 'dispense',
+                printer: 'zebra',
+                dispense_id: dispenseId,
+            })
+        });
+        showToast('Label sent to Zebra printer (Job #' + result.job_id + ')', 'success');
+    } catch (e) {
+        console.error('[Print] Peptide clinic print failed:', e);
+        showToast('Printer queue failed: ' + (e.message || 'Error'), 'error');
+    }
 }
 
 // sendInvoice() removed per admin request
@@ -13986,6 +20638,15 @@ async function printPeptideLabel(dispenseId) {
 window._shipCart = [];
 window._shipDiscount = { rate: 0, reason: 'retail', label: 'Retail' };
 window._shipProducts = [];
+window._shipMode = 'patient'; // 'patient' = Stripe charge; 'company' = no charge, ABX TAC invoices
+
+// Entry point for company-paid orders. Sets the mode flag and reuses the same
+// product-browser/cart/address flow as shipPeptidesToPatient(). Skips the
+// "card on file" guard because no card is charged.
+async function orderPeptidesCompanyPaid() {
+    window._shipMode = 'company';
+    return shipPeptidesToPatient();
+}
 
 async function shipPeptidesToPatient() {
     const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
@@ -13994,30 +20655,68 @@ async function shipPeptidesToPatient() {
     const paymentMethods = chartPanelData?.payment_methods || [];
     const demographics = chartPanelData?.demographics || {};
 
-    const directCards = paymentMethods.filter(pm =>
-        pm.source_type === 'direct_stripe' || pm.id?.startsWith('direct_pm_')
-    );
+    // Default to patient mode unless orderPeptidesCompanyPaid set company mode
+    if (window._shipMode !== 'company') window._shipMode = 'patient';
 
-    if (directCards.length === 0) {
-        showToast('No billing card on file. Add a card first.', 'error');
-        return;
+    if (window._shipMode === 'patient') {
+        const directCards = paymentMethods.filter(pm =>
+            pm.source_type === 'direct_stripe' || pm.id?.startsWith('direct_pm_')
+        );
+
+        if (directCards.length === 0) {
+            showToast('No billing card on file. Add a card first.', 'error');
+            return;
+        }
     }
 
     window._shipCart = [];
     window._shipOverrideAddress = null; // FIX: Reset stale address from previous flow
+    window._shipAddressConfirmed = false; // FIX(2026-05-19): reset confirm gate per ship flow
     window._shipPatient = { patientId, healthieId, patientName, demographics };
 
     showToast('Loading peptide catalog...', 'info');
 
     try {
-        const response = await fetch('/ops/api/ipad/billing/woo-products/?patient_id=' + encodeURIComponent(healthieId || patientId), {
-            credentials: 'include'
-        });
-        const data = await response.json();
-        if (!data.success) throw new Error(data.error || 'Failed to load products');
+        // FIX(2026-04-22): Load products AND check for pending consent in parallel.
+        // If consent exists, auto-populate the ship cart from consent items so staff
+        // don't have to re-add products manually (consent sends clear the in-memory cart).
+        var [productsResp, consentResp] = await Promise.all([
+            fetch('/ops/api/ipad/billing/woo-products/?patient_id=' + encodeURIComponent(healthieId || patientId), { credentials: 'include' }).then(r => r.json()),
+            fetch('/ops/api/ipad/billing/pending-consent/?patient_id=' + encodeURIComponent(patientId), { credentials: 'include' }).then(r => r.json()).catch(() => null)
+        ]);
 
-        window._shipProducts = data.products;
-        window._shipDiscount = data.discount;
+        if (!productsResp.success) throw new Error(productsResp.error || 'Failed to load products');
+
+        window._shipProducts = productsResp.products;
+        window._shipDiscount = productsResp.discount;
+        window._shipCategories = productsResp.categories_available || [];
+        window._shipSelectedCategory = 'all';
+
+        // Auto-populate ship cart from pending consent items
+        if (consentResp && consentResp.has_consent && consentResp.items && consentResp.items.length > 0) {
+            var consentItems = consentResp.items;
+            consentItems.forEach(function(ci) {
+                // Match consent item to a product in the catalog by SKU
+                var product = window._shipProducts.find(function(p) { return p.sku === ci.sku; });
+                if (product) {
+                    window._shipCart.push({
+                        sku: product.sku,
+                        woo_product_id: product.id,
+                        name: product.name,
+                        price: product.price,
+                        retail_price: product.retail_price,
+                        quantity: ci.quantity || 1,
+                        image_url: product.vial_image_url || product.image_url || ''
+                    });
+                }
+            });
+            var consentStatus = consentResp.consent_status || 'pending';
+            var consentBy = consentResp.created_by || 'staff';
+            var consentAge = consentResp.created_at ? Math.round((Date.now() - new Date(consentResp.created_at + 'Z').getTime()) / 60000) : 0;
+            var ageLabel = consentAge < 60 ? consentAge + 'm ago' : Math.round(consentAge / 60) + 'h ago';
+            showToast('Cart loaded from ' + consentStatus + ' consent (' + consentBy + ', ' + ageLabel + ')', 'info');
+        }
+
         showShipProductBrowser();
     } catch (err) {
         console.error('Failed to load WooCommerce products:', err);
@@ -14042,16 +20741,40 @@ function showShipProductBrowser() {
         backdrop-filter: blur(4px);
     `;
 
-    // FIX(2026-04-08): Split into static shell + dynamic grid to prevent search input focus loss.
-    // Only the product grid re-renders on search — the input element persists in the DOM.
+    // Staff tier selector — admin defaults to at_cost, others to retail.
+    // Company-paid mode is FORCED to at_cost (wholesale + $10) so the recorded
+    // amount matches what ABX TAC will actually invoice.
+    window._shipTierRates = { retail: 0, heal: 0.10, optimize: 0.20, thrive: 0.30 };
+    window._shipDiscount = { ...discount };
+    if (window._shipMode === 'company') {
+        window._shipSelectedTier = 'at_cost';
+        window._shipProducts.forEach(p => {
+            p.price = p.at_cost_price != null ? Math.round(p.at_cost_price * 100) / 100 : p.retail_price;
+        });
+        window._shipDiscount = { rate: 0, reason: 'at_cost', label: 'At Cost (wholesale + $10)' };
+    } else {
+        window._shipSelectedTier = discount.reason === 'at_cost' ? 'at_cost' : 'retail';
+    }
+
+    const tierSelectorHtml = window._shipMode === 'company'
+        ? `<span style="padding:5px 10px; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.4); border-radius:6px; color:#f59e0b; font-size:12px; font-weight:600;">At Cost (wholesale + $10) — locked for company orders</span>`
+        : `<select id="ship-tier-select" onchange="changeShipTier(this.value)"
+                    style="padding:5px 10px; background:#1a1a2e; border:1px solid rgba(124,58,237,0.5); border-radius:6px; color:#c084fc; font-size:12px; font-weight:600; cursor:pointer; -webkit-appearance:auto;">
+                <option value="retail">Retail (0% off)</option>
+                <option value="heal">Heal (10% off)</option>
+                <option value="optimize">Optimize (20% off)</option>
+                <option value="thrive">Thrive (30% off)</option>
+                <option value="at_cost">At Cost (wholesale + $10)</option>
+            </select>`;
+
     modal.innerHTML = `
         <div style="display:flex; flex-direction:column; height:100%; max-width:900px; margin:0 auto; width:100%;">
             <div style="padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; align-items:center; justify-content:space-between;">
                 <div>
-                    <div style="font-size:18px; font-weight:700; color:#fff;">Ship Peptides to ${patient.patientName}</div>
-                    <div style="font-size:12px; color:#aaa; margin-top:2px;">
-                        ${discount.rate > 0 ? '<span style="color:#10b981; font-weight:600;">' + discount.label + '</span> · ' : ''}
-                        $20 shipping · Free over $400
+                    <div style="font-size:18px; font-weight:700; color:#fff;">${window._shipMode === 'company' ? `🏥 Company-Paid Order for ${patient.patientName}` : `Ship Peptides to ${patient.patientName}`}</div>
+                    <div style="font-size:12px; color:#aaa; margin-top:4px;">
+                        ${tierSelectorHtml}
+                        <span style="margin-left:6px;">· $20 shipping · Free over $400</span>
                     </div>
                 </div>
                 <div id="ship-cart-buttons" style="display:flex; gap:8px; align-items:center;">
@@ -14062,20 +20785,74 @@ function showShipProductBrowser() {
                 <input type="text" id="ship-search" placeholder="Search peptides by name or SKU..."
                     style="width:100%; padding:12px 16px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.15); border-radius:8px; color:#fff; font-size:14px; box-sizing:border-box;" />
             </div>
+            <div id="ship-category-tabs" style="padding:4px 20px 8px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none;"></div>
             <div id="ship-product-grid" style="flex:1; overflow-y:auto; padding:0 20px 20px;"></div>
         </div>
     `;
     document.body.appendChild(modal);
+
+    // Set dropdown to patient's default tier
+    setTimeout(() => {
+        const sel = document.getElementById('ship-tier-select');
+        if (sel) sel.value = window._shipSelectedTier;
+    }, 50);
 
     // Attach search handler AFTER element exists in DOM (no re-render of input)
     const searchInput = document.getElementById('ship-search');
     searchInput.addEventListener('input', (e) => renderProductGrid(e.target.value));
     setTimeout(() => searchInput?.focus(), 100);
 
+    // Render category filter tabs
+    renderShipCategoryTabs();
+
+    // FIX(2026-04-12): Tier change handler — recalculates all prices and re-renders grid
+    window.changeShipTier = function(tierKey) {
+        if (window._shipMode === 'company') return; // tier locked to at_cost
+        window._shipSelectedTier = tierKey;
+        if (tierKey === 'at_cost') {
+            // At-cost uses wholesale + $10 handling, not a percentage
+            window._shipProducts.forEach(p => {
+                p.price = p.at_cost_price != null ? Math.round(p.at_cost_price * 100) / 100 : p.retail_price;
+            });
+            window._shipDiscount = { rate: 0, reason: 'at_cost', label: 'At Cost (wholesale + $10)' };
+        } else {
+            const rate = window._shipTierRates[tierKey] || 0;
+            window._shipProducts.forEach(p => {
+                p.price = Math.round(p.retail_price * (1 - rate) * 100) / 100;
+            });
+            window._shipDiscount = {
+                rate: rate,
+                reason: tierKey + '_tier',
+                label: tierKey === 'retail' ? 'Retail' : tierKey.charAt(0).toUpperCase() + tierKey.slice(1) + ' (' + Math.round(rate * 100) + '% off)'
+            };
+        }
+        // Recalculate cart prices too
+        window._shipCart.forEach(ci => {
+            const product = window._shipProducts.find(p => p.sku === ci.sku);
+            if (product) ci.price = product.price;
+        });
+        // Re-render with current search query
+        const q = document.getElementById('ship-search')?.value || '';
+        renderProductGrid(q);
+    };
+
     function renderProductGrid(searchQuery) {
-        const filtered = searchQuery
-            ? products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.sku.toLowerCase().includes(searchQuery.toLowerCase()))
-            : products;
+        const selectedCat = window._shipSelectedCategory || 'all';
+        let filtered = products;
+
+        // Category filter
+        if (selectedCat !== 'all') {
+            if (selectedCat === 'biobox') {
+                filtered = filtered.filter(p => p.section === 'BioBox Labs');
+            } else {
+                filtered = filtered.filter(p => p.therapeutic_category?.slug === selectedCat);
+            }
+        }
+
+        // Search filter
+        if (searchQuery) {
+            filtered = filtered.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
+        }
 
         // Update cart button in header
         const cartCount = window._shipCart.reduce((s, i) => s + i.quantity, 0);
@@ -14095,57 +20872,92 @@ function showShipProductBrowser() {
         const gridEl = document.getElementById('ship-product-grid');
         if (!gridEl) return;
 
-        gridEl.innerHTML = `
-            <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">
-                ${filtered.map(p => {
-                    const inCart = window._shipCart.find(c => c.sku === p.sku);
-                    const safeDesc = (p.description || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
-                    const safeCategory = (p.category || '').replace(/'/g, "\\'");
-                    return `
-                    <div style="background:rgba(255,255,255,0.04); border:1px solid ${inCart ? 'rgba(124,58,237,0.5)' : 'rgba(255,255,255,0.08)'}; border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px;">
-                        <div style="display:flex; gap:10px; align-items:flex-start; cursor:pointer;" onclick="togglePeptideInfo('${p.sku}')">
-                            <img src="${p.vial_image_url || p.image_url || ''}" onerror="this.style.display='none'"
-                                style="width:48px; height:48px; border-radius:8px; object-fit:cover; background:rgba(255,255,255,0.05);" />
-                            <div style="flex:1; min-width:0;">
-                                <div style="font-size:13px; font-weight:600; color:#fff;">${p.name}</div>
-                                <div style="font-size:11px; color:#888;">${p.sku} · ${p.category} · <span style="color:#c084fc;">tap for info</span></div>
-                            </div>
-                        </div>
-                        <div id="peptide-info-${p.sku}" style="display:none; padding:10px; background:rgba(255,255,255,0.03); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
-                            ${safeDesc ? `<div style="font-size:12px; color:#ccc; margin-bottom:8px;">${safeDesc}</div>` : ''}
-                            <div style="font-size:11px; color:#aaa; line-height:1.6;">
-                                <strong style="color:#c084fc;">Category:</strong> ${safeCategory}<br/>
-                                <strong style="color:#c084fc;">SKU:</strong> ${p.sku}<br/>
-                                ${p.stock_quantity != null ? `<strong style="color:#c084fc;">Stock:</strong> ${p.stock_quantity} units<br/>` : ''}
-                                <strong style="color:#c084fc;">Retail:</strong> $${p.retail_price.toFixed(2)}
-                                ${discount.rate > 0 ? ` · <strong style="color:#10b981;">Patient Price:</strong> $${p.price.toFixed(2)} (${Math.round(discount.rate * 100)}% off)` : ''}
-                            </div>
-                        </div>
-                        <div style="display:flex; align-items:center; justify-content:space-between;">
-                            <div>
-                                ${discount.rate > 0 ? `
-                                    <span style="font-size:12px; color:#888; text-decoration:line-through;">$${p.retail_price.toFixed(2)}</span>
-                                    <span style="font-size:15px; font-weight:700; color:#10b981; margin-left:4px;">$${p.price.toFixed(2)}</span>
-                                ` : `
-                                    <span style="font-size:15px; font-weight:700; color:#fff;">$${p.price.toFixed(2)}</span>
-                                `}
-                            </div>
-                            ${inCart ? `
-                                <div style="display:flex; align-items:center; gap:6px;">
-                                    <button onclick="updateShipCartQty('${p.sku}', -1)" style="width:28px; height:28px; background:rgba(255,255,255,0.1); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">−</button>
-                                    <span style="font-size:14px; font-weight:600; color:#fff; min-width:20px; text-align:center;">${inCart.quantity}</span>
-                                    <button onclick="updateShipCartQty('${p.sku}', 1)" style="width:28px; height:28px; background:rgba(124,58,237,0.3); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">+</button>
-                                </div>
-                            ` : `
-                                <button onclick="addToShipCart('${p.sku}')" style="padding:6px 14px; background:rgba(124,58,237,0.2); border:1px solid rgba(124,58,237,0.4); border-radius:6px; color:#c084fc; font-size:12px; font-weight:600; cursor:pointer;">Add</button>
-                            `}
-                        </div>
+        const peptides = filtered.filter(p => p.section !== 'BioBox Labs');
+        const biobox = filtered.filter(p => p.section === 'BioBox Labs');
+
+        function renderCard(p) {
+            const inCart = window._shipCart.find(c => c.sku === p.sku);
+            const safeDesc = (p.description || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
+            const safeCategory = (p.category || '').replace(/'/g, "\\'");
+            const imgSrc = p.image_url || p.vial_image_url || '';
+            return `
+            <div style="background:rgba(255,255,255,0.04); border:1px solid ${inCart ? 'rgba(124,58,237,0.5)' : 'rgba(255,255,255,0.08)'}; border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+                <div style="display:flex; gap:10px; align-items:flex-start; cursor:pointer;" onclick="togglePeptideInfo('${p.sku}')">
+                    <img src="${imgSrc}" onerror="this.style.display='none'"
+                        style="width:48px; height:48px; border-radius:8px; object-fit:cover; background:rgba(255,255,255,0.05);" />
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:13px; font-weight:600; color:#fff;">${p.name}</div>
+                        <div style="font-size:11px; color:#888;">${p.sku} · ${p.category} · <span style="color:#c084fc;">tap for info</span></div>
                     </div>
-                    `;
-                }).join('')}
+                </div>
+                <div id="peptide-info-${p.sku}" style="display:none; padding:10px; background:rgba(255,255,255,0.03); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
+                    ${safeDesc ? '<div style="font-size:12px; color:#ccc; margin-bottom:8px;">' + safeDesc + '</div>' : ''}
+                    ${p.biomarkers && p.biomarkers.length > 0 ? '<div style="margin-bottom:8px;"><strong style="color:#10b981; font-size:11px;">Biomarkers:</strong><div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;">' + p.biomarkers.map(function(b) { return '<span style="font-size:10px; padding:2px 6px; background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.3); border-radius:4px; color:#6ee7b7;">' + b + '</span>'; }).join('') + '</div></div>' : ''}
+                    <div style="font-size:11px; color:#aaa; line-height:1.6;">
+                        <strong style="color:#c084fc;">Category:</strong> ${safeCategory}<br/>
+                        <strong style="color:#c084fc;">SKU:</strong> ${p.sku}<br/>
+                        ${p.stock_quantity != null ? '<strong style="color:#c084fc;">Stock:</strong> ' + p.stock_quantity + ' units<br/>' : ''}
+                        <strong style="color:#c084fc;">Retail:</strong> $${p.retail_price.toFixed(2)}
+                        ${(window._shipDiscount?.rate > 0 || window._shipDiscount?.reason === 'at_cost') && p.price !== p.retail_price ? ' · <strong style="color:#10b981;">Patient Price:</strong> $' + p.price.toFixed(2) + (window._shipDiscount?.reason === 'at_cost' ? ' (at cost)' : ' (' + Math.round(window._shipDiscount.rate * 100) + '% off)') : ''}
+                    </div>
+                </div>
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                    <div>
+                        ${(window._shipDiscount?.rate > 0 || window._shipDiscount?.reason === 'at_cost') && p.price !== p.retail_price ? `
+                            <span style="font-size:12px; color:#888; text-decoration:line-through;">$${p.retail_price.toFixed(2)}</span>
+                            <span style="font-size:15px; font-weight:700; color:#10b981; margin-left:4px;">$${p.price.toFixed(2)}</span>
+                        ` : `
+                            <span style="font-size:15px; font-weight:700; color:#fff;">$${p.price.toFixed(2)}</span>
+                        `}
+                    </div>
+                    ${inCart ? `
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <button onclick="updateShipCartQty('${p.sku}', -1)" style="width:28px; height:28px; background:rgba(255,255,255,0.1); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">−</button>
+                            <span style="font-size:14px; font-weight:600; color:#fff; min-width:20px; text-align:center;">${inCart.quantity}</span>
+                            <button onclick="updateShipCartQty('${p.sku}', 1)" style="width:28px; height:28px; background:rgba(124,58,237,0.3); border:none; border-radius:6px; color:#fff; font-size:16px; cursor:pointer;">+</button>
+                        </div>
+                    ` : `
+                        <button onclick="addToShipCart('${p.sku}')" style="padding:6px 14px; background:rgba(124,58,237,0.2); border:1px solid rgba(124,58,237,0.4); border-radius:6px; color:#c084fc; font-size:12px; font-weight:600; cursor:pointer;">Add</button>
+                    `}
+                </div>
             </div>
-            ${filtered.length === 0 ? '<div style="text-align:center; padding:40px; color:#888;">No products found</div>' : ''}
-        `;
+            `;
+        }
+
+        let html = '';
+
+        if (selectedCat === 'all' && !searchQuery) {
+            // Group by therapeutic category when showing all
+            const categories = window._shipCategories || [];
+            for (const cat of categories) {
+                const catProducts = filtered.filter(p => p.therapeutic_category?.slug === cat.slug);
+                if (catProducts.length === 0) continue;
+                html += '<div style="font-size:15px; font-weight:700; color:' + cat.color + '; margin:16px 0 8px; padding-bottom:6px; border-bottom:1px solid ' + cat.color + '33;">' + cat.label + ' (' + catProducts.length + ')</div>';
+                html += '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px; margin-bottom:8px;">' + catProducts.map(renderCard).join('') + '</div>';
+            }
+            // BioBox section
+            const biobox = filtered.filter(p => p.section === 'BioBox Labs');
+            if (biobox.length > 0) {
+                html += '<div style="font-size:15px; font-weight:700; color:#10b981; margin:16px 0 8px; padding-bottom:6px; border-bottom:1px solid rgba(16,185,129,0.3);">BioBox Labs (' + biobox.length + ')</div>';
+                html += '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">' + biobox.map(renderCard).join('') + '</div>';
+            }
+            // Uncategorized peptides (shouldn't happen, but safety net)
+            const uncategorized = filtered.filter(p => p.section !== 'BioBox Labs' && !p.therapeutic_category);
+            if (uncategorized.length > 0) {
+                html += '<div style="font-size:15px; font-weight:700; color:#888; margin:16px 0 8px; padding-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.1);">Other (' + uncategorized.length + ')</div>';
+                html += '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">' + uncategorized.map(renderCard).join('') + '</div>';
+            }
+        } else {
+            // Filtered view — flat grid
+            if (filtered.length > 0) {
+                html += '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">' + filtered.map(renderCard).join('') + '</div>';
+            }
+        }
+
+        if (filtered.length === 0) {
+            html = '<div style="text-align:center; padding:40px; color:#888;">No products found</div>';
+        }
+        gridEl.innerHTML = html;
     }
 
     // Initial render of product grid
@@ -14154,6 +20966,41 @@ function showShipProductBrowser() {
     // Expose for cart updates (add/remove need to refresh the grid)
     window._refreshShipGrid = () => renderProductGrid(document.getElementById('ship-search')?.value || '');
 }
+
+function renderShipCategoryTabs() {
+    const tabsEl = document.getElementById('ship-category-tabs');
+    if (!tabsEl) return;
+    const categories = window._shipCategories || [];
+    const selected = window._shipSelectedCategory || 'all';
+    const allCount = (window._shipProducts || []).length;
+
+    let html = '';
+
+    // "All" tab
+    const allActive = selected === 'all';
+    html += '<button onclick="selectShipCategory(\'all\')" style="' +
+        'padding:6px 14px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer; border:1px solid; transition:all 0.15s; ' +
+        (allActive ? 'background:rgba(124,58,237,0.3); border-color:rgba(124,58,237,0.6); color:#c084fc;' : 'background:rgba(255,255,255,0.05); border-color:rgba(255,255,255,0.12); color:#aaa;') +
+        '">All (' + allCount + ')</button>';
+
+    // Category tabs
+    for (const cat of categories) {
+        const isActive = selected === cat.slug;
+        html += '<button onclick="selectShipCategory(\'' + cat.slug + '\')" style="' +
+            'padding:6px 14px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer; border:1px solid; transition:all 0.15s; ' +
+            (isActive ? 'background:' + cat.color + '22; border-color:' + cat.color + '88; color:' + cat.color + ';' : 'background:rgba(255,255,255,0.05); border-color:rgba(255,255,255,0.12); color:#aaa;') +
+            '">' + cat.label + ' (' + cat.count + ')</button>';
+    }
+
+    tabsEl.innerHTML = html;
+}
+
+window.selectShipCategory = function(slug) {
+    window._shipSelectedCategory = slug;
+    renderShipCategoryTabs();
+    const q = document.getElementById('ship-search')?.value || '';
+    window._refreshShipGrid ? window._refreshShipGrid() : null;
+};
 
 function removeFromShipCart(sku) {
     window._shipCart = window._shipCart.filter(c => c.sku !== sku);
@@ -14169,7 +21016,8 @@ function removeFromShipCart(sku) {
 async function processRefund(transactionId, description, amount) {
     const patientName = chartPanelData?.demographics?.full_name || 'Patient';
 
-    if (!confirm(`Refund $${parseFloat(amount).toFixed(2)} to ${patientName}?\n\n${description}\n\nThis will refund the charge to the patient's card and send a refund receipt to their Healthie chart.`)) {
+    // FIX(2026-04-22): Updated confirm to mention WC/ShipStation cancellation
+    if (!confirm('Refund $' + parseFloat(amount).toFixed(2) + ' to ' + patientName + '?\n\n' + description + '\n\nThis will:\n\u2022 Refund the charge to the patient\'s card\n\u2022 Cancel the WooCommerce/ShipStation order (if shipped)\n\u2022 Reverse peptide dispenses\n\u2022 Upload a refund receipt to Healthie')) {
         return;
     }
 
@@ -14189,7 +21037,16 @@ async function processRefund(transactionId, description, amount) {
         const result = await response.json();
 
         if (result.success) {
-            showToast(`Refunded $${result.refund.amount.toFixed(2)} to ${patientName}. Receipt sent to chart.`, 'success');
+            // FIX(2026-04-22): Show WC cancellation status in success toast
+            var msgs = ['Refunded $' + result.refund.amount.toFixed(2) + ' to ' + patientName];
+            if (result.wc_order_cancelled) {
+                msgs.push('WC order #' + result.wc_order_id + ' cancelled');
+            } else if (result.wc_order_id && !result.wc_order_cancelled) {
+                showToast('\u26a0\ufe0f WC order #' + result.wc_order_id + ' could not be auto-cancelled \u2014 cancel manually in WooCommerce!', 'error');
+            }
+            if (result.dispenses_reversed) msgs.push(result.dispenses_reversed + ' dispense(s) reversed');
+            msgs.push('Receipt sent to chart');
+            showToast(msgs.join(' \u00b7 '), 'success');
 
             // Reload the patient chart to reflect the refund
             const patientId = chartPanelData?.demographics?.patient_id || chartPanelPatientId;
@@ -14211,9 +21068,25 @@ function togglePeptideInfo(sku) {
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-function addToShipCart(sku) {
+async function addToShipCart(sku) {
     const product = window._shipProducts.find(p => p.sku === sku);
     if (!product) return;
+
+    // FIX(2026-04-22): Check if this product is already in the patient's DB-persisted billing cart.
+    // Warns staff to prevent double-charging through both billing and ship paths.
+    var patient = window._shipPatient;
+    if (patient && !window._shipCart.find(c => c.sku === sku)) {
+        try {
+            var cartResp = await fetch('/ops/api/ipad/billing/cart/?patient_id=' + encodeURIComponent(patient.patientId || patient.healthieId), { credentials: 'include' }).then(function(r) { return r.json(); }).catch(function() { return null; });
+            if (cartResp && cartResp.items && cartResp.items.length > 0) {
+                var match = cartResp.items.find(function(ci) { return ci.product_name === product.name; });
+                if (match) {
+                    var proceed = confirm('⚠️ "' + product.name + '" is already in this patient\'s in-clinic billing cart (added by ' + (match.added_by || 'staff') + '). Adding it to the ship cart may result in a double charge.\n\nContinue anyway?');
+                    if (!proceed) return;
+                }
+            }
+        } catch (e) { /* non-blocking */ }
+    }
 
     const existing = window._shipCart.find(c => c.sku === sku);
     if (existing) {
@@ -14268,7 +21141,8 @@ function showShipCartReview() {
         <div style="display:flex; flex-direction:column; height:100%; max-width:600px; margin:0 auto; width:100%;">
             <div style="padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; align-items:center; gap:12px;">
                 <button onclick="showShipProductBrowser()" style="background:none; border:none; color:#aaa; font-size:18px; cursor:pointer;">&#8592;</button>
-                <div style="font-size:18px; font-weight:700; color:#fff;">Review & Ship</div>
+                <div style="font-size:18px; font-weight:700; color:#fff;">${window._shipMode === 'company' ? '🏥 Review & Place Company Order' : 'Review & Ship'}</div>
+                ${window._shipMode === 'company' ? '<div style="margin-left:auto; padding:4px 10px; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.4); border-radius:6px; color:#f59e0b; font-size:11px; font-weight:600;">PATIENT NOT CHARGED</div>' : ''}
             </div>
 
             <div style="flex:1; overflow-y:auto; padding:20px;">
@@ -14324,14 +21198,17 @@ function showShipCartReview() {
 
                 <!-- Summary -->
                 <div style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:14px; margin-bottom:20px;">
+                    ${window._shipMode === 'company' ? `
+                        <div style="font-size:11px; color:#f59e0b; font-weight:600; text-transform:uppercase; margin-bottom:8px;">At-Cost Pricing (Wholesale + $10/item)</div>
+                    ` : ''}
                     <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
                         <span style="color:#aaa; font-size:13px;">Subtotal</span>
                         <span style="color:#fff; font-size:13px;">$${subtotal.toFixed(2)}</span>
                     </div>
-                    ${discount.rate > 0 ? `
+                    ${(discount.rate > 0 || (window._shipMode === 'company' && discount.reason === 'at_cost')) ? `
                         <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-                            <span style="color:#10b981; font-size:13px;">${discount.label}</span>
-                            <span style="color:#10b981; font-size:13px;">Applied</span>
+                            <span style="color:${window._shipMode === 'company' ? '#f59e0b' : '#10b981'}; font-size:13px;">${discount.label}</span>
+                            <span style="color:${window._shipMode === 'company' ? '#f59e0b' : '#10b981'}; font-size:13px;">Applied</span>
                         </div>
                     ` : ''}
                     <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
@@ -14339,26 +21216,39 @@ function showShipCartReview() {
                         <span style="color:${shipping === 0 ? '#10b981' : '#fff'}; font-size:13px;">${shipping === 0 ? 'FREE' : '$' + shipping.toFixed(2)}</span>
                     </div>
                     <div style="display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.1); padding-top:8px; margin-top:8px;">
-                        <span style="color:#fff; font-size:16px; font-weight:700;">Total</span>
+                        <span style="color:#fff; font-size:16px; font-weight:700;">${window._shipMode === 'company' ? 'ABX TAC will invoice' : 'Total'}</span>
                         <span style="color:#fff; font-size:16px; font-weight:700;">$${total.toFixed(2)}</span>
                     </div>
                 </div>
 
                 <!-- Consent + Checkout -->
                 <div style="display:flex; flex-direction:column; gap:10px;">
-                    <button onclick="sendPeptideConsent()" id="ship-consent-btn" style="width:100%; padding:14px; background:rgba(251,191,36,0.15); border:1px solid rgba(251,191,36,0.3); border-radius:10px; color:#fbbf24; font-size:14px; font-weight:600; cursor:pointer;">
-                        📋 Send Consent Form to Patient
-                    </button>
-                    <button onclick="executeShipOrder()" id="ship-checkout-btn" style="width:100%; padding:16px; background:linear-gradient(135deg, #7c3aed, #6d28d9); border:none; border-radius:10px; color:#fff; font-size:16px; font-weight:700; cursor:pointer;">
-                        📦 Charge $${total.toFixed(2)} & Ship
-                    </button>
+                    ${window._shipMode === 'company' ? `
+                        <div style="padding:12px 14px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.3); border-radius:10px; color:#fbbf24; font-size:12px; line-height:1.5;">
+                            Patient will NOT be charged. Pricing is at-cost (wholesale + $10/item handling); ABX TAC will invoice the company for $${total.toFixed(2)} on net terms. Patient receives only a shipping/tracking notification — no price visible.
+                        </div>
+                        <button onclick="executeShipOrder()" id="ship-checkout-btn" style="width:100%; padding:16px; background:linear-gradient(135deg, #f59e0b, #d97706); border:none; border-radius:10px; color:#fff; font-size:16px; font-weight:700; cursor:pointer;">
+                            🏥 Place Company Order & Ship
+                        </button>
+                    ` : `
+                        <button onclick="sendPeptideConsent()" id="ship-consent-btn" style="width:100%; padding:14px; background:rgba(251,191,36,0.15); border:1px solid rgba(251,191,36,0.3); border-radius:10px; color:#fbbf24; font-size:14px; font-weight:600; cursor:pointer;">
+                            📋 Send Consent Form to Patient
+                        </button>
+                        <button onclick="executeShipOrder()" id="ship-checkout-btn" style="width:100%; padding:16px; background:linear-gradient(135deg, #7c3aed, #6d28d9); border:none; border-radius:10px; color:#fff; font-size:16px; font-weight:700; cursor:pointer;">
+                            📦 Charge $${total.toFixed(2)} & Ship
+                        </button>
+                    `}
                 </div>
             </div>
         </div>
     `;
 }
 
-window._shipAddressConfirmed = true; // Auto-confirm if patient has address on file
+// FIX(2026-05-19): require EXPLICIT staff click on "Confirm This Address" before
+// Charge & Ship will fire. Was defaulting to true — staff could ship to a stale
+// address without ever reviewing it. The server now also rejects ship-order /
+// company-order POSTs that lack `address_confirmed: true`.
+window._shipAddressConfirmed = false;
 
 function toggleShipAddressEdit() {
     const form = document.getElementById('ship-address-form');
@@ -14395,17 +21285,30 @@ async function sendPeptideConsent() {
     if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
 
     try {
+        // FIX(2026-05-19): Ship-to flow is channel='woo' — ABXTAC handles consent at WC
+        // checkout, so the API skips creating a pending consent. Frontend passes channel
+        // so the API can distinguish the ship-to caller from in-house callers.
         const response = await fetch('/ops/api/ipad/billing/send-consent/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({
                 patient_id: patient.healthieId || patient.patientId,
+                channel: 'woo',
                 items: cart.map(i => ({ sku: i.sku, name: i.name, price: i.price, quantity: i.quantity }))
             })
         });
         const result = await response.json();
         if (result.success) {
+            if (result.skipped) {
+                showToast('Ship-to orders don’t need a consent — ABXTAC handles it.', 'info');
+                if (btn) { btn.textContent = 'Not required for ship-to'; btn.style.background = 'rgba(100,116,139,0.2)'; btn.style.borderColor = 'rgba(100,116,139,0.4)'; btn.style.color = '#94a3b8'; }
+                return;
+            }
+            // FIX(2026-04-22): Show warning if a prior consent was replaced
+            if (result.prior_consent_warning) {
+                showToast('⚠️ ' + result.prior_consent_warning, 'info');
+            }
             showToast('Consent form sent to ' + patient.patientName, 'success');
             if (btn) { btn.textContent = '✓ Consent Sent'; btn.style.background = 'rgba(16,185,129,0.2)'; btn.style.borderColor = 'rgba(16,185,129,0.4)'; btn.style.color = '#10b981'; }
         } else {
@@ -14425,12 +21328,39 @@ async function executeShipOrder() {
 
     if (!cart.length) { showToast('Cart is empty', 'error'); return; }
 
-    // Address is auto-confirmed if patient has one on file; staff can edit if needed
+    // FIX(2026-05-19): explicit address confirmation gate. Staff must click
+    // "Confirm This Address" before we'll charge & ship, even if the patient
+    // already has demographics on file (those can be months stale).
+    if (!window._shipAddressConfirmed) {
+        showToast('Click ✓ Confirm This Address before shipping', 'error');
+        const confirmBtn = document.getElementById('ship-confirm-addr-btn');
+        if (confirmBtn) {
+            confirmBtn.style.background = 'rgba(239,68,68,0.25)';
+            confirmBtn.style.borderColor = 'rgba(239,68,68,0.6)';
+            confirmBtn.style.color = '#fca5a5';
+            confirmBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return;
+    }
 
     if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; btn.style.opacity = '0.6'; }
 
+    // FIX(2026-04-15): per-checkout idempotency key. If the network drops mid-charge
+    // (Coby Cook case — server completed but iPad never got the response), we can
+    // poll /recovery to find out whether the charge actually went through, and a
+    // staff retry won't double-charge thanks to the server-side replay guard.
+    const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('ship-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
+    const isCompanyMode = window._shipMode === 'company';
+    const endpoint = isCompanyMode
+        ? '/ops/api/ipad/billing/company-order/'
+        : '/ops/api/ipad/billing/ship-order/';
+
+    let result = null;
     try {
-        const response = await fetch('/ops/api/ipad/billing/ship-order/', {
+        const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
@@ -14442,85 +21372,606 @@ async function executeShipOrder() {
                     price: i.price,
                     quantity: i.quantity
                 })),
-                shipping_address: window._shipOverrideAddress || null
+                shipping_address: window._shipOverrideAddress || null,
+                address_confirmed: true,
+                idempotency_key: idempotencyKey
             })
         });
 
-        const result = await response.json();
+        result = await response.json();
 
         if (result.success) {
             document.getElementById('ship-modal')?.remove();
+            const orderedItems = [...cart]; // Save before clearing
             window._shipCart = [];
-            window._shipAddressConfirmed = false;
             window._shipOverrideAddress = null;
+            window._shipAddressConfirmed = false;
 
-            showChargeSuccess({
+            // Show comprehensive ship order confirmation
+            showShipOrderConfirmation({
                 patientName: patient.patientName,
-                amount: result.charge.amount,
-                description: cart.map(i => i.name + ' x' + i.quantity).join(', '),
-                chargeId: result.charge.id,
-                productId: null,
+                charge: result.charge,
+                wooOrder: result.woocommerce_order,
+                shipping: result.shipping,
                 dispenseIds: result.dispense_ids || [],
-                paymentMethod: result.charge.card
+                items: orderedItems,
+                consentSent: !!document.getElementById('ship-consent-btn')?.textContent?.includes('Sent'),
+                companyPaid: !!result.company_paid,
+                receipt: result.receipt || null,
             });
 
-            showToast('Order shipped! ' + (result.woocommerce_order ? '#' + result.woocommerce_order.number : ''), 'success');
+            // Reset mode flag so the next click defaults back to patient
+            window._shipMode = 'patient';
 
             if (typeof loadPatientPaymentData === 'function') {
                 loadPatientPaymentData(patient.healthieId || patient.patientId);
             }
         } else {
-            showToast('Ship order failed: ' + (result.error || 'Unknown error'), 'error');
-            if (btn) { btn.disabled = false; btn.textContent = '📦 Charge & Ship'; btn.style.opacity = '1'; }
+            showToast((isCompanyMode ? 'Company order failed: ' : 'Ship order failed: ') + (result.error || 'Unknown error'), 'error');
+            if (btn) { btn.disabled = false; btn.textContent = isCompanyMode ? '🏥 Place Company Order & Ship' : '📦 Charge & Ship'; btn.style.opacity = '1'; }
         }
     } catch (err) {
         console.error('Ship order error:', err);
-        showToast('Network error — check before retrying', 'error');
-        if (btn) { btn.disabled = false; btn.textContent = '📦 Charge & Ship'; btn.style.opacity = '1'; }
+        // Network failure: poll /recovery to see if the charge actually went through
+        // before letting staff retry (would otherwise double-charge).
+        if (btn) { btn.disabled = true; btn.textContent = 'Connection lost — checking…'; btn.style.opacity = '0.6'; }
+        if (isCompanyMode) {
+            // Company mode has no /recovery endpoint and no Stripe charge to reconcile.
+            // Idempotency key on the server will prevent duplicate WC orders if staff retries.
+            showToast('Network error — check abxtac.com admin to confirm whether the order was created before retrying.', 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '🏥 Place Company Order & Ship'; btn.style.opacity = '1'; }
+            return;
+        }
+        const recovered = await pollShipOrderRecovery(idempotencyKey, 30000);
+        if (recovered && recovered.status === 'succeeded') {
+            const orderedItems = [...cart];
+            window._shipCart = [];
+            window._shipOverrideAddress = null;
+            window._shipAddressConfirmed = false;
+            document.getElementById('ship-modal')?.remove();
+            showShipOrderConfirmation({
+                patientName: patient.patientName,
+                charge: { id: recovered.charge_id, amount: recovered.amount, status: 'succeeded', card: { brand: null, last4: null } },
+                wooOrder: null,
+                shipping: null,
+                dispenseIds: [],
+                items: orderedItems,
+                consentSent: false,
+                recovered: true,
+            });
+            showToast('Charge recovered after network drop — confirmed succeeded.', 'success');
+            if (typeof loadPatientPaymentData === 'function') {
+                loadPatientPaymentData(patient.healthieId || patient.patientId);
+            }
+        } else {
+            showToast('Network error — charge did NOT go through. Safe to retry.', 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '📦 Charge & Ship'; btn.style.opacity = '1'; }
+        }
     }
 }
 
-// ─── HEALTHIE MESSAGES TAB ──────────────────────────────────
+// Poll the recovery endpoint until we find a transaction or timeout.
+// Returns the transaction (with status) or null if nothing landed within timeoutMs.
+async function pollShipOrderRecovery(idempotencyKey, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 30000);
+    let attempt = 0;
+    while (Date.now() < deadline) {
+        attempt++;
+        try {
+            const r = await fetch('/ops/api/ipad/billing/recovery/?idempotency_key=' + encodeURIComponent(idempotencyKey), {
+                credentials: 'include'
+            });
+            if (r.ok) {
+                const data = await r.json();
+                if (data.found && data.transaction) return data.transaction;
+            }
+        } catch (e) { /* keep polling — likely still offline */ }
+        // Backoff: 2s, 3s, 4s, 5s, 5s, 5s...
+        await new Promise(res => setTimeout(res, Math.min(2000 + attempt * 1000, 5000)));
+    }
+    return null;
+}
+
+// ─── SHIP ORDER CONFIRMATION (comprehensive) ──────────────────────────────────
+
+function showShipOrderConfirmation({ patientName, charge, wooOrder, shipping, dispenseIds, items, consentSent, companyPaid, receipt }) {
+    const modal = document.createElement('div');
+    modal.id = 'ship-confirm-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10001; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(4px);';
+
+    const accent = companyPaid ? '#f59e0b' : '#10b981';
+    const accentRgb = companyPaid ? '245,158,11' : '16,185,129';
+    const totalAmount = companyPaid ? (receipt?.amount || 0) : (charge?.amount || 0);
+
+    const itemsHtml = items.map(function(i) {
+        return '<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #1f2937;">' +
+            '<img src="' + (i.image_url || i.vial_image_url || '') + '" onerror="this.style.display=\'none\'" style="width:40px; height:40px; border-radius:6px; object-fit:cover; background:#1f2937;" />' +
+            '<div style="flex:1;"><div style="font-size:13px; color:#f0f4f8; font-weight:600;">' + sanitize(i.name) + '</div>' +
+            '<div style="font-size:11px; color:#6b7280;">' + (i.sku || '') + ' · Qty: ' + i.quantity + '</div></div>' +
+            '<div style="font-size:14px; font-weight:700; color:' + accent + ';">$' + (i.price * i.quantity).toFixed(2) + '</div>' +
+        '</div>';
+    }).join('');
+
+    modal.innerHTML = `
+        <div style="background:#0a0f1a; border:1px solid rgba(${accentRgb},0.3); border-radius:16px; width:90%; max-width:500px; max-height:90vh; overflow-y:auto; padding:24px;">
+            <div style="text-align:center; margin-bottom:16px;">
+                <div style="font-size:48px; margin-bottom:8px;">${companyPaid ? '🏥' : '✅'}</div>
+                <div style="font-size:22px; font-weight:800; color:${accent};">${companyPaid ? 'Company Order Placed' : 'Order Confirmed'}</div>
+                <div style="font-size:14px; color:#9ca3af; margin-top:4px;">${sanitize(patientName)}</div>
+                ${companyPaid ? '<div style="margin-top:8px; display:inline-block; padding:4px 10px; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.4); border-radius:6px; color:#f59e0b; font-size:11px; font-weight:600;">PATIENT WAS NOT CHARGED</div>' : ''}
+            </div>
+
+            <!-- Payment / Billing -->
+            <div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:14px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <div style="font-size:11px; color:#6b7280; text-transform:uppercase;">${companyPaid ? 'Order Total (Company-Paid)' : 'Payment'}</div>
+                        <div style="font-size:24px; font-weight:800; color:${accent};">$${totalAmount.toFixed(2)}</div>
+                    </div>
+                    <div style="text-align:right;">
+                        ${companyPaid
+                            ? '<div style="font-size:12px; color:#f59e0b; font-weight:600;">Provider Account</div><div style="font-size:11px; color:#9ca3af;">ABX TAC will invoice</div>'
+                            : `<div style="font-size:12px; color:#10b981; font-weight:600;">✓ ${charge?.status}</div><div style="font-size:11px; color:#9ca3af;">${charge?.card?.brand || ''} ···· ${charge?.card?.last4 || '****'}</div>`
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <!-- WooCommerce Order -->
+            ${wooOrder ? `
+            <div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:14px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <div style="font-size:11px; color:#6b7280; text-transform:uppercase;">WooCommerce Order</div>
+                        <div style="font-size:16px; font-weight:700; color:#22d3ee;">#${wooOrder.number}</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:11px; color:#10b981;">✓ Created → ShipStation</div>
+                    </div>
+                </div>
+            </div>` : '<div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; padding:10px; margin-bottom:12px; font-size:12px; color:#ef4444;">⚠️ WooCommerce order not created — check credentials</div>'}
+
+            <!-- Shipping -->
+            ${shipping ? `
+            <div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:14px; margin-bottom:12px;">
+                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; margin-bottom:4px;">📦 Ships Via USPS Priority Mail</div>
+                <div style="font-size:13px; color:#f0f4f8;">${sanitize(shipping.address)}</div>
+                <div style="font-size:12px; color:#9ca3af; margin-top:4px;">Shipping: ${shipping.free ? 'FREE' : '$' + shipping.cost.toFixed(2)}</div>
+            </div>` : ''}
+
+            <!-- Consent Status (patient mode only) -->
+            ${companyPaid ? '' : `
+            <div style="background:${consentSent ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)'}; border:1px solid ${consentSent ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'}; border-radius:10px; padding:10px; margin-bottom:12px;">
+                <div style="font-size:12px; color:${consentSent ? '#10b981' : '#f59e0b'}; font-weight:600;">
+                    ${consentSent ? '✅ Consent form sent to patient' : '⚠️ Consent form was NOT sent — consider sending via patient app'}
+                </div>
+            </div>`}
+
+            <!-- Items Ordered -->
+            <div style="margin-bottom:12px;">
+                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; margin-bottom:6px;">Items Ordered (${items.length})</div>
+                ${itemsHtml}
+            </div>
+
+            <!-- Receipt + Dispense -->
+            <div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:10px; margin-bottom:12px; font-size:12px; color:#9ca3af;">
+                <div>📋 ${dispenseIds.length} dispense${dispenseIds.length !== 1 ? 's' : ''} logged to inventory</div>
+                <div>🧾 ${companyPaid ? 'Internal receipt uploaded to chart (NOT visible to patient) — appears in CEO Receipts.' : 'Itemized receipt uploaded to patient\'s Healthie chart'}</div>
+            </div>
+
+            ${dispenseIds.length > 0 ? `
+            <div style="margin-bottom:12px;">
+                ${dispenseIds.map(function(did) { return '<button onclick="printPeptideLabel(' + did + ')" style="width:100%; padding:10px; margin-bottom:4px; background:rgba(59,130,246,0.1); border:1px solid rgba(59,130,246,0.3); border-radius:8px; color:#3b82f6; font-size:12px; font-weight:600; cursor:pointer;">🏷️ Print Label #' + did + '</button>'; }).join('')}
+            </div>` : ''}
+
+            <button onclick="document.getElementById('ship-confirm-modal')?.remove()" style="width:100%; padding:14px; background:#111827; border:1px solid #374151; border-radius:10px; color:#f0f4f8; font-size:15px; font-weight:600; cursor:pointer;">Done</button>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+}
+
+// ─── MESSAGES TAB (Healthie Chat + GHL SMS) ──────────────────────────────────
 var messagesConversations = [];
 var messagesCurrentConvo = null;
 var messagesCurrentConvoName = null;
 var messagesCurrentMessages = [];
 var messagesLoading = false;
 
+// GHL SMS state
+var messagesChannel = 'healthie'; // 'healthie' | 'sms-mensHealth' | 'sms-primaryCare' | 'sms-abxtac'
+var ghlConversations = [];
+var ghlCurrentContact = null; // { contactId, contactName, phone }
+var ghlThreadMessages = [];
+
+var GHL_SMS_CHANNELS = [
+    { key: 'sms-mensHealth', label: "Men's Health", account: 'mensHealth', color: '#DC2626' },
+    { key: 'sms-primaryCare', label: 'Primary Care / Longevity', account: 'primaryCare', color: '#060F6A' },
+    { key: 'sms-abxtac', label: 'ABXTAC', account: 'abxtac', color: '#3A7D32' },
+];
+
+function getGhlAccountFromChannel() {
+    var ch = GHL_SMS_CHANNELS.find(function(c) { return c.key === messagesChannel; });
+    return ch ? ch.account : null;
+}
+
+function getGhlChannelColor() {
+    var ch = GHL_SMS_CHANNELS.find(function(c) { return c.key === messagesChannel; });
+    return ch ? ch.color : 'var(--cyan)';
+}
+
 async function renderMessagesView(container) {
+    // Channel switcher tabs
+    var channelTabs = '<button onclick="switchMessagesChannel(\'healthie\')" ' +
+        'style="padding:8px 16px; border:none; border-bottom:3px solid ' + (messagesChannel === 'healthie' ? 'var(--cyan)' : 'transparent') + '; ' +
+        'background:' + (messagesChannel === 'healthie' ? 'rgba(0,212,255,0.08)' : 'transparent') + '; ' +
+        'color:' + (messagesChannel === 'healthie' ? 'var(--cyan)' : 'var(--text-tertiary)') + '; ' +
+        'font-weight:' + (messagesChannel === 'healthie' ? '700' : '500') + '; font-size:13px; cursor:pointer; border-radius:6px 6px 0 0;">Healthie Chat</button>';
+
+    GHL_SMS_CHANNELS.forEach(function(ch) {
+        var isActive = messagesChannel === ch.key;
+        channelTabs += '<button onclick="switchMessagesChannel(\'' + ch.key + '\')" ' +
+            'style="padding:8px 16px; border:none; border-bottom:3px solid ' + (isActive ? ch.color : 'transparent') + '; ' +
+            'background:' + (isActive ? ch.color + '12' : 'transparent') + '; ' +
+            'color:' + (isActive ? ch.color : 'var(--text-tertiary)') + '; ' +
+            'font-weight:' + (isActive ? '700' : '500') + '; font-size:13px; cursor:pointer; border-radius:6px 6px 0 0;">SMS: ' + ch.label + '</button>';
+    });
+
+    var isHealthie = messagesChannel === 'healthie';
+    var refreshFn = isHealthie ? 'loadMessagesConversations(true)' : 'loadGhlConversations(true)';
+    var newBtnHtml = isHealthie
+        ? '<button onclick="showNewConversationModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ New</button>'
+        : '';
+
     container.innerHTML = '<div style="padding: 0 4px;">' +
-        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
-        '<div><h1 style="font-size:24px; margin:0; color:var(--text-primary);">Messages</h1>' +
-        '<p style="font-size:13px; color:var(--text-tertiary); margin:4px 0 0;">Healthie Messaging</p></div>' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">' +
+        '<h1 style="font-size:24px; margin:0; color:var(--text-primary);">Messages</h1>' +
         '<div style="display:flex; gap:6px;">' +
-        '<button onclick="loadMessagesConversations(true)" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>' +
-        '<button onclick="showNewConversationModal()" style="padding:8px 14px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:var(--cyan); font-size:13px; font-weight:600; cursor:pointer;">+ New</button>' +
+        '<button onclick="' + refreshFn + '" style="padding:8px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">↻ Refresh</button>' +
+        newBtnHtml +
         '</div></div>' +
+        '<div style="display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--border-light); overflow-x:auto; -webkit-overflow-scrolling:touch;">' + channelTabs + '</div>' +
         '<div id="messagesContainer"><div class="loading-spinner" style="margin:40px auto;"></div></div>' +
         '</div>';
 
     await new Promise(resolve => setTimeout(resolve, 50));
-    await loadMessagesConversations();
+
+    if (isHealthie) {
+        await loadMessagesConversations();
+    } else {
+        await loadGhlConversations();
+    }
 
     // Auto-refresh every 30 seconds — SKIP if user is actively typing
     if (window._messagesPollTimer) clearInterval(window._messagesPollTimer);
     window._messagesPollTimer = setInterval(async function() {
         if (currentTab !== 'messages') { clearInterval(window._messagesPollTimer); return; }
 
-        // FIX(2026-04-09): Never refresh while the compose input has focus or content
-        // This was destroying staff's messages mid-typing
-        var composeInput = document.getElementById('msgComposeInput');
-        if (composeInput && (document.activeElement === composeInput || composeInput.value.trim().length > 0)) {
-            return; // Skip this refresh cycle — user is composing
+        // Only skip refresh if user is actively typing (has focus AND content)
+        var composeInput = document.getElementById('msgComposeInput') || document.getElementById('ghlComposeInput');
+        if (composeInput && document.activeElement === composeInput && composeInput.value.trim().length > 0) {
+            return; // Skip — user is actively typing
         }
 
-        if (!messagesCurrentConvo) {
-            await loadMessagesConversations();
+        if (messagesChannel === 'healthie') {
+            if (!messagesCurrentConvo) {
+                await loadMessagesConversations();
+            } else {
+                await loadConversationMessages(messagesCurrentConvo, true);
+            }
         } else {
-            await loadConversationMessages(messagesCurrentConvo, true);
+            if (!ghlCurrentContact) {
+                await loadGhlConversations();
+            } else {
+                await loadGhlThread(ghlCurrentContact.contactId, true);
+            }
         }
-    }, 30000);
+    }, 15000); // Poll every 15 seconds for faster message receipt
 }
+
+function switchMessagesChannel(channel) {
+    messagesChannel = channel;
+    // Reset ALL state so stale data from previous tab doesn't bleed through
+    messagesCurrentConvo = null;
+    ghlCurrentContact = null;
+    ghlThreadMessages = [];
+    ghlConversations = [];
+    var view = document.getElementById('mainContent');
+    if (view) renderMessagesView(view);
+}
+
+// ─── GHL SMS Functions ──────────────────────────────────
+
+async function loadGhlConversations(force) {
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    var account = getGhlAccountFromChannel();
+    if (!account) return;
+
+    if (!force && ghlConversations.length > 0) {
+        renderGhlConversationList(containerEl);
+        return;
+    }
+
+    containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+    try {
+        var data = await apiFetch('/ops/api/admin/ghl/conversations?account=' + account + '&limit=20');
+        ghlConversations = data.conversations || [];
+        renderGhlConversationList(containerEl);
+    } catch (e) {
+        console.error('[GHL SMS] Load error:', e);
+        containerEl.innerHTML = '<div class="empty-state-card"><h3>Could not load SMS conversations</h3><p>' + (e.message || 'Network error') + '</p><button onclick="loadGhlConversations(true)" class="btn-primary" style="margin-top:8px;">Try Again</button></div>';
+    }
+}
+
+function renderGhlConversationList(containerEl) {
+    if (ghlConversations.length === 0) {
+        containerEl.innerHTML = '<div class="empty-state-card"><div class="empty-state-icon">📱</div><h3>No SMS Conversations</h3><p>No recent text messages found for this account.</p></div>';
+        return;
+    }
+    var color = getGhlChannelColor();
+    var html = '';
+    ghlConversations.forEach(function(c) {
+        var ts = c.lastMessageDate ? new Date(c.lastMessageDate) : null;
+        var timeStr = ts ? formatRelativeTime(ts.toISOString()) : '';
+        var isInbound = c.lastMessageDirection === 'inbound';
+        var dirArrow = isInbound ? '←' : '→';
+        var dirColor = isInbound ? '#3b82f6' : '#22c55e';
+        var msgType = (c.lastMessageType || '').replace('TYPE_', '').toLowerCase();
+        var typeBadge = '';
+        if (msgType === 'call') {
+            typeBadge = '<span style="font-size:10px; padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.15); color:#d97706; font-weight:600; text-transform:uppercase;">CALL</span>';
+        } else if (msgType === 'sms') {
+            typeBadge = '<span style="font-size:10px; padding:1px 5px; border-radius:3px; background:rgba(59,130,246,0.15); color:#2563eb; font-weight:600; text-transform:uppercase;">SMS</span>';
+        }
+        var preview = c.lastMessageBody ? sanitize(c.lastMessageBody).substring(0, 80) : '(no message body)';
+        if (c.lastMessageBody && c.lastMessageBody.length > 80) preview += '...';
+        var unreadDot = c.unreadCount > 0 ? '<div style="width:8px; height:8px; border-radius:50%; background:' + color + '; flex-shrink:0;"></div>' : '';
+        var storedBadge = c.storedMessageCount > 0
+            ? '<span style="font-size:10px; padding:1px 5px; border-radius:3px; background:rgba(14,165,233,0.1); color:#0ea5e9; font-weight:600;">' + c.storedMessageCount + ' stored</span>'
+            : '';
+
+        html += '<div onclick="openGhlConversation(\'' + sanitize(c.contactId) + '\', \'' + sanitize(c.contactName).replace(/'/g, "\\'") + '\', \'' + sanitize(c.phone || '').replace(/'/g, "\\'") + '\')" style="background:var(--card); border:1px solid ' + (c.unreadCount > 0 ? color + '40' : 'var(--border-light)') + '; border-radius:12px; padding:14px 16px; margin-bottom:8px; cursor:pointer; transition:background 0.15s;" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'var(--card)\'">';
+        html += '<div style="display:flex; align-items:center; justify-content:space-between;">';
+        html += '<div style="display:flex; align-items:center; gap:10px; flex:1; min-width:0;">';
+        html += unreadDot;
+        html += '<div style="width:32px; height:32px; border-radius:8px; background:' + dirColor + '20; display:flex; align-items:center; justify-content:center; font-size:16px; color:' + dirColor + '; flex-shrink:0; font-weight:700;">' + dirArrow + '</div>';
+        html += '<div style="min-width:0; flex:1;">';
+        html += '<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">';
+        html += '<span style="font-size:14px; font-weight:' + (c.unreadCount > 0 ? '700' : '500') + '; color:var(--text-primary);">' + sanitize(c.contactName) + '</span>';
+        if (c.phone) html += '<span style="font-size:11px; color:var(--text-tertiary);">' + sanitize(c.phone) + '</span>';
+        html += typeBadge + storedBadge;
+        html += '</div>';
+        html += '<div style="font-size:12px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px;">' + preview + '</div>';
+        html += '</div></div>';
+        html += '<div style="text-align:right; flex-shrink:0; margin-left:8px;">';
+        html += '<div style="font-size:11px; color:var(--text-tertiary);">' + timeStr + '</div>';
+        if (c.unreadCount > 0) {
+            html += '<div style="margin-top:4px; display:inline-block; background:' + color + '; color:#fff; border-radius:10px; padding:1px 7px; font-size:10px; font-weight:700;">' + c.unreadCount + '</div>';
+        }
+        html += '</div></div></div>';
+    });
+    containerEl.innerHTML = html;
+}
+
+async function openGhlConversation(contactId, contactName, phone) {
+    ghlCurrentContact = { contactId: contactId, contactName: contactName, phone: phone };
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+    await loadGhlThread(contactId);
+}
+
+async function loadGhlThread(contactId, silent) {
+    var containerEl = document.getElementById('messagesContainer');
+    if (!containerEl) return;
+    var account = getGhlAccountFromChannel();
+
+    // Preserve draft during silent refresh
+    var savedDraft = '';
+    if (silent) {
+        var composeInput = document.getElementById('ghlComposeInput');
+        if (composeInput) savedDraft = composeInput.value || '';
+    }
+
+    if (!silent) containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
+
+    try {
+        var data = await apiFetch('/ops/api/admin/ghl/conversations?account=' + account + '&contactId=' + contactId + '&limit=50');
+        ghlThreadMessages = data.messages || [];
+
+        if (silent) {
+            var threadEl = document.getElementById('ghlThread');
+            if (threadEl) {
+                threadEl.innerHTML = renderGhlBubbles(ghlThreadMessages);
+                threadEl.scrollTop = threadEl.scrollHeight;
+                return;
+            }
+        }
+
+        renderGhlThread(containerEl);
+
+        if (savedDraft) {
+            var composeInput = document.getElementById('ghlComposeInput');
+            if (composeInput) { composeInput.value = savedDraft; composeInput.focus(); }
+        }
+    } catch (e) {
+        console.error('[GHL SMS] Thread load error:', e);
+        if (!silent) containerEl.innerHTML = '<div class="empty-state-card"><h3>Could not load conversation</h3><p>' + (e.message || 'Error') + '</p></div>';
+    }
+}
+
+function renderGhlBubbles(messages) {
+    console.log('[GHL Bubbles] Rendering', messages ? messages.length : 0, 'messages');
+    if (messages && messages.length > 0) {
+        messages.forEach(function(m, i) {
+            console.log('[GHL Bubbles] msg', i, ':', m.direction, '| body:', (m.body||'').substring(0,30), '| attachments:', JSON.stringify(m.attachments));
+        });
+    }
+    if (!messages || messages.length === 0) {
+        return '<div style="text-align:center; color:var(--text-tertiary); padding:40px 0; font-size:14px;">No stored messages yet. Messages will appear as they come in via webhook capture.</div>';
+    }
+    var color = getGhlChannelColor();
+    var html = '';
+    // Show oldest first (messages come newest-first from API)
+    var sorted = messages.slice().reverse();
+    sorted.forEach(function(msg) {
+        var ts = msg.timestamp ? new Date(msg.timestamp) : null;
+        var timeStr = ts ? ts.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: CLINIC_TIMEZONE }) : '';
+        var isOut = msg.direction === 'outbound';
+        var align = isOut ? 'flex-end' : 'flex-start';
+        var bubbleBg = isOut ? color + '25' : 'var(--surface)';
+        var bubbleBorder = isOut ? color + '40' : 'var(--border-light)';
+        var label = isOut ? (msg.sentByName ? msg.sentByName : 'Staff') : (ghlCurrentContact ? ghlCurrentContact.contactName : 'Patient');
+        html += '<div style="display:flex; flex-direction:column; align-items:' + align + '; margin-bottom:10px;">';
+        html += '<div style="font-size:10px; color:var(--text-tertiary); margin-bottom:2px;">' + sanitize(label) + ' · ' + timeStr;
+        if (msg.messageType && msg.messageType !== 'SMS') html += ' (' + msg.messageType.toLowerCase() + ')';
+        html += '</div>';
+        html += '<div style="max-width:80%; padding:10px 14px; border-radius:12px; background:' + bubbleBg + '; border:1px solid ' + bubbleBorder + '; font-size:14px; color:var(--text-primary); line-height:1.5; word-wrap:break-word;">';
+        html += msg.body ? sanitize(msg.body) : '<em style="color:var(--text-tertiary);">(no message body)</em>';
+        // Show attachments if present
+        if (msg.attachments && msg.attachments.length > 0) {
+            msg.attachments.forEach(function(url) {
+                html += '<div style="margin-top:6px;"><img src="' + sanitize(url) + '" style="max-width:240px; max-height:200px; border-radius:8px; cursor:pointer;" onclick="window.open(\'' + sanitize(url) + '\', \'_blank\')" alt="MMS Image"></div>';
+            });
+        }
+        html += '</div></div>';
+    });
+    return html;
+}
+
+function renderGhlThread(containerEl) {
+    var color = getGhlChannelColor();
+    var name = ghlCurrentContact ? sanitize(ghlCurrentContact.contactName) : 'Conversation';
+    var phone = ghlCurrentContact && ghlCurrentContact.phone ? ' · ' + sanitize(ghlCurrentContact.phone) : '';
+    var html = '';
+
+    // Header with back button
+    html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--border-light);">';
+    html += '<button onclick="ghlCurrentContact=null; loadGhlConversations(true);" style="padding:6px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:13px; cursor:pointer;">← Back</button>';
+    html += '<div style="flex:1;"><span style="font-size:16px; font-weight:600; color:var(--text-primary);">' + name + '</span>';
+    html += '<span style="font-size:12px; color:var(--text-tertiary);">' + phone + '</span></div>';
+    html += '<button onclick="loadGhlThread(\'' + ghlCurrentContact.contactId + '\')" style="padding:6px 10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:12px; cursor:pointer;">↻</button>';
+    html += '</div>';
+
+    // Messages thread
+    html += '<div id="ghlThread" style="flex:1; overflow-y:auto; max-height:calc(100vh - 280px); padding:4px 0;">';
+    html += renderGhlBubbles(ghlThreadMessages);
+    html += '</div>';
+
+    // Image preview area
+    html += '<div id="ghlImagePreview" style="margin-top:8px;"></div>';
+
+    // Compose bar
+    html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border-light); display:flex; gap:8px; align-items:flex-end;">';
+    html += '<button id="ghlMicBtn" onclick="toggleGhlSpeechToText()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Speech to text">🎙️</button>';
+    html += '<button onclick="pickGhlImage()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Attach photo">📷</button>';
+    html += '<button onclick="pickGhlFile()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Attach file">📎</button>';
+    html += '<textarea id="ghlComposeInput" rows="2" placeholder="Type or tap 🎙️ to dictate..." style="flex:1; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; outline:none;" onkeydown="if(event.key===\'Enter\' && !event.shiftKey){event.preventDefault(); sendGhlSms();}"></textarea>';
+    html += '<button onclick="sendGhlSms()" style="padding:10px 18px; background:' + color + '; border:none; border-radius:10px; color:#fff; font-weight:700; font-size:14px; cursor:pointer; white-space:nowrap;">Send SMS</button>';
+    html += '</div>';
+
+    containerEl.innerHTML = html;
+
+    // Scroll to bottom
+    var thread = document.getElementById('ghlThread');
+    if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+async function sendGhlSms() {
+    var input = document.getElementById('ghlComposeInput');
+    if (!input) return;
+    var content = input.value.trim();
+    if (!content && !_ghlImageData) return;
+    if (!ghlCurrentContact) return;
+    var account = getGhlAccountFromChannel();
+    if (!account) return;
+
+    input.disabled = true;
+    input.value = 'Sending...';
+
+    try {
+        var payload = {
+            account: account,
+            contactId: ghlCurrentContact.contactId,
+            message: content,
+            contactName: ghlCurrentContact.contactName,
+            contactPhone: ghlCurrentContact.phone
+        };
+        if (_ghlImageData) {
+            payload.attachments = [_ghlImageData.url];
+            console.log('[GHL SMS] Sending MMS with attachment:', _ghlImageData.url);
+        }
+        console.log('[GHL SMS] Payload:', JSON.stringify(payload));
+        await apiFetch('/ops/api/admin/ghl/conversations', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+        input.value = '';
+        input.disabled = false;
+        var hadImage = !!_ghlImageData;
+        clearGhlImage();
+        showToast((hadImage ? 'MMS' : 'SMS') + ' sent to ' + ghlCurrentContact.contactName, 'success');
+        await loadGhlThread(ghlCurrentContact.contactId);
+    } catch (e) {
+        console.error('[GHL SMS] Send error:', e);
+        input.value = content;
+        input.disabled = false;
+        showToast('Failed to send SMS: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// ─── SHARED: Image Upload Helper ──────────────────────────────────
+
+var _pendingImageUpload = null; // { url, base64, filename, mimeType }
+
+function triggerImagePicker(inputId) {
+    var existing = document.getElementById(inputId);
+    if (existing) existing.remove();
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.id = inputId;
+    input.accept = 'image/*';
+    // No capture attribute — lets iOS show full picker: Photo Library, Take Photo, Browse Files
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.click();
+    return input;
+}
+
+async function uploadImageFile(file) {
+    console.log('[Upload] Starting upload:', file.name, file.type, file.size, 'bytes');
+    var formData = new FormData();
+    formData.append('file', file);
+    var resp = await fetch('/ops/api/ipad/upload/', {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+    });
+    var text = await resp.text();
+    console.log('[Upload] Response status:', resp.status, 'body:', text.substring(0, 200));
+    if (!resp.ok) {
+        var err;
+        try { err = JSON.parse(text); } catch(e) { err = { error: text || 'Upload failed' }; }
+        throw new Error(err.error || 'Upload failed (HTTP ' + resp.status + ')');
+    }
+    var data = JSON.parse(text);
+    console.log('[Upload] Success:', data.url);
+    return data;
+}
+
+function showImagePreview(containerId, uploadData, onRemove) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '<div style="display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px;">' +
+        '<img src="' + uploadData.base64.substring(0, 100000) + '" style="width:48px; height:48px; border-radius:6px; object-fit:cover;">' +
+        '<div style="flex:1; min-width:0;"><div style="font-size:12px; color:var(--text-primary); font-weight:500;">' + sanitize(uploadData.filename) + '</div>' +
+        '<div style="font-size:11px; color:var(--text-tertiary);">' + (uploadData.size / 1024).toFixed(0) + ' KB</div></div>' +
+        '<button onclick="' + onRemove + '" style="background:none; border:none; color:var(--text-tertiary); font-size:18px; cursor:pointer; padding:4px;">✕</button>' +
+        '</div>';
+}
+
+// ─── HEALTHIE MESSAGES FUNCTIONS ──────────────────────────────────
 
 async function loadMessagesConversations(force) {
     var containerEl = document.getElementById('messagesContainer');
@@ -14531,21 +21982,18 @@ async function loadMessagesConversations(force) {
     }
     containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
     try {
-        // Phil (admin) sees all conversations; everyone else sees only their own
-        var isPhilAdmin = currentUser && (currentUser.email === 'admin@granitemountainhealth.com' || currentUser.email === 'admin@nowoptimal.com');
+        // Admins see all conversations; everyone else sees only their own
+        var isPhilAdmin = currentUser?.permissions?.can_view_ceo_dashboard === true;
         var msgUrl = '/ops/api/ipad/messages/';
         if (!isPhilAdmin && currentUser?.healthie_provider_id) {
             msgUrl += '?provider_id=' + currentUser.healthie_provider_id;
         }
         var data = await apiFetch(msgUrl);
         messagesConversations = data.conversations || [];
-        // Update badge
+        // Update badge via shared helper so background poll stays in sync
         var unreadCount = messagesConversations.filter(function(c) { return c.unread; }).length;
-        var badge = document.getElementById('messagesBadge');
-        if (badge) {
-            if (unreadCount > 0) { badge.textContent = unreadCount; badge.classList.remove('hidden'); }
-            else { badge.classList.add('hidden'); }
-        }
+        setMessagesBadge(unreadCount);
+        _lastMessagesUnreadCount = unreadCount;
         renderConversationList(containerEl);
     } catch (e) {
         console.error('[Messages] Load error:', e);
@@ -14623,6 +22071,28 @@ async function openConversation(convoId) {
     if (!containerEl) return;
     containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
     await loadConversationMessages(convoId);
+    // Mark read for THIS staff member (per-user read tracking) and clear the badge locally.
+    markConversationRead(convoId);
+}
+
+// Tell the server this staff member has read this conversation. Optimistically clear
+// it in the local cache and refresh the badge so the change shows immediately (no 30s
+// wait), then persist so the next poll stays consistent.
+async function markConversationRead(convoId) {
+    var convo = (messagesConversations || []).find(function(c) { return c.id === convoId; });
+    if (convo) convo.unread = false;
+    var unread = (messagesConversations || []).filter(function(c) { return c.unread; }).length;
+    setMessagesBadge(unread);
+    _lastMessagesUnreadCount = unread;
+    try {
+        await apiFetch('/ops/api/ipad/messages/mark-read/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversation_id: convoId }),
+        });
+    } catch (e) {
+        console.warn('[Messages] mark-read failed:', e && e.message ? e.message : e);
+    }
 }
 
 async function loadConversationMessages(convoId, silent) {
@@ -14687,7 +22157,11 @@ function renderMessageBubbles(messages) {
         html += '</div>';
         html += '<div style="max-width:80%; padding:10px 14px; border-radius:12px; background:' + bubbleBg + '; border:1px solid ' + bubbleBorder + '; font-size:14px; color:var(--text-primary); line-height:1.5; word-wrap:break-word;">';
         html += renderHealthieMessage(msg.content);
-        if (msg.has_attachment) html += '<div style="margin-top:6px; font-size:11px; color:var(--cyan);">📎 Attachment</div>';
+        if (msg.has_attachment && msg.attachment_url) {
+            html += '<div style="margin-top:6px;"><img src="' + sanitize(msg.attachment_url) + '" style="max-width:240px; max-height:200px; border-radius:8px; cursor:pointer;" onclick="window.open(\'' + sanitize(msg.attachment_url) + '\', \'_blank\')" alt="Attachment"></div>';
+        } else if (msg.has_attachment) {
+            html += '<div style="margin-top:6px; font-size:11px; color:var(--cyan);">📎 Attachment</div>';
+        }
         html += '</div></div>';
     });
     return html;
@@ -14710,9 +22184,13 @@ function renderConversationThread(containerEl, convo, messages) {
     html += renderMessageBubbles(messages);
     html += '</div>';
 
+    // Image preview area
+    html += '<div id="healthieImagePreview" style="margin-top:8px;"></div>';
+
     // Compose bar
     html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border-light); display:flex; gap:8px; align-items:flex-end;">';
     html += '<button id="msgMicBtn" onclick="toggleSpeechToText()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Speech to text">🎙️</button>';
+    html += '<button onclick="pickHealthieImage()" style="padding:10px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-secondary); font-size:18px; cursor:pointer; flex-shrink:0;" title="Attach image">📷</button>';
     html += '<textarea id="msgComposeInput" rows="2" placeholder="Type or tap 🎙️ to dictate..." style="flex:1; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:10px; color:var(--text-primary); font-size:14px; font-family:inherit; resize:none; outline:none;" onkeydown="if(event.key===\'Enter\' && !event.shiftKey){event.preventDefault(); sendMessageInConvo();}"></textarea>';
     html += '<button onclick="sendMessageInConvo()" style="padding:10px 18px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:10px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer; white-space:nowrap;">Send</button>';
     html += '</div>';
@@ -14724,22 +22202,53 @@ function renderConversationThread(containerEl, convo, messages) {
     if (thread) thread.scrollTop = thread.scrollHeight;
 }
 
+// Healthie image picker
+var _healthieImageData = null;
+
+function pickHealthieImage() {
+    var input = triggerImagePicker('healthieImageInput');
+    input.onchange = async function() {
+        if (!input.files || !input.files[0]) return;
+        showToast('Uploading image...', 'info');
+        try {
+            var data = await uploadImageFile(input.files[0]);
+            _healthieImageData = data;
+            showImagePreview('healthieImagePreview', data, 'clearHealthieImage()');
+            showToast('Image attached', 'success');
+        } catch (e) {
+            showToast('Upload failed: ' + (e.message || 'Error'), 'error');
+        }
+    };
+}
+
+function clearHealthieImage() {
+    _healthieImageData = null;
+    var el = document.getElementById('healthieImagePreview');
+    if (el) el.innerHTML = '';
+}
+
 async function sendMessageInConvo() {
     var input = document.getElementById('msgComposeInput');
     if (!input) return;
     var content = input.value.trim();
-    if (!content || !messagesCurrentConvo) return;
+    if (!content && !_healthieImageData) return;
+    if (!messagesCurrentConvo) return;
 
     input.disabled = true;
     input.value = 'Sending...';
 
     try {
+        var payload = { action: 'send', conversation_id: messagesCurrentConvo, content: content };
+        if (_healthieImageData) {
+            payload.attached_image_string = _healthieImageData.base64;
+        }
         await apiFetch('/ops/api/ipad/messages/', {
             method: 'POST',
-            body: JSON.stringify({ action: 'send', conversation_id: messagesCurrentConvo, content: content })
+            body: JSON.stringify(payload)
         });
         input.value = '';
         input.disabled = false;
+        clearHealthieImage();
         await loadConversationMessages(messagesCurrentConvo);
         showToast('Message sent', 'success');
     } catch (e) {
@@ -14747,6 +22256,105 @@ async function sendMessageInConvo() {
         input.value = content;
         input.disabled = false;
         showToast('Failed to send: ' + (e.message || 'Error'), 'error');
+    }
+}
+
+// GHL SMS image picker
+var _ghlImageData = null;
+
+function pickGhlImage() {
+    var input = triggerImagePicker('ghlImageInput');
+    input.onchange = async function() {
+        if (!input.files || !input.files[0]) return;
+        showToast('Uploading image...', 'info');
+        try {
+            var data = await uploadImageFile(input.files[0]);
+            _ghlImageData = data;
+            showImagePreview('ghlImagePreview', data, 'clearGhlImage()');
+            showToast('Image attached — will send as MMS', 'success');
+        } catch (e) {
+            showToast('Upload failed: ' + (e.message || 'Error'), 'error');
+        }
+    };
+}
+
+function clearGhlImage() {
+    _ghlImageData = null;
+    var el = document.getElementById('ghlImagePreview');
+    if (el) el.innerHTML = '';
+}
+
+// GHL file picker (PDFs, documents, etc.)
+function pickGhlFile() {
+    var existing = document.getElementById('ghlFileInput');
+    if (existing) existing.remove();
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.id = 'ghlFileInput';
+    input.accept = 'image/*,.pdf,.doc,.docx';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.click();
+    input.onchange = async function() {
+        if (!input.files || !input.files[0]) return;
+        var file = input.files[0];
+        // Images go through normal upload
+        if (file.type.startsWith('image/')) {
+            showToast('Uploading image...', 'info');
+            try {
+                var data = await uploadImageFile(file);
+                _ghlImageData = data;
+                showImagePreview('ghlImagePreview', data, 'clearGhlImage()');
+                showToast('Image attached — will send as MMS', 'success');
+            } catch (e) {
+                showToast('Upload failed: ' + (e.message || 'Error'), 'error');
+            }
+        } else {
+            // Non-image files: upload and attach URL
+            showToast('Uploading file...', 'info');
+            try {
+                var formData = new FormData();
+                formData.append('file', file);
+                var resp = await fetch('/ops/api/ipad/upload/', { method: 'POST', credentials: 'include', body: formData });
+                if (!resp.ok) {
+                    var err = await resp.json().catch(function() { return { error: 'Upload failed' }; });
+                    throw new Error(err.error || 'Upload failed');
+                }
+                var data = await resp.json();
+                _ghlImageData = data;
+                // Show file preview (non-image)
+                var container = document.getElementById('ghlImagePreview');
+                if (container) {
+                    container.innerHTML = '<div style="display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px;">' +
+                        '<div style="font-size:24px;">📄</div>' +
+                        '<div style="flex:1; min-width:0;"><div style="font-size:12px; color:var(--text-primary); font-weight:500;">' + sanitize(data.filename) + '</div>' +
+                        '<div style="font-size:11px; color:var(--text-tertiary);">' + (data.size / 1024).toFixed(0) + ' KB</div></div>' +
+                        '<button onclick="clearGhlImage()" style="background:none; border:none; color:var(--text-tertiary); font-size:18px; cursor:pointer; padding:4px;">✕</button>' +
+                        '</div>';
+                }
+                showToast('File attached', 'success');
+            } catch (e) {
+                showToast('Upload failed: ' + (e.message || 'Error'), 'error');
+            }
+        }
+    };
+}
+
+// GHL speech-to-text
+var _ghlRec = null;
+function toggleGhlSpeechToText() {
+    if (_ghlRec && _ghlRec._active) {
+        _stopDictation(_ghlRec, 'ghlComposeInput', 'ghlMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' });
+        _ghlRec = null;
+        return;
+    }
+    _ghlRec = _startDictation('ghlComposeInput', 'ghlMicBtn', function() {
+        _stopDictation(_ghlRec, 'ghlComposeInput', 'ghlMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' });
+        _ghlRec = null;
+    });
+    if (!_ghlRec) {
+        _stopDictation(_ghlRec, 'ghlComposeInput', 'ghlMicBtn', { placeholder: 'Type or tap 🎙️ to dictate...' });
+        _ghlRec = null;
     }
 }
 
@@ -14826,6 +22434,118 @@ async function deleteMessage(noteId) {
     }
 }
 
+// Vitals dictation (Hannah → Phil task #15) — uses _startDictation, parses spoken
+// numbers like "BP one twenty over eighty, pulse seventy two" into the modal fields.
+var _vitalsDictationRec = null;
+function toggleVitalsDictation() {
+    var btn = document.getElementById('vitalsDictateBtn');
+    if (!btn) return;
+    if (_vitalsDictationRec && _vitalsDictationRec._active) {
+        _stopDictation(_vitalsDictationRec, 'vitalsDictateInput', 'vitalsDictateBtn',
+            { bg: 'var(--surface)', border: 'var(--border-light)', color: 'var(--text-secondary)', text: '🎤 Dictate', placeholder: "e.g. 'BP 120 over 80, pulse 72, temp 98.6, sat 98, weight 185'" });
+        _vitalsDictationRec = null;
+        var inp = document.getElementById('vitalsDictateInput');
+        if (inp && inp.value) parseDictatedVitalsToFields(inp.value);
+    } else {
+        _vitalsDictationRec = _startDictation('vitalsDictateInput', 'vitalsDictateBtn', function() {
+            var b = document.getElementById('vitalsDictateBtn');
+            if (b) b.textContent = '🎤 Dictate';
+        });
+        if (_vitalsDictationRec) btn.textContent = '⏹ Stop';
+    }
+}
+
+// Convert spoken number words → digits, then extract vitals into the modal fields.
+// Homophones (to/too/for/ate/oh) were removed from the map — they collide with common
+// filler words ("blood pressure for the patient", "120 to 80") and corrupt the regex
+// passes downstream. "point" is normalized to "." so "98 point 6" survives as "98.6".
+function _wordsToDigits(s) {
+    var map = { zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9,
+        ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19,
+        twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90, hundred:100 };
+    var normalized = s.toLowerCase().replace(/-/g, ' ').replace(/\bpoint\b/g, ' . ');
+    var tokens = normalized.split(/\s+/);
+    var out = [], i = 0;
+    while (i < tokens.length) {
+        var t = tokens[i];
+        if (t in map) {
+            var num = map[t]; i++;
+            while (i < tokens.length && tokens[i] in map) {
+                var nxt = map[tokens[i]];
+                if (nxt === 100 && num) num *= 100;
+                else if (nxt < 10 && num % 10 === 0 && num > 0) num += nxt;
+                else if (num > 0 && nxt < 100 && (num < 100)) num = num * 100 + nxt; // "one twenty" → 120
+                else num += nxt;
+                i++;
+            }
+            out.push(String(num));
+        } else { out.push(t); i++; }
+    }
+    // Glue "98 . 6" back into "98.6" so vital-sign regexes capture the decimal.
+    return out.join(' ').replace(/(\d)\s*\.\s*(\d)/g, '$1.$2');
+}
+
+function parseDictatedVitalsToFields(raw) {
+    if (!raw) return;
+    // Normalize typographic quotes (iOS/iPad smart-quote autocorrect and many speech
+    // recognizers emit ’ ” instead of ' "), so "5’9”" parses the same as 5'9".
+    var normalized = String(raw).replace(/[‘’ʼ׳]/g, "'").replace(/[“”″]/g, '"');
+    var text = _wordsToDigits(normalized).toLowerCase();
+    // Strip noisy units so they aren't vacuumed into adjacent numeric fields.
+    text = text
+        .replace(/\bbpm\b/g, ' ')
+        .replace(/\bmm\s*hg\b/g, ' ')
+        .replace(/\bdegrees?\b/g, ' ')
+        .replace(/\b(lbs?|pounds?)\b/g, ' ')
+        .replace(/\bbreaths?\s*(?:per|\/)\s*minute\b/g, ' ');
+    var setIfEmpty = function(id, val) {
+        var el = document.getElementById(id);
+        if (el && val != null && (!el.value || el.dataset.dictated === '1')) {
+            el.value = val; el.dataset.dictated = '1';
+            if (id === 'vHeight' || id === 'vWeight') calcBMI();
+        }
+    };
+    // Blood pressure — labeled form first ("BP 120 over 80", "blood pressure 120/80",
+    // "BP 120 to 80"); fall back to a bare "X/Y" or "X over Y" only if the labeled
+    // form misses, so we don't grab "weight 185 over the limit"-style noise.
+    var bp = text.match(/\b(?:bp|blood\s*pressure)\b[^0-9]{0,20}(\d{2,3})\s*(?:\/|over|on|to)\s*(\d{2,3})/);
+    if (!bp) bp = text.match(/(?:^|\s)(\d{2,3})\s*(?:\/|over)\s*(\d{2,3})\b/);
+    if (bp) setIfEmpty('vBP', bp[1] + '/' + bp[2]);
+    // Heart rate — explicit label only. Bare "p" was matching the P in "BP" → wrong value.
+    var hr = text.match(/\b(?:pulse|heart\s*rate|hr)\b\s*(?:of|is|at)?\s*(\d{2,3})/);
+    if (hr) setIfEmpty('vPulse', hr[1]);
+    // Temperature — explicit label only. Bare "t" was matching trailing "t" of "weight".
+    var temp = text.match(/\b(?:temp|temperature)\b\s*(?:of|is|at)?\s*(\d{2,3}(?:\.\d+)?)/);
+    if (temp) setIfEmpty('vTemp', temp[1]);
+    var rr = text.match(/\b(?:rr|resp(?:irations?|iratory(?:\s*rate)?)?|breathing)\b\s*(?:of|is|at)?\s*(\d{1,2})/);
+    if (rr) setIfEmpty('vRR', rr[1]);
+    var spo2 = text.match(/\b(?:sp[o0]2|sat(?:uration)?|o2\s*sat|oxygen(?:\s*sat(?:uration)?)?)\b\s*(?:of|is|at)?\s*(\d{2,3})\s*%?/);
+    if (spo2) setIfEmpty('vSpO2', spo2[1]);
+    var wt = text.match(/\b(?:weight|wt)\b\s*(?:of|is|at)?\s*(\d{2,4}(?:\.\d+)?)/);
+    if (wt) {
+        var w = parseFloat(wt[1]);
+        if (w >= 40 && w <= 800) setIfEmpty('vWeight', wt[1]);
+    }
+    // Height — try feet+inches form FIRST so "5'9", "5’9”", "five foot nine",
+    // "5 ft 9 in", "patient is 5'9" all become 69. A labeled "height 5"-style
+    // form would otherwise grab the bare 5 and stop. Falls back to a labeled
+    // form only if no ft/in pattern is found, with a sane inch range.
+    var ftIn = text.match(/(?:^|[^\d])(\d{1,2})\s*(?:foot|feet|ft|')\s*(\d{1,2})?\s*(?:inch(?:es)?|in|")?/);
+    if (ftIn) {
+        var feet = parseInt(ftIn[1], 10);
+        var inches = parseInt(ftIn[2] || '0', 10);
+        if (feet >= 3 && feet <= 8 && inches >= 0 && inches < 12) {
+            setIfEmpty('vHeight', String(feet * 12 + inches));
+        }
+    } else {
+        var ht = text.match(/\b(?:height|ht)\b\s*(?:of|is|at)?\s*(\d{2,3}(?:\.\d+)?)/);
+        if (ht) {
+            var h = parseFloat(ht[1]);
+            if (h >= 30 && h <= 100) setIfEmpty('vHeight', ht[1]);
+        }
+    }
+}
+
 // Speech-to-text — shared helper. No cached state. Only appends final results
 // to the input. You can freely delete/edit the textarea without interference.
 function _startDictation(inputId, btnId, onStop) {
@@ -14842,6 +22562,7 @@ function _startDictation(inputId, btnId, onStop) {
     rec._active = true;
 
     rec.onresult = function(event) {
+        var appended = false;
         for (var i = event.resultIndex; i < event.results.length; i++) {
             if (event.results[i].isFinal) {
                 var text = event.results[i][0].transcript.trim();
@@ -14849,9 +22570,13 @@ function _startDictation(inputId, btnId, onStop) {
                     // Just append to whatever is currently in the box
                     var cur = input.value;
                     input.value = cur + (cur && !cur.endsWith(' ') ? ' ' : '') + text;
+                    appended = true;
                 }
             }
         }
+        // Programmatic value writes don't fire `oninput`, so vitals fields would only
+        // fill on Stop. Dispatch the event ourselves to drive the live parser.
+        if (appended) input.dispatchEvent(new Event('input', { bubbles: true }));
     };
     rec.onerror = function(e) {
         if (e.error === 'not-allowed') showToast('Microphone access denied', 'error');
@@ -15130,7 +22855,11 @@ async function submitResetPassword(mode) {
 let kioskActive = false;
 let kioskSessionIds = [];
 let kioskPopstateHandler = null;
+let kioskBeforeUnloadHandler = null;
 let kioskOriginalOverscroll = '';
+let kioskOriginalMainDisplay = '';
+let kioskOriginalChartDisplay = '';
+let kioskOriginalHash = '';
 
 /**
  * Launch kiosk mode — fullscreen patient form overlay
@@ -15139,11 +22868,149 @@ let kioskOriginalOverscroll = '';
  * @param {Array} pendingForms - [{id, name, status}]
  * @param {string} patientName - Display name
  */
-function launchKioskMode(patientId, healthieId, pendingForms, patientName) {
+// ─── Send Healthie forms to patient ──────────────────────────────────
+async function showSendFormsModal(healthieId, patientName) {
+    if (!healthieId) {
+        alert('This patient has no Healthie ID on file — cannot send forms.');
+        return;
+    }
+    var existing = document.getElementById('sendFormsModal');
+    if (existing) existing.remove();
+
+    var modal = document.createElement('div');
+    modal.id = 'sendFormsModal';
+    modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center;';
+    modal.innerHTML =
+        '<div style="background:var(--bg); border:1px solid var(--border-light); border-radius:14px; padding:20px; width:640px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column; color:var(--text-primary);">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">' +
+        '<h3 style="margin:0; font-size:18px;">📨 Send forms to ' + (patientName || 'patient') + '</h3>' +
+        '<button onclick="document.getElementById(\'sendFormsModal\').remove()" style="background:none; border:none; color:var(--text-secondary); font-size:22px; cursor:pointer;">&times;</button>' +
+        '</div>' +
+        '<input id="sendFormsSearch" type="search" placeholder="Search forms…" style="width:100%; padding:10px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); margin-bottom:10px;">' +
+        '<div id="sendFormsList" style="flex:1; overflow-y:auto; border:1px solid var(--border-light); border-radius:8px; padding:6px; margin-bottom:12px; min-height:260px;">' +
+        '<div style="padding:20px; text-align:center; color:var(--text-tertiary);">Loading available forms…</div>' +
+        '</div>' +
+        '<label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); margin-bottom:10px;">' +
+        '<input type="checkbox" id="sendFormsSkipEmail"> Skip Healthie email notification (only queue for in-office)' +
+        '</label>' +
+        '<div style="display:flex; gap:8px; justify-content:space-between; align-items:center;">' +
+        '<div id="sendFormsSelectedCount" style="font-size:12px; color:var(--text-tertiary);">0 selected</div>' +
+        '<div style="display:flex; gap:8px;">' +
+        '<button onclick="document.getElementById(\'sendFormsModal\').remove()" style="padding:10px 16px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-secondary); font-size:14px; cursor:pointer;">Cancel</button>' +
+        '<button id="sendFormsSubmitBtn" disabled data-healthie-id="' + healthieId + '" onclick="submitSendForms()" style="padding:10px 18px; background:#22c55e; border:none; border-radius:8px; color:#000; font-size:14px; font-weight:600; cursor:pointer; opacity:0.5;">Send</button>' +
+        '</div>' +
+        '</div>' +
+        '</div>';
+    document.body.appendChild(modal);
+
+    window._sendFormsSelection = new Set();
+    window._sendFormsAll = [];
+    await loadSendFormsList('');
+
+    // Wire search
+    var searchEl = document.getElementById('sendFormsSearch');
+    searchEl.addEventListener('input', function() {
+        renderSendFormsList(searchEl.value.trim().toLowerCase());
+    });
+}
+
+async function loadSendFormsList(q) {
+    var listEl = document.getElementById('sendFormsList');
+    if (!listEl) return;
+    try {
+        var resp = await fetch('/ops/api/ipad/patient-chart/send-forms/?limit=300' + (q ? '&q=' + encodeURIComponent(q) : ''), { credentials: 'include' });
+        var data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'Failed to load forms');
+        window._sendFormsAll = data.forms || [];
+        renderSendFormsList('');
+    } catch (err) {
+        listEl.innerHTML = '<div style="padding:20px; text-align:center; color:#ef4444;">' + (err.message || 'Error loading forms') + '</div>';
+    }
+}
+
+function renderSendFormsList(filter) {
+    var listEl = document.getElementById('sendFormsList');
+    if (!listEl) return;
+    var forms = window._sendFormsAll || [];
+    if (filter) forms = forms.filter(function(f) { return (f.name || '').toLowerCase().includes(filter); });
+    if (forms.length === 0) {
+        listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-tertiary);">No forms match.</div>';
+        return;
+    }
+    var html = '';
+    forms.forEach(function(f) {
+        var selected = window._sendFormsSelection.has(f.id);
+        html += '<div onclick="toggleSendFormSelection(\x27' + f.id + '\x27)" style="display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:6px; cursor:pointer;' + (selected ? ' background:rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.35);' : ' border:1px solid transparent;') + '" onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'' + (selected ? 'rgba(34,197,94,0.12)' : 'transparent') + '\'">';
+        html += '<div style="width:18px; height:18px; border-radius:4px; border:2px solid ' + (selected ? '#22c55e' : 'var(--border-light)') + '; background:' + (selected ? '#22c55e' : 'transparent') + '; display:flex; align-items:center; justify-content:center; font-size:12px; color:#000; flex-shrink:0;">' + (selected ? '✓' : '') + '</div>';
+        html += '<div style="font-size:14px; color:var(--text-primary); flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (f.name || 'Unnamed form') + '</div>';
+        html += '<div style="font-size:10px; color:var(--text-tertiary); flex-shrink:0;">' + f.id + '</div>';
+        html += '</div>';
+    });
+    listEl.innerHTML = html;
+}
+
+function toggleSendFormSelection(formId) {
+    if (!window._sendFormsSelection) window._sendFormsSelection = new Set();
+    if (window._sendFormsSelection.has(formId)) window._sendFormsSelection.delete(formId);
+    else window._sendFormsSelection.add(formId);
+    var count = window._sendFormsSelection.size;
+    var countEl = document.getElementById('sendFormsSelectedCount');
+    if (countEl) countEl.textContent = count + ' selected';
+    var btn = document.getElementById('sendFormsSubmitBtn');
+    if (btn) {
+        btn.disabled = count === 0;
+        btn.style.opacity = count === 0 ? '0.5' : '1';
+    }
+    var searchEl = document.getElementById('sendFormsSearch');
+    renderSendFormsList(searchEl ? searchEl.value.trim().toLowerCase() : '');
+}
+
+async function submitSendForms() {
+    var btn = document.getElementById('sendFormsSubmitBtn');
+    if (!btn) return;
+    var healthieId = btn.getAttribute('data-healthie-id');
+    var skipEmail = document.getElementById('sendFormsSkipEmail')?.checked;
+    var ids = Array.from(window._sendFormsSelection || []);
+    if (!healthieId || ids.length === 0) return;
+    if (!confirm('Send ' + ids.length + ' form' + (ids.length === 1 ? '' : 's') + ' to this patient?' + (skipEmail ? '\n(No email — queued for in-office only.)' : '\nHealthie will email the patient a link.'))) return;
+    btn.disabled = true; btn.textContent = 'Sending…'; btn.style.opacity = '0.7';
+    try {
+        var resp = await fetch('/ops/api/ipad/patient-chart/send-forms/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ healthie_patient_id: healthieId, form_ids: ids, skip_notification_email: !!skipEmail }),
+        });
+        var data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Send failed');
+        document.getElementById('sendFormsModal').remove();
+        var msg = data.message || ('Sent ' + (data.sent?.length || 0) + ' forms');
+        showToast(msg, data.errors && data.errors.length > 0 ? 'info' : 'success');
+        if (data.errors && data.errors.length > 0) {
+            console.warn('[send-forms] partial failure:', data.errors);
+        }
+        // Refresh chart so pending_forms list reflects the new requests
+        if (typeof reloadPatientChart === 'function') {
+            reloadPatientChart();
+        } else if (typeof openChartForPatient === 'function' && typeof chartPanelPatientId !== 'undefined' && chartPanelPatientId) {
+            openChartForPatient(chartPanelPatientId);
+        }
+    } catch (err) {
+        btn.disabled = false; btn.textContent = 'Send'; btn.style.opacity = '1';
+        alert('Could not send: ' + (err.message || err));
+    }
+}
+
+function launchKioskMode(patientId, healthieId, pendingForms, patientName, demographics) {
     // Parse forms if passed as string (from inline HTML attribute)
     if (typeof pendingForms === 'string') {
         try { pendingForms = JSON.parse(pendingForms); } catch(e) { pendingForms = []; }
     }
+    // FIX(2026-04-15): accept demographics so forms can pre-fill name/DOB/email/phone/address
+    if (typeof demographics === 'string') {
+        try { demographics = JSON.parse(demographics); } catch(e) { demographics = {}; }
+    }
+    window.kioskPatientDemo = demographics || {};
 
     if (!pendingForms || pendingForms.length === 0) {
         showToast('No pending forms for this patient', 'info');
@@ -15156,7 +23023,24 @@ function launchKioskMode(patientId, healthieId, pendingForms, patientName) {
     }
 
     kioskActive = true;
+    window.kioskActive = true; // expose for the hash-routing guard
     kioskSessionIds = [];
+
+    // SECURITY: hide the staff app entirely so it cannot be reached via Reader mode,
+    // accessibility tooling, pinch-zoom, or any underlying-DOM exploit. The kiosk
+    // overlay is the only thing the patient can see while in this mode.
+    const mainEl = document.getElementById('mainContent');
+    if (mainEl) {
+        kioskOriginalMainDisplay = mainEl.style.display || '';
+        mainEl.style.display = 'none';
+        mainEl.setAttribute('aria-hidden', 'true');
+    }
+    // Same for the global chart panel if it's open
+    const chartPanel = document.getElementById('globalChartPanel');
+    if (chartPanel) {
+        kioskOriginalChartDisplay = chartPanel.style.display || '';
+        chartPanel.style.display = 'none';
+    }
 
     // Create overlay
     const overlay = document.createElement('div');
@@ -15167,13 +23051,29 @@ function launchKioskMode(patientId, healthieId, pendingForms, patientName) {
     // Lock navigation
     kioskOriginalOverscroll = document.body.style.overscrollBehavior;
     document.body.style.overscrollBehavior = 'contain';
-    history.pushState({ kiosk: true }, '');
-    kioskPopstateHandler = function(e) {
+
+    // Push 5 history entries so back/forward stays trapped even with rapid taps.
+    // Each popstate immediately re-pushes to keep the trap deep.
+    kioskOriginalHash = window.location.hash;
+    for (let i = 0; i < 5; i++) {
+        history.pushState({ kiosk: true, depth: i }, '');
+    }
+    kioskPopstateHandler = function() {
         if (kioskActive) {
             history.pushState({ kiosk: true }, '');
         }
     };
     window.addEventListener('popstate', kioskPopstateHandler);
+
+    // Confirm prompt blocks accidental tab close / refresh / nav-away
+    kioskBeforeUnloadHandler = function(e) {
+        if (kioskActive) {
+            e.preventDefault();
+            e.returnValue = 'Patient kiosk mode is active. Staff PIN required to exit.';
+            return e.returnValue;
+        }
+    };
+    window.addEventListener('beforeunload', kioskBeforeUnloadHandler);
 
     // Start with form select (or jump to first form if only one)
     const formQueue = pendingForms.filter(f => f.status !== 'completed');
@@ -15347,39 +23247,101 @@ function renderKioskField(field) {
     const desc = field.description ? `<div class="kiosk-field-description">${sanitize(field.description)}</div>` : '';
     const id = 'kioskField_' + field.id;
 
+    // FIX(2026-04-15): Pre-fill from patient demographics when the field label matches a
+    // known profile field. Patients were being asked to re-type name/DOB/email/phone/address.
+    const demo = window.kioskPatientDemo || {};
+    const label = (field.label || '').toLowerCase().trim();
+    const prefillFromDemo = () => {
+        // Match by label keywords
+        if (/\b(full name|patient name|your name|^name$|first name|last name|legal name|preferred name)\b/i.test(label)) {
+            if (/first/.test(label))      return (demo.first_name || (demo.full_name || '').split(' ')[0] || '');
+            if (/last/.test(label))       return (demo.last_name || (demo.full_name || '').split(' ').slice(-1)[0] || '');
+            if (/preferred/.test(label))  return demo.preferred_name || '';
+            return demo.full_name || '';
+        }
+        if (/\b(email|e-mail)\b/i.test(label))                          return demo.email || '';
+        if (/\b(phone|mobile|cell|contact number)\b/i.test(label))      return demo.phone_primary || demo.phone_number || '';
+        if (/\b(dob|date of birth|birthdate|birthday)\b/i.test(label))  return demo.dob || '';
+        if (/\b(gender|sex)\b/i.test(label))                            return demo.gender || '';
+        if (/\b(address|street)\b/i.test(label))                        return demo.address_line1 || '';
+        if (/\bcity\b/i.test(label))                                    return demo.city || '';
+        if (/\bstate\b/i.test(label))                                   return demo.state || '';
+        if (/\b(zip|postal)\b/i.test(label))                            return demo.postal_code || '';
+        return '';
+    };
+    const prefillValue = prefillFromDemo();
+    const valueAttr = prefillValue ? ` value="${String(prefillValue).replace(/"/g, '&quot;')}"` : '';
+
     let inputHtml = '';
 
-    switch (field.type) {
+    // Normalize Healthie mod_type strings (they come in many forms; map each
+    // to one of our widget branches below).
+    const rawType = (field.type || 'text');
+    const t = rawType.toLowerCase();
+
+    // Aliases → handler branch
+    const alias = (
+        /^(text|string|name|location|client_source|email|matrix)$/.test(t) ? 'text' :
+        /^(textarea|long_text)$/.test(t) ? 'textarea' :
+        /^(number|smart_.*(?:weight|height|bmi|bp|pulse|temp))$/.test(t) ? 'number' :
+        /weight|height|bmi|blood_?pressure|pulse|temperature|waist/i.test(rawType) ? 'number' :
+        /^(phone|smart_phone)$/.test(t) ? 'phone' :
+        /^(date|dob|date_of_birth)$/.test(t) ? 'date' :
+        /^time$/.test(t) ? 'time' :
+        /^(radio|dropdown|select)$/.test(t) ? 'radio' :
+        /^(checkbox|multiple_select|multiple_checkbox)$/.test(t) ? 'checkbox' :
+        /^(signature)$/.test(t) ? 'signature' :
+        /^(file|image|upload|drop_in|camera)$/.test(t) ? 'file' :
+        /^(read_only|label|header|hr|divider|horizontal_line)$/.test(t) ? 'read_only' :
+        /^(synced_allergy|medications|allergies|intolerance|sensitivity|synced_.*)$/.test(t) ? 'synced_display' :
+        /^(agree_to_above|consent)$/.test(t) ? 'checkbox' :
+        'text'  // safe fallback so unknown types still get a usable input
+    );
+
+    switch (alias) {
         case 'text':
-        case 'string':
-            inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
+            inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}"${valueAttr} ${req}>`;
             break;
 
         case 'textarea':
-        case 'long_text':
-            inputHtml = `<textarea id="${id}" class="kiosk-input" rows="4" placeholder="Enter your answer" data-field-id="${field.id}" ${req}></textarea>`;
+            inputHtml = `<textarea id="${id}" class="kiosk-input" rows="4" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>${prefillValue ? sanitize(prefillValue) : ''}</textarea>`;
             break;
 
         case 'number':
-            inputHtml = `<input type="number" id="${id}" class="kiosk-input" placeholder="Enter a number" data-field-id="${field.id}" ${req}>`;
+            inputHtml = `<input type="number" id="${id}" class="kiosk-input" placeholder="Enter a number" data-field-id="${field.id}" inputmode="decimal"${valueAttr} ${req}>`;
             break;
 
         case 'phone':
-            inputHtml = `<input type="tel" id="${id}" class="kiosk-input" placeholder="(___) ___-____" data-field-id="${field.id}" ${req} oninput="formatKioskPhone(this)">`;
+            inputHtml = `<input type="tel" id="${id}" class="kiosk-input" placeholder="(___) ___-____" data-field-id="${field.id}"${valueAttr} ${req} oninput="formatKioskPhone(this)">`;
             break;
 
         case 'date':
-            inputHtml = `<input type="date" id="${id}" class="kiosk-input" data-field-id="${field.id}" ${req}>`;
+            inputHtml = `<input type="date" id="${id}" class="kiosk-input" data-field-id="${field.id}"${valueAttr} ${req}>`;
             break;
 
-        case 'radio':
-        case 'dropdown': {
+        case 'time':
+            inputHtml = `<input type="time" id="${id}" class="kiosk-input" data-field-id="${field.id}" ${req}>`;
+            break;
+
+        case 'synced_display':
+            // Auto-populated from patient profile (allergies, meds, etc.) — show
+            // a read-only note so the patient isn't confused by an empty field.
+            inputHtml = `<div class="kiosk-input" style="background:#f8fafc; color:#64748b; font-style:italic; padding:12px;">This information is pulled from your chart. Please let the staff know if anything needs to be updated.</div><input type="hidden" id="${id}" data-field-id="${field.id}" value="(synced from chart)">`;
+            break;
+
+        case 'radio': {
             const options = field.options || [];
-            inputHtml = `<div class="kiosk-radio-group" id="${id}" data-field-id="${field.id}">
-                ${options.map(opt => `
-                    <div class="kiosk-radio-option" onclick="selectKioskRadio(this)" data-value="${sanitize(opt)}">${sanitize(opt)}</div>
-                `).join('')}
-            </div>`;
+            if (options.length === 0) {
+                // No options on a radio/dropdown → degrade to text so the patient
+                // isn't stuck on an empty field.
+                inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
+            } else {
+                inputHtml = `<div class="kiosk-radio-group" id="${id}" data-field-id="${field.id}">
+                    ${options.map(opt => `
+                        <div class="kiosk-radio-option" onclick="selectKioskRadio(this)" data-value="${sanitize(opt)}">${sanitize(opt)}</div>
+                    `).join('')}
+                </div>`;
+            }
             break;
         }
 
@@ -15422,8 +23384,17 @@ function renderKioskField(field) {
         case 'read_only':
         case 'label':
         case 'header':
-            // Display-only field — just show label text, no input
-            return `<div class="kiosk-field"><div style="font-size:14px; color:#334155; line-height:1.5; padding:8px 0; border-bottom:1px solid #e2e8f0;">${sanitize(field.label)}</div>${desc}</div>`;
+        case 'hipaa': {
+            // FIX(2026-04-15): Display-only fields — render the full agreement text from
+            // options_array (HTML paragraphs from Healthie form builder). Previously only
+            // rendered the title label, hiding the actual HIPAA/AI/consent agreement.
+            const title = field.label ? `<h3 style="font-size:18px; font-weight:700; color:#0f172a; margin:0 0 12px 0;">${sanitize(field.label)}</h3>` : '';
+            const body = Array.isArray(field.options) && field.options.length
+                ? `<div class="kiosk-agreement-text" style="font-size:15px; color:#334155; line-height:1.65; max-height:60vh; overflow-y:auto; padding:16px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; margin-bottom:12px;">${field.options.join('')}</div>`
+                : '';
+            const sublabel = desc || '';
+            return `<div class="kiosk-field">${title}${body}${sublabel}</div>`;
+        }
 
         default:
             inputHtml = `<input type="text" id="${id}" class="kiosk-input" placeholder="Enter your answer" data-field-id="${field.id}" ${req}>`;
@@ -15816,16 +23787,32 @@ async function validateKioskPin() {
 
 function exitKioskMode() {
     kioskActive = false;
+    window.kioskActive = false;
 
     // Remove overlay
     document.getElementById('kioskOverlay')?.remove();
     document.getElementById('kioskUnlockOverlay')?.remove();
+
+    // Restore staff app visibility
+    const mainEl = document.getElementById('mainContent');
+    if (mainEl) {
+        mainEl.style.display = kioskOriginalMainDisplay || '';
+        mainEl.removeAttribute('aria-hidden');
+    }
+    const chartPanel = document.getElementById('globalChartPanel');
+    if (chartPanel) {
+        chartPanel.style.display = kioskOriginalChartDisplay || '';
+    }
 
     // Restore navigation
     document.body.style.overscrollBehavior = kioskOriginalOverscroll;
     if (kioskPopstateHandler) {
         window.removeEventListener('popstate', kioskPopstateHandler);
         kioskPopstateHandler = null;
+    }
+    if (kioskBeforeUnloadHandler) {
+        window.removeEventListener('beforeunload', kioskBeforeUnloadHandler);
+        kioskBeforeUnloadHandler = null;
     }
 
     // Clean up state
@@ -15841,3 +23828,271 @@ function exitKioskMode() {
         loadChartData(chartPanelPatientId);
     }
 }// build 1775724203
+// 1775768467
+// 1775781086
+// 1775790331
+
+// ─── PHARMACY SUB-TAB (inside Inventory) ────────────────────
+// Uses the specialty pharmacy system (tirzepatide/farmakaio/olympia/toprx/
+// carrieboyd/alphabiomed/abxtac). Patient-level orders with tracking-slip
+// PDF/photo uploads via /api/pharmacy/upload.
+// NOT connected to peptide inventory.
+
+const PHARMACIES = [
+    { key: 'tirzepatide', label: 'Strive', color: { bg: '#dbeafe', fg: '#1e40af' } },
+    { key: 'farmakaio',   label: 'Farmakaio', color: { bg: '#fef3c7', fg: '#92400e' } },
+    { key: 'olympia',     label: 'Olympia', color: { bg: '#e0e7ff', fg: '#3730a3' } },
+    { key: 'toprx',       label: 'TopRX', color: { bg: '#fce7f3', fg: '#9f1239' } },
+    { key: 'carrieboyd',  label: 'Carrie Boyd', color: { bg: '#ede9fe', fg: '#5b21b6' } },
+    { key: 'alphabiomed', label: 'Alpha BioMed', color: { bg: '#d1fae5', fg: '#065f46' } },
+    { key: 'abxtac',      label: 'ABXTAC', color: { bg: '#cffafe', fg: '#155e75' } },
+];
+
+let pharmacyOrdersByType = {};        // { farmakaio: [...], strive: [...], ... }
+let activePharmacyKey = 'farmakaio';  // default to Farmakaio
+let pharmacyUploadingId = null;
+let pharmacyLoadingKey = null;
+
+async function loadPharmacyOrdersFor(key) {
+    if (pharmacyLoadingKey === key) return;
+    pharmacyLoadingKey = key;
+    try {
+        const resp = await fetch(`/ops/api/pharmacy/?pharmacy=${encodeURIComponent(key)}`, { credentials: 'include' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        pharmacyOrdersByType[key] = await resp.json();
+    } catch (e) {
+        console.error('[pharmacy] load failed for', key, e);
+        pharmacyOrdersByType[key] = [];
+    } finally {
+        pharmacyLoadingKey = null;
+    }
+}
+
+function renderPharmacySection() {
+    const orders = pharmacyOrdersByType[activePharmacyKey];
+
+    if (orders === undefined) {
+        loadPharmacyOrdersFor(activePharmacyKey).then(() => {
+            if (currentTab === 'inventory' && activeInventoryTab === 'pharmacy') {
+                const contentEl = document.getElementById('inventoryContent');
+                if (contentEl) contentEl.innerHTML = renderInventoryContent();
+            }
+        });
+    }
+
+    const activeMeta = PHARMACIES.find(p => p.key === activePharmacyKey) || PHARMACIES[0];
+
+    return `
+        <p style="color:var(--text-tertiary); margin:0 0 16px 0; font-size:14px;">
+            Patient orders and tracking slips per pharmacy. Tap 📷 to photograph a tracking slip.
+        </p>
+
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
+            ${PHARMACIES.map(p => {
+                const active = activePharmacyKey === p.key;
+                return `<button class="inv-tab ${active ? 'active' : ''}" onclick="setPharmacyKey('${p.key}')" style="${active ? `background:${p.color.bg}; color:${p.color.fg};` : ''}">${p.label}</button>`;
+            }).join('')}
+        </div>
+
+        <input type="file" id="pharmacyFileInput" accept="image/*,application/pdf" capture="environment" style="display:none;" onchange="handlePharmacyFileSelected(event)">
+
+        <div id="pharmacyList">
+            ${orders === undefined
+                ? renderLoadingState()
+                : orders.length === 0
+                    ? renderEmptyState('📦', 'No orders', `No orders in ${activeMeta.label} yet.`)
+                    : orders.slice(0, 100).map(o => renderPharmacyOrderCard(o, activeMeta)).join('')
+            }
+        </div>
+    `;
+}
+
+function setPharmacyKey(key) {
+    activePharmacyKey = key;
+    const contentEl = document.getElementById('inventoryContent');
+    if (contentEl) contentEl.innerHTML = renderInventoryContent();
+}
+
+function renderPharmacyOrderCard(order, activeMeta) {
+    const color = activeMeta?.color || { bg: '#f1f5f9', fg: '#475569' };
+    const hasSlip = !!order.pdf_s3_key;
+    const isUploading = pharmacyUploadingId === order.order_id;
+    const dateStr = order.date_ordered
+        ? new Date(order.date_ordered).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+        : '—';
+    const patient = order.healthie_patient_name || order.patient_name || 'Unknown patient';
+    const med = order.medication_ordered || '';
+    const dose = order.dose ? ` · ${order.dose}` : '';
+    const orderNum = order.order_number ? ` · ${order.order_number}` : '';
+    const status = order.status || 'Pending';
+
+    return `
+        <div style="background:#fff; border:1px solid rgba(148,163,184,0.22); border-radius:12px; padding:16px; margin-bottom:12px; box-shadow:0 2px 8px rgba(15,23,42,0.04);">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+                <div style="flex:1; min-width:0;">
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
+                        <span style="background:${color.bg}; color:${color.fg}; padding:3px 10px; border-radius:6px; font-size:12px; font-weight:600;">
+                            ${status}
+                        </span>
+                        <span style="color:var(--text-tertiary); font-size:13px;">${dateStr}${orderNum}</span>
+                    </div>
+                    <div style="font-size:16px; font-weight:600; margin-bottom:4px;">${escapeHtmlSafe(patient)}</div>
+                    ${med ? `<div style="color:var(--text-secondary); font-size:14px;">${escapeHtmlSafe(med)}${dose}</div>` : ''}
+                    ${order.notes ? `<div style="color:var(--text-tertiary); font-size:13px; margin-top:4px;">${escapeHtmlSafe(order.notes)}</div>` : ''}
+                </div>
+                <div style="display:flex; flex-direction:column; gap:8px; min-width:120px;">
+                    ${hasSlip
+                        ? `<button class="toggle-btn" style="background:#059669; color:#fff;" onclick="viewPharmacyPdf('${encodeURIComponent(order.pdf_s3_key)}')">📄 View Slip</button>
+                           <button class="toggle-btn" style="background:#6366f1; color:#fff;" onclick="triggerPharmacyUpload('${order.order_id}')" ${isUploading ? 'disabled' : ''}>📷 Replace</button>`
+                        : `<button class="toggle-btn" style="background:#6366f1; color:#fff;" onclick="triggerPharmacyUpload('${order.order_id}')" ${isUploading ? 'disabled' : ''}>${isUploading ? 'Uploading…' : '📷 Upload Slip'}</button>`
+                    }
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function escapeHtmlSafe(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+function triggerPharmacyUpload(orderId) {
+    window._pharmacyUploadTarget = orderId;
+    document.getElementById('pharmacyFileInput')?.click();
+}
+
+async function handlePharmacyFileSelected(ev) {
+    const file = ev.target.files?.[0];
+    const orderId = window._pharmacyUploadTarget;
+    ev.target.value = '';
+    if (!file || !orderId) return;
+
+    pharmacyUploadingId = orderId;
+    const rerender = () => {
+        const contentEl = document.getElementById('inventoryContent');
+        if (contentEl) contentEl.innerHTML = renderInventoryContent();
+    };
+    rerender();
+
+    try {
+        const fd = new FormData();
+        fd.append('order_id', orderId);
+        fd.append('order_type', activePharmacyKey);
+        fd.append('file', file);
+        const resp = await fetch('/ops/api/pharmacy/upload', {
+            method: 'POST',
+            credentials: 'include',
+            body: fd,
+        });
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || `HTTP ${resp.status}`);
+        }
+        showToast('Tracking slip uploaded ✓', 'success');
+        // Invalidate + reload current pharmacy's orders
+        delete pharmacyOrdersByType[activePharmacyKey];
+        await loadPharmacyOrdersFor(activePharmacyKey);
+    } catch (e) {
+        console.error('[pharmacy] upload failed', e);
+        showToast('Upload failed: ' + e.message, 'error');
+    } finally {
+        pharmacyUploadingId = null;
+        rerender();
+    }
+}
+
+async function viewPharmacyPdf(encodedS3Key) {
+    try {
+        const resp = await fetch(`/ops/api/pharmacy/upload?s3_key=${encodedS3Key}`, { credentials: 'include' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const { url } = await resp.json();
+        if (url) window.open(url, '_blank');
+    } catch (e) {
+        console.error('[pharmacy] view failed', e);
+        showToast('Could not load tracking slip', 'error');
+    }
+}
+
+
+// ─── WEB PUSH (staff assignment banners) ────────────────────────────────
+// Registers /ipad/sw.js, then asks the browser for a push subscription with
+// our VAPID public key, then POSTs the subscription to /api/push/subscribe
+// where it is stored against the signed-in staff user. lib/push.ts (server)
+// sends the actual notifications when ~/dispatch-mcp/lib/notify.py fires.
+//
+// Self-installs: polls for window.currentUser (set in loadCurrentUser) so we
+// don't have to surgically edit existing auth flow. iPadOS 16.4+ Safari
+// requires the PWA to be added to the home screen for push to deliver;
+// Chrome on iPad and any desktop browser work natively.
+(function setupStaffPush() {
+    const VAPID_PUBLIC_KEY = 'BDLilGmmjnlTVoYgvrn4aj1hA_kDZBPInAVGDYvx2HIQaFVqSIPGNnJ2wvGrZ1FBvvBLjrHliKh3FG9GjnGtKkU';
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        console.log('[Push] Web Push not supported in this browser');
+        return;
+    }
+
+    function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - base64String.length % 4) % 4);
+        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const raw = atob(base64);
+        const out = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
+        return out;
+    }
+
+    async function subscribeOnce(userId) {
+        try {
+            const isMobile = location.pathname.startsWith('/mobile');
+            const swPath = isMobile ? '/mobile/sw.js' : '/ipad/sw.js';
+            const swScope = isMobile ? '/mobile/' : '/ipad/';
+            const reg = await navigator.serviceWorker.register(swPath, { scope: swScope });
+            await navigator.serviceWorker.ready;
+            // Re-check permission: if the user has previously denied, don't pester.
+            if (Notification.permission === 'denied') {
+                console.log('[Push] notifications are denied — skipping subscribe');
+                return;
+            }
+            if (Notification.permission === 'default') {
+                const perm = await Notification.requestPermission();
+                if (perm !== 'granted') {
+                    console.log('[Push] permission not granted:', perm);
+                    return;
+                }
+            }
+            let sub = await reg.pushManager.getSubscription();
+            if (!sub) {
+                sub = await reg.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+                });
+            }
+            const resp = await fetch('/ops/api/push/subscribe/', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ipad_user_id: userId, subscription: sub.toJSON() })
+            });
+            if (!resp.ok) {
+                console.warn('[Push] /api/push/subscribe returned', resp.status);
+            } else {
+                console.log('[Push] subscribed for', userId);
+            }
+        } catch (e) {
+            console.warn('[Push] setup failed:', e && e.message ? e.message : e);
+        }
+    }
+
+    // Wait for currentUser to be populated by loadCurrentUser(). Bail after 60s.
+    let attempts = 0;
+    const iv = setInterval(() => {
+        attempts += 1;
+        const u = window.currentUser || (typeof currentUser !== 'undefined' ? currentUser : null);
+        if (u && (u.user_id || u.id)) {
+            clearInterval(iv);
+            subscribeOnce(u.user_id || u.id);
+        } else if (attempts > 120) {
+            clearInterval(iv);
+        }
+    }, 500);
+})();

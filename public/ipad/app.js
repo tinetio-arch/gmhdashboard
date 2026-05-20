@@ -1694,10 +1694,7 @@ function renderTodayView(container) {
             </div>
         </div>
 
-        <!-- Critical Lab Alerts — TOP PRIORITY, right after stats -->
-        <div id="criticalLabAlerts"></div>
-
-        <!-- My Tasks — right after alerts -->
+        <!-- My Tasks — TOP PRIORITY, right after stats (above lab alerts) -->
         <div id="myStaffTasks">
             <div class="section-header">
                 <h2>📋 My Tasks</h2>
@@ -1708,6 +1705,9 @@ function renderTodayView(container) {
             </div>
             <div style="color:var(--text-tertiary); font-size:13px; padding:8px 0;">Loading tasks...</div>
         </div>
+
+        <!-- Critical Lab Alerts — directly below tasks -->
+        <div id="criticalLabAlerts"></div>
 
         <!-- Pending Appointment Approvals (below Tasks) -->
         <div id="pendingApptRequestsHost"></div>
