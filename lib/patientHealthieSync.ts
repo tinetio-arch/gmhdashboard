@@ -85,49 +85,72 @@ function parseName(fullName: string): { firstName: string; lastName: string } {
 const PROVIDER_PHIL = process.env.HEALTHIE_PRIMARY_CARE_PROVIDER_ID || '12088269';
 const PROVIDER_WHITTEN = process.env.HEALTHIE_MENS_HEALTH_PROVIDER_ID || '12093125';
 
+// FIX(2026-05-20): Hannah Schafer RN is the DEFAULT chat contact for Dr. Whitten's
+// patients (men's health + ABXTAC) so he isn't overloaded with patient messages.
+// In Healthie, a patient's default conversation is auto-created owned by their
+// `dietitian_id`, so we set Hannah as the dietitian_id for those client types while
+// Whitten stays the appointment/prescribing provider (appointmentRouting keys off
+// appointment TYPE, not dietitian_id; the patient still lands in the men's-health
+// GROUP). Hannah can add Dr. Whitten to any chat in Healthie when she needs him.
+// Existing patients are untouched — this only affects newly created patients.
+// Task 20260520-103801-0970.
+const CHAT_CONTACT_HANNAH = process.env.HEALTHIE_MENS_HEALTH_CHAT_CONTACT_ID || '13815235';
+
 /**
  * Client Type → Healthie Group + Provider mapping
  * As of April 2026, client type (not clinic) drives Healthie group assignment for new patients.
+ *
+ * `providerId`  = clinical / appointment + prescribing provider for the client type.
+ * `dietitianId` = Healthie `dietitian_id` = the patient's DEFAULT chat contact (owner of
+ *                 their auto-created conversation). Usually equals `providerId`, but for
+ *                 Dr. Whitten's client types it is Hannah (see CHAT_CONTACT_HANNAH above).
  */
 const CLIENT_TYPE_HEALTHIE_MAP: Record<string, {
     groupId: string;
     providerId: string;
+    dietitianId: string;
     groupName: string;
     providerName: string;
 }> = {
     nowmenshealth: {
         groupId: process.env.HEALTHIE_MENS_HEALTH_GROUP_ID || '75522',
         providerId: PROVIDER_WHITTEN,
+        dietitianId: CHAT_CONTACT_HANNAH,  // chats default to Hannah, not Whitten
         groupName: 'NowMensHealth.Care',
         providerName: 'Aaron Whitten, DO'
     },
     nowprimarycare: {
         groupId: process.env.HEALTHIE_PRIMARY_CARE_GROUP_ID || '75523',
         providerId: PROVIDER_PHIL,
+        dietitianId: PROVIDER_PHIL,
         groupName: 'NowPrimary.Care',
         providerName: 'Phil Schafer, NP'
     },
     nowlongevity: {
         groupId: process.env.HEALTHIE_LONGEVITY_GROUP_ID || '82532',
         providerId: PROVIDER_PHIL,
+        dietitianId: PROVIDER_PHIL,
         groupName: 'NowLongevity.Care',
         providerName: 'Phil Schafer, NP'
     },
     nowmentalhealth: {
         groupId: process.env.HEALTHIE_MENTAL_HEALTH_GROUP_ID || '82533',
         providerId: PROVIDER_PHIL,
+        dietitianId: PROVIDER_PHIL,
         groupName: 'NowMentalHealth.Care',
         providerName: 'Phil Schafer, NP'
     },
     abxtac: {
         groupId: process.env.HEALTHIE_ABXTAC_GROUP_ID || '82534',
         providerId: PROVIDER_WHITTEN,
+        dietitianId: CHAT_CONTACT_HANNAH,  // chats default to Hannah, not Whitten
         groupName: 'ABXTAC',
         providerName: 'Aaron Whitten, DO'
     },
     sick_visit: {
         groupId: process.env.HEALTHIE_SICK_VISIT_GROUP_ID || '77894',
         providerId: PROVIDER_PHIL,
+        dietitianId: PROVIDER_PHIL,
         groupName: 'Sick Visit',
         providerName: 'Phil Schafer, NP'
     }
@@ -139,6 +162,7 @@ const CLIENT_TYPE_HEALTHIE_MAP: Record<string, {
 function getHealthieConfig(clinic: ClinicType, clientTypeKey?: string | null): {
     groupId: string;
     providerId: string;
+    dietitianId: string;
     groupName: string;
     providerName: string;
 } {
@@ -188,7 +212,8 @@ export async function createPatientInHealthie(
         const config = getHealthieConfig(patientData.clinic, patientData.clientTypeKey);
         debugLog('Using Healthie config:', {
             group: config.groupName,
-            provider: config.providerName
+            provider: config.providerName,
+            dietitianId: config.dietitianId  // default chat contact (Hannah for Whitten's patients)
         });
 
         // 3. Parse patient name
@@ -219,8 +244,8 @@ export async function createPatientInHealthie(
             email: patientData.email || undefined,
             phone_number: patientData.phoneNumber || undefined,
             dob: patientData.dateOfBirth || undefined,
-            dietitian_id: config.providerId,  // Assign to provider
-            user_group_id: config.groupId,    // Assign to group
+            dietitian_id: config.dietitianId,  // Default chat contact (Hannah for Dr. Whitten's patients)
+            user_group_id: config.groupId,     // Assign to group (still men's-health for Whitten's patients)
             dont_send_welcome: !patientData.email,  // Only send if email exists
             skipped_email: !patientData.email,       // Skip email field if no email
             skip_set_password_state: false,          // Allow patient to set password
