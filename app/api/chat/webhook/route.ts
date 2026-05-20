@@ -2,27 +2,32 @@ import { NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
+import { verifyGoogleChatRequest } from '@/lib/googleChatAuth';
 
 /**
  * Google Chat inbound webhook — wave3a chat-thread backend.
  *
  * Flow:
+ *   0. Verify the Google-signed Bearer JWT (see lib/googleChatAuth.ts).
+ *      Unauthenticated / unverifiable requests are rejected before any work.
  *   1. Google Chat POSTs an event { type, user, space, message, ... }
  *   2. We extract user.name → google_chat_id → staff slug (via staff.json).
  *   3. We extract a [Task: <uuid>] tag from message.text, OR fall back to
- *      a recent space→row mapping in chat-task-routing.json.
+ *      a recent space→row mapping in chat-task-routing.json. The row_uuid
+ *      must match the safe task_id charset or the event is treated as orphan.
  *   4. We fire-and-forget a POST to dispatch-mcp /api/call inbox_chat_append.
  *   5. No-task or no-staff events go to chat-orphan-messages.log for review.
+ *      Message bodies are NEVER written to that log (PHI-at-rest); we record
+ *      only metadata + a redaction marker.
  *
- * We always return 200 (Google Chat retries on non-2xx and we don't want
- * dispatch-mcp downtime to block patient-facing replies).
+ * Once a request is authenticated we return 200 for handled/ignored/orphan
+ * outcomes (Google Chat retries on non-2xx and we don't want dispatch-mcp
+ * downtime to block patient-facing replies). Authentication failures, by
+ * contrast, return 401/503 — Google's legitimately-signed retries will pass.
  *
- * Security TODO (wave3b):
- *   Google Chat signs requests with a Bearer JWT issued by Workspace. We
- *   should verify the JWT's audience matches our project_id, the iss is
- *   `chat@system.gserviceaccount.com`, and the email_verified flag is set.
- *   For now we accept any POST and rely on the fact that the URL is
- *   non-guessable + only Google's IPs can reach the endpoint behind nginx.
+ * FIX(2026-05-20): wave3b — implemented Google JWT verification (was an
+ *   unauthenticated public write endpoint), added UUID validation on the
+ *   task tag, and stopped logging PHI message bodies to the orphan log.
  */
 
 const COORD_HOME = path.join(os.homedir(), '.claude', 'coord');
@@ -70,22 +75,55 @@ function findStaffSlug(staff: StaffMap, googleChatId: string): string | null {
   return null;
 }
 
-function extractTaskUuid(text: string | undefined): string | null {
-  if (!text) return null;
-  // [Task: <uuid>] — uuid is any non-]] sequence, trimmed.
-  const m = text.match(/\[Task:\s*([^\]]+?)\s*\]/i);
-  return m ? m[1].trim() : null;
+// Validate the [Task:] target before forwarding it to dispatch-mcp as a
+// row_uuid. dispatch-mcp task_ids are NOT canonical UUIDs — they look like
+// "20260519-224757-1a7b" (YYYYMMDD-HHMMSS-<hex>) or the on-disk underscore
+// form "1_20260519_133846_781123". So we use a conservative character
+// allowlist that admits every legitimate task_id while blocking the real
+// injection vector (path traversal / metacharacters). dispatch-mcp's own
+// _row_path() additionally rejects "/" and ".." server-side — this is
+// defense-in-depth at the trust boundary.
+const TASK_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+function isValidTaskId(s: string | null | undefined): s is string {
+  return typeof s === 'string' && TASK_ID_RE.test(s);
 }
 
-async function appendOrphan(event: unknown, reason: string): Promise<void> {
+function extractTaskUuid(text: string | undefined): string | null {
+  if (!text) return null;
+  // [Task: <task_id>] — must match the safe task_id charset, else rejected.
+  const m = text.match(/\[Task:\s*([^\]]+?)\s*\]/i);
+  if (!m) return null;
+  const candidate = m[1].trim();
+  return isValidTaskId(candidate) ? candidate : null;
+}
+
+// Redact a Chat event for orphan logging. We keep routing/diagnostic metadata
+// but NEVER persist the message body (potential PHI) to disk.
+function redactEvent(event: ChatEvent): Record<string, unknown> {
+  const text = event?.message?.text;
+  return {
+    type: event?.type ?? null,
+    user: event?.user?.name ?? null,
+    space: event?.space?.name ?? null,
+    message_id: event?.message?.name ?? null,
+    message_createTime: event?.message?.createTime ?? null,
+    body_redacted: true,
+    body_len: typeof text === 'string' ? text.length : 0,
+  };
+}
+
+async function appendOrphan(event: ChatEvent, reason: string): Promise<void> {
   try {
     await fs.mkdir(COORD_HOME, { recursive: true });
     const line = JSON.stringify({
       at: new Date().toISOString(),
       reason,
-      event,
+      event: redactEvent(event),
     }) + '\n';
-    await fs.appendFile(ORPHAN_LOG, line, 'utf8');
+    await fs.appendFile(ORPHAN_LOG, line, { encoding: 'utf8', mode: 0o600 });
+    // Best-effort: tighten perms in case the file pre-existed with looser mode.
+    await fs.chmod(ORPHAN_LOG, 0o600).catch(() => {});
   } catch (err) {
     console.error('[chat-webhook] orphan log write failed:', err);
   }
@@ -126,6 +164,14 @@ type ChatEvent = {
 };
 
 export async function POST(request: Request) {
+  // Security gate (wave3b): verify the Google-signed Bearer JWT before any
+  // parsing, identity resolution, or dispatch write. Reject on failure.
+  const auth = await verifyGoogleChatRequest(request);
+  if (!auth.ok) {
+    console.error(`[chat-webhook] rejected request: ${auth.reason}`);
+    return NextResponse.json({ error: 'unauthorized' }, { status: auth.status });
+  }
+
   let body: ChatEvent = {};
   try {
     body = (await request.json()) as ChatEvent;
@@ -167,15 +213,16 @@ export async function POST(request: Request) {
   let routingSource: 'tag' | 'space-cache' | 'none' = rowUuid ? 'tag' : 'none';
   if (!rowUuid && spaceName) {
     const routing = await loadRoutingMap();
-    const entry = routing[spaceName];
-    if (entry?.row_uuid) {
-      rowUuid = entry.row_uuid;
+    const cached = routing[spaceName]?.row_uuid;
+    // Only trust a space-cache hit if it carries a valid task_id.
+    if (isValidTaskId(cached)) {
+      rowUuid = cached;
       routingSource = 'space-cache';
     }
   }
 
   if (!rowUuid) {
-    await appendOrphan(body, `no [Task:] tag and no space-cache hit for space=${spaceName}`);
+    await appendOrphan(body, `no valid [Task:] uuid and no space-cache hit for space=${spaceName}`);
     return NextResponse.json({ ok: true, handled: false, reason: 'no task routing' });
   }
 
