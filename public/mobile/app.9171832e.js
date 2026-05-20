@@ -210,13 +210,6 @@ function _playMessageBeep() {
     } catch (e) { /* audio unavailable — silent fallback */ }
 }
 
-function _setMessagesBadgeCount(n) {
-    const badge = document.getElementById('messagesBadge');
-    if (!badge) return;
-    if (n > 0) { badge.textContent = String(n); badge.classList.remove('hidden'); }
-    else { badge.classList.add('hidden'); }
-}
-
 async function _pollGlobalMessagesOnce() {
     if (!currentUser) return;
     if (document.hidden) return;
@@ -235,7 +228,7 @@ async function _pollGlobalMessagesOnce() {
             messagesConversations = convos;
         }
 
-        _setMessagesBadgeCount(unread);
+        setMessagesBadge(unread);
 
         if (_lastUnreadMessagesCount >= 0 && unread > _lastUnreadMessagesCount) {
             const delta = unread - _lastUnreadMessagesCount;
@@ -531,11 +524,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }, 300000); // 5 minutes
 
-    // FIX(2026-05-07): Background poll for unread messages so the badge updates
-    // even when the user is on Today/Labs/CEO/etc. Phil was missing messages because
-    // the badge only refreshed while the Messages tab was open.
-    pollMessagesBadge();
-    setInterval(pollMessagesBadge, 30000); // every 30s
+    // FIX(2026-05-19): Background unread polling is handled by startGlobalMessagesPoll()
+    // above (beep + toast + visibility-aware, lifecycle-managed). The earlier duplicate
+    // pollMessagesBadge() poller was removed to stop double-polling Healthie + double beeps.
 });
 
 // ─── AUTH & RBAC ────────────────────────────────────────────
@@ -1462,10 +1453,8 @@ function updateBadges() {
     }
 }
 
-// FIX(2026-05-07): Messages badge was only updated when the user was actively on the
-// Messages tab, so new messages arriving while on Today/Labs/CEO/etc. were invisible.
-// pollMessagesBadge runs in the background regardless of current tab and pulses the
-// badge red + toasts when a new unread arrives.
+// Badge setter shared by the background poller (_pollGlobalMessagesOnce),
+// the in-tab refresh (loadMessagesConversations), and markConversationRead.
 var _lastMessagesUnreadCount = 0;
 function setMessagesBadge(unreadCount) {
     var badge = document.getElementById('messagesBadge');
@@ -1477,37 +1466,6 @@ function setMessagesBadge(unreadCount) {
     } else {
         badge.classList.add('hidden');
         badge.classList.remove('alert');
-    }
-}
-
-async function pollMessagesBadge() {
-    // Skip when app is backgrounded — saves battery and avoids stale toasts on resume
-    if (document.hidden) return;
-    if (!currentUser) return;
-    try {
-        var isPhilAdmin = currentUser?.permissions?.can_view_ceo_dashboard === true;
-        var msgUrl = '/ops/api/ipad/messages/';
-        if (!isPhilAdmin && currentUser?.healthie_provider_id) {
-            msgUrl += '?provider_id=' + currentUser.healthie_provider_id;
-        }
-        var data = await apiFetch(msgUrl);
-        var conversations = data.conversations || [];
-        var unreadCount = conversations.filter(function(c) { return c.unread; }).length;
-
-        // Keep cached list in sync so opening Messages tab doesn't double-fetch
-        messagesConversations = conversations;
-
-        setMessagesBadge(unreadCount);
-
-        // Toast + sound when count goes UP and user is NOT already on Messages tab
-        if (unreadCount > _lastMessagesUnreadCount && currentTab !== 'messages') {
-            var newOnes = unreadCount - _lastMessagesUnreadCount;
-            showToast('💬 ' + newOnes + ' new message' + (newOnes === 1 ? '' : 's'), 'info', 4000);
-        }
-        _lastMessagesUnreadCount = unreadCount;
-    } catch (e) {
-        if (e && e.message === 'AUTH_EXPIRED') return;
-        console.warn('[Messages Badge Poll] Failed:', e?.message || e);
     }
 }
 
@@ -21422,7 +21380,7 @@ function renderGhlBubbles(messages) {
         var align = isOut ? 'flex-end' : 'flex-start';
         var bubbleBg = isOut ? color + '25' : 'var(--surface)';
         var bubbleBorder = isOut ? color + '40' : 'var(--border-light)';
-        var label = isOut ? 'Staff' : (ghlCurrentContact ? ghlCurrentContact.contactName : 'Patient');
+        var label = isOut ? (msg.sentByName ? msg.sentByName : 'Staff') : (ghlCurrentContact ? ghlCurrentContact.contactName : 'Patient');
         html += '<div style="display:flex; flex-direction:column; align-items:' + align + '; margin-bottom:10px;">';
         html += '<div style="font-size:10px; color:var(--text-tertiary); margin-bottom:2px;">' + sanitize(label) + ' · ' + timeStr;
         if (msg.messageType && msg.messageType !== 'SMS') html += ' (' + msg.messageType.toLowerCase() + ')';
@@ -21671,6 +21629,28 @@ async function openConversation(convoId) {
     if (!containerEl) return;
     containerEl.innerHTML = '<div class="loading-spinner" style="margin:40px auto;"></div>';
     await loadConversationMessages(convoId);
+    // Mark read for THIS staff member (per-user read tracking) and clear the badge locally.
+    markConversationRead(convoId);
+}
+
+// Tell the server this staff member has read this conversation. Optimistically clear
+// it in the local cache and refresh the badge so the change shows immediately (no 30s
+// wait), then persist so the next poll stays consistent.
+async function markConversationRead(convoId) {
+    var convo = (messagesConversations || []).find(function(c) { return c.id === convoId; });
+    if (convo) convo.unread = false;
+    var unread = (messagesConversations || []).filter(function(c) { return c.unread; }).length;
+    setMessagesBadge(unread);
+    _lastMessagesUnreadCount = unread;
+    try {
+        await apiFetch('/ops/api/ipad/messages/mark-read/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversation_id: convoId }),
+        });
+    } catch (e) {
+        console.warn('[Messages] mark-read failed:', e && e.message ? e.message : e);
+    }
 }
 
 async function loadConversationMessages(convoId, silent) {
