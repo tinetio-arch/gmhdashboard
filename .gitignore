@@ -43,3 +43,4 @@ data/processed-faxes.json
 data/labs-review-queue.json
 docs/KPI_CHECK.md
 docs/LIVE_STATUS.md
+config/vapid-keys.json

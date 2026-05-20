@@ -23572,3 +23572,82 @@ async function viewPharmacyPdf(encodedS3Key) {
     }
 }
 
+
+// ─── WEB PUSH (staff assignment banners) ────────────────────────────────
+// Registers /ipad/sw.js, then asks the browser for a push subscription with
+// our VAPID public key, then POSTs the subscription to /api/push/subscribe
+// where it is stored against the signed-in staff user. lib/push.ts (server)
+// sends the actual notifications when ~/dispatch-mcp/lib/notify.py fires.
+//
+// Self-installs: polls for window.currentUser (set in loadCurrentUser) so we
+// don't have to surgically edit existing auth flow. iPadOS 16.4+ Safari
+// requires the PWA to be added to the home screen for push to deliver;
+// Chrome on iPad and any desktop browser work natively.
+(function setupStaffPush() {
+    const VAPID_PUBLIC_KEY = 'BDLilGmmjnlTVoYgvrn4aj1hA_kDZBPInAVGDYvx2HIQaFVqSIPGNnJ2wvGrZ1FBvvBLjrHliKh3FG9GjnGtKkU';
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        console.log('[Push] Web Push not supported in this browser');
+        return;
+    }
+
+    function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - base64String.length % 4) % 4);
+        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const raw = atob(base64);
+        const out = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
+        return out;
+    }
+
+    async function subscribeOnce(userId) {
+        try {
+            const reg = await navigator.serviceWorker.register('/ipad/sw.js', { scope: '/ipad/' });
+            await navigator.serviceWorker.ready;
+            // Re-check permission: if the user has previously denied, don't pester.
+            if (Notification.permission === 'denied') {
+                console.log('[Push] notifications are denied — skipping subscribe');
+                return;
+            }
+            if (Notification.permission === 'default') {
+                const perm = await Notification.requestPermission();
+                if (perm !== 'granted') {
+                    console.log('[Push] permission not granted:', perm);
+                    return;
+                }
+            }
+            let sub = await reg.pushManager.getSubscription();
+            if (!sub) {
+                sub = await reg.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+                });
+            }
+            const resp = await fetch('/ops/api/push/subscribe/', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ipad_user_id: userId, subscription: sub.toJSON() })
+            });
+            if (!resp.ok) {
+                console.warn('[Push] /api/push/subscribe returned', resp.status);
+            } else {
+                console.log('[Push] subscribed for', userId);
+            }
+        } catch (e) {
+            console.warn('[Push] setup failed:', e && e.message ? e.message : e);
+        }
+    }
+
+    // Wait for currentUser to be populated by loadCurrentUser(). Bail after 60s.
+    let attempts = 0;
+    const iv = setInterval(() => {
+        attempts += 1;
+        const u = window.currentUser || (typeof currentUser !== 'undefined' ? currentUser : null);
+        if (u && (u.user_id || u.id)) {
+            clearInterval(iv);
+            subscribeOnce(u.user_id || u.id);
+        } else if (attempts > 120) {
+            clearInterval(iv);
+        }
+    }, 500);
+})();
