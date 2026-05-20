@@ -9753,9 +9753,33 @@ function renderPeptidesSection() {
         return renderEmptyState('💊', 'No peptide data', 'Inventory data not yet available');
     }
 
-    return `
+    // Client-side search filter on product name + description (read-only).
+    let filtered = peptides;
+    if (peptideSearchQuery && peptideSearchQuery.trim()) {
+        const q = peptideSearchQuery.trim().toLowerCase();
+        filtered = peptides.filter(p => {
+            const name = (p.name || p.medication || p.peptide_name || '').toLowerCase();
+            const desc = (p.description || p.notes || p.category || '').toLowerCase();
+            return name.includes(q) || desc.includes(q);
+        });
+    }
+
+    const searchBar = `
+    <div style="margin-bottom:12px;">
+        <input type="text" id="peptideSearchInput" placeholder="🔍 Search peptides by name or description…"
+               value="${peptideSearchQuery.replace(/"/g, '&quot;')}"
+               oninput="setPeptideSearch(this.value)"
+               style="width:100%; padding:10px 14px; border:1px solid var(--border-light); border-radius:var(--radius-sm); background:var(--bg-secondary); color:var(--text-primary); font-size:14px;">
+        <div style="font-size:11px; color:var(--text-tertiary); margin-top:6px;">${filtered.length} of ${peptides.length} products</div>
+    </div>`;
+
+    if (filtered.length === 0) {
+        return searchBar + renderEmptyState('🔍', 'No matches', 'No peptides match your search');
+    }
+
+    return searchBar + `
     <div class="peptide-grid stagger-in">
-        ${peptides.map(p => {
+        ${filtered.map(p => {
         const stock = p.current_stock ?? p.stock ?? p.quantity ?? 0;
         const par = p.reorder_point ?? p.par_level ?? p.par ?? 10;
         const name = p.name || p.medication || p.peptide_name || '';
@@ -9788,6 +9812,26 @@ function extractPeptides() {
         return inventorySummary.filter(item => item.peptide_name || item.is_peptide || (item.category && item.category.toLowerCase().includes('peptide')));
     }
     return [];
+}
+
+// Peptide search state + debounced handler (150ms). Re-renders only the
+// inventory content so the input keeps focus while typing.
+let peptideSearchQuery = '';
+let peptideSearchTimer = null;
+function setPeptideSearch(q) {
+    peptideSearchQuery = q || '';
+    if (peptideSearchTimer) clearTimeout(peptideSearchTimer);
+    peptideSearchTimer = setTimeout(() => {
+        const container = document.getElementById('inventoryContent');
+        if (!container) { renderCurrentTab(); return; }
+        container.innerHTML = renderInventoryContent();
+        const input = document.getElementById('peptideSearchInput');
+        if (input) {
+            input.focus();
+            const v = input.value;
+            input.setSelectionRange(v.length, v.length);
+        }
+    }, 150);
 }
 
 // ─── SUPPLIES SECTION ───────────────────────────────────────
