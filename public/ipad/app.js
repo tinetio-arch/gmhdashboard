@@ -7610,6 +7610,22 @@ function renderChartingTab(container, d) {
     const alerts = d.alerts || [];
     const scribeHist = d.scribe_history || [];
 
+    // FIX(2026-05-20): list BOTH past and future appointments (Phil request). The API now
+    // pulls filter:"all" from Healthie; split into upcoming (soonest first) + past (most
+    // recent first) so the chart shows the full appointment history, not just upcoming.
+    const _apptMs = (a) => { const t = new Date(a && a.date ? a.date : 0).getTime(); return isNaN(t) ? 0 : t; };
+    const _nowMs = Date.now();
+    const upcomingAppts = hAppts.filter(a => _apptMs(a) >= _nowMs).sort((a, b) => _apptMs(a) - _apptMs(b));
+    const pastAppts = hAppts.filter(a => _apptMs(a) < _nowMs).sort((a, b) => _apptMs(b) - _apptMs(a));
+    const apptCard = (a, upcoming) => `
+                    <div class="chart-visit-card"${upcoming ? ' style="border-left:2px solid var(--cyan);"' : ''}>
+                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
+                        <div style="flex:1">
+                            <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
+                            <div class="chart-med-detail">${a.provider?.full_name || ''}${a.pm_status ? ' · ' + a.pm_status : ''}</div>
+                        </div>
+                    </div>`;
+
     function fmtDate(dt) {
         if (!dt) return '—';
         try { const dd = new Date(dt); return isNaN(dd.getTime()) ? '—' : dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE }); } catch { return '—'; }
@@ -7707,15 +7723,10 @@ function renderChartingTab(container, d) {
                 <span class="chart-chevron">›</span>
             </div>
             <div class="chart-section-body">
-                ${hAppts.length > 0 ? hAppts.slice(0, 10).map(a => `
-                    <div class="chart-visit-card">
-                        <div class="chart-visit-date">${fmtDate(a.date)}</div>
-                        <div style="flex:1">
-                            <div class="chart-med-name">${a.appointment_type?.name || 'Appointment'}</div>
-                            <div class="chart-med-detail">${a.provider?.full_name || ''} · ${a.pm_status || a.status || ''}</div>
-                        </div>
-                    </div>
-                `).join('') : '<div class="chart-empty" style="padding:12px; text-align:center; color:var(--text-tertiary);">No upcoming appointments</div>'}
+                ${hAppts.length > 0 ? `
+                    ${upcomingAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700; padding:2px 2px 4px;">Upcoming (${upcomingAppts.length})</div>${upcomingAppts.map(a => apptCard(a, true)).join('')}` : ''}
+                    ${pastAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; padding:10px 2px 4px;">Past (${pastAppts.length})</div>${pastAppts.slice(0, 15).map(a => apptCard(a, false)).join('')}${pastAppts.length > 15 ? `<div style="font-size:10px; color:var(--text-tertiary); padding:6px 2px;">+ ${pastAppts.length - 15} older not shown</div>` : ''}` : ''}
+                ` : '<div class="chart-empty" style="padding:12px; text-align:center; color:var(--text-tertiary);">No appointments on file</div>'}
             </div>
         </div>
         <!-- All Clinical Notes (unified timeline) -->

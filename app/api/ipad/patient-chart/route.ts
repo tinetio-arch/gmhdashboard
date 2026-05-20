@@ -240,7 +240,7 @@ export async function GET(request: NextRequest) {
                 query GetAppointments($userId: ID) {
                     appointments(
                         user_id: $userId,
-                        is_active: true,
+                        filter: "all",
                         offset: 0
                     ) {
                         id
