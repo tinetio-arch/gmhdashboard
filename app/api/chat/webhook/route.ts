@@ -14,7 +14,7 @@ import { verifyGoogleChatRequest } from '@/lib/googleChatAuth';
  *   2. We extract user.name → google_chat_id → staff slug (via staff.json).
  *   3. We extract a [Task: <uuid>] tag from message.text, OR fall back to
  *      a recent space→row mapping in chat-task-routing.json. The row_uuid
- *      MUST be a syntactically valid UUID or the event is treated as orphan.
+ *      must match the safe task_id charset or the event is treated as orphan.
  *   4. We fire-and-forget a POST to dispatch-mcp /api/call inbox_chat_append.
  *   5. No-task or no-staff events go to chat-orphan-messages.log for review.
  *      Message bodies are NEVER written to that log (PHI-at-rest); we record
@@ -75,21 +75,27 @@ function findStaffSlug(staff: StaffMap, googleChatId: string): string | null {
   return null;
 }
 
-// Canonical UUID (any version/variant) — used to validate the [Task:] target
-// before forwarding it to dispatch-mcp as a row_uuid.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Validate the [Task:] target before forwarding it to dispatch-mcp as a
+// row_uuid. dispatch-mcp task_ids are NOT canonical UUIDs — they look like
+// "20260519-224757-1a7b" (YYYYMMDD-HHMMSS-<hex>) or the on-disk underscore
+// form "1_20260519_133846_781123". So we use a conservative character
+// allowlist that admits every legitimate task_id while blocking the real
+// injection vector (path traversal / metacharacters). dispatch-mcp's own
+// _row_path() additionally rejects "/" and ".." server-side — this is
+// defense-in-depth at the trust boundary.
+const TASK_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
-function isUuid(s: string | null | undefined): s is string {
-  return typeof s === 'string' && UUID_RE.test(s);
+function isValidTaskId(s: string | null | undefined): s is string {
+  return typeof s === 'string' && TASK_ID_RE.test(s);
 }
 
 function extractTaskUuid(text: string | undefined): string | null {
   if (!text) return null;
-  // [Task: <uuid>] — must be a syntactically valid UUID, else rejected.
+  // [Task: <task_id>] — must match the safe task_id charset, else rejected.
   const m = text.match(/\[Task:\s*([^\]]+?)\s*\]/i);
   if (!m) return null;
   const candidate = m[1].trim();
-  return isUuid(candidate) ? candidate : null;
+  return isValidTaskId(candidate) ? candidate : null;
 }
 
 // Redact a Chat event for orphan logging. We keep routing/diagnostic metadata
@@ -208,8 +214,8 @@ export async function POST(request: Request) {
   if (!rowUuid && spaceName) {
     const routing = await loadRoutingMap();
     const cached = routing[spaceName]?.row_uuid;
-    // Only trust a space-cache hit if it carries a valid UUID.
-    if (isUuid(cached)) {
+    // Only trust a space-cache hit if it carries a valid task_id.
+    if (isValidTaskId(cached)) {
       rowUuid = cached;
       routingSource = 'space-cache';
     }
