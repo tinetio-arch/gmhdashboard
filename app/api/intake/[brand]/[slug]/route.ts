@@ -107,6 +107,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
             source,
             ip,
             userAgent,
+            dryRun: body.dry_run === true,
         };
 
         const result = await submitIntake(def, input);

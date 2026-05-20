@@ -55,11 +55,15 @@ export interface IntakeSubmissionInput {
     source?: 'web' | 'ios' | 'ipad';
     ip?: string | null;
     userAgent?: string | null;
+    // When true (or env INTAKE_DRY_RUN=1), validate + capture the submission but
+    // create NO patient and call NO Healthie API — for end-to-end testing with
+    // zero side effects and zero customer communication.
+    dryRun?: boolean;
 }
 
 export interface ProvisionResult {
     submissionId: string;
-    status: 'provisioned' | 'healthie_unmapped' | 'error';
+    status: 'provisioned' | 'healthie_unmapped' | 'dry_run' | 'error';
     patientId: string | null;
     healthieClientId: string | null;
     healthieFormAnswerGroupId: string | null;
@@ -242,6 +246,23 @@ export async function submitIntake(
     );
     const submissionId = inserted[0].submission_id;
 
+    // Dry-run: validated + captured, but NO patient and NO Healthie call. Used to
+    // test the full pipeline end-to-end with zero side effects / zero comms.
+    const dryRun = input.dryRun || process.env.INTAKE_DRY_RUN === '1';
+    if (dryRun) {
+        await query(
+            `UPDATE intake_submissions SET status = 'dry_run', provisioned_at = NOW() WHERE submission_id = $1`,
+            [submissionId]
+        );
+        return {
+            submissionId,
+            status: 'dry_run',
+            patientId: null,
+            healthieClientId: null,
+            healthieFormAnswerGroupId: null,
+        };
+    }
+
     try {
         // 2. Find-or-create patient in our DB (dedup by email).
         let patientId: string | null = null;
@@ -270,6 +291,10 @@ export async function submitIntake(
 
         // 3. Create in Healthie (clientTypeKey drives the group; clinic is a
         //    required-type placeholder only — getHealthieConfig prefers clientTypeKey).
+        //    Suppress Healthie's welcome/set-password email by default: OUR forms
+        //    own all patient communication (the decoupling goal). Re-enable per
+        //    deployment with INTAKE_HEALTHIE_SEND_WELCOME=1 if ever desired.
+        const sendHealthieWelcome = process.env.INTAKE_HEALTHIE_SEND_WELCOME === '1';
         const healthieResult = await createPatientInHealthie({
             patientName: input.applicantName,
             email: input.applicantEmail,
@@ -278,6 +303,7 @@ export async function submitIntake(
             address: input.address,
             clinic: 'nowprimary.care' as ClinicType,
             clientTypeKey: def.client_type_key as ClientTypeKey,
+            suppressWelcome: !sendHealthieWelcome,
         });
 
         let healthieClientId: string | null = null;

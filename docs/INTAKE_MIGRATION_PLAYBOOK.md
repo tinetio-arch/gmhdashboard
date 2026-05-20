@@ -128,10 +128,11 @@ Do **one brand at a time**. ABXTAC is done as the worked example; the others fol
 - **client_type_key:** `abxtac` → Healthie group **82534**, provider Aaron Whitten, DO.
 - **Web form:** `/ops/intake/abxtac/services-agreement`
 - **API:** `GET|POST /ops/api/intake/abxtac/services-agreement`
-- **Status after this session:** schema + seed + API + web form built; submissions provision a
-  patient locally and in Healthie. **Healthie answer-mapping (Step 4) is NOT done yet** —
-  submissions will land as `healthie_unmapped` until the ABXTAC Healthie form/module ids are
-  filled in. This is expected and called out so it isn't mistaken for a bug.
+- **Status:** schema **applied to RDS** (2026-05-20) + seed + API + web form built; submissions
+  provision a patient locally and in Healthie. By default intake now **suppresses Healthie's
+  welcome/set-password email** (`suppressWelcome`) so OUR forms own all patient comms.
+  **Healthie answer-mapping (Step 4) is NOT done yet** — submissions land as `healthie_unmapped`
+  until the ABXTAC Healthie form/module ids are filled in. Expected, not a bug.
 
 ### Apply the migration (on-box)
 ```bash
@@ -157,7 +158,69 @@ curl -s -X POST "https://nowoptimal.com/ops/api/intake/abxtac/services-agreement
 
 ---
 
+## 4a. Deep-dive safety findings (2026-05-20)
+
+Audited before applying the migration. Goal: prove it can't impact other companies or
+how Healthie communicates with customers.
+
+### Schema migration is additive + safe
+- Creates **only** 3 new tables (`form_definitions`, `form_fields`, `intake_submissions`)
+  + indexes. **Touches no existing table**, no `ALTER`, no `DROP` (passes the pre-deploy
+  DROP-TABLE gate). Verified idempotent — re-running inserts 0 rows.
+- Live-DB dependencies verified before apply: `gen_random_uuid()` available; `patients.patient_id`
+  is the UUID PK; `healthie_clients` has a **single-column** unique index on `healthie_client_id`
+  (so `ON CONFLICT (healthie_client_id)` is valid); all inserted `patients` columns exist.
+- The `patients` INSERT is allowed by the status-chokepoint trigger `trg_patient_status_audit`
+  (it only blocks `webhook_processor→inactive` and non-admin `inactive→active`; a fresh INSERT
+  of `active` just writes one audit row — same pattern as `lib/ipad-patient-resolver.ts`).
+
+### Isolation from other companies — proven
+- `createPatientInHealthie` has exactly **one** other caller (`app/api/patients/route.ts`).
+  The new `suppressWelcome` option is **additive with the legacy default**, so that caller's
+  behavior is byte-for-byte unchanged.
+- Only **ABXTAC** is seeded. `getActiveFormDefinition` returns `null` for every other brand →
+  the public GET/POST return **404** for them. No other company can be provisioned here.
+- Nothing else (no cron/webhook) reads the new tables. No code auto-applies a Healthie
+  onboarding flow.
+- ⚠️ One inherited cross-brand behavior to know: `createPatientInHealthie` dedups by
+  email/phone/name across **all** Healthie patients and *links* to a match instead of creating.
+  If an ABXTAC applicant already exists in another brand's Healthie group, we link to that one
+  human's chart (intended — one human = one chart). Acceptable; flagged for awareness.
+
+### Healthie customer communication — the gate before real launch
+Two layers can make Healthie email/text a customer:
+1. **`createClient` welcome / set-password email** — **WE control this.** Intake now sets
+   `suppressWelcome: true` by default → `dont_send_welcome=true`, `skip_set_password_state=true`.
+   Healthie holds the chart silently. (Re-enable with `INTAKE_HEALTHIE_SEND_WELCOME=1`.)
+2. **Group-level auto onboarding flow** — **Healthie-side config we cannot see from code.**
+   If ABXTAC group **82534** is set to auto-apply an onboarding flow, Healthie will email
+   "complete your forms" the moment the patient is assigned to the group — *regardless* of
+   `suppressWelcome`. **🚦 GATE: before the first real (non-dry-run) provisioning, confirm in
+   the Healthie UI that group 82534 has no auto-onboarding flow (or disable it).** Until then,
+   test only with `dry_run` or `INTAKE_DRY_RUN=1`.
+
+## 4b. Test plan — through and through
+
+| # | Test | How | Side effects | Status |
+|---|------|-----|--------------|--------|
+| 1 | Migration applies + idempotent | `psql -f migrations/20260520_intake_forms.sql` twice | additive only | ✅ done |
+| 2 | Schema deps exist on live DB | read-only psql probes | none | ✅ done |
+| 3 | Pipeline: load/validate/dry-run-submit | `npx tsx --env-file=.env.local .tmp/test-intake-pipeline.ts` (16 assertions) | none (dry-run; self-cleans) | ✅ 16/16 |
+| 4 | Isolation: other brands → null/404 | covered in test #3 + GET probe post-deploy | none | ✅ (lib) |
+| 5 | Live GET form structure | `curl …/api/intake/abxtac/services-agreement` | none | ⏳ needs deploy |
+| 6 | Live GET other brand → 404 | `curl …/api/intake/nowmenshealth/x` | none | ⏳ needs deploy |
+| 7 | Live POST dry-run | `curl -X POST … -d '{"dry_run":true,…}'` | none | ⏳ needs deploy |
+| 8 | Web form renders + submits (dry-run) | open `/ops/intake/abxtac/services-agreement` | none | ⏳ needs deploy |
+| 9 | **Real** provision (1 patient) | POST with a Phil-owned test email, `suppressWelcome` on | creates 1 Healthie client | 🚦 after gate (§4a.2) |
+| 10 | Healthie answer push reaches chart | after Step-4 mapping, POST test → check Healthie chart | writes form answers | 🚦 after mapping |
+
+The dry-run path (env `INTAKE_DRY_RUN=1` or body `{"dry_run":true}`) validates + captures with
+**no patient and no Healthie call** — use it for all pre-launch HTTP testing. The test script
+lives at `.tmp/test-intake-pipeline.ts` (regenerable; not committed).
+
 ## 5. Open items / next sessions
+- **🚦 Confirm/disable the auto onboarding flow on Healthie group 82534** (§4a gate) before any real provisioning.
+- **Deploy the branch** (behind the pre-deploy gate) so tests 5–8 (live HTTP + web form) can run.
 - Map ABXTAC Healthie `custom_module_form_id` + per-field `custom_module_id` (Step 4) to reach `provisioned`.
 - Build an admin review screen for `intake_submissions` (retry `error` rows, see `healthie_unmapped`).
 - Add rate-limit + OTP + CAPTCHA before public launch.

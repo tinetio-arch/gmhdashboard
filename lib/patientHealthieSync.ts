@@ -31,6 +31,10 @@ export type CreatePatientInHealthieInput = {
     zip?: string | null;
     clinic: ClinicType;
     clientTypeKey?: ClientTypeKey | string | null;  // New: drives Healthie group assignment
+    // When true, suppress Healthie's own welcome / set-password emails so Healthie
+    // holds the chart silently while OUR forms own all patient communication.
+    // Default (undefined) preserves the legacy behavior — existing callers unaffected.
+    suppressWelcome?: boolean;
 };
 
 export type HealthieSyncResult = {
@@ -221,9 +225,11 @@ export async function createPatientInHealthie(
             dob: patientData.dateOfBirth || undefined,
             dietitian_id: config.providerId,  // Assign to provider
             user_group_id: config.groupId,    // Assign to group
-            dont_send_welcome: !patientData.email,  // Only send if email exists
+            // suppressWelcome wins: keep Healthie silent (no welcome / set-password email).
+            // Otherwise legacy behavior: only send a welcome when an email exists.
+            dont_send_welcome: patientData.suppressWelcome ? true : !patientData.email,
             skipped_email: !patientData.email,       // Skip email field if no email
-            skip_set_password_state: false,          // Allow patient to set password
+            skip_set_password_state: patientData.suppressWelcome ? true : false,
         };
 
         // Add address if provided
