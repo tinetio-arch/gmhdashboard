@@ -10,49 +10,49 @@
 ---
 
 <!-- AUTOGEN:START — do not edit between these markers; overwritten by scripts/refresh-project-tracker.sh -->
-## LIVE SYSTEM SNAPSHOT (verified 2026-05-17)
+## LIVE SYSTEM SNAPSHOT (verified 2026-05-21)
 
-_Auto-regenerated 2026-05-17 06:00:02 MST by `scripts/refresh-project-tracker.sh`._
+_Auto-regenerated 2026-05-21 06:00:02 MST by `scripts/refresh-project-tracker.sh`._
 
 | Metric | Value | Source |
 |---|---|---|
-| Total patients | **500** | `SELECT COUNT(*) FROM patients` |
-| ↳ active | 382 | `status_key='active'` |
-| ↳ active_pending | 32 | `status_key='active_pending'` |
-| ↳ inactive | 75 | `status_key='inactive'` |
-| ↳ hold_payment_research | 10 | `status_key='hold_payment_research'` |
-| ↳ inactive_payment_research | 1 | `status_key='inactive_payment_research'` |
-| healthie_clients rows | 512 | (>patients because legacy duplicate links exist) |
+| Total patients | **505** | `SELECT COUNT(*) FROM patients` |
+| ↳ active | 395 | `status_key='active'` |
+| ↳ active_pending | 27 | `status_key='active_pending'` |
+| ↳ inactive | 76 | `status_key='inactive'` |
+| ↳ hold_payment_research | 5 | `status_key='hold_payment_research'` |
+| ↳ inactive_payment_research | 2 | `status_key='inactive_payment_research'` |
+| healthie_clients rows | 518 | (>patients because legacy duplicate links exist) |
 | patient_qb_mapping rows | 192 | QuickBooks mappings |
-| patient_ghl_mapping rows | 0 | GHL contact mappings |
+| patients w/ ghl_contact_id | 499 | `ghl_contact_id IS NOT NULL` (legacy mapping table dropped 2026-05-19) |
 | memberships (active) | 32 | `status='active'` |
-| lab_orders (total) | 173 | — |
+| lab_orders (total) | 179 | — |
 | lab_review_queue (pending) | 0 | — |
-| dispenses (total) | 791 | — |
-| dea_transactions | 833 | — |
-| staged_doses (staged) | 1 | — |
+| dispenses (total) | 850 | — |
+| dea_transactions | 902 | — |
+| staged_doses (staged) | 6 | — |
 | payment_issues (open) | 0 | `resolved_at IS NULL` |
 | bioscope_authorized (active) | 1 | `revoked_at IS NULL` |
-| Postgres tables (public) | **118** | `information_schema.tables` |
+| Postgres tables (public) | **125** | `information_schema.tables` |
 | PM2 services | **0** total, **0** online | `pm2 jlist` |
-| Cron jobs (active) | **34** | `crontab -l` (non-comment, non-blank) |
-| Disk used | **50%** (51G free of 100G) | `df -h /` |
-| Git branch | `master` @ `1698946` (17 dirty file(s)) | `git status --porcelain` |
-| Orphan Claude branches | 9 | `git branch --list 'claude/*'` |
-| Active coordinator sessions | 5 | `~/.claude/coord/registry.json` |
+| Cron jobs (active) | **38** | `crontab -l` (non-comment, non-blank) |
+| Disk used | **72%** (29G free of 100G) | `df -h /` |
+| Git branch | `master` @ `3815292` (8 dirty file(s)) | `git status --porcelain` |
+| Orphan Claude branches | 42 | `git branch --list 'claude/*'` |
+| Active coordinator sessions | 12 | `~/.claude/coord/registry.json` |
 
 ### Patient distribution by `client_type_key`
 | Type | Count |
 |---|---|
-| nowmenshealth | 320 |
+| nowmenshealth | 323 |
 | nowlongevity | 43 |
-| nowprimarycare | 28 |
+| nowprimarycare | 29 |
 | sick_visit | 27 |
 | primecare_premier_50_month | 20 |
 | approved_disc_pro_bono_pt | 13 |
 | qbo_tcmh_180_month | 12 |
 | primecare_elite_100_month | 10 |
-| (null) | 7 |
+| (null) | 8 |
 | qbo_f_f_fr_veteran_140_month | 6 |
 | jane_f_f_fr_veteran_140_month | 5 |
 | other | 4 |
@@ -60,6 +60,11 @@ _Auto-regenerated 2026-05-17 06:00:02 MST by `scripts/refresh-project-tracker.sh
 | ins_supp_60_month | 2 |
 
 <!-- AUTOGEN:END -->
+
+
+### Recently shipped
+- **2026-05-21 — TRT staged-dose "only 0.5ml saves" (dispatch row 20260520-235955-1d54).** Reported bug was already fixed in running prod — root cause was the pre-04-22 `LIKE '%30%'` vial filter (staging only saw Carrie Boyd 30mL vials); with those depleted, only a 0.5mL dose found a qualifying vial and larger doses hit a *silent* 400. Live-tested API (0.5/0.7/1.0 → all 200, inventory reversed after). Shipped two hardening fixes: (1) `StagedDosesManager.tsx` now surfaces the API's real error ("Not enough medication in vials…") instead of generic "Failed to save staged dose" — that hidden message was why staff couldn't diagnose; (2) `staged-doses/route.ts` rounds `totalMl` to 2dp (kills `3.1999999999999997` float artifacts + spurious volume-check edge case) and fixes `wasteMl || 0.1` turning a legit 0 waste into 0.1. Deployed to prod (master 30bab59, local only — not pushed to origin). Verified live: dose 0.7 now returns `totalMl: 3.2`.
+- **2026-05-20 — iPad patient-chart Appointments (dispatch row 1_...194086).** Fixed recurring "appointments missing / files need upload dates" task. Files/docs already showed upload dates (no change). Appointments section was collapsed + buried in Notes tab + gated on `hAppts>0` so it vanished for patients with no upcoming appt. Moved to top of chart, expanded, always-visible; split into Upcoming/Past. Root API fix: `patient-chart` appointments query `is_active:true` → `filter:"all"` (Healthie was upcoming-only). Deployed to prod (master 576c6d1, local only — not pushed to origin).
 
 
 
