@@ -154,7 +154,13 @@ export default function StagedDosesManager({ patients, onUpdate }: Props) {
                     }
                 }
             } else {
-                alert('Failed to save staged dose');
+                // FIX(2026-05-20): Surface the API's real reason instead of a generic
+                // message. The inventory 400 ("Not enough medication in vials. Need Xml
+                // but no single vial has that much.") was being hidden, so staff couldn't
+                // tell an out-of-stock dose from an actual bug — the source of the
+                // "only 0.5ml works" confusion when 30mL vials were nearly empty.
+                const errPayload = await res.json().catch(() => null);
+                alert(errPayload?.error || 'Failed to save staged dose');
             }
         } catch (err) {
             console.error('Error saving staged dose:', err);

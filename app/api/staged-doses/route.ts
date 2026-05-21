@@ -83,8 +83,14 @@ export async function POST(req: NextRequest) {
 
         await client.query('BEGIN');
 
-        // Calculate total ml needed
-        const totalMl = (parseFloat(doseMl) + parseFloat(wasteMl || 0.1)) * parseInt(syringeCount);
+        // Calculate total ml needed.
+        // FIX(2026-05-20): Round to 2 dp (matches the numeric(10,2) columns) so the
+        // vial volume check and the stored/returned total don't carry float artifacts
+        // like 3.1999999999999997 — which can also make a value such as 2.4000000000000004
+        // spuriously fail the `remaining_volume_ml >= $1` check against a vial holding
+        // exactly 2.40. Also `wasteMl || 0.1` wrongly turned a legitimate 0 waste into 0.1.
+        const wasteVal = wasteMl !== undefined && wasteMl !== null && wasteMl !== '' ? parseFloat(wasteMl) : 0.1;
+        const totalMl = Math.round((parseFloat(doseMl) + wasteVal) * parseInt(syringeCount) * 100) / 100;
 
         // FIX(2026-04-22): Was hardcoded to LIKE '%30%' (Carrie Boyd only).
         // Now finds ANY active controlled substance vial with enough volume (FEFO order).
@@ -160,7 +166,7 @@ export async function POST(req: NextRequest) {
             DEFAULT_TESTOSTERONE_DEA_SCHEDULE,
             totalMl,
             stagedDate || new Date().toISOString().split('T')[0],
-            `STAGED PREFILL: ${patientName || 'Generic'} - ${syringeCount} syringes (${doseMl}ml + ${wasteMl}ml waste each)`
+            `STAGED PREFILL: ${patientName || 'Generic'} - ${syringeCount} syringes (${doseMl}ml + ${wasteVal}ml waste each)`
         ]);
 
         // Create staged dose record
@@ -188,7 +194,7 @@ export async function POST(req: NextRequest) {
             patientId || null,
             patientName || null,
             doseMl,
-            wasteMl || 0.1,
+            wasteVal,
             syringeCount,
             totalMl,
             vendor,
