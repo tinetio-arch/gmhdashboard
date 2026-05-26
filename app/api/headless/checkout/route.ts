@@ -451,14 +451,19 @@ export async function POST(request: NextRequest) {
         }
 
         // 9. If cart contains Supply Kit, create staff task for assembly
+        // FIX(2026-05-26): Include peptides ordered so staff pack the right amount of supplies (needles/syringes/swabs).
         if (pricedItems.some(i => i.sku === SUPPLY_KIT_SKU)) {
             try {
+                const otherItems = pricedItems.filter(i => i.sku !== SUPPLY_KIT_SKU);
+                const itemsList = otherItems.length
+                    ? '\n\nPeptides in this order:\n' + otherItems.map(i => `  • ${i.sku} — ${i.name} ×${i.quantity}`).join('\n')
+                    : '\n\nSupply Kit only — no other items.';
                 await query(
                     `INSERT INTO staff_tasks (title, description, priority, assigned_to, assigned_to_name, created_by, created_by_name)
                      VALUES ($1, $2, 'high', 'all', 'All Staff', 'system', 'Auto (Mobile Checkout)')`,
                     [
                         `Assemble Supply Kit for ${patient.full_name}`,
-                        `Ship to: ${address}, ${city}, ${state} ${zip}\nOrder: ${wooOrder?.orderNumber || 'pending'}\nStripe: ${paymentIntent.id}`,
+                        `Ship to: ${address}, ${city}, ${state} ${zip}\nOrder: ${wooOrder?.orderNumber || 'pending'}\nStripe: ${paymentIntent.id}${itemsList}`,
                     ]
                 );
                 console.log(`[Mobile Checkout] Staff task created for Supply Kit — ${patient.full_name}`);

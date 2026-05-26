@@ -343,16 +343,21 @@ export async function POST(request: NextRequest) {
     }
 
     // Supply Kit task (if in approved items)
+    // FIX(2026-05-26): Include peptides ordered so staff pack the right amount of supplies (needles/syringes/swabs).
     if (approvedItems.some(i => i.sku === SUPPLY_KIT_SKU)) {
       try {
         const shippingAddr = order.shipping_address || {};
         const addr = [shippingAddr.address_line1, shippingAddr.city, shippingAddr.state, shippingAddr.postal_code].filter(Boolean).join(', ');
+        const otherItems = approvedItems.filter(i => i.sku !== SUPPLY_KIT_SKU);
+        const itemsList = otherItems.length
+          ? '\n\nPeptides in this order:\n' + otherItems.map(i => `  • ${i.sku} — ${i.name} ×${i.quantity}`).join('\n')
+          : '\n\nSupply Kit only — no other items.';
         await query(
           `INSERT INTO staff_tasks (title, description, priority, assigned_to, assigned_to_name, created_by, created_by_name)
            VALUES ($1, $2, 'high', 'all', 'All Staff', $3, $4)`,
           [
             `Assemble Supply Kit for ${order.patient_name}`,
-            `Ship to: ${addr || 'See patient chart'}\nWC Order: ${wooOrderId || 'pending'}\nStripe: ${paymentIntent.id}`,
+            `Ship to: ${addr || 'See patient chart'}\nWC Order: ${wooOrderId || 'pending'}\nStripe: ${paymentIntent.id}${itemsList}`,
             staffEmail,
             'iPad Staff (Approved Pending)',
           ]

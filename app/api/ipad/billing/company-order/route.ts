@@ -327,15 +327,20 @@ export async function POST(request: NextRequest) {
     }
 
     // Supply Kit assembly task — same logic as patient ship-order
+    // FIX(2026-05-26): Include peptides ordered so staff pack the right amount of supplies (needles/syringes/swabs).
     if (items.some(i => i.sku === SUPPLY_KIT_SKU)) {
       try {
         const addr = patient.address_line1 ? `${patient.address_line1}, ${patient.city}, ${patient.state} ${patient.postal_code}` : 'See patient chart';
+        const otherItems = items.filter(i => i.sku !== SUPPLY_KIT_SKU);
+        const itemsList = otherItems.length
+          ? '\n\nPeptides in this order:\n' + otherItems.map(i => `  • ${i.sku} — ${i.name} ×${i.quantity}`).join('\n')
+          : '\n\nSupply Kit only — no other items.';
         await query(
           `INSERT INTO staff_tasks (title, description, priority, assigned_to, assigned_to_name, created_by, created_by_name)
            VALUES ($1, $2, 'high', 'all', 'All Staff', $3, $4)`,
           [
             `Assemble Supply Kit for ${patient.full_name}`,
-            `Ship to: ${addr}\nOrder: ${wooOrder.orderNumber} (Company-Paid)`,
+            `Ship to: ${addr}\nOrder: ${wooOrder.orderNumber} (Company-Paid)${itemsList}`,
             (user as any).email || 'staff',
             (user as any).display_name || 'iPad Staff',
           ]
