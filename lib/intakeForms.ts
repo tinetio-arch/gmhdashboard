@@ -16,6 +16,7 @@ import {
     type ClinicType,
     type ClientTypeKey,
 } from '@/lib/patientHealthieSync';
+import { markIntakeCompleteIfDone } from '@/lib/intakeGhlTagging';
 
 const HEALTHIE_API_URL = process.env.HEALTHIE_API_URL || 'https://api.gethealthie.com/graphql';
 const HEALTHIE_API_KEY = process.env.HEALTHIE_API_KEY || '';
@@ -307,6 +308,14 @@ export async function submitIntake(
                   WHERE submission_id = $2`,
                 [patientId, submissionId]
             );
+            // Fire-and-forget: tag the GHL contact once all brand forms are done.
+            // Errors are logged inside; never blocks or fails the submission.
+            markIntakeCompleteIfDone({
+                brandKey: def.brand_key,
+                patientId: patientId as string,
+                applicantEmail: input.applicantEmail,
+                applicantPhone: input.applicantPhone,
+            }).catch(() => { /* already logged inside */ });
             return {
                 submissionId,
                 status: 'local_only',
@@ -365,6 +374,18 @@ export async function submitIntake(
               WHERE submission_id = $5`,
             [patientId, healthieClientId, answerGroupId, status, submissionId]
         );
+
+        // Fire-and-forget: only tag if this submission was successfully captured
+        // (status is one of the "complete" states; 'error' never reaches here, but
+        // markIntakeCompleteIfDone double-checks the per-form status filter anyway).
+        if (patientId && status !== 'error') {
+            markIntakeCompleteIfDone({
+                brandKey: def.brand_key,
+                patientId,
+                applicantEmail: input.applicantEmail,
+                applicantPhone: input.applicantPhone,
+            }).catch(() => { /* already logged inside */ });
+        }
 
         return {
             submissionId,
