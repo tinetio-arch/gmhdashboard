@@ -3,6 +3,7 @@ import { requireApiUser, UnauthorizedError } from '@/lib/auth';
 import {
     getTodayCheckStatus,
     getSystemInventoryCounts,
+    getLastEodPhysicalCount,
     recordControlledSubstanceCheck,
     adjustInventoryToPhysicalCount,
     getCheckHistory,
@@ -60,6 +61,14 @@ export async function GET(request: NextRequest) {
             return NextResponse.json({ checks: history });
         }
 
+        if (action === 'prior-eod') {
+            // Last EOD physical count — used by morning check as the
+            // baseline ("did anything change overnight?") rather than
+            // comparing to a possibly-drifted live system count.
+            const eod = await getLastEodPhysicalCount();
+            return NextResponse.json({ priorEod: eod });
+        }
+
         return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
     } catch (error: any) {
         if (error instanceof UnauthorizedError) {
@@ -103,13 +112,22 @@ export async function POST(request: NextRequest) {
         // Require discrepancy notes if difference > 2ml.
         // FIX(2026-04-22): `discrepancyCb`/`discrepancyTopRx` were referenced without
         // being declared — any POST hitting the threshold branch would ReferenceError.
-        // Compute them from systemCounts vs. the physical totals (dose + waste + syringe).
+        // FIX(2026-05-26): Morning checks compare against last EOD physical count (the
+        // last known-good baseline) instead of the live system. Otherwise a system that
+        // has drifted from physical reality (e.g. shipment received but not yet logged
+        // via Inventory Management) flags a phantom morning discrepancy every day.
+        const checkType = input.checkType || 'morning';
+        const priorEod = checkType === 'morning' ? await getLastEodPhysicalCount() : null;
+
+        const baselineCbMl = priorEod ? priorEod.cbVialOnlyMl : systemCounts.cb30ml.totalMl;
+        const baselineTrMl = priorEod ? priorEod.trVialOnlyMl : systemCounts.topRx10ml.totalMl;
+
         const physicalTotalCb =
             input.physicalVialsCb30ml * 30 + (input.physicalPartialMlCb || 0);
         const physicalTotalTopRx =
             input.physicalVialsTopRx10ml * 10 + (input.physicalPartialMlTopRx || 0);
-        const discrepancyCb = Math.abs(systemCounts.cb30ml.totalMl - physicalTotalCb);
-        const discrepancyTopRx = Math.abs(systemCounts.topRx10ml.totalMl - physicalTotalTopRx);
+        const discrepancyCb = Math.abs(baselineCbMl - physicalTotalCb);
+        const discrepancyTopRx = Math.abs(baselineTrMl - physicalTotalTopRx);
 
         const DISCREPANCY_THRESHOLD = 2.0;
         if ((discrepancyCb > DISCREPANCY_THRESHOLD || discrepancyTopRx > DISCREPANCY_THRESHOLD) && !input.discrepancyNotes) {

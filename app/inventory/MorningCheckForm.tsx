@@ -15,6 +15,18 @@ interface SystemCounts {
     toprx_total_ml: number;
 }
 
+interface PriorEod {
+    checkDate: string;
+    performedAt: string;
+    performedByName: string;
+    cbFullVials: number;
+    cbPartialMl: number;
+    cbVialOnlyMl: number;
+    trFullVials: number;
+    trPartialMl: number;
+    trVialOnlyMl: number;
+}
+
 interface CheckStatus {
     completed: boolean;
     checkTime?: string;
@@ -31,6 +43,7 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
     // Status state
     const [checkStatus, setCheckStatus] = useState<CheckStatus | null>(null);
     const [systemCounts, setSystemCounts] = useState<SystemCounts | null>(null);
+    const [priorEod, setPriorEod] = useState<PriorEod | null>(null);
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -53,22 +66,27 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
     // Small differences (<=2ml) are auto-documented as waste
     // NOTE: Compare against vial-only totals (excluding staged/prefilled doses)
     //       because staff counts vials, not prefilled syringes
+    //
+    // FIX(2026-05-26): Morning checks compare against last EOD physical count (last
+    // known-good baseline). The live system can drift from physical reality when
+    // shipments arrive but haven't been logged in Inventory Management yet — that's
+    // a real-but-separate concern; without using the EOD baseline, every morning
+    // check showed a phantom discrepancy equal to the outstanding drift.
     const hasDiscrepancy = useMemo(() => {
         if (!systemCounts) return false;
 
         const physicalCbTotal = (parseInt(cbFull) || 0) * 30 + (parseFloat(cbPartial) || 0);
         const physicalTrTotal = (parseInt(trCount) || 0) * 10 + (parseFloat(trPartial) || 0);
 
-        // Vial-only system total = total in vials (excludes staged doses since those left the vials)
-        const systemCbVialOnly = systemCounts.carrieboyd_total_ml;
-        const systemTrVialOnly = systemCounts.toprx_total_ml;
+        const baselineCb = isMorning && priorEod ? priorEod.cbVialOnlyMl : systemCounts.carrieboyd_total_ml;
+        const baselineTr = isMorning && priorEod ? priorEod.trVialOnlyMl : systemCounts.toprx_total_ml;
 
-        const cbDiff = Math.abs(systemCbVialOnly - physicalCbTotal);
-        const trDiff = Math.abs(systemTrVialOnly - physicalTrTotal);
+        const cbDiff = Math.abs(baselineCb - physicalCbTotal);
+        const trDiff = Math.abs(baselineTr - physicalTrTotal);
 
         // Only require explanation for >2ml difference
         return cbDiff > 2.0 || trDiff > 2.0;
-    }, [systemCounts, cbFull, cbPartial, trCount, trPartial]);
+    }, [systemCounts, priorEod, isMorning, cbFull, cbPartial, trCount, trPartial]);
 
     // Load status on mount
     useEffect(() => {
@@ -78,27 +96,43 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
     async function loadStatus() {
         setLoading(true);
         try {
-            const [statusRes, countsRes] = await Promise.all([
+            const requests = [
                 fetch(withBasePath(`/api/inventory/controlled-check?action=status&type=${checkType}`)),
                 fetch(withBasePath('/api/inventory/controlled-check?action=counts'))
-            ]);
+            ];
+            // Morning checks compare against prior EOD physical (last known-good
+            // baseline) instead of the live system. See FIX(2026-05-26).
+            if (isMorning) {
+                requests.push(fetch(withBasePath('/api/inventory/controlled-check?action=prior-eod')));
+            }
 
-            const statusData = await statusRes.json();
-            const countsData = await countsRes.json();
+            const responses = await Promise.all(requests);
+            const statusData = await responses[0].json();
+            const countsData = await responses[1].json();
+            const priorEodData = isMorning && responses[2] ? (await responses[2].json()).priorEod : null;
 
             setCheckStatus(statusData);
             setSystemCounts(countsData);
+            setPriorEod(priorEodData);
 
-            // Pre-fill with system counts as default.
+            // Pre-fill defaults.
             // FIX(2026-05-12): Do NOT subtract staged_ml from partial_ml here.
             // partial_ml is computed from vials.remaining_volume_ml, and every
             // staging path (app/api/staged-doses, ipad/stage-dose, smart-dispense/stage)
             // already deducts the staged volume from remaining_volume_ml. Subtracting
             // again caused a guaranteed N ml ghost discrepancy whenever staged doses
-            // existed (e.g., TopRX showed "33 full + 0ml partial" while the vials
-            // actually held 19.6ml — staff submitted the pre-fill and got flagged
-            // for a discrepancy that wasn't real).
-            if (countsData) {
+            // existed.
+            //
+            // FIX(2026-05-26): For morning checks, prefer the prior EOD physical
+            // count as the pre-fill — overnight nothing changes, so the staff
+            // should be confirming "still the same as last night", not "still
+            // matches a possibly-drifted live system".
+            if (isMorning && priorEodData) {
+                setCbFull(String(priorEodData.cbFullVials || 0));
+                setCbPartial(String((priorEodData.cbPartialMl || 0).toFixed(1)));
+                setTrCount(String(priorEodData.trFullVials || 0));
+                setTrPartial(String((priorEodData.trPartialMl || 0).toFixed(1)));
+            } else if (countsData) {
                 setCbFull(String(countsData.carrieboyd_full_vials || 0));
                 setCbPartial(String((countsData.carrieboyd_partial_ml || 0).toFixed(1)));
                 setTrCount(String(countsData.toprx_full_vials ?? countsData.toprx_vials ?? 0));
@@ -244,16 +278,29 @@ export default function MorningCheckForm({ checkType = 'morning' }: Props) {
             )}
 
             <form onSubmit={handleSubmit}>
-                {/* System shows what it expects — vial-only counts, staged doses shown separately.
-                    FIX(2026-05-12): partial_ml is already net of staged volume (staging deducts
-                    from vials.remaining_volume_ml), so don't subtract staged here. */}
+                {/* What the morning check should match — prior EOD physical for morning,
+                    live system for evening. FIX(2026-05-12 + 2026-05-26). */}
                 <div style={{ backgroundColor: '#f8fafc', padding: '0.75rem 1rem', borderRadius: '0.5rem', marginBottom: '1rem' }}>
-                    <p style={{ margin: 0, fontSize: '0.85rem', color: '#64748b' }}>
-                        <strong>System expects:</strong>{' '}
-                        Carrie Boyd: {systemCounts?.carrieboyd_full_vials} full + {(systemCounts?.carrieboyd_partial_ml ?? 0).toFixed(1)}ml partial = {(systemCounts?.carrieboyd_total_ml ?? 0).toFixed(1)}ml
-                        {' | '}
-                        TopRX: {systemCounts?.toprx_full_vials ?? systemCounts?.toprx_vials} full{(systemCounts?.toprx_partial_ml ?? 0) > 0 ? ` + ${(systemCounts?.toprx_partial_ml ?? 0).toFixed(1)}ml partial` : ''} = {(systemCounts?.toprx_total_ml ?? 0).toFixed(1)}ml
-                    </p>
+                    {isMorning && priorEod ? (
+                        <>
+                            <p style={{ margin: 0, fontSize: '0.85rem', color: '#0f172a' }}>
+                                <strong>Expected (last EOD baseline):</strong>{' '}
+                                Carrie Boyd: {priorEod.cbFullVials} full + {priorEod.cbPartialMl.toFixed(1)}ml partial = {priorEod.cbVialOnlyMl.toFixed(1)}ml
+                                {' | '}
+                                TopRX: {priorEod.trFullVials} full{priorEod.trPartialMl > 0 ? ` + ${priorEod.trPartialMl.toFixed(1)}ml partial` : ''} = {priorEod.trVialOnlyMl.toFixed(1)}ml
+                            </p>
+                            <p style={{ margin: '0.25rem 0 0', fontSize: '0.75rem', color: '#64748b' }}>
+                                From EOD check {priorEod.checkDate} by {priorEod.performedByName}. Overnight should match unless after-hours activity occurred.
+                            </p>
+                        </>
+                    ) : (
+                        <p style={{ margin: 0, fontSize: '0.85rem', color: '#64748b' }}>
+                            <strong>System expects:</strong>{' '}
+                            Carrie Boyd: {systemCounts?.carrieboyd_full_vials} full + {(systemCounts?.carrieboyd_partial_ml ?? 0).toFixed(1)}ml partial = {(systemCounts?.carrieboyd_total_ml ?? 0).toFixed(1)}ml
+                            {' | '}
+                            TopRX: {systemCounts?.toprx_full_vials ?? systemCounts?.toprx_vials} full{(systemCounts?.toprx_partial_ml ?? 0) > 0 ? ` + ${(systemCounts?.toprx_partial_ml ?? 0).toFixed(1)}ml partial` : ''} = {(systemCounts?.toprx_total_ml ?? 0).toFixed(1)}ml
+                        </p>
+                    )}
                     {((systemCounts?.carrieboyd_staged_ml ?? 0) > 0 || (systemCounts?.toprx_staged_ml ?? 0) > 0) && (
                         <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: '#7c3aed', fontWeight: 500 }}>
                             💉 Prefilled doses (not in vials):{' '}
