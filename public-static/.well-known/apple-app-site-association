@@ -3,7 +3,7 @@
     "apps": [],
     "details": [
       {
-        "appID": "<APPLE_TEAM_ID>.com.nowoptimal.patient",
+        "appID": "8U5FU5S7M6.com.nowoptimal.patient",
         "paths": [
           "/ops/intake/*",
           "/ops/intake",
@@ -14,6 +14,6 @@
     ]
   },
   "webcredentials": {
-    "apps": ["<APPLE_TEAM_ID>.com.nowoptimal.patient"]
+    "apps": ["8U5FU5S7M6.com.nowoptimal.patient"]
   }
 }
