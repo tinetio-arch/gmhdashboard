@@ -22469,8 +22469,14 @@ function _wordsToDigits(s) {
     var map = { zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9,
         ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19,
         twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90, hundred:100 };
-    var normalized = s.toLowerCase().replace(/-/g, ' ').replace(/\bpoint\b/g, ' . ');
-    var tokens = normalized.split(/\s+/);
+    // Punctuation is broken out into its own tokens so "eighty," still hits the map.
+    // Without this, dictation with commas ("BP 120 over eighty, pulse seventy two")
+    // would leave "eighty" un-converted because the comma was glued to the word.
+    var normalized = s.toLowerCase()
+        .replace(/-/g, ' ')
+        .replace(/\bpoint\b/g, ' . ')
+        .replace(/([,;:!?])/g, ' $1 ');
+    var tokens = normalized.split(/\s+/).filter(Boolean);
     var out = [], i = 0;
     while (i < tokens.length) {
         var t = tokens[i];
@@ -22478,10 +22484,13 @@ function _wordsToDigits(s) {
             var num = map[t]; i++;
             while (i < tokens.length && tokens[i] in map) {
                 var nxt = map[tokens[i]];
+                var combined = true;
                 if (nxt === 100 && num) num *= 100;
-                else if (nxt < 10 && num % 10 === 0 && num > 0) num += nxt;
-                else if (num > 0 && nxt < 100 && (num < 100)) num = num * 100 + nxt; // "one twenty" → 120
-                else num += nxt;
+                else if (nxt < 10 && num % 10 === 0 && num > 0) num += nxt;     // 90 + 8 = 98
+                else if (num > 0 && nxt < 100 && num < 100) num = num * 100 + nxt; // "one twenty" → 120
+                else if (num >= 100 && num % 100 === 0 && nxt < 100) num += nxt;   // 100 + 80 = 180
+                else combined = false; // "one twenty eighty" — stop, leave nxt for next pass
+                if (!combined) break;
                 i++;
             }
             out.push(String(num));
@@ -22512,9 +22521,11 @@ function parseDictatedVitalsToFields(raw) {
         }
     };
     // Blood pressure — labeled form first ("BP 120 over 80", "blood pressure 120/80",
-    // "BP 120 to 80"); fall back to a bare "X/Y" or "X over Y" only if the labeled
-    // form misses, so we don't grab "weight 185 over the limit"-style noise.
-    var bp = text.match(/\b(?:bp|blood\s*pressure)\b[^0-9]{0,20}(\d{2,3})\s*(?:\/|over|on|to)\s*(\d{2,3})/);
+    // "BP 120 to 80", "BP 120, 80", "BP 120 80"). Falls back to a bare "X/Y" or
+    // "X over Y" only if labeled form misses, so we don't grab "weight 185 over the
+    // limit"-style noise. The looser " " / "," gap is only accepted right after a BP
+    // label (so we don't sweep up "pulse 72 temp 98" as a BP pair).
+    var bp = text.match(/\b(?:bp|blood\s*pressure)\b[^0-9]{0,20}(\d{2,3})\s*(?:\/|over|on|to|,|\s)\s*(\d{2,3})/);
     if (!bp) bp = text.match(/(?:^|\s)(\d{2,3})\s*(?:\/|over)\s*(\d{2,3})\b/);
     if (bp) setIfEmpty('vBP', bp[1] + '/' + bp[2]);
     // Heart rate — explicit label only. Bare "p" was matching the P in "BP" → wrong value.
@@ -22527,7 +22538,8 @@ function parseDictatedVitalsToFields(raw) {
     if (rr) setIfEmpty('vRR', rr[1]);
     var spo2 = text.match(/\b(?:sp[o0]2|sat(?:uration)?|o2\s*sat|oxygen(?:\s*sat(?:uration)?)?)\b\s*(?:of|is|at)?\s*(\d{2,3})\s*%?/);
     if (spo2) setIfEmpty('vSpO2', spo2[1]);
-    var wt = text.match(/\b(?:weight|wt)\b\s*(?:of|is|at)?\s*(\d{2,4}(?:\.\d+)?)/);
+    // "weighs" / "weighing" / "weighed" — dictators rarely say the noun "weight".
+    var wt = text.match(/\b(?:weight|wt|weighs|weighing|weighed)\b\s*(?:in\s*at|of|is|at)?\s*(\d{2,4}(?:\.\d+)?)/);
     if (wt) {
         var w = parseFloat(wt[1]);
         if (w >= 40 && w <= 800) setIfEmpty('vWeight', wt[1]);
