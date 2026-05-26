@@ -6558,6 +6558,54 @@ function renderChartPanel(content) {
                 : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No vitals on file</div>`}
         </div>
 
+        <!-- APPOINTMENTS (always visible — Phil request 2026-05-26, row 20260519-224757-e2c8:
+             previously buried inside Notes tab below 700+px of other content, so users couldn't
+             scroll to them; surface them alongside Allergies/Diagnoses/Meds/Vitals so the
+             next visit + recent history is visible immediately on chart open) -->
+        ${(() => {
+            const apptList = d.healthie_appointments || [];
+            const apptMs = (a) => { const t = new Date(a && a.date ? a.date : 0).getTime(); return isNaN(t) ? 0 : t; };
+            const nowMs = Date.now();
+            const upcoming = apptList.filter(a => apptMs(a) >= nowMs).sort((a, b) => apptMs(a) - apptMs(b));
+            const past = apptList.filter(a => apptMs(a) < nowMs).sort((a, b) => apptMs(b) - apptMs(a));
+            const fmtApptDate = (dt) => {
+                if (!dt) return '—';
+                try {
+                    const dd = new Date(dt);
+                    if (isNaN(dd.getTime())) return '—';
+                    return dd.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: CLINIC_TIMEZONE });
+                } catch { return '—'; }
+            };
+            const apptRow = (a, isUpcoming) => {
+                const typeName = (a.appointment_type && a.appointment_type.name) || 'Appointment';
+                const provName = (a.provider && a.provider.full_name) || '';
+                const accent = isUpcoming ? 'border-left:2px solid var(--cyan);' : 'border-left:2px solid rgba(255,255,255,0.08);';
+                return `<div style="padding:4px 8px; background:var(--surface-2); border-radius:6px; ${accent} display:flex; align-items:center; gap:8px;">
+                    <div style="font-size:10px; color:var(--text-tertiary); min-width:110px;">${fmtApptDate(a.date)}</div>
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:11px; color:var(--text-primary); font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${typeName}</div>
+                        ${provName ? `<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${provName}${a.pm_status ? ' · ' + a.pm_status : ''}</div>` : (a.pm_status ? `<div style="font-size:9px; color:var(--text-tertiary);">${a.pm_status}</div>` : '')}
+                    </div>
+                </div>`;
+            };
+            const upcomingPreview = upcoming.slice(0, 2);
+            const pastPreview = past.slice(0, 3);
+            const extra = (upcoming.length - upcomingPreview.length) + (past.length - pastPreview.length);
+            return `
+        <div id="appointments-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>📅 Appointments (${apptList.length})</span>
+                ${apptList.length > 0 ? `<button onclick="switchChartTab('notes'); setTimeout(() => { var el = document.getElementById('chartTabContent'); if (el) { var sec = el.querySelector('.chart-section'); if (sec) sec.scrollIntoView({behavior:'smooth', block:'start'}); } }, 50);" style="font-size:9px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">View all →</button>` : ''}
+            </div>
+            ${apptList.length > 0 ? `
+            <div style="display:flex; flex-direction:column; gap:3px;">
+                ${upcomingPreview.length > 0 ? `<div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700;">Upcoming</div>${upcomingPreview.map(a => apptRow(a, true)).join('')}` : '<div style="font-size:10px; color:var(--text-tertiary); font-style:italic;">No upcoming appointments</div>'}
+                ${pastPreview.length > 0 ? `<div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; margin-top:2px;">Recent</div>${pastPreview.map(a => apptRow(a, false)).join('')}` : ''}
+                ${extra > 0 ? `<div style="font-size:10px; color:var(--text-tertiary); padding:2px 4px;">+ ${extra} more</div>` : ''}
+            </div>` : '<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No appointments on file</div>'}
+        </div>`;
+        })()}
+
         <!-- Controlled Substance Alert (if any) -->
         ${renderControlledSubstanceAlert(d)}
 
@@ -10206,7 +10254,7 @@ function saveSupplyConfig(itemId) {
     // Mark source as 'manual' when the user touches cost
     if (unit_cost !== null) payload.unit_cost_source = 'manual';
 
-    apiFetch(`/ops/api/supplies/${itemId}`, {
+    apiFetch(`/ops/api/supplies/${itemId}/`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -10224,7 +10272,7 @@ let mckMappingState = null;  // { items: [...], totals: {...}, filter: 'all' }
 async function openMckessonMappingModal() {
     showToast('Loading McKesson suggestions…');
     try {
-        const data = await apiFetch('/ops/api/supplies/mapping');
+        const data = await apiFetch('/ops/api/supplies/mapping/');
         mckMappingState = {
             items: data.items || [],
             skipped: data.skipped || [],
@@ -10379,7 +10427,7 @@ function closeMckMapping() {
 
 async function confirmMckMatch(curatedId, mckessonRowId) {
     try {
-        await apiFetch('/ops/api/supplies/mapping', {
+        await apiFetch('/ops/api/supplies/mapping/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ curatedId, mckessonRowId, action: 'merge' }),
@@ -10403,7 +10451,7 @@ async function confirmMckMatch(curatedId, mckessonRowId) {
 
 async function skipMckMatch(curatedId) {
     try {
-        await apiFetch('/ops/api/supplies/mapping', {
+        await apiFetch('/ops/api/supplies/mapping/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ curatedId, action: 'skip' }),
@@ -10470,7 +10518,7 @@ async function saveDifferentSupplier(curatedId) {
     const cost = costRaw === '' ? null : parseFloat(costRaw);
     if (cost !== null && (isNaN(cost) || cost < 0)) { showToast('Cost must be a number ≥ 0 (or blank)'); return; }
     try {
-        await apiFetch('/ops/api/supplies/mapping', {
+        await apiFetch('/ops/api/supplies/mapping/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -10509,7 +10557,7 @@ function recountMckMappingTotals() {
 
 async function undoSkip(curatedId) {
     try {
-        await apiFetch('/ops/api/supplies/mapping', {
+        await apiFetch('/ops/api/supplies/mapping/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ curatedId, action: 'undo-skip' }),
@@ -10517,7 +10565,7 @@ async function undoSkip(curatedId) {
         showToast('Restored to McKesson matching — refresh modal to recompute');
         // Easiest correct UX: refetch the whole modal so the item shows up in the
         // appropriate confidence bucket again with re-scored candidates.
-        const data = await apiFetch('/ops/api/supplies/mapping');
+        const data = await apiFetch('/ops/api/supplies/mapping/');
         mckMappingState.items = data.items || [];
         mckMappingState.skipped = data.skipped || [];
         mckMappingState.totals = data.totals || {};
@@ -10635,7 +10683,7 @@ function setInvoicesSearch(q) {
 async function loadInvoices(forceSync = false) {
     try {
         if (forceSync) showToast('Pulling latest from McKesson…');
-        const data = await apiFetch('/ops/api/mckesson/invoices');
+        const data = await apiFetch('/ops/api/mckesson/invoices/');
         invoicesData = data;
         const c = document.getElementById('inventoryContent');
         if (c) c.innerHTML = renderInvoicesSection();
@@ -10646,7 +10694,7 @@ async function loadInvoices(forceSync = false) {
 
 async function openInvoiceDetail(id) {
     try {
-        const data = await apiFetch(`/ops/api/mckesson/invoices/${id}`);
+        const data = await apiFetch(`/ops/api/mckesson/invoices/${id}/`);
         renderInvoiceDetailModal(data);
     } catch (e) {
         showToast('Failed to load invoice: ' + e.message);
@@ -10747,7 +10795,7 @@ async function saveInvoiceOrderIdAndFetch(invoiceRowId) {
     const orderId = (inp?.value || '').trim();
     if (!orderId) { showToast('Order ID required'); return; }
     try {
-        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}`, {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ order_id: orderId }),
@@ -10839,7 +10887,7 @@ async function saveManualLines(invoiceRowId) {
     }).filter(l => l.product_id || l.product_description || l.price);
     if (lines.length === 0) { showToast('No line items entered'); return; }
     try {
-        await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}`, {
+        await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ manual_lines: lines }),
@@ -10857,7 +10905,7 @@ async function saveManualLines(invoiceRowId) {
 
 async function previewReorder(invoiceRowId) {
     try {
-        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder`, {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ dryRun: true }),
@@ -10914,7 +10962,7 @@ function closeReorderPreview() {
 async function submitReorder(invoiceRowId) {
     if (!confirm('Submit a real McKesson order? This will be charged to your account.')) return;
     try {
-        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder`, {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ dryRun: false }),
@@ -11050,6 +11098,12 @@ function setNewOrderQty(idx, v) {
     // Don't re-render on every keystroke; the input keeps the value
 }
 
+// FIX(2026-05-20): all McKesson/supply mutation calls below MUST use a trailing slash.
+// next.config.js has trailingSlash:true, so a slash-less POST/PATCH gets a 308 redirect.
+// iOS Safari/WebKit DROPS the request body when following a 308 (proven in nginx logs:
+// POST /supplies/mapping -> 308 -> /supplies/mapping/ arrives with empty body -> 500/400).
+// That was why "New Order" appeared dead on the iPad — the dryRun preview reached the
+// route with no items[] and 400'd. curl preserves the body on 308, which masked it.
 async function previewNewOrder() {
     if (newOrderCart.length === 0) { showToast('Add at least one item to preview'); return; }
     try {
@@ -11064,7 +11118,7 @@ async function previewNewOrder() {
             dryRun: true,
         };
         showToast('Building preview…');
-        const r = await apiFetch('/ops/api/ipad/mckesson/orders', {
+        const r = await apiFetch('/ops/api/ipad/mckesson/orders/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -11096,7 +11150,7 @@ async function submitNewOrder() {
             dryRun: false,
             idempotencyKey: newOrderIdempotencyKey,
         };
-        const r = await apiFetch('/ops/api/ipad/mckesson/orders', {
+        const r = await apiFetch('/ops/api/ipad/mckesson/orders/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
