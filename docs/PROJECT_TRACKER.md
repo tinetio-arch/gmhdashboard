@@ -10,49 +10,49 @@
 ---
 
 <!-- AUTOGEN:START — do not edit between these markers; overwritten by scripts/refresh-project-tracker.sh -->
-## LIVE SYSTEM SNAPSHOT (verified 2026-05-21)
+## LIVE SYSTEM SNAPSHOT (verified 2026-05-26)
 
-_Auto-regenerated 2026-05-21 06:00:02 MST by `scripts/refresh-project-tracker.sh`._
+_Auto-regenerated 2026-05-26 06:00:01 MST by `scripts/refresh-project-tracker.sh`._
 
 | Metric | Value | Source |
 |---|---|---|
-| Total patients | **505** | `SELECT COUNT(*) FROM patients` |
-| ↳ active | 395 | `status_key='active'` |
-| ↳ active_pending | 27 | `status_key='active_pending'` |
-| ↳ inactive | 76 | `status_key='inactive'` |
-| ↳ hold_payment_research | 5 | `status_key='hold_payment_research'` |
+| Total patients | **510** | `SELECT COUNT(*) FROM patients` |
+| ↳ active | 393 | `status_key='active'` |
+| ↳ active_pending | 26 | `status_key='active_pending'` |
+| ↳ inactive | 78 | `status_key='inactive'` |
+| ↳ hold_payment_research | 11 | `status_key='hold_payment_research'` |
 | ↳ inactive_payment_research | 2 | `status_key='inactive_payment_research'` |
-| healthie_clients rows | 518 | (>patients because legacy duplicate links exist) |
+| healthie_clients rows | 523 | (>patients because legacy duplicate links exist) |
 | patient_qb_mapping rows | 192 | QuickBooks mappings |
-| patients w/ ghl_contact_id | 499 | `ghl_contact_id IS NOT NULL` (legacy mapping table dropped 2026-05-19) |
+| patients w/ ghl_contact_id | 504 | `ghl_contact_id IS NOT NULL` (legacy mapping table dropped 2026-05-19) |
 | memberships (active) | 32 | `status='active'` |
-| lab_orders (total) | 179 | — |
+| lab_orders (total) | 180 | — |
 | lab_review_queue (pending) | 0 | — |
-| dispenses (total) | 850 | — |
-| dea_transactions | 902 | — |
-| staged_doses (staged) | 6 | — |
+| dispenses (total) | 864 | — |
+| dea_transactions | 912 | — |
+| staged_doses (staged) | 1 | — |
 | payment_issues (open) | 0 | `resolved_at IS NULL` |
 | bioscope_authorized (active) | 1 | `revoked_at IS NULL` |
 | Postgres tables (public) | **125** | `information_schema.tables` |
 | PM2 services | **0** total, **0** online | `pm2 jlist` |
 | Cron jobs (active) | **38** | `crontab -l` (non-comment, non-blank) |
-| Disk used | **72%** (29G free of 100G) | `df -h /` |
-| Git branch | `master` @ `3815292` (8 dirty file(s)) | `git status --porcelain` |
-| Orphan Claude branches | 42 | `git branch --list 'claude/*'` |
+| Disk used | **73%** (28G free of 100G) | `df -h /` |
+| Git branch | `master` @ `4766aa8` (8 dirty file(s)) | `git status --porcelain` |
+| Orphan Claude branches | 43 | `git branch --list 'claude/*'` |
 | Active coordinator sessions | 12 | `~/.claude/coord/registry.json` |
 
 ### Patient distribution by `client_type_key`
 | Type | Count |
 |---|---|
-| nowmenshealth | 323 |
+| nowmenshealth | 325 |
 | nowlongevity | 43 |
-| nowprimarycare | 29 |
+| nowprimarycare | 30 |
 | sick_visit | 27 |
 | primecare_premier_50_month | 20 |
 | approved_disc_pro_bono_pt | 13 |
 | qbo_tcmh_180_month | 12 |
+| (null) | 10 |
 | primecare_elite_100_month | 10 |
-| (null) | 8 |
 | qbo_f_f_fr_veteran_140_month | 6 |
 | jane_f_f_fr_veteran_140_month | 5 |
 | other | 4 |
@@ -62,7 +62,14 @@ _Auto-regenerated 2026-05-21 06:00:02 MST by `scripts/refresh-project-tracker.sh
 <!-- AUTOGEN:END -->
 
 
+
+
+
+
+
 ### Recently shipped
+- **2026-05-26 — iPad "New Order" McKesson button fix (dispatch row 20260520-231517-ec86).** Phil reported the iPad supply-inventory "📦 New Order" button does nothing. Deep-dive of the McKesson supply stack (catalog → availability sync → invoices → ordering): backend, data, code, and modal all healthy — 67 purchasable items mapped, `MCKESSON_ALLOW_PRODUCTION_ORDERS=true`, dryRun preview returns full draft when called correctly. **Root cause: `next.config.js` has `trailingSlash:true`, and the iPad's `previewNewOrder` / `submitNewOrder` POST'd to `/ops/api/ipad/mckesson/orders` (no trailing slash) → Next 308-redirects to `/orders/`. iOS Safari/WebKit drops the POST body when following a 308**, so the redirected request arrived with empty body → route returned 400 `items[] is required` → modal silently failed. Proven directly in nginx access logs: `POST /ops/api/supplies/mapping → 308 → /supplies/mapping/ → 500` (same bug, different endpoint — and "Map to McKesson" was also broken). curl preserves the body on 308, which is why backend tests passed. **Fix**: added trailing slashes to the entire McKesson/supply mutation cluster in `public/ipad/app.js` — 11 calls across New Order (2), Map-to-McKesson (4), supplies PATCH (1), invoice edit (2), invoice reorder (2), plus 4 GETs for consistency. Pre-commit hook auto-ran `sync-mobile.sh` and re-bundled `app.86db2dee.js`. Debug 27/27, pre-deploy SAFE. Deployed to prod (master `3460e2b` + merge, local only — not pushed to origin). Verified live: `curl https://nowoptimal.com/ops/ipad/app.js | grep "/ops/api/ipad/mckesson/orders/'"` → 2 matches.
+- **2026-05-26 — Acosta duplicate-Healthie login fix (claude-acosta session).** Chris Acosta could not log into the patient app because two Healthie users shared his email: `12212961` (active, KEEPER, holds payments + Stripe cus_UE71PDOvYxBjAJ + 3 succeeded payments totaling $610 + 3 TRT dispenses + 5 peptides + active lab cadence) and `12741471` (archived 2026-01-20, "Jesus Cris Acosta Acosta" — the dup audrey@nowoptimal.com created in our DB on 2026-04-09; zero payments / zero dispenses / zero memberships locally). Healthie's email-based login lookup was ambiguous. Comparison record `12792633` (a third Cris dup) showed Healthie's own dedup convention: rename archived dup emails to `<hash>@gethealthie.com` — but `12741471` missed that step in January. **Fix** (minimal, reversible): renamed Healthie 12741471 email → `archived-hc12741471@gethealthie.com` via `updateClient`, mirrored on local DUP `patients.email` (status_key=inactive so demographics sync skips it anyway). KEEPER untouched. **Verified (33/33 independent checks)**: Healthie search for `teteacosta12111987@gmail.com` returns exactly one user (12212961, active=true); KEEPER's payment_method/stripe_customer_id/3 payments/3 TRT/3 DEA/5 peptide/labs all intact; DUP retired locally still has `Inactive (Merged)` + zero financial footprint; healthie_clients junction still maps 12741471 → KEEPER for inbound webhook routing. Side-effect noted: post-rename, DUP's `last_sign_in_at` cleared from 2026-05-24 → null (confirming Healthie was pooling sign-in across same-email users — the root mechanism behind the login failure). Audit: `agent_action_log` id 166 (category=patient_data_dedup). Backup: `.tmp/acosta-dedup/backup-latest.json`. Reversal: `node /home/ec2-user/gmhdashboard/.tmp/acosta-dedup/06-reversal.js --execute`.
 - **2026-05-21 — TRT staged-dose "only 0.5ml saves" (dispatch row 20260520-235955-1d54).** Reported bug was already fixed in running prod — root cause was the pre-04-22 `LIKE '%30%'` vial filter (staging only saw Carrie Boyd 30mL vials); with those depleted, only a 0.5mL dose found a qualifying vial and larger doses hit a *silent* 400. Live-tested API (0.5/0.7/1.0 → all 200, inventory reversed after). Shipped two hardening fixes: (1) `StagedDosesManager.tsx` now surfaces the API's real error ("Not enough medication in vials…") instead of generic "Failed to save staged dose" — that hidden message was why staff couldn't diagnose; (2) `staged-doses/route.ts` rounds `totalMl` to 2dp (kills `3.1999999999999997` float artifacts + spurious volume-check edge case) and fixes `wasteMl || 0.1` turning a legit 0 waste into 0.1. Deployed to prod (master 30bab59, local only — not pushed to origin). Verified live: dose 0.7 now returns `totalMl: 3.2`.
 - **2026-05-20 — iPad patient-chart Appointments (dispatch row 1_...194086).** Fixed recurring "appointments missing / files need upload dates" task. Files/docs already showed upload dates (no change). Appointments section was collapsed + buried in Notes tab + gated on `hAppts>0` so it vanished for patients with no upcoming appt. Moved to top of chart, expanded, always-visible; split into Upcoming/Past. Root API fix: `patient-chart` appointments query `is_active:true` → `filter:"all"` (Healthie was upcoming-only). Deployed to prod (master 576c6d1, local only — not pushed to origin).
 
