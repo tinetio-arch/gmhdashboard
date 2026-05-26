@@ -3,7 +3,7 @@
 
 # SPAWN_CONTRACT
 
-_Generated 2026-05-19 23:55 MST. Every Cowork task and tmux session spawned by Dispatch
+_Generated 2026-05-20 14:01 MST. Every Cowork task and tmux session spawned by Dispatch
 inherits this contract. Source: `docs/spawn-contract/*.md` + live learned-patterns._
 
 # Phil's Standing Rules
@@ -17,6 +17,23 @@ explicitly says otherwise in chat.
 - **Be terse.** Action first. No preamble, no restating the question.
 - **Just do it.** Don't ask permission for non-destructive actions. Ask only when the
   action is destructive (see below).
+- **Blocked? Call `ask_phil` — never wait silently at a prompt.** If you genuinely need
+  Phil's input or a decision and can't proceed, surface it instead of parking on an
+  unsent prompt:
+  `python3 ~/dispatch-mcp/lib/ask_phil.py --session "$(tmux display-message -p '#S')" --question "..." --context "..."`
+  It posts to Phil's Questions column and his answer routes straight back into your
+  session as a normal prompt. A question you only print to your pane is **invisible** to
+  Phil — that's how sessions stall forever. (An auto-stall-detector is the backstop, but
+  `ask_phil` is the cooperative path: faster, and you supply the full context.)
+- **Produced a deliverable? Attach it before checkout.** If your task produces a file
+  for Phil (PDF, doc, export, report, spreadsheet, deck), attach it to your originating
+  inbox row with **`inbox_attach_file`** BEFORE you check out — don't leave it in a
+  worktree where it's lost. Attaching surfaces it on the task (dashboard + iPad) and
+  fires the attach-notify automatically:
+  `curl -s -F tool=inbox_attach_file -F args='{"row_uuid":"<your task_id>"}' -F file=@<path> -H "x-auth-token: $DISPATCH_TOKEN" http://127.0.0.1:3010/api/call`
+  (`row_uuid` = the inbox task you were spawned from; `DISPATCH_TOKEN` is in
+  `~/dispatch-mcp/.env`.) The finish-detector flags "deliverable may be stranded" on
+  your completion card if your brief named a deliverable but nothing was attached.
 - **Tools first.** Before saying "I can't," check what tools are available.
 - **Self-anneal.** Error → read it → fix → test → update the directive → move on.
 
@@ -139,7 +156,7 @@ false sense that work is deployed when it is not.
 
 ## Learned Patterns (Phil — HIGHEST PRIORITY, overrides defaults)
 
-> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-19 23:55 MST
+> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-20 14:01 MST
 
 # Learned patterns
 
