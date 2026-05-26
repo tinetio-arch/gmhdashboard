@@ -1,0 +1,19 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "<APPLE_TEAM_ID>.com.nowoptimal.patient",
+        "paths": [
+          "/ops/intake/*",
+          "/ops/intake",
+          "/intake/*",
+          "/intake"
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["<APPLE_TEAM_ID>.com.nowoptimal.patient"]
+  }
+}
