@@ -264,6 +264,89 @@ Lab Report Text:
             return m[0], m[1]
         return None, 0
 
+    # ---------------------------------------------------------------------
+    # HARD DOB GATE (PATIENT SAFETY)
+    # FIX(2026-05-20): Lab PDFs were matched to patients by fuzzy NAME only.
+    # DOB from the PDF was passed into match_to_healthie() but never used as a
+    # gate — it was at most a soft tiebreaker inside the Healthie fallback
+    # searches. A name collision with a DIFFERENT DOB (or a candidate whose DOB
+    # we can't verify) could pre-fill a high-confidence Healthie match that a
+    # reviewer rubber-stamps, crossing a lab result onto the wrong patient
+    # (the "Snyder lab crossover"). The gate below makes DOB mandatory:
+    #   - PDF DOB missing/unparseable  -> route to human review (dob_missing)
+    #   - candidate DOB missing/unknown -> route to human review (dob_unverifiable)
+    #   - PDF DOB != candidate DOB      -> route to human review (dob_mismatch)
+    #   - name match AND DOB match      -> auto-assign (the ONLY safe path)
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_dob(raw) -> Optional[str]:
+        """Normalize a DOB from any of the formats we see (PDF 'MM/DD/YYYY',
+        Snowflake/Postgres 'YYYY-MM-DD', datetime strings with a time component)
+        to a canonical 'YYYY-MM-DD'. Returns None if it can't be parsed or is a
+        sentinel like 'Unknown'."""
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s or s.lower() in ('unknown', 'none', 'null', 'n/a'):
+            return None
+        for c in (s, s[:10]):  # try full string, then leading date of a datetime
+            for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y', '%Y/%m/%d'):
+                try:
+                    return datetime.strptime(c, fmt).strftime('%Y-%m-%d')
+                except Exception:
+                    continue
+        return None
+
+    def _route_to_review(self, reason: str, matched_name, top_matches,
+                         pdf_dob, candidate_dob, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Build a deliberate NO-AUTO-ASSIGN result: patient_id/healthie_id are
+        None so add_to_review_queue() stores no linked patient and the human
+        reviewer must select the patient manually. Logs one clear line per case."""
+        logger.warning(
+            f"DOB GATE: routing lab to human review (reason={reason}) — "
+            f"name_match='{matched_name}' pdf_dob={pdf_dob!r} candidate_dob={candidate_dob!r}. "
+            f"NOT auto-assigning."
+        )
+        result = {
+            'patient_id': None,
+            'healthie_id': None,
+            'confidence': 0.0,
+            'matched_name': matched_name,
+            'top_matches': top_matches or [],
+            'review_required': True,
+            'review_reason': reason,
+        }
+        if extra:
+            result.update(extra)
+        return result
+
+    def _dob_gate(self, match_result: Dict[str, Any], pdf_dob) -> Dict[str, Any]:
+        """HARD gate applied to every would-be positive match. `match_result`
+        must carry 'candidate_dob' (the DOB of the patient we're about to assign
+        to), 'matched_name', and 'top_matches'. Returns match_result unchanged
+        ONLY when the PDF DOB is present AND equals the candidate DOB; otherwise
+        returns a route-to-review no-match dict."""
+        candidate_dob = match_result.get('candidate_dob')
+        matched_name = match_result.get('matched_name')
+        top_matches = match_result.get('top_matches', [])
+        norm_pdf = self._normalize_dob(pdf_dob)
+        norm_cand = self._normalize_dob(candidate_dob)
+
+        if norm_pdf is None:
+            return self._route_to_review('dob_missing', matched_name, top_matches, pdf_dob, candidate_dob)
+        if norm_cand is None:
+            return self._route_to_review('dob_unverifiable', matched_name, top_matches, pdf_dob, candidate_dob)
+        if norm_pdf != norm_cand:
+            return self._route_to_review('dob_mismatch', matched_name, top_matches, pdf_dob, candidate_dob)
+
+        # Name matched AND DOB matched — the only path that may auto-assign.
+        match_result.pop('candidate_dob', None)  # internal-only, don't leak into queue item
+        logger.info(
+            f"DOB GATE PASSED: name+DOB match for '{matched_name}' (dob={norm_pdf}) — auto-assign OK"
+        )
+        return match_result
+
     def _lookup_postgres_active(self, normalized_name: str, dob: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Fuzzy-match against the Postgres `patients` table (active only).
         Returns {'healthie_id','name','dob','patient_id'} or None.
@@ -449,14 +532,15 @@ Lab Report Text:
                 api_match = self._search_healthie_direct_active(normalized_name, dob)
                 if api_match:
                     logger.info(f"Matched via direct Healthie search (no Snowflake candidates): {api_match['name']} ({api_match['id']})")
-                    return {
+                    return self._dob_gate({
                         'patient_id': api_match['id'],
                         'healthie_id': api_match['id'],
                         'confidence': 0.95,
                         'matched_name': api_match['name'],
                         'top_matches': [],
-                        'source': 'healthie_api'
-                    }
+                        'source': 'healthie_api',
+                        'candidate_dob': api_match.get('dob'),
+                    }, dob)
                 return {'patient_id': None, 'confidence': 0.0, 'matched_name': None, 'top_matches': []}
 
             from thefuzz import fuzz, process
@@ -502,15 +586,16 @@ Lab Report Text:
                                 f"Replaced archived id {matched_id} with Postgres active id "
                                 f"{pg_match['healthie_id']} ({pg_match['name']})"
                             )
-                            return {
+                            return self._dob_gate({
                                 'patient_id': pg_match['healthie_id'],
                                 'healthie_id': pg_match['healthie_id'],
                                 'confidence': max(score / 100.0, 0.9),
                                 'matched_name': pg_match['name'],
                                 'top_matches': top_matches_serializable,
                                 'source': 'postgres_fallback',
-                                'replaced_archived_id': str(matched_id)
-                            }
+                                'replaced_archived_id': str(matched_id),
+                                'candidate_dob': pg_match.get('dob'),
+                            }, dob)
                     # Rescue tier B: direct Healthie API search restricted to active.
                     api_match = self._search_healthie_direct_active(normalized_name, dob)
                     if api_match:
@@ -518,15 +603,16 @@ Lab Report Text:
                             f"Replaced archived id {matched_id} with Healthie API active id "
                             f"{api_match['id']} ({api_match['name']})"
                         )
-                        return {
+                        return self._dob_gate({
                             'patient_id': api_match['id'],
                             'healthie_id': api_match['id'],
                             'confidence': max(score / 100.0, 0.9),
                             'matched_name': api_match['name'],
                             'top_matches': top_matches_serializable,
                             'source': 'healthie_api_fallback',
-                            'replaced_archived_id': str(matched_id)
-                        }
+                            'replaced_archived_id': str(matched_id),
+                            'candidate_dob': api_match.get('dob'),
+                        }, dob)
                     # No active dup found anywhere — return no-match rather than the archived id.
                     logger.error(
                         f"Archived id={matched_id} matched and no active dup found for "
@@ -561,23 +647,25 @@ Lab Report Text:
                                 f"Low-confidence Snowflake match ({score}%) → upgraded via Postgres "
                                 f"to {pg_match['name']} ({pg_match['healthie_id']})"
                             )
-                            return {
+                            return self._dob_gate({
                                 'patient_id': pg_match['healthie_id'],
                                 'healthie_id': pg_match['healthie_id'],
                                 'confidence': 0.9,
                                 'matched_name': pg_match['name'],
                                 'top_matches': top_matches_serializable,
                                 'source': 'postgres_low_confidence_rescue',
-                                'snowflake_below_threshold_match': best_match_name
-                            }
+                                'snowflake_below_threshold_match': best_match_name,
+                                'candidate_dob': pg_match.get('dob'),
+                            }, dob)
 
-                return {
+                return self._dob_gate({
                     'patient_id': best_patient['id'],
                     'confidence': score / 100.0,
                     'matched_name': best_match_name,
                     'healthie_id': best_patient.get('healthie_id'),
-                    'top_matches': top_matches_serializable
-                }
+                    'top_matches': top_matches_serializable,
+                    'candidate_dob': best_patient.get('dob'),
+                }, dob)
 
             return {'patient_id': None, 'confidence': 0.0, 'matched_name': None, 'top_matches': []}
 
