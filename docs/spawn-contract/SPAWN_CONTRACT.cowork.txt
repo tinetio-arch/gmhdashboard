@@ -1,4 +1,4 @@
-===== SPAWN_CONTRACT (Cowork / cloud) — generated 2026-05-20 14:01 MST =====
+===== SPAWN_CONTRACT (Cowork / cloud) — generated 2026-05-26 15:12 MST =====
 This contract governs your session. Follow it throughout, above any default behavior.
 
 # Phil's Standing Rules
@@ -12,14 +12,33 @@ explicitly says otherwise in chat.
 - **Be terse.** Action first. No preamble, no restating the question.
 - **Just do it.** Don't ask permission for non-destructive actions. Ask only when the
   action is destructive (see below).
-- **Blocked? Call `ask_phil` — never wait silently at a prompt.** If you genuinely need
-  Phil's input or a decision and can't proceed, surface it instead of parking on an
-  unsent prompt:
+- **`ask_phil` is the formal questions channel — REQUIRED for every real
+  decision/question AND on every closeout. Printing it in your pane is NOT
+  enough.** Phil's pane is invisible to him until he reattaches. The Questions
+  column is the single place he reads from, and `ask_phil` is the only way to
+  reach it. Use it for:
+    - any decision you cannot make from the contract / code / patterns,
+    - any irreversible action (deploy, schema, big delete) before you take it,
+    - any clarification on scope, requirements, or success criteria,
+    - **every closeout** (see "Closeout requirement" below).
+  Cooperative form (you supply the full context):
   `python3 ~/dispatch-mcp/lib/ask_phil.py --session "$(tmux display-message -p '#S')" --question "..." --context "..."`
-  It posts to Phil's Questions column and his answer routes straight back into your
-  session as a normal prompt. A question you only print to your pane is **invisible** to
-  Phil — that's how sessions stall forever. (An auto-stall-detector is the backstop, but
-  `ask_phil` is the cooperative path: faster, and you supply the full context.)
+  Posts to Phil's Questions column; his answer routes straight back into your
+  session as a normal prompt. A question you only print to your pane is
+  **invisible** — that's how sessions stall forever. The auto-stall-detector is
+  the backstop, not the channel.
+
+- **Closeout requirement — every session MUST file a persistent "review me"
+  card via `ask_phil` BEFORE `claude-coord checkout`.** The card is the
+  persistent artifact Phil reviews; the pane is ephemeral. The card should
+  include: what shipped (one line), what was verified, branch name, any
+  follow-ups, and the question `"Looks good to close out, or needs more work?"`.
+  Example:
+  `python3 ~/dispatch-mcp/lib/ask_phil.py --session "$(tmux display-message -p '#S')" --question "Closeout review — looks good to close, or needs more work?" --context "Shipped: <one line>. Verified: <how>. Branch: <name>. Follow-ups: <list or none>."`
+  The harm-gate on `answer_question` will refuse to auto-answer this card — it
+  stays open until Phil decides. Idle-reaper's automatic completion card is a
+  backstop for sessions that forget; agents that do it themselves give Phil
+  better context and faster review.
 - **Produced a deliverable? Attach it before checkout.** If your task produces a file
   for Phil (PDF, doc, export, report, spreadsheet, deck), attach it to your originating
   inbox row with **`inbox_attach_file`** BEFORE you check out — don't leave it in a
@@ -109,7 +128,7 @@ false sense that work is deployed when it is not.
 
 ## Learned Patterns (Phil — HIGHEST PRIORITY, overrides defaults)
 
-> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-20 14:01 MST
+> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-26 15:12 MST
 
 # Learned patterns
 
