@@ -10206,7 +10206,7 @@ function saveSupplyConfig(itemId) {
     // Mark source as 'manual' when the user touches cost
     if (unit_cost !== null) payload.unit_cost_source = 'manual';
 
-    apiFetch(`/ops/api/supplies/${itemId}`, {
+    apiFetch(`/ops/api/supplies/${itemId}/`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -10224,7 +10224,7 @@ let mckMappingState = null;  // { items: [...], totals: {...}, filter: 'all' }
 async function openMckessonMappingModal() {
     showToast('Loading McKesson suggestions…');
     try {
-        const data = await apiFetch('/ops/api/supplies/mapping');
+        const data = await apiFetch('/ops/api/supplies/mapping/');
         mckMappingState = {
             items: data.items || [],
             skipped: data.skipped || [],
@@ -10379,7 +10379,7 @@ function closeMckMapping() {
 
 async function confirmMckMatch(curatedId, mckessonRowId) {
     try {
-        await apiFetch('/ops/api/supplies/mapping', {
+        await apiFetch('/ops/api/supplies/mapping/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ curatedId, mckessonRowId, action: 'merge' }),
@@ -10403,7 +10403,7 @@ async function confirmMckMatch(curatedId, mckessonRowId) {
 
 async function skipMckMatch(curatedId) {
     try {
-        await apiFetch('/ops/api/supplies/mapping', {
+        await apiFetch('/ops/api/supplies/mapping/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ curatedId, action: 'skip' }),
@@ -10470,7 +10470,7 @@ async function saveDifferentSupplier(curatedId) {
     const cost = costRaw === '' ? null : parseFloat(costRaw);
     if (cost !== null && (isNaN(cost) || cost < 0)) { showToast('Cost must be a number ≥ 0 (or blank)'); return; }
     try {
-        await apiFetch('/ops/api/supplies/mapping', {
+        await apiFetch('/ops/api/supplies/mapping/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -10509,7 +10509,7 @@ function recountMckMappingTotals() {
 
 async function undoSkip(curatedId) {
     try {
-        await apiFetch('/ops/api/supplies/mapping', {
+        await apiFetch('/ops/api/supplies/mapping/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ curatedId, action: 'undo-skip' }),
@@ -10517,7 +10517,7 @@ async function undoSkip(curatedId) {
         showToast('Restored to McKesson matching — refresh modal to recompute');
         // Easiest correct UX: refetch the whole modal so the item shows up in the
         // appropriate confidence bucket again with re-scored candidates.
-        const data = await apiFetch('/ops/api/supplies/mapping');
+        const data = await apiFetch('/ops/api/supplies/mapping/');
         mckMappingState.items = data.items || [];
         mckMappingState.skipped = data.skipped || [];
         mckMappingState.totals = data.totals || {};
@@ -10635,7 +10635,7 @@ function setInvoicesSearch(q) {
 async function loadInvoices(forceSync = false) {
     try {
         if (forceSync) showToast('Pulling latest from McKesson…');
-        const data = await apiFetch('/ops/api/mckesson/invoices');
+        const data = await apiFetch('/ops/api/mckesson/invoices/');
         invoicesData = data;
         const c = document.getElementById('inventoryContent');
         if (c) c.innerHTML = renderInvoicesSection();
@@ -10646,7 +10646,7 @@ async function loadInvoices(forceSync = false) {
 
 async function openInvoiceDetail(id) {
     try {
-        const data = await apiFetch(`/ops/api/mckesson/invoices/${id}`);
+        const data = await apiFetch(`/ops/api/mckesson/invoices/${id}/`);
         renderInvoiceDetailModal(data);
     } catch (e) {
         showToast('Failed to load invoice: ' + e.message);
@@ -10747,7 +10747,7 @@ async function saveInvoiceOrderIdAndFetch(invoiceRowId) {
     const orderId = (inp?.value || '').trim();
     if (!orderId) { showToast('Order ID required'); return; }
     try {
-        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}`, {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ order_id: orderId }),
@@ -10839,7 +10839,7 @@ async function saveManualLines(invoiceRowId) {
     }).filter(l => l.product_id || l.product_description || l.price);
     if (lines.length === 0) { showToast('No line items entered'); return; }
     try {
-        await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}`, {
+        await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ manual_lines: lines }),
@@ -10857,7 +10857,7 @@ async function saveManualLines(invoiceRowId) {
 
 async function previewReorder(invoiceRowId) {
     try {
-        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder`, {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ dryRun: true }),
@@ -10914,7 +10914,7 @@ function closeReorderPreview() {
 async function submitReorder(invoiceRowId) {
     if (!confirm('Submit a real McKesson order? This will be charged to your account.')) return;
     try {
-        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder`, {
+        const r = await apiFetch(`/ops/api/mckesson/invoices/${invoiceRowId}/reorder/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ dryRun: false }),
@@ -11050,6 +11050,12 @@ function setNewOrderQty(idx, v) {
     // Don't re-render on every keystroke; the input keeps the value
 }
 
+// FIX(2026-05-20): all McKesson/supply mutation calls below MUST use a trailing slash.
+// next.config.js has trailingSlash:true, so a slash-less POST/PATCH gets a 308 redirect.
+// iOS Safari/WebKit DROPS the request body when following a 308 (proven in nginx logs:
+// POST /supplies/mapping -> 308 -> /supplies/mapping/ arrives with empty body -> 500/400).
+// That was why "New Order" appeared dead on the iPad — the dryRun preview reached the
+// route with no items[] and 400'd. curl preserves the body on 308, which masked it.
 async function previewNewOrder() {
     if (newOrderCart.length === 0) { showToast('Add at least one item to preview'); return; }
     try {
@@ -11064,7 +11070,7 @@ async function previewNewOrder() {
             dryRun: true,
         };
         showToast('Building preview…');
-        const r = await apiFetch('/ops/api/ipad/mckesson/orders', {
+        const r = await apiFetch('/ops/api/ipad/mckesson/orders/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -11096,7 +11102,7 @@ async function submitNewOrder() {
             dryRun: false,
             idempotencyKey: newOrderIdempotencyKey,
         };
-        const r = await apiFetch('/ops/api/ipad/mckesson/orders', {
+        const r = await apiFetch('/ops/api/ipad/mckesson/orders/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
