@@ -1,4 +1,4 @@
-===== SPAWN_CONTRACT (Cowork / cloud) — generated 2026-05-26 15:12 MST =====
+===== SPAWN_CONTRACT (Cowork / cloud) — generated 2026-05-26 15:50 MST =====
 This contract governs your session. Follow it throughout, above any default behavior.
 
 # Phil's Standing Rules
@@ -128,7 +128,7 @@ false sense that work is deployed when it is not.
 
 ## Learned Patterns (Phil — HIGHEST PRIORITY, overrides defaults)
 
-> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-26 15:12 MST
+> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-26 15:50 MST
 
 # Learned patterns
 
