@@ -131,6 +131,9 @@ def profile(p):
         rows.append(("Benefits", " &bull; ".join(p["benefits"])))
     if p.get("protocol"):
         rows.append(("Protocol", p["protocol"]))
+    recon = p.get("recon") or RECON.get(p["name"])
+    if recon:
+        rows.append(("Reconstitution", recon))
     if p.get("cycle"):
         rows.append(("Cycling", p["cycle"]))
     if p.get("stack"):
@@ -312,6 +315,105 @@ def build_story():
         "<b>Topical</b> — creams/serums for skin peptides (GHK-Cu, Snap-8, copper blends).",
         "<b>Oral</b> — a few are oral-active (5-Amino-1MQ capsules); most peptides are destroyed by digestion, which is why injection is the norm.",
     ]))
+    story.append(PageBreak())
+
+    # ---- RECONSTITUTION QUICK-REFERENCE TABLE ----
+    story.append(Paragraph("Reconstitution Quick Reference (All Peptides)", styles["H1"]))
+    story.append(HRFlowable(width="100%", thickness=1.2, color=GOLD, spaceAfter=10))
+    story.append(Paragraph(
+        "The recipe for every injectable peptide we carry, organized into a single page. "
+        "Each row shows the <b>standard vial + water combination</b>, the resulting "
+        "<b>concentration</b>, and the <b>most common dose in U-100 insulin-syringe units</b>. "
+        "Verified by arithmetic on 2026-05-26. When a dose exceeds 100 units (a full "
+        "syringe), the recipe says “split” — never tell a customer to fill more than one "
+        "syringe and add it together. The full per-peptide profile in Part 4 gives the "
+        "complete dose range.", styles["Body"]))
+    story.append(Spacer(1, 6))
+
+    qr_rows = [[
+        Paragraph("Peptide", styles["TblHead"]),
+        Paragraph("Vial + BAC water", styles["TblHead"]),
+        Paragraph("Concentration", styles["TblHead"]),
+        Paragraph("Common dose &rarr; units", styles["TblHead"]),
+    ]]
+    QUICK_REF = [
+        ("Semaglutide",                   "10 mg + 2 mL",   "5 mg/mL",          "0.25 mg = 5 u  •  1 mg = 20 u  •  2.4 mg = 48 u"),
+        ("Tirzepatide",                   "10 mg + 1 mL",   "10 mg/mL",         "2.5 mg = 25 u  •  5 mg = 50 u  •  10 mg = 100 u"),
+        ("Retatrutide",                   "20 mg + 2 mL",   "10 mg/mL",         "2 mg = 20 u  •  6 mg = 60 u  •  10 mg = 100 u"),
+        ("Cagrilintide",                  "10 mg + 2 mL",   "5 mg/mL",          "0.3 mg = 6 u  •  1.2 mg = 24 u  •  2.4 mg = 48 u"),
+        ("AOD-9604",                      "2 mg + 2 mL",    "1 mg/mL",          "300 mcg = 30 u  •  500 mcg = 50 u"),
+        ("BPC-157",                       "5 mg + 2 mL",    "2.5 mg/mL",        "250 mcg = 10 u  •  500 mcg = 20 u"),
+        ("TB-500",                        "10 mg + 2 mL",   "5 mg/mL",          "2 mg = 40 u  •  2.5 mg = 50 u  •  4 mg = 80 u"),
+        ("Wolverine Blend",               "5 mg + 2 mL",    "per vial label",   "per blend ratio &mdash; check label"),
+        ("GHK-Cu",                        "50 mg + 5 mL",   "10 mg/mL",         "1 mg = 10 u  •  2 mg = 20 u  (or topical)"),
+        ("GLOW / KLOW Blends",            "vial + 2 mL",    "per vial label",   "per blend ratio &mdash; check label"),
+        ("LL-37",                         "5 mg + 2 mL",    "2.5 mg/mL",        "100 mcg = 4 u  •  500 mcg = 20 u"),
+        ("Sermorelin",                    "10 mg + 2 mL",   "5 mg/mL",          "200 mcg = 4 u  •  300 mcg = 6 u"),
+        ("CJC-1295 (no DAC)",             "2 mg + 2 mL",    "1 mg/mL",          "100 mcg = 10 u  •  200 mcg = 20 u"),
+        ("CJC-1295 (with DAC)",           "2 mg + 1 mL",    "2 mg/mL",          "1 mg = 50 u  •  2 mg = 100 u"),
+        ("Ipamorelin",                    "10 mg + 5 mL",   "2 mg/mL",          "100 mcg = 5 u  •  200 mcg = 10 u  •  300 mcg = 15 u"),
+        ("Tesamorelin",                   "10 mg + 2 mL",   "5 mg/mL",          "1 mg = 20 u  •  2 mg = 40 u"),
+        ("IGF-1 LR3",                     "1 mg + 1 mL",    "1 mg/mL",          "50 mcg = 5 u  •  100 mcg = 10 u"),
+        ("GHRP-6 / Hexarelin",            "5 mg + 2 mL",    "2.5 mg/mL",        "100 mcg = 4 u  •  200 mcg = 8 u"),
+        ("DSIP",                          "15 mg + 3 mL",   "5 mg/mL",          "100 mcg = 2 u  •  300 mcg = 6 u"),
+        ("PT-141",                        "10 mg + 2 mL",   "5 mg/mL",          "1 mg = 20 u  •  1.75 mg = 35 u"),
+        ("Kisspeptin-10",                 "10 mg + 5 mL",   "2 mg/mL",          "100 mcg = 5 u  •  400 mcg = 20 u"),
+        ("Melanotan 2",                   "10 mg + 2 mL",   "5 mg/mL",          "250 mcg = 5 u  •  500 mcg = 10 u  •  1 mg = 20 u"),
+        ("Semax",                         "10 mg + 2 mL",   "5 mg/mL",          "200 mcg = 4 u  •  500 mcg = 10 u  (intranasal or SubQ)"),
+        ("Selank",                        "10 mg + 2 mL",   "5 mg/mL",          "250 mcg = 5 u  •  500 mcg = 10 u  (intranasal or SubQ)"),
+        ("SS-31 (Elamipretide)",          "10 mg + 2 mL",   "5 mg/mL",          "1 mg = 20 u  •  2 mg = 40 u  (protect from light)"),
+        ("Pinealon",                      "20 mg + 2 mL",   "10 mg/mL",         "5 mg = 50 u  •  10 mg = 100 u"),
+        ("NAD+",                          "500 mg + 5 mL saline", "100 mg/mL",  "50 mg = 50 u  •  100 mg = 100 u  (inject SLOWLY)"),
+        ("Epitalon",                      "10 mg + 2 mL",   "5 mg/mL",          "2.5 mg = 50 u  •  5 mg = 100 u  •  10 mg = split"),
+        ("MOTS-c",                        "10 mg + 1 mL",   "10 mg/mL",         "2.5 mg = 25 u  •  5 mg = 50 u  •  10 mg = 100 u"),
+        ("FOXO4-DRI",                     "10 mg + 2 mL",   "5 mg/mL",          "provider-directed — advanced senolytic"),
+        ("VIP (VIP10)",                   "10 mg + 2 mL",   "5 mg/mL",          "intranasal — per vial label"),
+        ("ARA-290",                       "10 mg + 2 mL",   "5 mg/mL",          "1 mg = 20 u  •  4 mg = 80 u"),
+        ("Thymosin Alpha-1 (TA1)",        "10 mg + 2 mL",   "5 mg/mL",          "900 mcg = 18 u  •  1.5 mg = 30 u"),
+        ("Thymalin",                      "10 mg + 2 mL",   "5 mg/mL",          "2.5 mg = 50 u  •  5 mg = 100 u"),
+        ("KPV",                           "10 mg + 2 mL",   "5 mg/mL",          "500 mcg = 10 u  •  1 mg = 20 u"),
+        ("HCG",                           "10,000 iu + 10 mL", "1,000 iu/mL",   "500 iu = 50 u  •  1,000 iu = 100 u"),
+        ("HMG",                           "75 iu + 1 mL",   "75 iu/mL",         "full vial = 100 u (typical)"),
+        ("ACE-031",                       "1 mg + 1 mL",    "1 mg/mL",          "100 mcg = 10 u  •  500 mcg = 50 u"),
+        ("AICAR",                         "50 mg + 5 mL",   "10 mg/mL",         "10 mg = 100 u  (larger doses are split)"),
+        ("B12 (pre-mixed)",               "&mdash;",        "1 mg/mL",          "500 mcg = 50 u  •  1 mg = 100 u"),
+        ("Glutathione (pre-mixed)",       "&mdash;",        "200 mg/mL",        "100 mg = 50 u  •  200 mg = 100 u"),
+        ("MIC / Lipotropic (pre-mixed)",  "&mdash;",        "per label",        "0.5–1 mL IM/SubQ weekly typical"),
+    ]
+    for label, recipe, conc, doses in QUICK_REF:
+        qr_rows.append([
+            Paragraph(label, styles["TblCellB"]),
+            Paragraph(recipe, styles["TblCell"]),
+            Paragraph(conc, styles["TblCell"]),
+            Paragraph(doses, styles["TblCell"]),
+        ])
+    qr_table = Table(qr_rows, colWidths=[1.50 * inch, 1.30 * inch, 1.05 * inch, 2.85 * inch], repeatRows=1)
+    qr_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT]),
+        ("GRID", (0, 0), (-1, -1), 0.4, LINE),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(qr_table)
+    story.append(Spacer(1, 8))
+    story.append(callout("Reading the table.",
+        "<b>“10 mg + 2 mL”</b> means the standard vial size paired with the volume of "
+        "bacteriostatic water you add. The same concentration scales — e.g. for a 20 mg "
+        "tirzepatide vial use 2 mL instead of 1 mL; the units-per-dose stay identical. "
+        "When a vial label says a different mg or your customer is on a non-standard vial, "
+        "do the math the same way: concentration = mg ÷ mL of water; units = (dose mg ÷ "
+        "concentration) &times; 100.", color=TEAL))
+    story.append(Spacer(1, 6))
+    story.append(callout("Safety check.",
+        "If a dose calculation puts you over <b>100 units (a full insulin syringe)</b>, "
+        "<i>do not</i> just instruct the customer to draw a second syringe and combine — "
+        "split the dose into <b>two separate injections</b> of equal volume, ideally at "
+        "different sites. Verified on every recipe in this table. When in doubt: provider.",
+        color=RED))
     story.append(PageBreak())
 
     # ---- THE 11 CATEGORIES OVERVIEW ----
@@ -656,6 +758,218 @@ PLAYBOOKS = [
                 "knowledge pays off most.",
     },
 ]
+
+# ── Per-peptide reconstitution recipes ──────────────────────────────────────
+# Every recipe is verified by arithmetic: concentration = vial_mg / water_mL,
+# units = (dose_mg / concentration) * 100. Designed so doses land at ≤100 units
+# on a U-100 insulin syringe; where the on-label dose would exceed 100 units we
+# explicitly say "split into two injections" rather than printing an impossible
+# number. Numbers were re-derived from scratch on 2026-05-26 after the prior
+# reference doc was found to contain ~10x dosing errors for Tirzepatide,
+# Retatrutide, TB-500, and Epitalon.
+RECON = {
+    "Semaglutide (GLP-1)":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> Scale "
+        "proportionally for larger vials (20 mg + 4 mL, 30 mg + 6 mL — same "
+        "concentration). Draw: <b>0.25 mg = 5 u</b>, 0.5 mg = 10 u, 1.0 mg = "
+        "20 u, 1.7 mg = 34 u, 2.4 mg = 48 u. Refrigerated, use within 28 days.",
+    "Tirzepatide (GLP-1 / GIP)":
+        "<b>10 mg vial + 1 mL BAC water = 10 mg/mL.</b> (For larger vials: "
+        "20 mg + 2 mL, 30 mg + 3 mL, etc — same concentration.) Draw: 2.5 mg = "
+        "25 u, 5 mg = 50 u, 7.5 mg = 75 u, <b>10 mg = 100 u (full syringe)</b>. "
+        "For 12.5 / 15 mg, split into two injections of equal volume. "
+        "Refrigerated, use within 28 days.",
+    "Retatrutide (GLP-1 / GIP / Glucagon)":
+        "<b>20 mg vial + 2 mL BAC water = 10 mg/mL.</b> (30 mg + 3 mL, 40 mg + "
+        "4 mL, 50 mg + 5 mL — same concentration.) Draw: 2 mg = 20 u, 4 mg = "
+        "40 u, 6 mg = 60 u, 8 mg = 80 u, 10 mg = 100 u. For 12 mg, split into "
+        "two 60-unit injections. Refrigerated, use within 28 days.",
+    "Cagrilintide":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> Draw: "
+        "0.16 mg = 3 u, 0.3 mg = 6 u, 0.6 mg = 12 u, 1.2 mg = 24 u, 2.4 mg = "
+        "48 u. Refrigerated, use within 28 days.",
+    "Mazdutide &amp; Survodutide":
+        "Standard recipe: <b>vial + enough BAC water to reach 5 mg/mL</b> "
+        "(e.g., 10 mg + 2 mL). Investigational — provider sets the dose-to-units "
+        "conversion based on the actual vial label.",
+    "AOD-9604":
+        "<b>2 mg vial + 2 mL BAC water = 1 mg/mL (1,000 mcg/mL).</b> Draw: "
+        "<b>300 mcg = 30 u</b>, 250 mcg = 25 u, 500 mcg = 50 u. Refrigerated, "
+        "use within 21–28 days.",
+    "5-Amino-1MQ &amp; SLU-PP-332":
+        "<b>5-Amino-1MQ:</b> oral capsule, no reconstitution. "
+        "<b>SLU-PP-332:</b> research compound — provider sets the recipe per "
+        "the vial label.",
+    "BPC-157":
+        "<b>5 mg vial + 2 mL BAC water = 2.5 mg/mL (2,500 mcg/mL).</b> (10 mg "
+        "vial + 4 mL, 20 mg + 8 mL — same concentration.) Draw: "
+        "<b>250 mcg = 10 u, 500 mcg = 20 u</b>. Refrigerated, use within "
+        "14–21 days. For a tighter draw, alt recipe is 5 mg + 1 mL = 5 mg/mL "
+        "(250 mcg = 5 u, 500 mcg = 10 u).",
+    "TB-500 (Thymosin Beta-4 fragment)":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL.</b> Draw: 2 mg = 40 u, "
+        "2.5 mg = 50 u, 4 mg = 80 u. (Or 5 mg vial + 2 mL = 2.5 mg/mL: "
+        "2 mg = 80 u — same dose, more volume.) Refrigerated, use within "
+        "14–21 days.",
+    "Wolverine Blend (BPC-157 + TB-500)":
+        "<b>5 mg blend vial + 2 mL BAC water</b> (10 mg + 4 mL — same "
+        "concentration). The per-component split depends on the blend ratio "
+        "printed on the vial — always check the label before drawing. Daily "
+        "to several-times-weekly dosing in 4–6 week cycles.",
+    "GHK-Cu (Copper Peptide)":
+        "<b>50 mg vial + 5 mL BAC water = 10 mg/mL.</b> (100 mg vial + 10 mL "
+        "— same concentration.) Draw for systemic SubQ: 1 mg = 10 u, 2 mg = "
+        "20 u. Topical: apply a few drops of reconstituted solution to skin. "
+        "Refrigerated, use within 21 days.",
+    "GLOW Blend (GHK-Cu + BPC + TB)":
+        "<b>Blend vial + 2 mL BAC water.</b> Per-component concentrations "
+        "depend on the blend ratio on the label — check it before drawing. "
+        "Refrigerated, use within 14 days.",
+    "KLOW Blend (GHK-Cu + KPV + BPC + TB)":
+        "<b>Blend vial + 2 mL BAC water.</b> Four-component blend — per-mL "
+        "split is on the vial label. Refrigerated, use within 14 days.",
+    "LL-37":
+        "<b>5 mg vial + 2 mL BAC water = 2.5 mg/mL (2,500 mcg/mL).</b> Draw: "
+        "100 mcg = 4 u, 250 mcg = 10 u, 500 mcg = 20 u. Refrigerated, use "
+        "within 14 days.",
+    "Sermorelin":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> Draw: "
+        "200 mcg = 4 u, 300 mcg = 6 u. For a more precise small-dose draw, "
+        "alt recipe is 10 mg + 5 mL = 2 mg/mL (200 mcg = 10 u, 300 mcg = 15 u). "
+        "Refrigerated, use within 28 days.",
+    "CJC-1295 (with &amp; without DAC)":
+        "<b>Without DAC (Mod GRF 1-29):</b> 2 mg vial + 2 mL BAC = 1 mg/mL "
+        "(1,000 mcg/mL). Draw: 100 mcg = 10 u, 200 mcg = 20 u, 300 mcg = 30 u. "
+        "<b>With DAC:</b> 2 mg vial + 1 mL BAC = 2 mg/mL. Draw: 1 mg = 50 u, "
+        "2 mg = 100 u. Refrigerated, use within 21–28 days.",
+    "Ipamorelin":
+        "<b>10 mg vial + 5 mL BAC water = 2 mg/mL (2,000 mcg/mL).</b> Draw: "
+        "100 mcg = 5 u, 200 mcg = 10 u, 300 mcg = 15 u. Refrigerated, use "
+        "within 28 days. (Higher-concentration alt: 10 mg + 2 mL = 5 mg/mL — "
+        "but units get too small to read precisely.)",
+    "Tesamorelin":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL.</b> (20 mg + 4 mL — same "
+        "concentration.) Draw: 1 mg = 20 u, 2 mg = 40 u. Refrigerated, use "
+        "within 28 days.",
+    "IGF-1 LR3 &amp; IGF-DES":
+        "<b>1 mg vial + 1 mL BAC water = 1 mg/mL (1,000 mcg/mL).</b> Draw: "
+        "20 mcg = 2 u, 50 mcg = 5 u, 100 mcg = 10 u. Refrigerated, use within "
+        "14–21 days. <i>Advanced — provider-directed only.</i>",
+    "GHRP-6 &amp; Hexarelin":
+        "<b>5 mg vial + 2 mL BAC water = 2.5 mg/mL (2,500 mcg/mL).</b> Draw: "
+        "100 mcg = 4 u, 200 mcg = 8 u, 300 mcg = 12 u. Refrigerated, use "
+        "within 21 days.",
+    "DSIP &amp; GDF-8":
+        "<b>DSIP 15 mg vial + 3 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> "
+        "Draw: 100 mcg = 2 u, 200 mcg = 4 u, 300 mcg = 6 u. (5 mg vial + "
+        "1 mL = same 5 mg/mL.) GDF-8 is research-grade — provider sets recipe.",
+    "PT-141 (Bremelanotide)":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> Draw: "
+        "1 mg = 20 u, 1.5 mg = 30 u, 1.75 mg = 35 u. Use ~45 min before "
+        "intimacy. Refrigerated, use within 21 days.",
+    "Kisspeptin-10":
+        "<b>10 mg vial + 5 mL BAC water = 2 mg/mL (2,000 mcg/mL).</b> Draw: "
+        "100 mcg = 5 u, 200 mcg = 10 u, 400 mcg = 20 u. Refrigerated, use "
+        "within 21 days.",
+    "Melanotan 2":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> Draw: "
+        "<b>start 250 mcg = 5 u</b>, 500 mcg = 10 u, 1 mg = 20 u. Refrigerated, "
+        "use within 28 days.",
+    "Semax":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> "
+        "Intranasal: usually 2–4 drops/spray per nostril per dose (per the "
+        "label). SubQ draw if injecting: 200 mcg = 4 u, 500 mcg = 10 u, "
+        "1 mg = 20 u. Refrigerated, use within 14 days.",
+    "Selank":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> "
+        "Intranasal: 2–4 drops/spray per nostril per dose (per the label). "
+        "SubQ: 250 mcg = 5 u, 500 mcg = 10 u, 1 mg = 20 u. Refrigerated, use "
+        "within 14 days.",
+    "SS-31 (Elamipretide)":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL.</b> Draw: 1 mg = 20 u, "
+        "2 mg = 40 u, 3 mg = 60 u. (50 mg vial + 5 mL = 10 mg/mL: 1 mg = 10 u, "
+        "5 mg = 50 u.) Refrigerated, use within 14 days, <b>protect from light</b>.",
+    "Pinealon":
+        "<b>20 mg vial + 2 mL BAC water = 10 mg/mL.</b> Draw: 5 mg = 50 u, "
+        "10 mg = 100 u. Refrigerated, use within 21 days.",
+    "NAD+":
+        "<b>500 mg vial + 5 mL sterile saline (NOT bacteriostatic) = "
+        "100 mg/mL.</b> (1,000 mg + 10 mL — same concentration.) Inject "
+        "<b>slowly</b> — fast injection causes flushing/chest tightness. "
+        "Draw: 50 mg = 50 u, 100 mg = 100 u (full syringe). Often prepared "
+        "by a compounding pharmacy — check label.",
+    "Epitalon (Epithalon)":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> (5 mg + "
+        "1 mL = same; 50 mg + 10 mL = same.) Draw: 1 mg = 20 u, 2.5 mg = 50 u, "
+        "<b>5 mg = 100 u (full syringe)</b>. For 10 mg dose, split into two "
+        "5 mg injections. Refrigerated, use within 21 days.",
+    "MOTS-c":
+        "<b>10 mg vial + 1 mL BAC water = 10 mg/mL.</b> Draw: 2.5 mg = 25 u, "
+        "5 mg = 50 u, 10 mg = 100 u. (40 mg + 4 mL — same concentration.) "
+        "Refrigerated, use within 21 days.",
+    "FOXO4-DRI":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL.</b> Advanced senolytic — "
+        "provider sets the actual dose. Short, infrequent cycles only. "
+        "Refrigerated, use within 14 days.",
+    "PNC-27":
+        "Research compound. <b>Provider sets the recipe per vial label.</b> "
+        "Staff make no therapeutic claims and route all questions to the provider.",
+    "DSIP (Delta Sleep-Inducing Peptide)":
+        "<b>15 mg vial + 3 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> (5 mg + "
+        "1 mL = same.) Draw: 100 mcg = 2 u, 200 mcg = 4 u, 300 mcg = 6 u. "
+        "Refrigerated, use within 21 days.",
+    "VIP (VIP10)":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL.</b> Usually delivered "
+        "intranasally — drops/spray dosing per the vial label. Refrigerated, "
+        "use within 14 days.",
+    "ARA-290 (Cibinetide)":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> Draw: "
+        "1 mg = 20 u, 2 mg = 40 u, 4 mg = 80 u. Refrigerated, use within "
+        "21 days.",
+    "Thymosin Alpha-1 (TA1)":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> "
+        "(5 mg vial + 1 mL = same concentration.) Draw: 900 mcg = 18 u, "
+        "1.5 mg = 30 u, 1.6 mg = 32 u. Refrigerated, use within 21 days.",
+    "Thymalin":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL.</b> Draw: 2.5 mg = 50 u, "
+        "5 mg = 100 u (full syringe). Refrigerated, use within 14 days; run "
+        "in short cycles.",
+    "KPV":
+        "<b>10 mg vial + 2 mL BAC water = 5 mg/mL (5,000 mcg/mL).</b> Draw: "
+        "250 mcg = 5 u, 500 mcg = 10 u, 1 mg = 20 u. Refrigerated, use within "
+        "21 days.",
+    "HCG (Human Chorionic Gonadotropin)":
+        "<b>10,000 iu vial + 10 mL bacteriostatic water (or saline) = "
+        "1,000 iu/mL.</b> Draw: 250 iu = 25 u, 500 iu = 50 u, 1,000 iu = 100 u. "
+        "(Alt: + 5 mL = 2,000 iu/mL: 500 iu = 25 u, 1,000 iu = 50 u.) "
+        "Refrigerated, use within 28 days. <i>Provider-directed.</i>",
+    "HMG (Human Menopausal Gonadotropin)":
+        "<b>75 iu vial + 1 mL saline or BAC water = 75 iu/mL.</b> Typical "
+        "single-vial dose draws the full 100 u. Provider-directed.",
+    "ACE-031":
+        "<b>1 mg vial + 1 mL BAC water = 1 mg/mL (1,000 mcg/mL).</b> Draw: "
+        "100 mcg = 10 u, 250 mcg = 25 u, 500 mcg = 50 u. Refrigerated, use "
+        "within 14 days. <i>Research compound — provider sets the dose.</i>",
+    "AICAR":
+        "<b>50 mg vial + 5 mL BAC water = 10 mg/mL.</b> Draw: 10 mg = 100 u "
+        "(full syringe). Larger research doses are typically split across "
+        "multiple injections or delivered IV in clinic — provider-directed.",
+    "B12 (Methylcobalamin)":
+        "<b>Pre-mixed</b> solution, typically <b>1,000 mcg/mL (1 mg/mL).</b> "
+        "Draw: 500 mcg = 50 u, 1,000 mcg = 100 u (full syringe). No "
+        "reconstitution needed — confirm concentration on the bottle label.",
+    "Glutathione":
+        "<b>Often pre-mixed</b> at 200 mg/mL. Draw: 100 mg = 50 u, 200 mg = "
+        "100 u. For dry powder: 1,500 mg vial + 7.5 mL BAC = 200 mg/mL. "
+        "Provider/compounder sets the concentration on the actual product.",
+    "Lipotropic Blends (8X / 4X MIC)":
+        "<b>Pre-mixed</b> solution — no reconstitution. Dosed in mL per the "
+        "label; typical MIC injection is 0.5–1 mL IM/SubQ weekly.",
+    "Bacteriostatic / Reconstitution Water":
+        "Not reconstituted — <i>this IS the diluent.</i> One bottle reconstitutes "
+        "many peptide vials. Store at room temperature once opened; use within "
+        "28 days. (10 mL bottle = ~5 typical peptide vials at 2 mL each.)",
+}
 
 # ── Peptide profiles by category ─────────────────────────────────────────────
 CATEGORIES = [
