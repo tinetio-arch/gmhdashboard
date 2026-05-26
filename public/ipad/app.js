@@ -5738,6 +5738,13 @@ function toggleInterestingPanel() {
     }
 }
 
+function toggleCommsPanel() {
+    const panel = document.getElementById('commsPanel');
+    if (panel) {
+        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    }
+}
+
 // ============ GROUP & TAG MANAGEMENT ============
 
 // Cache for groups list
@@ -6404,6 +6411,7 @@ function renderChartPanel(content) {
                     <button onclick="showEditDemographicsForm()" style="padding:4px 10px; border-radius:6px; background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.2); color:var(--cyan); font-size:11px; font-weight:600; cursor:pointer;" title="Edit demographics">✏️ Edit</button>
                     <button onclick="showResetPasswordDialog()" style="padding:4px 10px; border-radius:6px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); color:var(--yellow); font-size:11px; font-weight:600; cursor:pointer;" title="Reset patient Healthie password">🔑 Password</button>
                     <button onclick="toggleInterestingPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.2); color:#a855f7; font-size:11px; font-weight:600; cursor:pointer;" title="Interesting facts about this patient">⭐ Interesting</button>
+                    <button onclick="toggleCommsPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); color:#22c55e; font-size:11px; font-weight:600; cursor:pointer;" title="Clinic communications with this patient">💬 Comms</button>
                 </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
@@ -6444,6 +6452,17 @@ function renderChartPanel(content) {
                 </div>
             </div>
             ${demo.interesting_facts ? `<button onclick="document.getElementById('interestingInputArea').style.display='block'; document.getElementById('interestingDisplay').style.display='none';" style="font-size:10px; background:none; border:none; color:#a855f7; cursor:pointer; padding:0;">✏️ Edit</button>` : ''}
+        </div>
+
+        <!-- COMMS PANEL (collapsible — Phase 1 placeholder for clinic comms) -->
+        <div id="commsPanel" style="display:none; padding:8px; border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(34,197,94,0.04);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:#22c55e; font-weight:600; margin-bottom:6px; display:flex; align-items:center; gap:6px;">
+                <span>💬 Comms</span>
+                <span style="font-size:9px; padding:1px 5px; border-radius:3px; background:rgba(245,158,11,0.15); color:#f59e0b; font-weight:500; text-transform:none; letter-spacing:0;">Phase 1 — coming soon</span>
+            </div>
+            <div style="font-size:12px; color:var(--text-secondary); line-height:1.5;">
+                Clinic ⇄ patient communications (SMS, email, calls) will surface here as part of the Healthie-communications untangling project. This tab is the entry point — content lands in Phase 2.
+            </div>
         </div>
 
         <!-- Show interesting facts inline if they exist (compact) -->
