@@ -1207,6 +1207,7 @@ async function loadHealthieAppointments() {
                 length: p.length || null,
                 location: p.location || '',
                 contact_type: p.contact_type || '',
+                notes: p.notes || '',
                 has_staged_dose: p.has_staged_dose || false,
                 has_payment_issue: p.has_payment_issue || false,
                 has_pending_lab: p.has_pending_lab || false,
@@ -15288,6 +15289,12 @@ async function showAddToScheduleModal(prefillDate, prefillTime, prefillProviderI
                     </select>
                 </div>
 
+                <!-- Notes -->
+                <div style="margin-bottom:16px;">
+                    <label style="display:block; font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Notes</label>
+                    <textarea id="addSchedNotes" rows="2" placeholder="Optional note shown on the appointment…" style="width:100%; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:8px; color:var(--text-primary); font-size:14px; font-family:inherit; outline:none; box-sizing:border-box; resize:vertical;"></textarea>
+                </div>
+
                 <button onclick="submitAddToSchedule()" id="addSchedBtn" style="width:100%; padding:12px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; border-radius:8px; color:#0a0f1a; font-weight:700; font-size:14px; cursor:pointer; font-family:inherit;">Add to Schedule</button>
             </div>
         </div>
@@ -15802,6 +15809,7 @@ async function submitAddToSchedule() {
     var timeVal = document.getElementById('addSchedTime').value;
     var contactType = document.getElementById('addSchedContactType').value;
     var location = document.getElementById('addSchedLocation')?.value || '';
+    var notes = document.getElementById('addSchedNotes')?.value || '';
 
     if (!patientId) { showToast('Please select a patient', 'error'); return; }
     if (!providerId) { showToast('Please select a provider', 'error'); return; }
@@ -15869,6 +15877,7 @@ async function submitAddToSchedule() {
                     length_minutes: 30,
                     contact_type: contactType,
                     location: location,
+                    notes: notes,
                     block_id: conflictBlock.id,
                     block_reason: reason,
                 })
@@ -15899,6 +15908,7 @@ async function submitAddToSchedule() {
                 length: durationVal || null,
                 contact_type: contactType,
                 location: location,
+                notes: notes,
                 // iPad is staff-only and the provider dropdown is now a required explicit pick.
                 // Trust the operator verbatim — fixes the May 17 bug where MensHealth-branded
                 // types (e.g. 504736 NMH General TRT Telemedicine) silently rerouted Phil → Whitten.
@@ -17199,6 +17209,8 @@ async function loadScheduleData(forceRefresh) {
                 date: a.date || '',
                 length: a.length || null,
                 location: a.location || '',
+                contact_type: a.contact_type || '',
+                notes: a.notes || '',
             };
         });
         var provMap = new Map();
@@ -17615,6 +17627,9 @@ function renderScheduleDayGrid(contentEl) {
                         if (_isCustomDur) {
                             html += '<div style="display:inline-block; margin-top:2px; font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(251,191,36,0.18); color:#fbbf24; border:1px solid rgba(251,191,36,0.4);" title="Duration changed from default ' + _defLen + 'm">⏱ ' + p.length + 'm · default ' + _defLen + 'm</div>';
                         }
+                        if (p.notes) {
+                            html += '<div title="' + sanitize(p.notes) + '" style="margin-top:2px; font-size:9px; color:#c084fc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📝 ' + sanitize(p.notes) + '</div>';
+                        }
                         html += '</div>';
                         // Action buttons (⏱ duration + ↔ move removed 2026-05-11 — click the tile to edit everything)
                         html += '<div style="display:flex; gap:3px; flex-shrink:0;">';
@@ -17740,6 +17755,7 @@ function renderScheduleDayGrid(contentEl) {
                     if (_isCustomDur) html += '<span style="font-size:9px; font-weight:700; padding:1px 6px; border-radius:3px; background:rgba(251,191,36,0.18); color:#fbbf24; border:1px solid rgba(251,191,36,0.4);" title="Duration changed from default ' + _defLen + 'm">⏱ ' + p.length + 'm · default ' + _defLen + 'm</span>';
                     html += '</div>';
                     html += '<div style="font-size:10px; color:var(--text-tertiary);">' + (p.time || '') + ' · ' + (p.appointment_type || '') + (p.length && !_isCustomDur ? ' · ' + p.length + 'm' : '') + '</div>';
+                    if (p.notes) html += '<div style="margin-top:3px; font-size:11px; color:#c084fc; padding:3px 7px; border-radius:5px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.25); overflow-wrap:anywhere;">📝 ' + sanitize(p.notes) + '</div>';
                     html += '</div>';
                     html += '<div style="display:flex; gap:4px; flex-shrink:0;">';
                     if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:3px 6px; border-radius:5px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:10px; cursor:pointer;" title="Message patient">💬</button>';
@@ -17902,7 +17918,9 @@ function renderScheduleList(contentEl) {
         }
         html += ' &middot; ' + (p.appointment_type || 'Appt');
         if (showProv && p.provider) html += ' &middot; <span style="color:var(--text-secondary);">' + p.provider + '</span>';
-        html += '</div></div></div>';
+        html += '</div>';
+        if (p.notes) html += '<div style="margin-top:5px; font-size:12px; color:#c084fc; padding:5px 9px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.25); overflow-wrap:anywhere;">📝 ' + sanitize(p.notes) + '</div>';
+        html += '</div></div>';
         html += '<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">';
         // ⏱ duration + ↔ move buttons removed 2026-05-11 — click the appointment row to edit any field.
         if (pid) html += '<button onclick="event.stopPropagation(); showMessagePatientModal(\x27' + pid + '\x27, \x27' + (p.full_name || '').replace(/'/g, '') + '\x27, \x27' + (p.appointment_type || '').replace(/'/g, '') + '\x27)" style="padding:5px 10px; border-radius:6px; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.3); color:#c084fc; font-size:11px; font-weight:600; cursor:pointer;" title="Message patient">💬 Msg</button>';
