@@ -240,9 +240,10 @@ today.** Evidence from read-only probes of Healthie group 82534 + the GHL ABXTAC
   ABXTAC the only delivery path today is a staff member manually sending each via the
   dashboard/iPad (`requestFormCompletion`). No automation.
 
-**Per-form end-to-end status** (post-wiring 2026-05-26):
+**Per-form end-to-end status** (post-wiring 2026-05-26; ABX Tactical Services Agreement
+removed at Phil's request, leaves **7 forms**):
 
-| Intake form | Healthie form id | Self-serve mapped? | Wired E2E (patient → our form → Healthie chart) |
+| Intake form | Healthie form id | Self-serve mapped? | Wired E2E |
 |---|---|---|---|
 | HIPAA Agreement | 2898628 | ✅ 3 fields | ✅ |
 | Consent to Treat | 2898608 | ✅ 4 fields | ✅ |
@@ -251,7 +252,11 @@ today.** Evidence from read-only probes of Healthie group 82534 + the GHL ABXTAC
 | Financial Agreement | 2898609 | ✅ 5 fields | ✅ |
 | Patient Intake (NOWOPTIMAL) | 2898622 | ✅ 18 fields | ✅ |
 | Peptide Therapy Informed Consent | 2960753 | ✅ 34 fields | ✅ |
-| **ABX Tactical Services Agreement** (created) | **3098004** | ✅ 9 fields | ✅ |
+| ~~ABX Tactical Services Agreement~~ | ~~3098004~~ | deactivated in DB | removed |
+
+*The wiring script now reconciles from `BRAND_CONFIG.forms` — removing a form there
+deactivates it in our DB on next run (history preserved via `is_active=false`).
+Healthie template `3098004` is left orphaned (no clean Healthie API delete); harmless.*
 
 **Wiring done by `scripts/wire-abxtac-intake.ts`** (one-shot, idempotent):
 - Created the missing **ABX Tactical Services Agreement** template in Healthie (id 3098004, 9 questions).
@@ -273,6 +278,21 @@ today.** Evidence from read-only probes of Healthie group 82534 + the GHL ABXTAC
 
 **To wire the next brand:** copy `wire-abxtac-intake.ts`, edit the `BRAND_CONFIG` block at top
 (brand_key, client_type_key, the 8 form names + healthieId / createIfMissing), run once.
+
+## 4d. ABXTAC GHL emails / workflows audit (2026-05-26, read-only)
+
+| Asset | Status |
+|---|---|
+| **GHL native forms (4)** — A2P, Registration ×2, Optin Claim | Lead-capture only. **No clinical intake forms in GHL** (correct under self-serve design — intake lives in our DB + Healthie). |
+| **Email templates (8)** — Launch Announcement, Booking Confirmation (New/Returning), 24h Reminder, Cancellation, Reschedule, Post-Visit (+ one "New Template" placeholder) | ✅ Lifecycle emails built April 2026. **Missing the intake email** — there is no "Welcome — please complete your intake forms" email containing the `/ops/intake/abxtac/...` link. |
+| **Workflows (11)** | ⚠️ **Only 1 published** (`Dashboard: Capture Inbound SMS`). The 10 lifecycle workflows ("Telehealth Consult Automation", "Workflow 1–6 nurture/booking", "ABXTac - Post Purchase Welcome", etc.) are all **draft** → nothing automated is firing today. |
+| **Scheduled email blasts** | none |
+
+**Gap to wire patient delivery of the self-serve intake link:** create one email template
+("ABXTAC — Welcome / Complete Intake") containing the `/ops/intake/abxtac/...` link, and
+publish one workflow that sends it when a new ABXTAC contact is created (e.g., on the
+`Telehealth Consult Booked` tag, which the appointment webhook already adds). Both are
+GHL UI work in the ABXTAC location, not API work.
 
 ## 5. Open items / next sessions
 - ~~Map ABXTAC Healthie `custom_module_form_id` + per-field `custom_module_id` (Step 4) to reach `provisioned`~~ — ✅ done 2026-05-26 (all 8 forms mapped via `wire-abxtac-intake.ts`).

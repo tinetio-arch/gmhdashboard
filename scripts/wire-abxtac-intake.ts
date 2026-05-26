@@ -41,25 +41,9 @@ const BRAND_CONFIG = {
         { slug: 'financial-agreement', name: 'Financial Agreement',                   healthieId: '2898609', createIfMissing: null },
         { slug: 'patient-intake',      name: 'NOWOPTIMAL Patient Intake Form',        healthieId: '2898622', createIfMissing: null },
         { slug: 'peptide-consent',     name: 'Peptide Therapy Informed Consent',      healthieId: '2960753', createIfMissing: null },
-        {
-            slug: 'services-agreement',
-            name: 'ABX Tactical Services Agreement',
-            healthieId: null as string | null,  // will be created
-            createIfMissing: {
-                description: 'Tactical medicine consultation and antibiotic pack authorization',
-                questions: [
-                    { label: 'Occupation',                    mod_type: 'text',     required: true  },
-                    { label: 'Professional Background',       mod_type: 'radio',    required: true,  options: ['First Responder','Military (Active)','Military (Reserve)','Law Enforcement','Other'] },
-                    { label: 'Training and Certifications',   mod_type: 'textarea', required: false, description: 'List relevant medical/tactical training and certifications' },
-                    { label: 'Deployment Status',             mod_type: 'radio',    required: true,  options: ['Active Deployment','Reserve/Training','Civilian'] },
-                    { label: 'Antibiotic Pack Authorization', mod_type: 'checkbox', required: true,  description: 'I authorize prescription of tactical antibiotic pack for emergency use' },
-                    { label: 'Self-Administration Training',  mod_type: 'checkbox', required: true,  description: 'I have completed or will complete self-administration training' },
-                    { label: 'Emergency Use Understanding',   mod_type: 'checkbox', required: true,  description: 'I understand these medications are for emergency use only and require provider notification' },
-                    { label: 'Liability Waiver',              mod_type: 'checkbox', required: true,  description: 'I understand and assume responsibility for proper use of tactical medications' },
-                    { label: 'Participant Signature',         mod_type: 'signature',required: true  },
-                ] as Array<{ label: string; mod_type: string; required: boolean; description?: string; options?: string[] }>,
-            },
-        },
+        // services-agreement (ABX Tactical Services Agreement) was removed per Phil
+        // 2026-05-26 — not needed. The Healthie form template (id 3098004) is left in
+        // place (Healthie API offers no clean delete and it does no harm orphaned).
     ],
 };
 // ──────────────────────────────────────────────────────────────────────────
@@ -253,6 +237,20 @@ async function main() {
         console.log(`  ✅ upserted form_definitions ${res.formDefId} + ${res.fieldCount} form_fields`);
         wiredFormIds.push(healthieId);
         summary.push({ slug: f.slug, healthieFormId: healthieId, fields: res.fieldCount });
+    }
+
+    // Reconcile: BRAND_CONFIG.forms is the source of truth. Any other form
+    // definitions for this brand are marked inactive (preserving history).
+    const activeSlugs = BRAND_CONFIG.forms.map((f) => f.slug);
+    const deactivated = await query<{ slug: string }>(
+        `UPDATE form_definitions SET is_active = false
+          WHERE brand_key = $1 AND is_active = true AND slug <> ALL($2::text[])
+          RETURNING slug`,
+        [BRAND_CONFIG.brandKey, activeSlugs]
+    );
+    if (deactivated.length > 0) {
+        console.log(`\n=== Deactivated (no longer in BRAND_CONFIG) ===`);
+        for (const r of deactivated) console.log(`  - ${r.slug}`);
     }
 
     console.log(`\n=== Onboarding flow (organize-only; not attached to any group) ===`);
