@@ -17,8 +17,13 @@ today each form lives at its own URL (`/ops/intake/abxtac/<slug>`). Two options:
 - **Stopgap:** point this email at the most-urgent single form (e.g. `hipaa-agreement`)
   and add the rest later. Cleaner to wait for the hub.
 
-If `INTAKE_TOKEN` is set in prod, the GHL workflow must append `?token=<value>` to the
-link (configure once in the GHL workflow step, not per-email).
+**`INTAKE_TOKEN` is set in prod (2026-05-26).** The submit endpoint returns 401 without
+a matching token. One-time GHL setup:
+1. **GHL → Settings → Business Profile → Custom Values** → add `intake_token` with the
+   value from `~/gmhdashboard/.env.local` (`grep '^INTAKE_TOKEN=' ~/gmhdashboard/.env.local`).
+2. In the email link below, use `…/ops/intake/abxtac?token={{custom_values.intake_token}}`.
+3. Same in the 48h-reminder email. Rotating the token = edit `.env.local` + GHL Custom
+   Value + `pm2 restart gmh-dashboard`.
 
 ---
 
@@ -61,7 +66,7 @@ data in hand.
         </p>
 
         <table cellpadding="0" cellspacing="0" border="0"><tr><td style="background:#111827;border-radius:6px;">
-          <a href="https://nowoptimal.com/ops/intake/abxtac"
+          <a href="https://nowoptimal.com/ops/intake/abxtac?token={{custom_values.intake_token}}"
              style="display:inline-block;padding:14px 28px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">
             Complete intake →
           </a>
@@ -106,7 +111,7 @@ they can prescribe and ship without delay.
 Time: about 15 minutes. One link, all 7 forms — phone, tablet, or computer.
 
 Complete intake:
-https://nowoptimal.com/ops/intake/abxtac
+https://nowoptimal.com/ops/intake/abxtac?token={{custom_values.intake_token}}
 
 What you'll complete:
   - HIPAA Agreement
@@ -150,7 +155,7 @@ needs these on file before your consult so we can prescribe and ship the
 same day.
 
 If you started already, this link picks up where you left off:
-https://nowoptimal.com/ops/intake/abxtac
+https://nowoptimal.com/ops/intake/abxtac?token={{custom_values.intake_token}}
 
 About 10–15 minutes total.
 
