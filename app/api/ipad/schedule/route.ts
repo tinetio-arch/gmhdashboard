@@ -236,6 +236,7 @@ export async function GET(request: NextRequest) {
                 length: appt.length || null,
                 location: appt.location || '',
                 contact_type: appt.contact_type || 'In Person',
+                notes: appt.notes || '',
             };
         });
 
@@ -490,7 +491,7 @@ export async function POST(request: NextRequest) {
         }
 
         if (action === 'create') {
-            const { patient_id, provider_id, appointment_type_id, datetime, length, location, contact_type, staff_override } = body;
+            const { patient_id, provider_id, appointment_type_id, datetime, length, location, contact_type, staff_override, notes } = body;
 
             if (!patient_id || !provider_id || !appointment_type_id || !datetime) {
                 return NextResponse.json({
@@ -637,7 +638,8 @@ export async function POST(request: NextRequest) {
                     $timezone: String,
                     $locationId: String,
                     $location: String,
-                    $contactType: String
+                    $contactType: String,
+                    $notes: String
                 ) {
                     createAppointment(input: {
                         user_id: $patientId,
@@ -649,7 +651,8 @@ export async function POST(request: NextRequest) {
                         timezone: $timezone,
                         appointment_location_id: $locationId,
                         location: $location,
-                        contact_type: $contactType
+                        contact_type: $contactType,
+                        notes: $notes
                     }) {
                         appointment {
                             id date length
@@ -669,6 +672,7 @@ export async function POST(request: NextRequest) {
                 locationId,
                 location: location || null,
                 contactType: contact_type || null,
+                notes: notes || null,
             });
 
             if (data.createAppointment?.messages?.length) {
