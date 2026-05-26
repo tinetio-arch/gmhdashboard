@@ -1,8 +1,36 @@
-# ABXTAC Patient Email Audit (2026-05-26, read-only)
+# ABXTAC Patient Email Audit (2026-05-26)
 
 > Inventory of every customer-facing email an ABXTAC patient could automatically
 > receive, across WooCommerce / ShipStation / GHL. Use this to decide what to
 > trim before publishing the GHL lifecycle workflows.
+
+## Changes applied this session
+
+**2026-05-26 — WC emails disabled per Phil:**
+- `customer_completed_order` (yes → **no**) — ShipStation's Branded Tracking emails
+  cover the "shipped / on its way" beat
+- `customer_on_hold_order` (yes → **no**) — duplicated the processing-email subject
+
+Rollback (if needed):
+```bash
+wp --path=/var/www/abxtac eval '
+foreach (["customer_completed_order","customer_on_hold_order"] as $id) {
+    foreach (WC()->mailer()->get_emails() as $e) {
+        if ($e->id === $id) $e->update_option("enabled", "yes");
+    }
+}'
+```
+
+**Current ABXTAC customer-email footprint per order** (after the change above):
+1. WC `customer_processing_order` — "Your ABXTac order has been received!"
+2. ShipStation BTN #1 — "Your order is being prepared"
+3. ShipStation BTN #2 — "Your package is estimated to arrive [day]"
+4. ShipStation BTN #3 — "Your package is out for delivery"
+5. ShipStation BTN #4 — "Your package has been delivered"
+
+5 emails per order; further trim is in ShipStation's UI (Branded Tracking toggles —
+items #2 and #3 above are the next candidates to turn off).
+
 
 ## Sender identity (live)
 
