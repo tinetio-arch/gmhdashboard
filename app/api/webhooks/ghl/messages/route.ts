@@ -6,6 +6,7 @@ import {
   createGHLClientForABXTAC,
   createGHLClientForLongevity,
 } from '@/lib/ghl';
+import { maybeSendBookingAutoReply, isAutoBookingEnabled } from '@/lib/ghl-auto-reply';
 
 /**
  * Location ID → account key mapping.
@@ -164,6 +165,32 @@ export async function POST(request: NextRequest) {
     );
 
     console.log(`[GHL-WH] Stored ${normalizedDirection} ${messageType} for ${contactName || contactPhone || contactId} (${accountKey})${body ? ' body=' + body.substring(0, 40) : ' (no body)'}`);
+
+    // Appointment-booking auto-responder. Only fires for inbound SMS with a body
+    // on a supported account, when GHL_AUTO_BOOKING_ENABLED=true. All other
+    // cases short-circuit inside the helper. Wrapped so a classifier or send
+    // failure can never poison the webhook response.
+    if (
+      isAutoBookingEnabled() &&
+      normalizedDirection === 'inbound' &&
+      messageType === 'SMS' &&
+      body &&
+      body.trim().length > 0
+    ) {
+      try {
+        const result = await maybeSendBookingAutoReply({
+          accountKey,
+          locationId,
+          contactId,
+          conversationId,
+          body,
+          contactName,
+        });
+        console.log(`[GHL-WH] Auto-reply ${result.status}${result.status === 'skipped' ? `: ${result.reason}` : ` msg=${result.messageId}`}`);
+      } catch (autoErr) {
+        console.error('[GHL-WH] Auto-reply pipeline crashed:', autoErr instanceof Error ? autoErr.message : autoErr);
+      }
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
