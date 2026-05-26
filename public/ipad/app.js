@@ -7714,22 +7714,10 @@ function renderChartingTab(container, d) {
         return db - da;
     });
 
+    // FIX(2026-05-26): Clinical Notes renders BEFORE Appointments (Phil request). Past
+    // appointments capped at 3 (last 3 + all future).
+    const pastApptsToShow = pastAppts.slice(0, 3);
     container.innerHTML = `
-        <!-- Appointments — always visible, expanded, top of chart. FIX(2026-05-20): was a collapsed
-             section buried below Clinical Notes that vanished entirely when a patient had no upcoming
-             appts, so it read as "missing." Now always shown with an empty state. -->
-        <div class="chart-section">
-            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <span>📅 Appointments (${hAppts.length})</span>
-                <span class="chart-chevron">›</span>
-            </div>
-            <div class="chart-section-body">
-                ${hAppts.length > 0 ? `
-                    ${upcomingAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700; padding:2px 2px 4px;">Upcoming (${upcomingAppts.length})</div>${upcomingAppts.map(a => apptCard(a, true)).join('')}` : ''}
-                    ${pastAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; padding:10px 2px 4px;">Past (${pastAppts.length})</div>${pastAppts.slice(0, 15).map(a => apptCard(a, false)).join('')}${pastAppts.length > 15 ? `<div style="font-size:10px; color:var(--text-tertiary); padding:6px 2px;">+ ${pastAppts.length - 15} older not shown</div>` : ''}` : ''}
-                ` : '<div class="chart-empty" style="padding:12px; text-align:center; color:var(--text-tertiary);">No appointments on file</div>'}
-            </div>
-        </div>
         <!-- All Clinical Notes (unified timeline) -->
         <div class="chart-section">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
@@ -7792,6 +7780,20 @@ function renderChartingTab(container, d) {
                         </div>
                     </div>`;
                 }).join('') : '<div class="chart-empty" style="padding:16px; text-align:center;">No clinical notes yet. Click Record Visit to create one.</div>'}
+            </div>
+        </div>
+        <!-- Appointments — last 3 past + all future, dates always shown. FIX(2026-05-26):
+             moved below Clinical Notes per Phil; past list capped at 3 (was 15). -->
+        <div class="chart-section">
+            <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span>📅 Appointments (${upcomingAppts.length + pastApptsToShow.length}${pastAppts.length > pastApptsToShow.length ? ` of ${hAppts.length}` : ''})</span>
+                <span class="chart-chevron">›</span>
+            </div>
+            <div class="chart-section-body">
+                ${hAppts.length > 0 ? `
+                    ${upcomingAppts.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700; padding:2px 2px 4px;">Upcoming (${upcomingAppts.length})</div>${upcomingAppts.map(a => apptCard(a, true)).join('')}` : ''}
+                    ${pastApptsToShow.length > 0 ? `<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; padding:10px 2px 4px;">Past ${pastAppts.length > pastApptsToShow.length ? `(last ${pastApptsToShow.length} of ${pastAppts.length})` : `(${pastApptsToShow.length})`}</div>${pastApptsToShow.map(a => apptCard(a, false)).join('')}` : ''}
+                ` : '<div class="chart-empty" style="padding:12px; text-align:center; color:var(--text-tertiary);">No appointments on file</div>'}
             </div>
         </div>
         <!-- Alerts -->
@@ -8837,7 +8839,7 @@ function renderDocumentsTab(container, d) {
             '</div>' +
             '<div class="chart-section-body" id="labDocsListContainer">' +
                 labItems.map(function(l) {
-                    return '<div class="chart-lab-card"><div class="chart-lab-name">' + (l.panel_names || l.lab_type || 'Lab Panel') + '</div><div class="chart-lab-detail">' + (l.ordered_date ? new Date(l.ordered_date).toLocaleDateString() : '') + ' · ' + (l.status || 'pending') + '</div></div>';
+                    return '<div class="chart-lab-card"><div class="chart-lab-name">' + (l.panel_names || l.lab_type || 'Lab Panel') + '</div><div class="chart-lab-detail">' + (formatDocDate(l.ordered_date || l.created_at || l.received_date) || 'No date') + ' · ' + (l.status || 'pending') + '</div></div>';
                 }).join('') +
                 visibleLabDocs.map(function(doc) { return renderDocCard(doc, 'lab'); }).join('') +
                 (hasMoreLabDocs ? '<button onclick="showMoreLabDocs()" style="width:100%; padding:10px; margin-top:4px; font-size:12px; font-weight:600; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; cursor:pointer;">Show More (' + (labDocs.length - _labDocsShown) + ' remaining)</button>' : '') +
@@ -8889,7 +8891,7 @@ function showMoreLabDocs() {
     var visibleLabDocs = labDocs.slice(0, _labDocsShown);
     var hasMore = labDocs.length > _labDocsShown;
     container.innerHTML = labItems.map(function(l) {
-        return '<div class="chart-lab-card"><div class="chart-lab-name">' + (l.panel_names || l.lab_type || 'Lab Panel') + '</div><div class="chart-lab-detail">' + (l.ordered_date ? new Date(l.ordered_date).toLocaleDateString() : '') + ' · ' + (l.status || 'pending') + '</div></div>';
+        return '<div class="chart-lab-card"><div class="chart-lab-name">' + (l.panel_names || l.lab_type || 'Lab Panel') + '</div><div class="chart-lab-detail">' + (formatDateDisplay(l.ordered_date || l.created_at || l.received_date) || 'No date') + ' · ' + (l.status || 'pending') + '</div></div>';
     }).join('') + visibleLabDocs.map(function(doc) { return window._renderDocCard(doc, 'lab'); }).join('');
     if (hasMore) {
         container.innerHTML += '<button onclick="showMoreLabDocs()" style="width:100%; padding:10px; margin-top:4px; font-size:12px; font-weight:600; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; cursor:pointer;">Show More (' + (labDocs.length - _labDocsShown) + ' remaining)</button>';
