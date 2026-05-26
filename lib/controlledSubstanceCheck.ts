@@ -138,6 +138,67 @@ export async function getTodayCheckStatus(checkType: 'morning' | 'evening' = 'mo
 }
 
 /**
+ * Get the last EOD (evening) check's physical count.
+ *
+ * Returned values are vial-only ml totals (full*size + partial) — these
+ * represent the last known-good baseline for what's physically on the
+ * shelf. Used by morning checks to pre-fill and compute "did anything
+ * change overnight" rather than comparing to a possibly-drifted live
+ * system count.
+ *
+ * Returns null if no EOD check has ever been recorded.
+ */
+export async function getLastEodPhysicalCount(): Promise<{
+    checkDate: string;
+    performedAt: string;
+    performedByName: string;
+    cbFullVials: number;
+    cbPartialMl: number;
+    cbVialOnlyMl: number;
+    trFullVials: number;
+    trPartialMl: number;
+    trVialOnlyMl: number;
+} | null> {
+    const result = await query<{
+        check_date: string;
+        performed_at: string;
+        performed_by_name: string;
+        physical_vials_cb_30ml: string;
+        physical_partial_ml_cb: string;
+        physical_vials_toprx_10ml: string;
+        physical_partial_ml_toprx: string;
+    }>(`
+        SELECT check_date, performed_at, performed_by_name,
+               physical_vials_cb_30ml, physical_partial_ml_cb,
+               physical_vials_toprx_10ml, physical_partial_ml_toprx
+        FROM controlled_substance_checks
+        WHERE check_type = 'evening'
+        ORDER BY performed_at DESC
+        LIMIT 1
+    `);
+
+    if (result.length === 0) return null;
+
+    const r = result[0];
+    const cbFull = parseInt(r.physical_vials_cb_30ml) || 0;
+    const cbPartial = parseFloat(r.physical_partial_ml_cb) || 0;
+    const trFull = parseInt(r.physical_vials_toprx_10ml) || 0;
+    const trPartial = parseFloat(r.physical_partial_ml_toprx) || 0;
+
+    return {
+        checkDate: r.check_date,
+        performedAt: r.performed_at,
+        performedByName: r.performed_by_name,
+        cbFullVials: cbFull,
+        cbPartialMl: cbPartial,
+        cbVialOnlyMl: cbFull * 30 + cbPartial,
+        trFullVials: trFull,
+        trPartialMl: trPartial,
+        trVialOnlyMl: trFull * 10 + trPartial,
+    };
+}
+
+/**
  * Get current system inventory counts
  */
 export async function getSystemInventoryCounts(): Promise<{
@@ -244,7 +305,21 @@ export async function recordControlledSubstanceCheck(
     //
     // If a future form starts collecting physicalSyringeMl, both sides can include
     // staged volume; until then, both sides are vial-only.
-    const systemGrandTotal = systemCounts.cb30ml.totalMl + systemCounts.topRx10ml.totalMl
+    //
+    // FIX(2026-05-26): Morning checks compare against the prior day's EOD physical
+    // count (the last known-good baseline), not the live system. The live system
+    // can drift from physical reality when new vials arrive but haven't been logged
+    // via Inventory Management yet — that gap is real but it's an EOD/reconciliation
+    // concern, not a "did overnight activity match expectation" concern. Without
+    // this, every morning check shows a phantom discrepancy equal to the
+    // outstanding system-vs-physical drift.
+    const checkType = input.checkType || 'morning';
+    const priorEod = checkType === 'morning' ? await getLastEodPhysicalCount() : null;
+
+    const baselineCbMl = priorEod ? priorEod.cbVialOnlyMl : systemCounts.cb30ml.totalMl;
+    const baselineTrMl = priorEod ? priorEod.trVialOnlyMl : systemCounts.topRx10ml.totalMl;
+
+    const systemGrandTotal = baselineCbMl + baselineTrMl
         + (physicalSyringeMl > 0 ? (systemCounts.cb30ml.stagedDoseMl + systemCounts.topRx10ml.stagedDoseMl) : 0);
     const physicalGrandTotal = physicalTotalCb + physicalTotalTopRx + physicalSyringeMl;
     const discrepancyCb = systemGrandTotal - physicalGrandTotal;
