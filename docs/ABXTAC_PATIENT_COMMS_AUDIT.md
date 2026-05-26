@@ -33,23 +33,41 @@ Mailchimp, Abandoned-Cart, etc.). Only the WC core, WC ShipStation integration, 
 WC Stripe Gateway, and `link-woocommerce-plugin-gty-main` are active — none of those add
 extra customer transactional emails.
 
-## 2. The ShipStation ↔ Woo bridge — where the "shipped" email actually comes from
+## 2. ShipStation is the loudest channel — confirmed from live Gmail (2026-05-26)
 
-The WC ShipStation integration plugin is configured with:
-- `shipped_status: wc-completed` — **when ShipStation marks a shipment shipped, the plugin
-  moves the WC order to status "Completed".**
-- That status change triggers `WC_Emails::send_transactional_email` on the `completed`
-  hook → fires `customer_completed_order` → patient gets *"Your order from ABXTac is on
-  its way!"*.
+ShipStation's classic "Shipment Notification" toggle is **OFF** (no `subject:shipped`
+emails ever come from `tracking@shipstation.com`). But the **Branded Tracking Notifications**
+feature is fully on, and it sends a customer **four separate emails per shipment** from
+`tracking@shipstation.com`:
 
-So the "your order shipped" email patients see is **WooCommerce's `customer_completed_order`**,
-not a ShipStation-sent email.
+| # | Stage | Subject | Triggered by |
+|---|---|---|---|
+| 1 | Label created | "Your order is being prepared" | label printed in ShipStation |
+| 2 | Tracking active | "Your package is estimated to arrive [day]" | first carrier scan |
+| 3 | Out for delivery | "Your package is out for delivery" | OFD scan |
+| 4 | Delivered | "Your package has been delivered" | delivery scan |
 
-**But ShipStation can ALSO send its own customer "Shipment Notification" email** (configured
-per-store in the ShipStation Web UI, Settings → Stores → [store] → *Customer Email*). That
-setting is not exposed in any WC option or API surface I can read — **must verify in the
-ShipStation dashboard**. If it's enabled, the patient gets *two* shipped emails (the WC one
-above + ShipStation's).
+**Live volume** in the last 14 days, sampled from admin's inbox (admin is BCC'd on every
+one of these): **~5 unique customers × 4 emails = ~20 ShipStation customer touches** —
+`bcozrn52@gmail.com`, `jfulmer92037@gmail.com`, `alex@halenkainvestments.com`,
+`badgersdenaz@gmail.com`, `joekarcie@gmail.com`, `brian@thegathering.global`,
+`jtbsyount@hotmail.com`. Every shipment generated all 4 emails.
+
+Meanwhile, the WC ShipStation integration plugin is configured `shipped_status: wc-completed`
+— so when ShipStation marks shipped, WC also fires `customer_completed_order` ("Your order
+from ABXTac is on its way!"). That's a **5th email per shipment**.
+
+**Total customer-facing emails per single ABXTAC order today:**
+
+1. WC `customer_processing_order` — order placed → "Your ABXTac order has been received!"
+2. ShipStation #1 → "Your order is being prepared"
+3. WC `customer_completed_order` — ShipStation marks shipped → "Your order from ABXTac is on its way!"
+4. ShipStation #2 → "Your package is estimated to arrive [day]"
+5. ShipStation #3 → "Your package is out for delivery"
+6. ShipStation #4 → "Your package has been delivered"
+
+**→ Six emails per order.** And `admin@granitemountainhealth.com` is BCC'd on the
+ShipStation four (which is why this audit can see them), so Phil's inbox gets 4 copies too.
 
 Our own `app/api/webhooks/shipstation/route.ts` only handles **delivery** events to set
 `peptide_order_tracking.delivered_at` — it sends no emails.
@@ -101,20 +119,41 @@ once the GHL workflows are published as-is:
 - (None of the GHL templates duplicate WC's *order* emails; they're appointment-focused,
   which WC doesn't send. No overlap there.)
 
-## 5. Recommended trims (read-only — for Phil to apply in the relevant UIs)
+## 5. Recommended trims — biggest noise first
 
+### The 4 ShipStation Branded-Tracking emails are the largest source of noise.
+In ShipStation: **Settings → Notifications → Branded Tracking Notifications** (or
+**Settings → Stores → [Store] → Customer Email** → "Tracking Updates"). Each of the 4
+stages can be toggled. A sensible trim:
+
+- ✂️ **Off:** "Order is being prepared" (redundant with WC's processing email)
+- ✂️ **Off:** "Estimated to arrive [day]" (low-value preview; reduces noise the most)
+- ✅ Keep: "Out for delivery" (only one with porch-piracy / availability utility)
+- ✅ Keep: "Delivered" (only one with "did it arrive?" utility)
+
+That drops customers from 6 → 4 emails per order. If you want to go further:
+
+- ✂️ Disable **WC `customer_completed_order`** (WP → WC → Settings → Emails) — ShipStation
+  emails cover the same "your order is on its way" ground. Drops to 3.
+- ✂️ Disable **WC `customer_on_hold_order`** — duplicate subject with `customer_processing_order`
+  on the rare paths that hit on-hold.
+
+### Other items
 | Action | Where | Why |
 |---|---|---|
-| **Disable `customer_on_hold_order`** | WP → WC → Settings → Emails | Same subject as processing; second copy when both fire |
-| **Verify "Shipment Notification" in ShipStation UI** is OFF (let WC own the shipped email), or disable WC `customer_completed_order` and let ShipStation own it | ShipStation → Settings → Stores → [Store] → Customer Email | Avoid double "your order shipped" |
-| **Audit `customer_note` use** | WC admin | Any staff "note to customer" emails the patient — easy accidental over-messaging |
-| **Fix store name "ABXTac " (trailing space) + set `woocommerce_email_from_name`** | WC → Settings → General + Emails | Cosmetic; cleans the `[ABXTac ]` subjects |
-| **Decide owner for "order shipped" before publishing GHL "ABXTac - Order Shipped" workflow** | GHL UI | Don't publish a 3rd shipped email |
-| **(Already correct)** Healthie group 82534 has no onboarding flow → no Healthie auto-emails | Healthie | Verified in §4a |
+| Audit `customer_note` use | WC admin | Staff "note to customer" emails the patient — easy accidental over-messaging |
+| Fix store name "ABXTac " (trailing space) + set `woocommerce_email_from_name` | WC → Settings → General + Emails | Cosmetic — cleans the `[ABXTac ]` subjects |
+| Decide owner for "order shipped" before publishing GHL "ABXTac - Order Shipped" workflow | GHL UI | Don't publish a 3rd "shipped" sender |
+| Turn off admin BCC on Branded Tracking emails | ShipStation Settings → Notifications | You're getting 4 copies in your inbox per shipment too |
+| Healthie group 82534 has no onboarding flow → no Healthie auto-emails (verified §4a) | — | already correct |
 
-Read-only verification commands used (no changes made):
+### Verification trail (all read-only)
+
 ```
 wp --path=/var/www/abxtac eval '$mailer = WC()->mailer(); foreach ($mailer->get_emails() as $e) { ... }'
 wp --path=/var/www/abxtac option get woocommerce_shipstation_settings --format=yaml
-# (no ShipStation API key in env — Shipment Notification toggle must be checked in UI)
+# Gmail MCP — confirmed live volume:
+#   from:shipstation.com newer_than:14d      → ~20 hits across ~5 customers (4 per shipment)
+#   from:shipstation.com subject:shipped     → 0 hits (classic Shipment Notification is OFF)
+# (no ShipStation API key in env — Branded Tracking toggles must be flipped in their UI)
 ```
