@@ -6558,6 +6558,54 @@ function renderChartPanel(content) {
                 : `<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No vitals on file</div>`}
         </div>
 
+        <!-- APPOINTMENTS (always visible — Phil request 2026-05-26, row 20260519-224757-e2c8:
+             previously buried inside Notes tab below 700+px of other content, so users couldn't
+             scroll to them; surface them alongside Allergies/Diagnoses/Meds/Vitals so the
+             next visit + recent history is visible immediately on chart open) -->
+        ${(() => {
+            const apptList = d.healthie_appointments || [];
+            const apptMs = (a) => { const t = new Date(a && a.date ? a.date : 0).getTime(); return isNaN(t) ? 0 : t; };
+            const nowMs = Date.now();
+            const upcoming = apptList.filter(a => apptMs(a) >= nowMs).sort((a, b) => apptMs(a) - apptMs(b));
+            const past = apptList.filter(a => apptMs(a) < nowMs).sort((a, b) => apptMs(b) - apptMs(a));
+            const fmtApptDate = (dt) => {
+                if (!dt) return '—';
+                try {
+                    const dd = new Date(dt);
+                    if (isNaN(dd.getTime())) return '—';
+                    return dd.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: CLINIC_TIMEZONE });
+                } catch { return '—'; }
+            };
+            const apptRow = (a, isUpcoming) => {
+                const typeName = (a.appointment_type && a.appointment_type.name) || 'Appointment';
+                const provName = (a.provider && a.provider.full_name) || '';
+                const accent = isUpcoming ? 'border-left:2px solid var(--cyan);' : 'border-left:2px solid rgba(255,255,255,0.08);';
+                return `<div style="padding:4px 8px; background:var(--surface-2); border-radius:6px; ${accent} display:flex; align-items:center; gap:8px;">
+                    <div style="font-size:10px; color:var(--text-tertiary); min-width:110px;">${fmtApptDate(a.date)}</div>
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:11px; color:var(--text-primary); font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${typeName}</div>
+                        ${provName ? `<div style="font-size:9px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${provName}${a.pm_status ? ' · ' + a.pm_status : ''}</div>` : (a.pm_status ? `<div style="font-size:9px; color:var(--text-tertiary);">${a.pm_status}</div>` : '')}
+                    </div>
+                </div>`;
+            };
+            const upcomingPreview = upcoming.slice(0, 2);
+            const pastPreview = past.slice(0, 3);
+            const extra = (upcoming.length - upcomingPreview.length) + (past.length - pastPreview.length);
+            return `
+        <div id="appointments-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
+                <span>📅 Appointments (${apptList.length})</span>
+                ${apptList.length > 0 ? `<button onclick="switchChartTab('notes'); setTimeout(() => { var el = document.getElementById('chartTabContent'); if (el) { var sec = el.querySelector('.chart-section'); if (sec) sec.scrollIntoView({behavior:'smooth', block:'start'}); } }, 50);" style="font-size:9px; background:none; border:none; color:var(--cyan); cursor:pointer; padding:0 4px;">View all →</button>` : ''}
+            </div>
+            ${apptList.length > 0 ? `
+            <div style="display:flex; flex-direction:column; gap:3px;">
+                ${upcomingPreview.length > 0 ? `<div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700;">Upcoming</div>${upcomingPreview.map(a => apptRow(a, true)).join('')}` : '<div style="font-size:10px; color:var(--text-tertiary); font-style:italic;">No upcoming appointments</div>'}
+                ${pastPreview.length > 0 ? `<div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; margin-top:2px;">Recent</div>${pastPreview.map(a => apptRow(a, false)).join('')}` : ''}
+                ${extra > 0 ? `<div style="font-size:10px; color:var(--text-tertiary); padding:2px 4px;">+ ${extra} more</div>` : ''}
+            </div>` : '<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No appointments on file</div>'}
+        </div>`;
+        })()}
+
         <!-- Controlled Substance Alert (if any) -->
         ${renderControlledSubstanceAlert(d)}
 
