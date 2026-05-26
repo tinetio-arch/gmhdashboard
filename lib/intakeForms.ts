@@ -63,7 +63,7 @@ export interface IntakeSubmissionInput {
 
 export interface ProvisionResult {
     submissionId: string;
-    status: 'provisioned' | 'healthie_unmapped' | 'dry_run' | 'error';
+    status: 'provisioned' | 'healthie_unmapped' | 'dry_run' | 'local_only' | 'error';
     patientId: string | null;
     healthieClientId: string | null;
     healthieFormAnswerGroupId: string | null;
@@ -294,6 +294,28 @@ export async function submitIntake(
         //    Suppress Healthie's welcome/set-password email by default: OUR forms
         //    own all patient communication (the decoupling goal). Re-enable per
         //    deployment with INTAKE_HEALTHIE_SEND_WELCOME=1 if ever desired.
+        //
+        //    Kill-switch: when INTAKE_PUSH_TO_HEALTHIE=false, skip the Healthie
+        //    create AND the answer-push entirely. The patient is local-only —
+        //    our DB becomes the system of record. This is the dial we turn down
+        //    as we migrate off Healthie brand-by-brand (start with ABXTAC).
+        const pushToHealthie = process.env.INTAKE_PUSH_TO_HEALTHIE !== 'false';
+        if (!pushToHealthie) {
+            await query(
+                `UPDATE intake_submissions
+                    SET patient_id = $1, status = 'local_only', provisioned_at = NOW()
+                  WHERE submission_id = $2`,
+                [patientId, submissionId]
+            );
+            return {
+                submissionId,
+                status: 'local_only',
+                patientId,
+                healthieClientId: null,
+                healthieFormAnswerGroupId: null,
+            };
+        }
+
         const sendHealthieWelcome = process.env.INTAKE_HEALTHIE_SEND_WELCOME === '1';
         const healthieResult = await createPatientInHealthie({
             patientName: input.applicantName,
