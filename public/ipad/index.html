@@ -210,7 +210,12 @@
     <!-- Footer -->
     <div class="footer-note">Powered by GMH Ops — Live Data</div>
 
-    <script>document.write('<scr'+'ipt src="./app.js?v='+Date.now()+'"></scr'+'ipt>');</script>
+    <!-- App bundle: content-hashed filename so iOS Safari / PWA caches invalidate
+         automatically when app.js changes. The hash is stamped by
+         scripts/sync-mobile.sh on every build/commit; the Date.now() suffix
+         layered on top is a belt-and-suspenders defense against any cache that
+         still keys on the bare path. Pattern matched by sed: app\.[a-f0-9]+\.js -->
+    <script>document.write('<scr'+'ipt src="./app.00000000.js?v='+Date.now()+'"></scr'+'ipt>');</script>
 </body>
 
 </html>
