@@ -58,7 +58,8 @@ export default function IntakePage({ params }: { params: Promise<{ brand: string
         setSubmitting(true);
         try {
             const token = new URLSearchParams(window.location.search).get('token') || '';
-            const res = await fetch(`${BASE}/api/intake/${brand}/${slug}${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+            // Trailing slash before `?token=` to avoid Next.js 308 body-drop.
+            const res = await fetch(`${BASE}/api/intake/${brand}/${slug}/${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

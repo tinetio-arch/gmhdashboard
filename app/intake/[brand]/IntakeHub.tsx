@@ -56,7 +56,9 @@ async function fetchPriorCompleted(brand: string, id: Identity): Promise<string[
     if (!id.applicant_email && !id.applicant_phone) return [];
     try {
         const token = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('token') || '' : '';
-        const r = await fetch(`${BASE}/api/intake/${brand}/progress${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+        // Trailing slash is REQUIRED before `?token=...` — Next.js trailingSlash:true
+        // would 308-redirect a POST without it and WebKit/curl drop the body on 308.
+        const r = await fetch(`${BASE}/api/intake/${brand}/progress/${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ applicant_email: id.applicant_email, applicant_phone: id.applicant_phone }),
@@ -240,7 +242,7 @@ function FormStep({ brand, form, identity, onSubmitted, onBack }: { brand: strin
         setSubmitting(true);
         try {
             const token = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('token') || '' : '';
-            const r = await fetch(`${BASE}/api/intake/${brand}/${form.slug}${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+            const r = await fetch(`${BASE}/api/intake/${brand}/${form.slug}/${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
