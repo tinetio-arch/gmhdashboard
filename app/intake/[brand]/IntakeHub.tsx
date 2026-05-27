@@ -50,6 +50,25 @@ interface Props {
     appDeepLink: string;
 }
 
+/** Look up forms already completed by this email/phone on this brand. POST so
+ * email doesn't end up in nginx access logs. Returns [] on any failure. */
+async function fetchPriorCompleted(brand: string, id: Identity): Promise<string[]> {
+    if (!id.applicant_email && !id.applicant_phone) return [];
+    try {
+        const token = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('token') || '' : '';
+        const r = await fetch(`${BASE}/api/intake/${brand}/progress${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ applicant_email: id.applicant_email, applicant_phone: id.applicant_phone }),
+        });
+        if (!r.ok) return [];
+        const d = await r.json();
+        return Array.isArray(d.completed) ? d.completed : [];
+    } catch {
+        return [];
+    }
+}
+
 export default function IntakeHub({ brand, forms, platform, appDeepLink }: Props) {
     const [continueInBrowser, setContinueInBrowser] = useState(!platform.isMobile);
     const [step, setStep] = useState(0); // 0 = identity, 1..N = forms, N+1 = done
@@ -114,7 +133,15 @@ export default function IntakeHub({ brand, forms, platform, appDeepLink }: Props
                 <IdentityStep
                     identity={identity}
                     onChange={setIdentity}
-                    onNext={() => setStep(1)}
+                    onNext={async () => {
+                        // Resume-by-email: if this email/phone has prior completed
+                        // submissions for this brand, skip past them and land on the
+                        // first incomplete form. Best-effort — failure falls back to step 1.
+                        const prior = await fetchPriorCompleted(brand, identity);
+                        if (prior.length > 0) setCompleted(new Set(prior));
+                        const firstIncomplete = forms.findIndex((f) => !prior.includes(f.slug));
+                        setStep(firstIncomplete >= 0 ? firstIncomplete + 1 : forms.length + 1);
+                    }}
                 />
             )}
 
