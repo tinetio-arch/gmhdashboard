@@ -36,6 +36,131 @@ const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
 const CLAUDE_MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
 const PROMPT_VERSION = 'v1-2026-05-27';
 
+// ─── Patient-scope guardrail ─────────────────────────────────────────────────
+//
+// Dispatch row 20260527-012352-1888: TRT- and Men's-Health-specific answers
+// must be gated on the patient actually being enrolled in NowMensHealth.Care.
+// A primary-care or longevity patient who happens to be open in the iPad chart
+// must NOT get a TRT supply / dispense / regimen answer.
+//
+// Two layers:
+//   1. SERVER-SIDE PRE-FILTER (this file) — if the question is TRT/MH-specific
+//      and the patient isn't mens_health, refuse before calling Bedrock and
+//      audit the rejection. This is the load-bearing enforcement.
+//   2. PROMPT BLOCK (defense-in-depth) — we still tell the model the patient's
+//      scope so a borderline question that slipped past the regex is steered
+//      toward "out of scope for this patient" rather than confabulated TRT
+//      guidance.
+
+type PatientScope = {
+  isMensHealth: boolean;
+  isPrimaryCare: boolean;
+  isLongevity: boolean;
+  isMentalHealth: boolean;
+  clinic: string | null;
+  clientTypeKey: string | null;
+  tags: string[];
+};
+
+// Keywords that make a question unambiguously TRT- or Men's-Health-specific.
+// Kept narrow on purpose: lab-only mentions (e.g. "what was their last
+// testosterone level") are NOT in this list because a primary-care patient
+// can legitimately have a testosterone lab drawn — only therapy/regimen/
+// dispense framing flips the question into the MH-only bucket.
+const TRT_INTENT_PATTERNS: RegExp[] = [
+  /\btrt\b/i,
+  /testosterone\s+(?:replacement|therapy|regimen|cypionate|enanthate|propionate|supply|refill|injection|dose|dispense|protocol|cycle)/i,
+  /\bcypionate\b/i,
+  /\benanthate\b/i,
+  /\bpropionate\b/i,
+  /\bsupply\s+status\b/i,
+  /\bnmh\s+trt\b/i,
+  /men'?s\s*health/i,
+  /\bmensheal/i,
+  /\bhcg\b/i,
+  /\bgonadorelin\b/i,
+  /\banastrozole\b/i,
+  /\barimidex\b/i,
+  /\benclomiphene\b/i,
+  /\bclomiphene\b/i,
+  /\btamoxifen\b/i,
+  /\baromatase\s+inhibitor/i,
+  /\bvial\b.*\b(?:trt|testosterone|t\b)/i,
+  /\bsyringe\b.*\b(?:trt|testosterone|t\b)/i,
+];
+
+function detectTRTIntent(question: string, history: ChatMessage[]): boolean {
+  const haystack = [
+    question,
+    ...history.map((m) => m.content),
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return TRT_INTENT_PATTERNS.some((re) => re.test(haystack));
+}
+
+async function fetchPatientScope(patientId: string): Promise<PatientScope | null> {
+  const rows = await query<{
+    clinic: string | null;
+    client_type_key: string | null;
+    ghl_tags: string[] | null;
+  }>(
+    `SELECT clinic, client_type_key, ghl_tags
+       FROM patients
+      WHERE patient_id = $1::uuid
+      LIMIT 1`,
+    [patientId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  const clinic = (row.clinic || '').toLowerCase();
+  const clientTypeKey = (row.client_type_key || '').toLowerCase();
+  const tagsRaw = Array.isArray(row.ghl_tags) ? row.ghl_tags : [];
+  const tags = tagsRaw.map((t) => String(t || '').toLowerCase().trim()).filter(Boolean);
+
+  // Same canonical detection used by app/api/jarvis/peptide-eligibility/route.ts.
+  // GHL "trt"/"testosterone" tag is treated as MH-equivalent because those
+  // tags only get applied to enrolled Men's Health patients.
+  const isMensHealth =
+    clinic.includes('men') ||
+    clinic.includes('nowmenshealth') ||
+    clientTypeKey === 'nowmenshealth' ||
+    clientTypeKey === 'qbo_tcmh_180_month' ||
+    clientTypeKey === 'jane_tcmh_180_month' ||
+    clientTypeKey === 'qbo_f_f_fr_veteran_140_month' ||
+    clientTypeKey === 'jane_f_f_fr_veteran_140_month' ||
+    clientTypeKey === 'mens_health_qbo' ||
+    tags.includes('trt') ||
+    tags.includes('testosterone') ||
+    tags.includes('men\'s health') ||
+    tags.includes('mens health');
+
+  const isPrimaryCare =
+    clinic.includes('primary') ||
+    clinic.includes('nowprimary') ||
+    clientTypeKey === 'nowprimarycare' ||
+    clientTypeKey === 'primecare_premier_50_month' ||
+    clientTypeKey === 'primecare_elite_100_month' ||
+    clientTypeKey === 'ins_supp_60_month';
+
+  const isLongevity =
+    clinic.includes('longevity') || clientTypeKey === 'nowlongevity';
+
+  const isMentalHealth =
+    clinic.includes('mental') || clientTypeKey === 'nowmentalhealth';
+
+  return {
+    isMensHealth,
+    isPrimaryCare,
+    isLongevity,
+    isMentalHealth,
+    clinic: row.clinic,
+    clientTypeKey: row.client_type_key,
+    tags,
+  };
+}
+
 // ─── System prompt (strict-grounding + §6 safety guardrails) ─────────────────
 
 const SYSTEM_PROMPT = `You are an AI clinical decision-support assistant embedded in the Granite Mountain Health staff iPad app. A clinician has opened a specific patient's chart and is asking you a question about that patient.
@@ -43,6 +168,12 @@ const SYSTEM_PROMPT = `You are an AI clinical decision-support assistant embedde
 **Your role**
 - You are a decision-support tool, NOT a prescriber. You do not make orders, do not finalize diagnoses, and do not replace clinical judgment. Always defer the final decision to the human provider.
 - You only ever discuss the ONE patient whose chart appears in <patient_chart> below.
+
+**SCOPE GATE — non-negotiable**
+- A <patient_scope> block tells you which clinical program(s) this patient is enrolled in (Men's Health, Primary Care, Longevity, Mental Health).
+- If the patient is NOT in Men's Health, you MUST NOT answer TRT-specific, testosterone-therapy-specific, or Men's-Health-program-specific questions. This includes: TRT supply / refill / dispense status, T-injection dosing, cypionate/enanthate/propionate regimens, HCG, gonadorelin, anastrozole/arimidex, enclomiphene/clomiphene, aromatase-inhibitor management, and "men's health" program guidance.
+- When the question is out-of-scope for the patient, reply with one short paragraph: identify what the patient IS enrolled in, name that the question is out of program scope, and suggest the right next step (enroll in NowMensHealth.Care, or refer to that team). Do not improvise a clinical answer.
+- Lab values themselves (e.g. "what was the last total T level on this patient") are still fair game when present in <patient_chart> — the gate is on therapy/regimen guidance, not on reading labs that are already in the chart.
 
 **STRICT GROUNDING — non-negotiable**
 - Answer ONLY from facts present in <patient_chart>. Do not invent medications, allergies, diagnoses, labs, visits, or history.
@@ -243,10 +374,132 @@ export async function POST(
     );
   }
 
+  // 3b. SCOPE GATE — fetch the patient's program enrollment (clinic +
+  // client_type_key + ghl_tags) and refuse TRT/MH-specific questions for
+  // patients who aren't enrolled in NowMensHealth.Care. This is the
+  // load-bearing server-side enforcement; the prompt block below is
+  // defense-in-depth.
+  let scope: PatientScope;
+  try {
+    const fetched = await fetchPatientScope(chart.patientId);
+    scope = fetched ?? {
+      isMensHealth: false,
+      isPrimaryCare: false,
+      isLongevity: false,
+      isMentalHealth: false,
+      clinic: null,
+      clientTypeKey: null,
+      tags: [],
+    };
+  } catch (err) {
+    // Scope fetch failing is a security-critical event — we cannot prove the
+    // patient IS mens-health, so we must default to "scope unknown" and apply
+    // the same gate as for non-MH patients.
+    console.error('[ipad/patient/ask] scope fetch failed, defaulting to closed:', err);
+    scope = {
+      isMensHealth: false,
+      isPrimaryCare: false,
+      isLongevity: false,
+      isMentalHealth: false,
+      clinic: null,
+      clientTypeKey: null,
+      tags: [],
+    };
+  }
+
+  const isTrtQuestion = detectTRTIntent(question, history);
+  if (isTrtQuestion && !scope.isMensHealth) {
+    const enrolledIn =
+      scope.isPrimaryCare ? 'NowPrimary.Care'
+      : scope.isLongevity ? 'NOWLongevity.Care'
+      : scope.isMentalHealth ? 'NOWMentalHealth.Care'
+      : scope.clinic
+        ? scope.clinic
+        : 'no Men\'s Health program';
+    const refusal =
+      `This patient is enrolled in ${enrolledIn}, not NowMensHealth.Care. ` +
+      `TRT- and Men's-Health-specific guidance (supply status, dispense / refill, ` +
+      `testosterone regimens, HCG, AI/gonadorelin, etc.) is out of scope for this ` +
+      `chart. To get that answer, enroll the patient in NowMensHealth.Care first, ` +
+      `or route the question to the Men's Health team.\n\n` +
+      `Decision-support only — verify and finalize.`;
+
+    await writeAudit({
+      userId: user.user_id,
+      userEmail: user.email,
+      patientId: chart.patientId,
+      healthieClientId: chart.healthieClientId,
+      question,
+      status: 'rejected',
+      summary: 'Out-of-scope TRT/MH question for non-mens_health patient',
+      details: {
+        reason: 'scope_gate_trt_for_non_mens_health',
+        scope: {
+          isMensHealth: scope.isMensHealth,
+          isPrimaryCare: scope.isPrimaryCare,
+          isLongevity: scope.isLongevity,
+          isMentalHealth: scope.isMentalHealth,
+          clinic: scope.clinic,
+          clientTypeKey: scope.clientTypeKey,
+          tagCount: scope.tags.length,
+        },
+      },
+    });
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'out_of_scope',
+        data: {
+          answer: refusal,
+          sources: [],
+          model: null,
+          promptVersion: PROMPT_VERSION,
+          patient: {
+            patientId: chart.patientId,
+            healthieClientId: chart.healthieClientId,
+            fullName: chart.demographics.fullName,
+          },
+          scopeGate: {
+            blocked: true,
+            reason: 'trt_for_non_mens_health',
+            enrolledIn,
+          },
+        },
+      },
+      { status: 403 }
+    );
+  }
+
   // 4. Build the Claude messages payload. The system prompt + chart context go
   // into Anthropic's `system` field; the conversation history + new question
-  // become `messages`. The chart appears once, inside <patient_chart>.
+  // become `messages`. The chart appears once, inside <patient_chart>, and the
+  // computed program enrollment goes inside <patient_scope> so the model has
+  // explicit context even on the questions the pre-filter let through.
+  const programs: string[] = [];
+  if (scope.isMensHealth) programs.push('NowMensHealth.Care');
+  if (scope.isPrimaryCare) programs.push('NowPrimary.Care');
+  if (scope.isLongevity) programs.push('NOWLongevity.Care');
+  if (scope.isMentalHealth) programs.push('NOWMentalHealth.Care');
+  const scopeBlock = JSON.stringify(
+    {
+      enrolledPrograms: programs,
+      isMensHealth: scope.isMensHealth,
+      isPrimaryCare: scope.isPrimaryCare,
+      isLongevity: scope.isLongevity,
+      isMentalHealth: scope.isMentalHealth,
+      rawClinic: scope.clinic,
+      clientTypeKey: scope.clientTypeKey,
+    },
+    null,
+    2
+  );
+
   const systemBlock = `${SYSTEM_PROMPT}
+
+<patient_scope>
+${scopeBlock}
+</patient_scope>
 
 <patient_chart>
 ${serializeChart(chart)}
