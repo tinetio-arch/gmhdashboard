@@ -7069,10 +7069,11 @@ function renderMedsRxTab(container, d) {
     const subTab = window._medsSubTab || 'rx';
 
     container.innerHTML = `
-        <div style="display:flex; gap:4px; padding:6px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
-            <button class="chart-subtab ${subTab === 'rx' ? 'active' : ''}" onclick="window._medsSubTab='rx'; renderChartTabContent();" style="flex:1; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'rx' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">💊 Medications</button>
-            <button class="chart-subtab ${subTab === 'erx' ? 'active' : ''}" onclick="window._medsSubTab='erx'; renderChartTabContent();" style="flex:1; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'erx' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">📝 E-Prescribe</button>
-            <button class="chart-subtab ${subTab === 'dispense' ? 'active' : ''}" onclick="window._medsSubTab='dispense'; renderChartTabContent();" style="flex:1; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'dispense' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">💉 Dispense Hx</button>
+        <div style="display:flex; gap:4px; padding:6px 8px; border-bottom:1px solid rgba(255,255,255,0.06); flex-wrap:wrap;">
+            <button class="chart-subtab ${subTab === 'rx' ? 'active' : ''}" onclick="window._medsSubTab='rx'; renderChartTabContent();" style="flex:1; min-width:0; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'rx' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">💊 Medications</button>
+            <button class="chart-subtab ${subTab === 'stack' ? 'active' : ''}" onclick="window._medsSubTab='stack'; renderChartTabContent();" style="flex:1; min-width:0; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'stack' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">🧬 Stack</button>
+            <button class="chart-subtab ${subTab === 'erx' ? 'active' : ''}" onclick="window._medsSubTab='erx'; renderChartTabContent();" style="flex:1; min-width:0; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'erx' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">📝 E-Prescribe</button>
+            <button class="chart-subtab ${subTab === 'dispense' ? 'active' : ''}" onclick="window._medsSubTab='dispense'; renderChartTabContent();" style="flex:1; min-width:0; padding:6px 8px; font-size:11px; font-weight:600; border:none; border-radius:6px; cursor:pointer; ${subTab === 'dispense' ? 'background:var(--cyan); color:white;' : 'background:var(--surface-2); color:var(--text-secondary);'}">💉 Dispense Hx</button>
         </div>
     `;
 
@@ -7081,6 +7082,8 @@ function renderMedsRxTab(container, d) {
 
     if (subTab === 'rx') {
         renderPrescriptionsTab(subContainer, d);
+    } else if (subTab === 'stack') {
+        renderStackTab(subContainer, d);
     } else if (subTab === 'erx') {
         renderERxTab(subContainer, d);
     } else if (subTab === 'dispense') {
@@ -8846,6 +8849,409 @@ function renderDispenseTab(container, d) {
             '<div class="chart-empty" style="padding:24px; text-align:center;">No dispense history</div>' : ''}
     `;
 }
+
+
+// ==================== STACK (DOSING) TAB ====================
+// Provider dose-set / adjust UI — reads GET /api/patients/[id]/stack/
+// and writes via POST /api/patients/[id]/stack/  (new item)
+// or PATCH /api/patients/[id]/stack/[stackId]/  (existing item).
+// Every change is audited server-side via dose_history. The P1 engine
+// (lib/patientStack.ts) then drives the patient's Stack screen.
+let _stackCache = null;
+let _stackLoadingFor = null;
+
+function getStackPatientUuid(d) {
+    return d?.demographics?.patient_id || chartPanelPatientId || '';
+}
+
+function renderStackTab(container, d) {
+    const patientId = getStackPatientUuid(d);
+    if (!patientId) {
+        container.innerHTML = '<div class="chart-empty" style="padding:16px;">No patient context</div>';
+        return;
+    }
+    // patient_id from /360/ is a UUID; chartPanelPatientId can be a Healthie ID
+    // for some entry points — only the UUID is accepted by the stack API.
+    const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientId);
+
+    container.innerHTML = `
+        <div style="padding:8px 12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px;">
+                <div style="font-size:12px; color:var(--text-secondary); flex:1;">
+                    Provider dose-set & adjust. Every change is audited.
+                </div>
+                <button onclick="openStackSetDoseModal()" style="padding:6px 12px; background:linear-gradient(135deg,#00d4ff,#0891b2); color:white; border:none; border-radius:6px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;">+ Set Dose</button>
+            </div>
+            ${!looksLikeUuid ? `<div style="padding:8px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:6px; font-size:11px; color:#f59e0b; margin-bottom:8px;">⚠️ Stack actions need the patient's internal UUID — chart opened with Healthie ID. Reopen via the patient list.</div>` : ''}
+            <div id="stackTabList" class="chart-loading"><div class="spinner"></div> Loading stack…</div>
+        </div>
+    `;
+
+    if (looksLikeUuid) {
+        _stackLoadingFor = patientId;
+        loadPatientStack(patientId);
+    }
+}
+
+async function loadPatientStack(patientId) {
+    try {
+        // trailingSlash on GET avoids the 308 redirect roundtrip.
+        const resp = await apiFetch(`/ops/api/patients/${patientId}/stack/`);
+        if (_stackLoadingFor !== patientId) return; // stale call
+        _stackCache = resp || { items: [], fda_disclaimer: '' };
+        renderStackList(patientId, _stackCache);
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        const el = document.getElementById('stackTabList');
+        if (el) el.innerHTML = '<div class="chart-empty">Failed to load stack — ' + (e.message || 'error') + '</div>';
+    }
+}
+
+function renderStackList(patientId, data) {
+    const el = document.getElementById('stackTabList');
+    if (!el) return;
+    const items = (data?.items || []);
+    if (items.length === 0) {
+        el.innerHTML = '<div class="chart-empty" style="padding:16px;">No stack items. Use "+ Set Dose" to start one.</div>';
+        return;
+    }
+    el.innerHTML = items.map(it => renderStackCard(patientId, it)).join('');
+}
+
+function renderStackCard(patientId, it) {
+    const itemJson = JSON.stringify(it).replace(/"/g, '&quot;');
+    const statusColor = it.status === 'active' ? '#22c55e'
+        : it.status === 'pending' ? '#f59e0b'
+        : it.status === 'paused' ? '#94a3b8'
+        : '#ef4444';
+    const typeIcon = it.item_type === 'testosterone' ? '💉' : '🧪';
+    const dose = it.recommended_dose != null
+        ? `${it.recommended_dose}${it.dose_unit || ''}`
+        : '<span style="color:var(--text-tertiary);">(no dose set)</span>';
+    const freq = it.frequency_code
+        || (it.cadence_days ? `every ${it.cadence_days}d` : '');
+    const nextDue = it.computed?.next_due_date
+        ? `Next due ${it.computed.next_due_date}${it.computed.days_until_due != null ? ` (${it.computed.days_until_due >= 0 ? 'in ' + it.computed.days_until_due + 'd' : Math.abs(it.computed.days_until_due) + 'd late'})` : ''}`
+        : '';
+    const remaining = (it.item_type === 'peptide' && it.computed?.amount_remaining != null)
+        ? `Remaining: ${Number(it.computed.amount_remaining).toFixed(2)}mL${it.computed.doses_remaining_estimate != null ? ` (~${it.computed.doses_remaining_estimate} doses)` : ''}`
+        : '';
+    const auditCount = Array.isArray(it.dose_history) ? it.dose_history.length : 0;
+
+    return `
+        <div class="chart-section" style="margin-bottom:6px;">
+            <div style="padding:10px 12px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:13px; font-weight:600; color:var(--text-primary);">
+                            ${typeIcon} ${(it.display_name || '?').replace(/</g,'&lt;')}
+                            <span style="margin-left:6px; font-size:9px; padding:1px 6px; background:rgba(${statusColor === '#22c55e' ? '34,197,94' : statusColor === '#f59e0b' ? '245,158,11' : statusColor === '#94a3b8' ? '148,163,184' : '239,68,68'},0.15); color:${statusColor}; border-radius:4px; vertical-align:middle; text-transform:uppercase; font-weight:700;">${it.status}</span>
+                        </div>
+                        <div style="font-size:14px; color:var(--cyan); margin-top:3px; font-weight:600;">${dose}${freq ? ` · ${freq}` : ''}</div>
+                        ${nextDue ? `<div style="font-size:11px; color:var(--text-secondary); margin-top:2px;">${nextDue}</div>` : ''}
+                        ${remaining ? `<div style="font-size:11px; color:var(--text-secondary); margin-top:2px;">${remaining}</div>` : ''}
+                    </div>
+                </div>
+                <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+                    <button onclick='openStackAdjustModal(${JSON.stringify(it.stack_id)})' style="padding:5px 10px; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.35); color:var(--cyan); border-radius:5px; font-size:11px; font-weight:600; cursor:pointer;">✏️ Adjust</button>
+                    ${it.status !== 'active' ? `<button onclick='quickStackStatus(${JSON.stringify(it.stack_id)}, "active")' style="padding:5px 10px; background:rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.3); color:#22c55e; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer;">▶ Resume</button>` : ''}
+                    ${it.status === 'active' ? `<button onclick='quickStackStatus(${JSON.stringify(it.stack_id)}, "paused")' style="padding:5px 10px; background:rgba(148,163,184,0.12); border:1px solid rgba(148,163,184,0.3); color:#94a3b8; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer;">⏸ Pause</button>` : ''}
+                    ${it.status !== 'discontinued' ? `<button onclick='quickStackStatus(${JSON.stringify(it.stack_id)}, "discontinued")' style="padding:5px 10px; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.3); color:#ef4444; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer;">⛔ Discontinue</button>` : ''}
+                    ${auditCount > 0 ? `<button onclick='toggleStackHistory(${JSON.stringify(it.stack_id)})' style="margin-left:auto; padding:5px 10px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-tertiary); border-radius:5px; font-size:11px; font-weight:600; cursor:pointer;">📜 ${auditCount}</button>` : ''}
+                </div>
+                <div id="stack-hist-${it.stack_id}" style="display:none; margin-top:8px; padding:8px; background:var(--surface-2); border-radius:6px; font-size:10px; color:var(--text-secondary); max-height:200px; overflow-y:auto;"></div>
+            </div>
+        </div>
+    `;
+}
+
+function toggleStackHistory(stackId) {
+    const el = document.getElementById('stack-hist-' + stackId);
+    if (!el) return;
+    if (el.style.display === 'none') {
+        const it = (_stackCache?.items || []).find(x => x.stack_id === stackId);
+        const hist = (it?.dose_history || []).slice().reverse();
+        if (hist.length === 0) { el.innerHTML = '<em>No history</em>'; }
+        else {
+            el.innerHTML = hist.map(h => {
+                const when = h.at ? new Date(h.at).toLocaleString('en-US', { timeZone: CLINIC_TIMEZONE, month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '';
+                const who = h.by_name || h.by || 'system';
+                const action = (h.action || '?').toUpperCase();
+                let summary = '';
+                if (h.next) {
+                    const n = h.next;
+                    const parts = [];
+                    if (n.recommended_dose != null) parts.push(`dose=${n.recommended_dose}${n.dose_unit || ''}`);
+                    if (n.frequency_code) parts.push(`freq=${n.frequency_code}`);
+                    if (n.cadence_days != null) parts.push(`cadence=${n.cadence_days}d`);
+                    if (n.status) parts.push(`status=${n.status}`);
+                    summary = parts.join(' · ');
+                }
+                return `<div style="padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.04);"><strong>${action}</strong> ${when} by ${who}${summary ? `<br><span style="color:var(--text-tertiary);">${summary}</span>` : ''}${h.note ? `<br><em>${(h.note + '').replace(/</g,'&lt;')}</em>` : ''}</div>`;
+            }).join('');
+        }
+        el.style.display = 'block';
+    } else {
+        el.style.display = 'none';
+    }
+}
+
+async function quickStackStatus(stackId, status) {
+    const patientId = getStackPatientUuid(chartPanelData);
+    if (!patientId) return showToast('No patient context', 'error');
+    if (status === 'discontinued' && !confirm('Discontinue this stack item? It will be soft-deleted and hidden from the patient.')) return;
+    try {
+        const resp = await apiFetch(`/ops/api/patients/${patientId}/stack/${stackId}/`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status, note: `Status changed to ${status} via iPad chart` })
+        });
+        if (resp?.success) {
+            showToast(`Status: ${status}`, 'success');
+            loadPatientStack(patientId);
+        } else {
+            showToast(resp?.error || 'Update failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Update failed', 'error');
+    }
+}
+
+// ── SET DOSE MODAL (new item) ──────────────────────────────────────
+function openStackSetDoseModal() {
+    const patientId = getStackPatientUuid(chartPanelData);
+    if (!patientId) return showToast('No patient context', 'error');
+    document.getElementById('stackDoseModal')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'stackDoseModal';
+    overlay.className = 'modal-overlay visible';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    overlay.innerHTML = `
+        <div class="modal-content" style="max-width:480px; max-height:90vh; overflow-y:auto; background:var(--surface-1); border-radius:12px; padding:18px; border:1px solid var(--border);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <div style="font-size:15px; font-weight:600; color:var(--text-primary);">🧬 Set Stack Item</div>
+                <button onclick="document.getElementById('stackDoseModal').remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+            </div>
+            <div style="display:grid; gap:10px; font-size:12px;">
+                <label>Item Type
+                    <select id="stkType" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;">
+                        <option value="peptide">🧪 Peptide</option>
+                        <option value="testosterone">💉 Testosterone (TRT)</option>
+                    </select>
+                </label>
+                <label>Display Name
+                    <input id="stkName" type="text" placeholder="e.g. BPC-157 5mg or Testosterone Cypionate" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;" />
+                </label>
+                <label>Product SKU
+                    <input id="stkSku" type="text" placeholder="e.g. YPB.123 or TRT-CYP" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;" />
+                </label>
+                <div style="display:grid; grid-template-columns:2fr 1fr; gap:8px;">
+                    <label>Recommended Dose
+                        <input id="stkDose" type="number" step="0.01" min="0" placeholder="e.g. 250" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;" />
+                    </label>
+                    <label>Unit
+                        <select id="stkUnit" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;">
+                            <option value="mcg">mcg</option>
+                            <option value="mg" selected>mg</option>
+                            <option value="iu">iu</option>
+                            <option value="mL">mL</option>
+                        </select>
+                    </label>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                    <label>Frequency
+                        <select id="stkFreq" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;">
+                            <option value="">— select —</option>
+                            <option value="daily">daily</option>
+                            <option value="q2d">every other day</option>
+                            <option value="weekly">weekly</option>
+                            <option value="2x_week">2× / week</option>
+                            <option value="3x_week">3× / week</option>
+                            <option value="monthly">monthly</option>
+                        </select>
+                    </label>
+                    <label>Cadence (days)
+                        <input id="stkCadence" type="number" step="0.1" min="0" placeholder="auto from freq" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;" />
+                    </label>
+                </div>
+                <label>Vial Size (mL)
+                    <input id="stkVialMl" type="number" step="0.1" min="0" placeholder="default 10" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;" />
+                </label>
+                <label>Status
+                    <select id="stkStatus" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;">
+                        <option value="active" selected>active</option>
+                        <option value="pending">pending</option>
+                        <option value="paused">paused</option>
+                    </select>
+                </label>
+                <label>Note (optional, written to audit)
+                    <textarea id="stkNote" rows="2" placeholder="e.g. starter dose, will titrate up in 4 weeks" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px; resize:vertical;"></textarea>
+                </label>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:14px;">
+                <button onclick="document.getElementById('stackDoseModal').remove()" style="flex:1; padding:10px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;">Cancel</button>
+                <button id="stkSubmitBtn" onclick="submitStackSetDose()" style="flex:2; padding:10px; background:linear-gradient(135deg,#00d4ff,#0891b2); color:white; border:none; border-radius:6px; font-size:13px; font-weight:700; cursor:pointer;">Save Dose</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+async function submitStackSetDose() {
+    const patientId = getStackPatientUuid(chartPanelData);
+    if (!patientId) return showToast('No patient context', 'error');
+    const item_type = document.getElementById('stkType').value;
+    const display_name = document.getElementById('stkName').value.trim();
+    const product_sku = document.getElementById('stkSku').value.trim();
+    const recommended_dose = parseFloat(document.getElementById('stkDose').value);
+    const dose_unit = document.getElementById('stkUnit').value;
+    const frequency_code = document.getElementById('stkFreq').value || null;
+    const cadenceRaw = document.getElementById('stkCadence').value;
+    const cadence_days = cadenceRaw ? parseFloat(cadenceRaw) : null;
+    const vialRaw = document.getElementById('stkVialMl').value;
+    const vial_size_ml = vialRaw ? parseFloat(vialRaw) : null;
+    const status = document.getElementById('stkStatus').value;
+    const note = document.getElementById('stkNote').value.trim() || null;
+
+    if (!display_name) return showToast('Display name required', 'error');
+    if (!product_sku) return showToast('Product SKU required', 'error');
+    if (!isFinite(recommended_dose) || recommended_dose <= 0) return showToast('Enter a positive dose', 'error');
+
+    const btn = document.getElementById('stkSubmitBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+        const resp = await apiFetch(`/ops/api/patients/${patientId}/stack/`, {
+            method: 'POST',
+            body: JSON.stringify({
+                item_type, product_sku, display_name,
+                recommended_dose, dose_unit,
+                frequency_code, cadence_days,
+                status, vial_size_ml,
+                note
+            })
+        });
+        if (resp?.success) {
+            document.getElementById('stackDoseModal')?.remove();
+            showToast('Stack item saved', 'success');
+            loadPatientStack(patientId);
+        } else {
+            showToast(resp?.error || 'Save failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Save failed', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save Dose'; }
+    }
+}
+
+// ── ADJUST DOSE MODAL (existing item) ──────────────────────────────
+function openStackAdjustModal(stackId) {
+    const it = (_stackCache?.items || []).find(x => x.stack_id === stackId);
+    if (!it) return showToast('Stack item not found', 'error');
+    const patientId = getStackPatientUuid(chartPanelData);
+    if (!patientId) return showToast('No patient context', 'error');
+
+    document.getElementById('stackDoseModal')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'stackDoseModal';
+    overlay.className = 'modal-overlay visible';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    const safeName = (it.display_name || '?').replace(/</g, '&lt;');
+    const curDose = it.recommended_dose != null ? it.recommended_dose : '';
+    overlay.innerHTML = `
+        <div class="modal-content" style="max-width:480px; max-height:90vh; overflow-y:auto; background:var(--surface-1); border-radius:12px; padding:18px; border:1px solid var(--border);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <div style="font-size:15px; font-weight:600; color:var(--text-primary);">✏️ Adjust Dose — ${safeName}</div>
+                <button onclick="document.getElementById('stackDoseModal').remove()" style="background:none; border:none; color:var(--text-tertiary); font-size:20px; cursor:pointer;">✕</button>
+            </div>
+            <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:10px;">
+                Current: <strong>${it.recommended_dose != null ? it.recommended_dose + (it.dose_unit || '') : '(no dose)'}</strong>
+                ${it.frequency_code ? ` · ${it.frequency_code}` : ''}
+                ${it.cadence_days != null ? ` · every ${it.cadence_days}d` : ''}
+            </div>
+            <div style="display:grid; gap:10px; font-size:12px;">
+                <div style="display:grid; grid-template-columns:2fr 1fr; gap:8px;">
+                    <label>New Dose
+                        <input id="adjDose" type="number" step="0.01" min="0" value="${curDose}" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;" />
+                    </label>
+                    <label>Unit
+                        <select id="adjUnit" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;">
+                            <option value="mcg" ${it.dose_unit==='mcg'?'selected':''}>mcg</option>
+                            <option value="mg" ${it.dose_unit==='mg'?'selected':''}>mg</option>
+                            <option value="iu" ${it.dose_unit==='iu'?'selected':''}>iu</option>
+                            <option value="mL" ${it.dose_unit==='mL'?'selected':''}>mL</option>
+                        </select>
+                    </label>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                    <label>Frequency
+                        <select id="adjFreq" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;">
+                            <option value="">— unchanged —</option>
+                            <option value="daily" ${it.frequency_code==='daily'?'selected':''}>daily</option>
+                            <option value="q2d" ${it.frequency_code==='q2d'?'selected':''}>every other day</option>
+                            <option value="weekly" ${it.frequency_code==='weekly'?'selected':''}>weekly</option>
+                            <option value="2x_week" ${it.frequency_code==='2x_week'?'selected':''}>2× / week</option>
+                            <option value="3x_week" ${it.frequency_code==='3x_week'?'selected':''}>3× / week</option>
+                            <option value="monthly" ${it.frequency_code==='monthly'?'selected':''}>monthly</option>
+                        </select>
+                    </label>
+                    <label>Cadence (days)
+                        <input id="adjCadence" type="number" step="0.1" min="0" value="${it.cadence_days != null ? it.cadence_days : ''}" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px;" />
+                    </label>
+                </div>
+                <label>Note (required for audit)
+                    <textarea id="adjNote" rows="2" placeholder="e.g. raising dose after 4-week response" style="width:100%; padding:8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-primary); border-radius:6px; font-size:13px; margin-top:3px; resize:vertical;"></textarea>
+                </label>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:14px;">
+                <button onclick="document.getElementById('stackDoseModal').remove()" style="flex:1; padding:10px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;">Cancel</button>
+                <button id="adjSubmitBtn" onclick="submitStackAdjust('${stackId}')" style="flex:2; padding:10px; background:linear-gradient(135deg,#00d4ff,#0891b2); color:white; border:none; border-radius:6px; font-size:13px; font-weight:700; cursor:pointer;">Save Adjustment</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+async function submitStackAdjust(stackId) {
+    const patientId = getStackPatientUuid(chartPanelData);
+    if (!patientId) return showToast('No patient context', 'error');
+    const recommended_dose = parseFloat(document.getElementById('adjDose').value);
+    const dose_unit = document.getElementById('adjUnit').value;
+    const frequency_code = document.getElementById('adjFreq').value || null;
+    const cadenceRaw = document.getElementById('adjCadence').value;
+    const cadence_days = cadenceRaw ? parseFloat(cadenceRaw) : null;
+    const note = document.getElementById('adjNote').value.trim() || null;
+
+    if (!isFinite(recommended_dose) || recommended_dose <= 0) return showToast('Enter a positive dose', 'error');
+    if (!note) return showToast('Note required (provider audit)', 'error');
+
+    const body = { recommended_dose, dose_unit, note };
+    if (frequency_code) body.frequency_code = frequency_code;
+    if (cadence_days) body.cadence_days = cadence_days;
+
+    const btn = document.getElementById('adjSubmitBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+        const resp = await apiFetch(`/ops/api/patients/${patientId}/stack/${stackId}/`, {
+            method: 'PATCH',
+            body: JSON.stringify(body)
+        });
+        if (resp?.success) {
+            document.getElementById('stackDoseModal')?.remove();
+            showToast('Dose adjusted', 'success');
+            loadPatientStack(patientId);
+        } else {
+            showToast(resp?.error || 'Adjust failed', 'error');
+        }
+    } catch (e) {
+        if (e.message === 'AUTH_EXPIRED') throw e;
+        showToast('Adjust failed', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save Adjustment'; }
+    }
+}
+
 
 
 // Track how many documents are shown (for pagination)

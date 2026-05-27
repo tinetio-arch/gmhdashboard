@@ -25,6 +25,7 @@ import { SUPPLY_KIT_SKU } from '@/lib/peptideCategories';
 import { getPatientAccessStatus } from '@/lib/appAccessControl';
 import Stripe from 'stripe';
 import { reconcilePatientPayments } from '@/lib/payment-reconcile';
+import { autoAddPeptideToStackBySku } from '@/lib/stackAutoAdd';
 
 export const maxDuration = 30;
 
@@ -447,6 +448,27 @@ export async function POST(request: NextRequest) {
                     [patient.full_name, item.unit_price, paymentIntent.id,
                      `Mobile order — ${item.name} (${item.sku}) — ${discount.tier} tier (${Math.round(discount.discountPct*100)}% off)`]
                 );
+            }
+
+            // Seed the patient's Stack at handbook lowest dose so the purchased
+            // peptide is visible + usable immediately. autoAddPeptideToStackBySku
+            // resolves sku→peptide_products.product_id and skips unknown SKUs
+            // (Supply Kit, ancillaries). Idempotent upsert — safe to call once
+            // per cart item. Non-blocking: a Stack write failure must not
+            // unwind the successful charge.
+            try {
+                const r = await autoAddPeptideToStackBySku({
+                    patient_id: patient.patient_id,
+                    sku: item.sku,
+                    source_order_id: paymentIntent.id,
+                    triggered_by_user_id: null,
+                    triggered_by_name: 'auto-add-on-purchase (mobile)'
+                });
+                if (r) {
+                    console.log(`[Mobile Checkout] Stack ${r.created ? 'created' : r.reactivated ? 'reactivated' : 'reused'} for ${item.sku} → ${r.stack_id} (${r.status})`);
+                }
+            } catch (stackErr: any) {
+                console.error('[Mobile Checkout] autoAddPeptideToStack failed (non-blocking):', stackErr?.message);
             }
         }
 

@@ -6,6 +6,7 @@ import { uploadSimpleReceiptToHealthie } from '@/lib/simpleReceiptUpload';
 import { v4 as uuidv4 } from 'uuid';
 import { resolvePatientId } from '@/lib/ipad-patient-resolver';
 import { reconcilePatientPayments } from '@/lib/payment-reconcile';
+import { autoAddPeptideToStack } from '@/lib/stackAutoAdd';
 
 /**
  * POST /api/ipad/billing/charge
@@ -512,6 +513,23 @@ async function chargeViaDirectStripe(
                         const sid = dispenseResult[0]?.sale_id || null;
                         if (sid) dispenseIds.push(sid);
                         console.log(`[billing/charge] Auto-created peptide dispense #${sid} for ${product.name}`);
+                    }
+
+                    // Auto-add to patient Stack at handbook lowest dose. Idempotent
+                    // upsert on (patient_id, item_type='peptide', product_sku) —
+                    // safe to call once per cart item even when qty>1. Non-blocking:
+                    // a Stack write failure must not roll back the sale.
+                    try {
+                        const r = await autoAddPeptideToStack({
+                            patient_id: patientId,
+                            product_ref: item.product_id,
+                            source_order_id: paymentIntent.id || null,
+                            triggered_by_user_id: null,
+                            triggered_by_name: 'auto-add-on-purchase (iPad)'
+                        });
+                        console.log(`[billing/charge] Stack ${r.created ? 'created' : r.reactivated ? 'reactivated' : 'reused'} for ${product.name} → ${r.stack_id} (${r.status})`);
+                    } catch (stackErr: any) {
+                        console.error('[billing/charge] autoAddPeptideToStack failed (non-blocking):', stackErr?.message);
                     }
                 }
             } catch (dispenseError: any) {
