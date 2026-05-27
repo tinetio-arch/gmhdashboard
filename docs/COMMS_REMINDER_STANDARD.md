@@ -71,7 +71,10 @@ Why this matters: the moment a single device opts in, the legacy cron will
 start firing **24h + 1h push**, which violates the single-24h standard and
 duplicates anything Phase 3 sends through the gateway.
 
-**Migration plan** (Phase 3 task `20260526-192907-f4ba` and friends):
+**Migration plan** (a Phase-3 follow-up — note: dispatch row `20260526-192907-f4ba`
+named here at draft time actually scoped to the **video-call-join event**
+shipped 2026-05-26 — see `docs/COMMS_VIDEO_CALL_JOIN.md`. The cron migration
+below is its own pending work item):
 
 1. Wire that cron through `notifyPatient()` using
    `buildAppointmentReminderEvent()`. The gateway's
