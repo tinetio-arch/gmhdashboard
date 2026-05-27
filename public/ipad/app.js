@@ -6421,7 +6421,7 @@ function renderChartPanel(content) {
                     <button onclick="showResetPasswordDialog()" style="padding:4px 10px; border-radius:6px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); color:var(--yellow); font-size:11px; font-weight:600; cursor:pointer;" title="Reset patient Healthie password">🔑 Password</button>
                     <button onclick="toggleInterestingPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.2); color:#a855f7; font-size:11px; font-weight:600; cursor:pointer;" title="Interesting facts about this patient">⭐ Interesting</button>
                     <button onclick="toggleCommsPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); color:#22c55e; font-size:11px; font-weight:600; cursor:pointer;" title="Clinic communications with this patient">💬 Comms</button>
-                    <button onclick="openPatientAiPanel('${chartPanelPatientId || ''}', '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="padding:4px 10px; border-radius:6px; background:linear-gradient(135deg, rgba(124,58,237,0.18), rgba(236,72,153,0.18)); border:1px solid rgba(236,72,153,0.35); color:#f0abfc; font-size:11px; font-weight:600; cursor:pointer;" title="Ask AI about this chart">✨ Ask AI</button>
+                    ${currentUser?.email === 'admin@nowoptimal.com' ? `<button onclick="openPatientAiPanel('${chartPanelPatientId || ''}', '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="padding:4px 10px; border-radius:6px; background:linear-gradient(135deg, rgba(124,58,237,0.18), rgba(236,72,153,0.18)); border:1px solid rgba(236,72,153,0.35); color:#f0abfc; font-size:11px; font-weight:600; cursor:pointer;" title="Ask AI about this chart">✨ Ask AI</button>` : ''}
                 </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
@@ -11773,9 +11773,9 @@ async function selectPatient(id) {
                     </div>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center;">
-                    <button onclick="openPatientAiPanel('${id}', '${(name || '').replace(/'/g, "\\'")}')" class="patient-ai-launch-btn" title="Ask AI about this chart">
+                    ${currentUser?.email === 'admin@nowoptimal.com' ? `<button onclick="openPatientAiPanel('${id}', '${(name || '').replace(/'/g, "\\'")}')" class="patient-ai-launch-btn" title="Ask AI about this chart">
                         <span style="font-size:14px; line-height:1;">✨</span> Ask AI
-                    </button>
+                    </button>` : ''}
                     <button onclick="openChartForPatient('${patient.healthie_client_id || id}', '${(name || '').replace(/'/g, "\\'")}')" style="padding:6px 14px; border-radius:8px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; color:#0a0f1a; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap;">Open Chart</button>
                 </div>
             </div>
@@ -24207,6 +24207,14 @@ function ensurePatientAiPanelMounted() {
 
 function openPatientAiPanel(patientId, patientName) {
     if (!patientId) return;
+    // Admin-only gate (engine option A, 2026-05-27). The server enforces this
+    // independently in app/api/ipad/patient/[id]/ask/route.ts; this is just
+    // the UI guardrail so a stale render or someone poking the console
+    // doesn't get a 403 back from the route.
+    if ((currentUser?.email || '').trim().toLowerCase() !== 'admin@nowoptimal.com') {
+        console.warn('[patient-ai] Ask AI is admin-only; ignoring open request.');
+        return;
+    }
     ensurePatientAiPanelMounted();
     patientAiCurrentPatientId = patientId;
     patientAiCurrentPatientName = patientName || '';
@@ -24426,27 +24434,85 @@ function streamRevealText(el, fullText, doneCb) {
     tick();
 }
 
-// Lightweight markdown-ish renderer for the answer body. Escapes HTML first,
-// then bolds **like this**, turns lines starting with "- " or "* " into a
-// <ul>, and preserves paragraph breaks. Deliberately small — Claude tends to
-// answer in short paragraphs + bullets, not full markdown.
+// Lightweight markdown-ish renderer for the answer body. Escapes HTML first
+// (sanitize), then renders the small subset Claude actually emits with the
+// strengthened prompt:
+//   ## Heading              → <h4>
+//   **bold**                → <strong>
+//   *italic*                → <em>
+//   `code`                  → <code>
+//   - / * / • bullet        → <ul>
+//   1. / 2. numbered        → <ol>
+//   Confidence: HIGH/...    → coloured pill
+// Deliberately narrow — we never want raw HTML from the model to land in the
+// DOM. Everything is escaped first; markdown syntax is rebuilt from the
+// escaped output. (2026-05-27)
 function formatPatientAiBody(raw) {
     if (!raw) return '';
-    const escaped = sanitize(String(raw))
-        // Sanitize escapes `/`; the bold regex below needs raw asterisks, which
-        // sanitize leaves alone, so we're fine.
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    let s = sanitize(String(raw));
 
-    // Split into blocks on blank lines, then convert bullet runs to <ul>.
-    const blocks = escaped.split(/\n{2,}/);
-    return blocks.map(block => {
-        const lines = block.split(/\n/);
-        const isList = lines.every(l => /^\s*[-*•]\s+/.test(l)) && lines.length > 0;
-        if (isList) {
-            return '<ul>' + lines.map(l => `<li>${l.replace(/^\s*[-*•]\s+/, '')}</li>`).join('') + '</ul>';
+    // Inline transforms (run on escaped text — the original `*`, `_`, "`" pass
+    // through sanitize untouched, so the regex sees them literally).
+    s = s
+        .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+        // Single-asterisk italics — require non-space neighbours so we don't
+        // eat lone bullet markers ("- * foo" or "* foo").
+        .replace(/(^|[^*\w])\*([^*\s][^*\n]*?[^*\s]|[^*\s])\*(?=[^*\w]|$)/g, '$1<em>$2</em>');
+
+    // Highlight a "Confidence: HIGH/MODERATE/LOW" line as a coloured pill so
+    // the clinician can spot the model's self-rating at a glance. Match either
+    // bold or plain. Operates on the escaped+strong-replaced string.
+    s = s.replace(
+        /(?:<strong>\s*Confidence\s*<\/strong>|Confidence)\s*[:\-—]\s*(HIGH|MODERATE|MOD|MED|MEDIUM|LOW)\b([^\n]*)/gi,
+        (_m, level, rest) => {
+            const lv = level.toUpperCase();
+            const tier = lv === 'HIGH' ? 'high' : lv === 'LOW' ? 'low' : 'mod';
+            return `<span class="patient-ai-confidence patient-ai-confidence-${tier}">Confidence: ${lv}</span>${rest || ''}`;
         }
-        return '<p>' + lines.join('<br>') + '</p>';
-    }).join('');
+    );
+
+    // Split on blank lines into blocks, then classify each block.
+    const blocks = s.split(/\n{2,}/);
+    const out = [];
+    for (let block of blocks) {
+        block = block.replace(/^\s+|\s+$/g, '');
+        if (!block) continue;
+
+        // ## / ### headings → <h4> (we don't allow real h1/h2 in a narrow panel)
+        const h = /^(#{2,4})\s+(.+)$/m.exec(block);
+        if (h && !block.includes('\n')) {
+            out.push(`<h4 class="patient-ai-heading">${h[2]}</h4>`);
+            continue;
+        }
+
+        const lines = block.split(/\n/);
+
+        // Numbered list (1. / 2. / …) — must be ALL lines
+        if (lines.every(l => /^\s*\d+[.)]\s+/.test(l))) {
+            out.push('<ol>' + lines.map(l => `<li>${l.replace(/^\s*\d+[.)]\s+/, '')}</li>`).join('') + '</ol>');
+            continue;
+        }
+
+        // Bullet list — must be ALL lines
+        if (lines.every(l => /^\s*[-*•]\s+/.test(l))) {
+            out.push('<ul>' + lines.map(l => `<li>${l.replace(/^\s*[-*•]\s+/, '')}</li>`).join('') + '</ul>');
+            continue;
+        }
+
+        // Single-line heading-ish ("Bottom line:" pattern Claude likes) —
+        // promote to a small label.
+        if (lines.length === 1 && /^[A-Z][A-Za-z /-]{2,30}:\s/.test(lines[0])) {
+            const m2 = lines[0].match(/^([A-Z][A-Za-z /-]{2,30}):\s(.*)$/);
+            if (m2) {
+                out.push(`<p><strong class="patient-ai-inline-label">${m2[1]}:</strong> ${m2[2]}</p>`);
+                continue;
+            }
+        }
+
+        out.push('<p>' + lines.join('<br>') + '</p>');
+    }
+    return out.join('');
 }
 
 // ─── WEB PUSH (staff assignment banners) ────────────────────────────────

@@ -2,23 +2,36 @@
  * patientChart.ts — single-call patient chart assembler.
  *
  * One function: `assemblePatientChart(identifier)` → the whole chart for an
- * AI agent (Phase 1 of the iPad Patient-Chart AI).
+ * AI agent (the iPad Patient-Chart "Ask AI").
  *
  * Sources, in one parallel fan-out:
  *   • Postgres `patients`        — demographics, status, dx (JSONB), lab dates, regimen text, notes
  *   • Postgres `patient_allergies` — local allergies + NKDA marker
  *   • Postgres `dispenses` + `vials` — recent signed TRT
  *   • Postgres `peptide_dispenses` + `peptide_products` — recent peptide fulfillments
- *   • Postgres `scribe_notes`     — recent ICD-10 codes from signed SOAP notes
- *   • Postgres `lab_review_queue` — recent reviewed labs
+ *   • Postgres `scribe_notes`     — recent ICD-10 codes, full visit-note text, supplementary docs
+ *   • Postgres `lab_review_queue` — recent labs incl. parsed analyte values from raw_result JSONB
  *   • Healthie GraphQL            — current meds + allergies
  *
- * Design rules (different from the existing /api/ipad/patient-chart route):
+ * Design rules:
  *   1. PURE READ. No DB writebacks, no Stripe calls, no UI-shape coupling.
  *   2. Per-section timeouts — a slow Healthie call degrades that section only.
  *   3. Distinguish empty-from-API from API-down via `meta.degradedSections`.
  *   4. Accepts either a UUID `patient_id` or a Healthie client ID.
  *   5. Returns `null` when the patient cannot be resolved (caller decides what to do).
+ *
+ * 2026-05-27 overhaul (Ask-AI engine option A):
+ *   • Fixed Healthie medications query — removed `created_at`/`updated_at`
+ *     (they don't exist on Medication type → query failed → guard() degraded
+ *     to empty → AI saw no meds). Aligned to the proven shape in
+ *     app/api/ipad/patient-chart/route.ts (adds `active`, `comment`).
+ *   • Allergies query already used the working `user(id) { allergy_sensitivities }`
+ *     shape — added `status`, `category_type`, `onset_date` for richer context.
+ *   • Real lab VALUES — parse lab_review_queue.raw_result JSONB (Access Labs
+ *     "Ordered Codes" structure) into a flat analyte list. Same parser the
+ *     /api/labs/review-queue endpoint uses.
+ *   • Documents — pull recent scribe_notes.full_note_text + supplementary_docs
+ *     so the model can reason over visit narratives + generated docs.
  */
 
 import { query } from './db';
@@ -80,6 +93,44 @@ export type ReviewedLabSummary = {
   accession: string | null;
   status: string | null;
   createdAt: string | null;
+  collectionDate: string | null;
+  abnormalCount: number;
+  flaggedSummary: string | null;
+};
+
+export type LabAnalyteResult = {
+  /** Test/analyte name as reported by the lab (e.g. "TESTOSTERONE TOTAL"). */
+  analyte: string;
+  /** Result value as a string (labs report ints, floats, ">2000", "<3", "Negative"). */
+  value: string | null;
+  unit: string | null;
+  range: string | null;
+  /**
+   * Access Labs abnormal flag. Common values: 'N' (normal), 'L' (low),
+   * 'H' (high), 'LL' (critical low), 'HH' (critical high), '' (no flag).
+   */
+  flag: string | null;
+  /** Specimen collection date if available on the parent queue row. */
+  collectedAt: string | null;
+  /** Accession # of the lab order this result came from. */
+  accession: string | null;
+};
+
+export type SupplementaryDocSummary = {
+  /** e.g. 'work_note', 'school_note', 'discharge_instructions', 'care_plan'. */
+  kind: string;
+  generatedAt: string | null;
+  /** Truncated body (~1200 chars) so the AI can read substance, not just titles. */
+  excerpt: string;
+};
+
+export type ScribeNoteSummary = {
+  noteId: string;
+  sessionId: string | null;
+  createdAt: string | null;
+  /** Truncated visit-note narrative (~1500 chars). */
+  fullNoteText: string | null;
+  icd10: string[];
 };
 
 export type PatientChart = {
@@ -112,11 +163,22 @@ export type PatientChart = {
     nextLabDate: string | null;
     status: string | null;
     recentReviewed: ReviewedLabSummary[];
+    /** Real analyte values parsed from the most-recent lab queue rows. */
+    recentResults: LabAnalyteResult[];
+    /** Names of analytes that came back abnormal in `recentResults`. */
+    abnormalAnalytes: string[];
   };
 
   notes: {
     general: string | null;
     interestingFacts: string | null;
+  };
+
+  documents: {
+    /** Truncated full-note text from recent signed scribe sessions. */
+    recentScribeNotes: ScribeNoteSummary[];
+    /** Generated supplementary docs (work-note, care-plan, etc.) from scribe_notes. */
+    recentSupplementary: SupplementaryDocSummary[];
   };
 
   meta: {
@@ -330,6 +392,12 @@ async function healthieGraphQL<T>(
   }
 }
 
+// FIX(2026-05-27): Removed `created_at` / `updated_at` — they aren't on
+// Healthie's Medication type, which made the whole query throw and guard()
+// degraded `regimen.medications` to []. The AI then saw an empty med list and
+// couldn't answer interaction / regimen questions. Shape now matches the
+// proven query in app/api/ipad/patient-chart/route.ts (adds `active` and
+// `comment`).
 const HEALTHIE_MEDS_QUERY = `
   query Meds($patientId: ID) {
     medications(patient_id: $patientId) {
@@ -341,13 +409,17 @@ const HEALTHIE_MEDS_QUERY = `
       directions
       start_date
       end_date
+      active
       normalized_status
-      created_at
-      updated_at
+      comment
     }
   }
 `;
 
+// Allergies — `user(id) { allergy_sensitivities }` is the working shape
+// (root-level `allergySensitivities` query was retired by Healthie). Expanded
+// to include status/category_type/onset_date so the prompt can show the
+// clinician the same context the iPad chart shows.
 const HEALTHIE_ALLERGIES_QUERY = `
   query Allergies($userId: ID) {
     user(id: $userId) {
@@ -356,6 +428,9 @@ const HEALTHIE_ALLERGIES_QUERY = `
         name
         reaction
         severity
+        status
+        category_type
+        onset_date
       }
     }
   }
@@ -420,6 +495,118 @@ function normalizeDiagnoses(raw: unknown): DiagnosisEntry[] {
   return [];
 }
 
+/**
+ * Parse a single lab_review_queue.raw_result JSONB (Access Labs API shape)
+ * into a flat list of analyte rows.
+ *
+ * Mirrors the parser used by /api/labs/review-queue/route.ts (parseRawResult):
+ *  - "Ordered Codes" is an array of panels.
+ *  - Each panel either has Components[] (e.g. CBC → HEMATOCRIT, HEMOGLOBIN …)
+ *    or is itself a standalone test (e.g. HBA1C, PSA, TESTOSTERONE TOTAL with
+ *    Result/Range directly on the panel object and empty Components).
+ *
+ * We keep this duplicated here (instead of importing the API helper) because
+ * patientChart.ts is a leaf lib — pulling in API-route code would invert the
+ * dependency direction.
+ */
+function parseAccessLabsRawResult(
+  raw: unknown,
+  meta: { accession: string | null; collectedAt: string | null }
+): LabAnalyteResult[] {
+  if (!raw) return [];
+
+  let payload: any;
+  try {
+    payload = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return [];
+  }
+  const orderedCodes: any[] = Array.isArray(payload?.['Ordered Codes']) ? payload['Ordered Codes'] : [];
+  if (orderedCodes.length === 0) return [];
+
+  const out: LabAnalyteResult[] = [];
+
+  const push = (testName: unknown, value: unknown, unit: unknown, range: unknown, flag: unknown) => {
+    const name = typeof testName === 'string' ? testName.trim() : '';
+    if (!name) return;
+    const v = value == null ? null : String(value).trim() || null;
+    if (v === null) return; // Skip "ordered but unresulted" rows.
+    out.push({
+      analyte: name,
+      value: v,
+      unit: unit == null ? null : String(unit).trim() || null,
+      range: range == null ? null : String(range).trim() || null,
+      flag: flag == null ? null : String(flag).trim() || null,
+      collectedAt: meta.collectedAt,
+      accession: meta.accession,
+    });
+  };
+
+  const walk = (components: any[]) => {
+    for (const comp of components) {
+      const children = Array.isArray(comp?.Components) ? comp.Components : [];
+      if (children.length > 0) {
+        walk(children);
+      } else if (comp?.['Test Name']) {
+        push(comp['Test Name'], comp['Result'], comp['Test Units'], comp['Range'], comp['Abnormal Flag']);
+      }
+    }
+  };
+
+  for (const panel of orderedCodes) {
+    const components = Array.isArray(panel?.Components) ? panel.Components : [];
+    if (components.length > 0) {
+      walk(components);
+    } else if (panel?.['Test Name']) {
+      push(panel['Test Name'], panel['Result'], panel['Test Units'], panel['Range'], panel['Abnormal Flag']);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Truncate prose for the model context. Trims runaway notes / generated
+ * documents to a per-doc cap while still preserving the head of the text where
+ * the structured info usually lives (SOAP order, document title, etc.).
+ */
+function truncateForContext(text: string, maxChars: number): string {
+  const t = (text || '').trim();
+  if (t.length <= maxChars) return t;
+  return t.slice(0, maxChars).trimEnd() + '\n…[truncated]';
+}
+
+/**
+ * Extract `{kind, generatedAt, excerpt}` rows from a single supplementary_docs
+ * JSONB. The known shapes from the scribe generator are:
+ *   {
+ *     "work_note":   { "content": "...", "generated_at": "ISO" },
+ *     "school_note": { "content": "...", "generated_at": "ISO" },
+ *     ...
+ *   }
+ * Older rows may store `content` only, no `generated_at`. We accept both.
+ */
+function extractSupplementaryDocs(raw: unknown, maxPerDocChars: number): SupplementaryDocSummary[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const out: SupplementaryDocSummary[] = [];
+  for (const [kind, body] of Object.entries(raw as Record<string, unknown>)) {
+    if (!body) continue;
+    const obj = (typeof body === 'object' ? body : { content: String(body) }) as Record<string, unknown>;
+    const content = typeof obj.content === 'string' ? obj.content : '';
+    if (!content.trim()) continue;
+    const generatedAt =
+      typeof obj.generated_at === 'string' ? obj.generated_at :
+      typeof obj.generatedAt === 'string' ? obj.generatedAt :
+      null;
+    out.push({
+      kind,
+      generatedAt,
+      excerpt: truncateForContext(content, maxPerDocChars),
+    });
+  }
+  return out;
+}
+
 // ─── Main export ────────────────────────────────────────────────────────────
 
 /**
@@ -454,7 +641,7 @@ export async function assemblePatientChart(
     localAllergies,
     trtDispenses,
     peptideDispenses,
-    recentScribeIcd10,
+    recentScribe,
     recentLabs,
   ] = await Promise.all([
     healthieAvailable && healthieClientId
@@ -559,24 +746,54 @@ export async function assemblePatientChart(
         })
       : Promise.resolve([]),
 
-    query<{ icd10_codes: unknown }>(
-      `SELECT sn.icd10_codes
+    query<{
+      note_id: string;
+      session_id: string | null;
+      created_at: string | null;
+      icd10_codes: unknown;
+      full_note_text: string | null;
+      supplementary_docs: unknown;
+    }>(
+      // Pull the recent signed visit notes including narrative text + any
+      // generated supplementary documents. Filtering on
+      // jsonb_array_length(icd10_codes) > 0 like the old query would have
+      // skipped notes that have narrative but no codes yet — drop that filter,
+      // de-dup ICD-10s on the JS side instead.
+      `SELECT sn.note_id,
+              sn.session_id,
+              ss.created_at,
+              sn.icd10_codes,
+              sn.full_note_text,
+              sn.supplementary_docs
          FROM scribe_sessions ss
          JOIN scribe_notes sn ON sn.session_id = ss.session_id
         WHERE (ss.patient_id = $1::text OR ss.patient_id = $2::text)
-          AND sn.icd10_codes IS NOT NULL
-          AND jsonb_array_length(sn.icd10_codes) > 0
-        ORDER BY ss.created_at DESC
+        ORDER BY ss.created_at DESC NULLS LAST
         LIMIT 5`,
       [patient.patient_id, healthieClientId ?? '']
     ).catch((err) => {
-      console.error('[patientChart] scribe icd10 failed:', err?.message || err);
+      console.error('[patientChart] scribe notes failed:', err?.message || err);
       degraded.push('local.scribe_notes');
       return [];
     }),
 
-    query<{ accession: string | null; status: string | null; created_at: string | null }>(
-      `SELECT accession, status, created_at
+    query<{
+      accession: string | null;
+      status: string | null;
+      created_at: string | null;
+      collection_date: string | null;
+      raw_result: unknown;
+      critical_tests: unknown;
+    }>(
+      // Pull the actual parsed lab payload (`raw_result`) so we can give the
+      // AI real analyte values, not just "lab #ACC-… exists". We also pull
+      // `critical_tests` for a fast abnormal-count if raw_result is missing.
+      `SELECT accession,
+              status,
+              created_at,
+              collection_date,
+              raw_result,
+              critical_tests
          FROM lab_review_queue
         WHERE patient_id = $1::text
            OR healthie_id = $2::text
@@ -597,8 +814,15 @@ export async function assemblePatientChart(
   // Be defensive and accept both shapes.
   const icdSeen = new Set<string>();
   const recentIcd10FromScribe: string[] = [];
-  for (const row of recentScribeIcd10) {
+  const recentScribeNotes: ScribeNoteSummary[] = [];
+  const recentSupplementary: SupplementaryDocSummary[] = [];
+
+  const NOTE_TEXT_CAP = 1500;
+  const SUPP_DOC_CAP = 1200;
+
+  for (const row of recentScribe) {
     const arr = Array.isArray(row.icd10_codes) ? row.icd10_codes : [];
+    const codes: string[] = [];
     for (const entry of arr) {
       const raw =
         typeof entry === 'string'
@@ -607,11 +831,102 @@ export async function assemblePatientChart(
             ? String((entry as { code: unknown }).code ?? '')
             : '';
       const c = raw.trim().toUpperCase();
-      if (!c || icdSeen.has(c)) continue;
-      icdSeen.add(c);
-      recentIcd10FromScribe.push(c);
+      if (!c) continue;
+      codes.push(c);
+      if (!icdSeen.has(c)) {
+        icdSeen.add(c);
+        recentIcd10FromScribe.push(c);
+      }
+    }
+
+    const noteText = typeof row.full_note_text === 'string' ? row.full_note_text.trim() : '';
+    if (row.note_id) {
+      recentScribeNotes.push({
+        noteId: row.note_id,
+        sessionId: row.session_id,
+        createdAt: row.created_at,
+        fullNoteText: noteText ? truncateForContext(noteText, NOTE_TEXT_CAP) : null,
+        icd10: codes,
+      });
+    }
+
+    const supp = extractSupplementaryDocs(row.supplementary_docs, SUPP_DOC_CAP);
+    for (const d of supp) recentSupplementary.push(d);
+  }
+
+  // Build a flat list of analyte results across the recent lab queue rows,
+  // newest first. Cap to MAX_ANALYTES so a 200-line panel doesn't blow the
+  // prompt budget — newest panels first, dedup analyte name within this list
+  // (keeps the latest observation of each test).
+  const MAX_ANALYTES = 80;
+  const seenAnalyte = new Set<string>();
+  const recentResults: LabAnalyteResult[] = [];
+  const abnormalAnalytes: string[] = [];
+
+  for (const lab of recentLabs) {
+    if (recentResults.length >= MAX_ANALYTES) break;
+    const parsed = parseAccessLabsRawResult(lab.raw_result, {
+      accession: lab.accession,
+      // Prefer the explicit collection date; fall back to created_at so the
+      // model at least knows which result is most recent.
+      collectedAt: lab.collection_date || lab.created_at,
+    });
+    for (const row of parsed) {
+      if (recentResults.length >= MAX_ANALYTES) break;
+      const key = row.analyte.toLowerCase();
+      if (seenAnalyte.has(key)) continue;
+      seenAnalyte.add(key);
+      recentResults.push(row);
+      const flag = (row.flag || '').toUpperCase();
+      if (flag && flag !== 'N') abnormalAnalytes.push(row.analyte);
     }
   }
+
+  // Per-lab abnormal count + summary, for the "recentReviewed" block. Uses
+  // the `critical_tests` JSONB the queue already stores (pre-extracted on
+  // ingest), falling back to a flag-scan on raw_result if missing.
+  const reviewedSummaries: ReviewedLabSummary[] = recentLabs.map((l) => {
+    let abnormalCount = 0;
+    let flaggedSummary: string | null = null;
+    const crit = Array.isArray(l.critical_tests) ? (l.critical_tests as any[]) : [];
+    if (crit.length > 0) {
+      abnormalCount = crit.length;
+      flaggedSummary = crit
+        .slice(0, 4)
+        .map((t) => {
+          const name = (t?.name || '').toString().trim();
+          const val = (t?.value || '').toString().trim();
+          const units = (t?.units || '').toString().trim();
+          return `${name}: ${val}${units ? ' ' + units : ''}`.trim();
+        })
+        .filter(Boolean)
+        .join('; ');
+    } else if (l.raw_result) {
+      const parsed = parseAccessLabsRawResult(l.raw_result, {
+        accession: l.accession,
+        collectedAt: l.collection_date || l.created_at,
+      });
+      const flagged = parsed.filter((p) => {
+        const f = (p.flag || '').toUpperCase();
+        return f && f !== 'N';
+      });
+      abnormalCount = flagged.length;
+      flaggedSummary =
+        flagged
+          .slice(0, 4)
+          .map((p) => `${p.analyte}: ${p.value}${p.unit ? ' ' + p.unit : ''} [${p.flag}]`)
+          .join('; ') || null;
+    }
+
+    return {
+      accession: l.accession,
+      status: l.status,
+      createdAt: l.created_at,
+      collectionDate: l.collection_date,
+      abnormalCount,
+      flaggedSummary,
+    };
+  });
 
   const allergies = mergeAllergies(localAllergies, healthieAllergies);
 
@@ -676,16 +991,19 @@ export async function assemblePatientChart(
       lastLabDate: patient.last_lab_date,
       nextLabDate: patient.next_lab_date,
       status: patient.lab_status,
-      recentReviewed: recentLabs.map((l) => ({
-        accession: l.accession,
-        status: l.status,
-        createdAt: l.created_at,
-      })),
+      recentReviewed: reviewedSummaries,
+      recentResults,
+      abnormalAnalytes,
     },
 
     notes: {
       general: patient.notes,
       interestingFacts: patient.interesting_facts,
+    },
+
+    documents: {
+      recentScribeNotes,
+      recentSupplementary,
     },
 
     meta: {

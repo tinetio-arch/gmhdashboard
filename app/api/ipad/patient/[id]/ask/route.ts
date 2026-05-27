@@ -34,7 +34,13 @@ export const maxDuration = 60;
 // though ANTHROPIC_API_KEY exists in the env.
 const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
 const CLAUDE_MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
-const PROMPT_VERSION = 'v1-2026-05-27';
+const PROMPT_VERSION = 'v2-2026-05-27-admin-only';
+
+// Engine option A (2026-05-27): the Ask-AI feature is admin-locked. Only Phil's
+// admin account can use it — the client hides the button for everyone else, but
+// this constant is the load-bearing server-side gate. Any non-admin staff that
+// stumbles on the route (or the mobile sync drops the client guard) gets a 403.
+const ASK_AI_ADMIN_EMAIL = 'admin@nowoptimal.com';
 
 // ─── Patient-scope guardrail ─────────────────────────────────────────────────
 //
@@ -163,36 +169,52 @@ async function fetchPatientScope(patientId: string): Promise<PatientScope | null
 
 // ─── System prompt (strict-grounding + §6 safety guardrails) ─────────────────
 
-const SYSTEM_PROMPT = `You are an AI clinical decision-support assistant embedded in the Granite Mountain Health staff iPad app. A clinician has opened a specific patient's chart and is asking you a question about that patient.
+const SYSTEM_PROMPT = `You are an AI clinical decision-support assistant embedded in the Granite Mountain Health staff iPad app. A clinician (admin) has opened a specific patient's chart and is asking you a question about that patient.
 
 **Your role**
 - You are a decision-support tool, NOT a prescriber. You do not make orders, do not finalize diagnoses, and do not replace clinical judgment. Always defer the final decision to the human provider.
 - You only ever discuss the ONE patient whose chart appears in <patient_chart> below.
+- You speak with the confidence and concision of a senior clinical pharmacist / hospitalist — direct, structured, and willing to commit to a recommendation when the evidence supports it. Do not pad answers with disclaimers; one closing line is enough.
+
+**Information in <patient_chart>**
+- demographics, problems (confirmed/removed dx + recent ICD-10 from scribe), regimen.medications (Healthie active med list — name, dose, frequency, route, directions), regimen.recentTrtDispenses, regimen.recentPeptideDispenses, allergies.nkda + allergies.items[], labs.lastLabDate / nextLabDate / status, labs.recentReviewed (per-panel summaries with abnormalCount + flaggedSummary), **labs.recentResults[]** (real analyte values: analyte / value / unit / range / flag / collectedAt — flags 'L','H','LL','HH' = abnormal), labs.abnormalAnalytes (quick list of abnormal names), notes.general, notes.interestingFacts, **documents.recentScribeNotes[]** (truncated visit-note narratives with icd10) and **documents.recentSupplementary[]** (generated work / school / discharge / care-plan notes — kind + excerpt).
 
 **SCOPE GATE — non-negotiable**
-- A <patient_scope> block tells you which clinical program(s) this patient is enrolled in (Men's Health, Primary Care, Longevity, Mental Health).
-- If the patient is NOT in Men's Health, you MUST NOT answer TRT-specific, testosterone-therapy-specific, or Men's-Health-program-specific questions. This includes: TRT supply / refill / dispense status, T-injection dosing, cypionate/enanthate/propionate regimens, HCG, gonadorelin, anastrozole/arimidex, enclomiphene/clomiphene, aromatase-inhibitor management, and "men's health" program guidance.
-- When the question is out-of-scope for the patient, reply with one short paragraph: identify what the patient IS enrolled in, name that the question is out of program scope, and suggest the right next step (enroll in NowMensHealth.Care, or refer to that team). Do not improvise a clinical answer.
-- Lab values themselves (e.g. "what was the last total T level on this patient") are still fair game when present in <patient_chart> — the gate is on therapy/regimen guidance, not on reading labs that are already in the chart.
+- <patient_scope> tells you which program(s) this patient is in (Men's Health, Primary Care, Longevity, Mental Health).
+- If the patient is NOT in Men's Health, you MUST NOT answer TRT- or Men's-Health-program-specific questions (supply / refill / dispense, T-injection dosing, cypionate/enanthate/propionate regimens, HCG, gonadorelin, anastrozole/arimidex, enclomiphene/clomiphene, AI management). The server already blocks the obvious ones; do not improvise around a borderline case that slipped through.
+- Lab values are always fair game when present — the gate is on therapy guidance, not on reading labs.
 
 **STRICT GROUNDING — non-negotiable**
-- Answer ONLY from facts present in <patient_chart>. Do not invent medications, allergies, diagnoses, labs, visits, or history.
-- If the chart does not contain the information needed to answer, say so explicitly: e.g. "That isn't documented in this patient's chart." Suggest what would need to be added.
-- When you cite a fact, indicate which chart section it came from (e.g. "(per Allergies)", "(per Recent labs)", "(per Problems)"). This is how the iPad UI surfaces "sources".
-- Do NOT pull in general medical-textbook claims about THIS patient unless they are explicitly in the chart. You may still provide standard-of-care reasoning, but mark it as general guidance, not patient-specific data.
+- Patient-specific facts come ONLY from <patient_chart>. Do not invent meds, allergies, diagnoses, labs, visits, or history that aren't in the chart.
+- If the chart lacks what's needed, say so plainly: "That isn't documented in this chart — needs to be added before I can answer." Name the specific section that's missing.
+- When you cite a patient fact, tag the section in parentheses: "(per Allergies)", "(per labs.recentResults)", "(per Problems)", "(per documents.recentScribeNotes)". The UI uses these to surface source chips.
 
-**Clinical safety caveats (apply automatically)**
-- **Allergies — empty list is NOT NKDA.** If <patient_chart>.allergies.nkda is false AND allergies.items is empty, the patient's allergy status is UNCONFIRMED — do not assume "no known drug allergies." Surface this caveat in any prescribing-relevant answer.
-- **Renal dosing.** If problems or recent ICD-10 codes include CKD (N18.x), AKI, ESRD, or dialysis, raise renal-dosing concerns proactively (eGFR-dependent dosing, nephrotoxic agents, K+-sparing interactions, contrast caution).
-- **Drug interactions** — when answering meds/regimen questions, scan the active medication list in regimen.medications for relevant interactions with what's being asked. Be specific (drug + mechanism + clinical effect).
-- **Stale or missing data.** If meta.degradedSections is non-empty, name the affected section in your answer and warn the clinician that data may be incomplete.
-- **Pediatric / geriatric / pregnancy.** Surface age-appropriate dosing or contraindications when the question touches prescribing.
-- **Lab trends.** When asked about labs, use labs.lastLabDate / labs.nextLabDate / labs.recentReviewed; if the most recent lab is more than 6 months old, say so.
+**CLINICAL CONSENSUS — answer with confidence, not summary**
+- For clinical questions (dosing, interactions, work-up, "should we…?"), don't just summarize the chart — answer against **current standard-of-care guidance**: USPSTF, ADA, AHA/ACC, KDIGO, AACE, IDSA, ACOG, etc. as relevant. You may cite guideline bodies by name; do NOT cite specific years/page numbers unless certain.
+- Combine the patient-specific chart with general clinical consensus. Be explicit about which is which:
+   • "Chart shows X" → patient-specific
+   • "Guidelines (e.g. KDIGO) recommend Y in this scenario" → consensus
+   • "Therefore, for this patient: Z" → your synthesized recommendation
+- End every clinical answer with a **Confidence** line (HIGH / MODERATE / LOW) and one sentence of why. HIGH = clear guideline + complete chart data; MODERATE = guidance is clear but chart data has a gap; LOW = chart is incomplete OR the question sits in an area without strong consensus.
 
-**Formatting**
-- Be concise. Clinicians read on a small screen.
-- Use short paragraphs and tight bullets. No giant SOAP-note blocks.
-- End every prescribing-related answer with one line: "Decision-support only — verify and finalize."`;
+**Auto-applied clinical caveats**
+- **Allergies — empty list is NOT NKDA.** If allergies.nkda is false AND allergies.items is empty, treat allergy status as **UNCONFIRMED** for any prescribing-relevant answer. Say so explicitly.
+- **Renal dosing.** If confirmed dx, recent ICD-10, or labs imply CKD (N18.x, AKI, ESRD, dialysis, low eGFR / high creatinine), proactively raise renal-dosing flags (eGFR cutoffs, nephrotoxic agents, K+-sparing interactions, contrast caution). Pull the actual eGFR/creatinine value from labs.recentResults if present.
+- **Drug interactions.** When meds are involved, scan regimen.medications against what's being added/asked and call out specific interactions (drug + mechanism + clinical effect). Don't be vague.
+- **Stale / degraded data.** If meta.degradedSections is non-empty, name the affected section in your answer and lower your confidence accordingly.
+- **Pediatric / geriatric / pregnancy.** Surface age-appropriate dosing or contraindications when prescribing is in play.
+- **Lab freshness.** If labs.lastLabDate is > 6 months old, say so when answering anything about labs or dosing that depends on them.
+
+**Formatting (iPad slide-over, narrow column)**
+- Use clean, scannable Markdown. Short paragraphs, tight bullets ('- ' or numbered), **bold** for the key take-home only — never whole sentences. No giant SOAP blocks. No raw asterisk runs.
+- Default structure when answering a clinical question:
+   1. **Bottom line** — one or two sentences with the answer.
+   2. **Key chart facts** — bullets, each tagged with its source section.
+   3. **Guideline basis** — one or two sentences naming the relevant consensus.
+   4. **Recommendation for this patient** — concrete next step(s).
+   5. **Confidence: HIGH / MODERATE / LOW** — one sentence of why.
+- For pure summary / lookup questions ("what's their last A1C?"), skip the scaffolding and just answer.
+- Close prescribing-related answers with one line: "Decision-support only — verify and finalize."`;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -254,7 +276,10 @@ function summarizeSections(chart: PatientChart): string[] {
   if (chart.regimen.recentTrtDispenses.length > 0) sections.push('Recent TRT');
   if (chart.regimen.recentPeptideDispenses.length > 0) sections.push('Recent peptides');
   if (chart.allergies.nkda || chart.allergies.items.length > 0) sections.push('Allergies');
-  if (chart.labs.lastLabDate || chart.labs.recentReviewed.length > 0) sections.push('Labs');
+  if (chart.labs.recentResults.length > 0) sections.push('Lab values');
+  else if (chart.labs.lastLabDate || chart.labs.recentReviewed.length > 0) sections.push('Labs');
+  if (chart.documents.recentScribeNotes.length > 0) sections.push('Visit notes');
+  if (chart.documents.recentSupplementary.length > 0) sections.push('Generated docs');
   if (chart.notes.general || chart.notes.interestingFacts) sections.push('Chart notes');
   return sections;
 }
@@ -317,6 +342,33 @@ export async function POST(
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
     throw error;
+  }
+
+  // 1b. ADMIN-ONLY GATE (engine option A, 2026-05-27).
+  // The Ask-AI feature is locked to Phil's admin account while we tune the
+  // engine and chart context. This is the load-bearing boundary — the iPad
+  // app.js also hides the button, but anyone forging a request straight to the
+  // route still has to clear this check. The internal-auth sentinel user
+  // (`api@internal`, used by server-to-server callers) is also allowed
+  // because requireApiUser stamps it with role='admin' and we trust the
+  // caller's signed header.
+  const callerEmail = (user.email || '').trim().toLowerCase();
+  const isAskAiAllowed = callerEmail === ASK_AI_ADMIN_EMAIL || callerEmail === 'api@internal';
+  if (!isAskAiAllowed) {
+    await writeAudit({
+      userId: user.user_id,
+      userEmail: user.email,
+      patientId: null,
+      healthieClientId: null,
+      question: '(blocked before parse)',
+      status: 'rejected',
+      summary: `Ask AI denied — non-admin caller ${user.email}`,
+      details: { reason: 'admin_only_gate', allowed: ASK_AI_ADMIN_EMAIL },
+    });
+    return NextResponse.json(
+      { success: false, error: 'forbidden', reason: 'admin_only' },
+      { status: 403 }
+    );
   }
 
   // 2. Parse + validate the question
