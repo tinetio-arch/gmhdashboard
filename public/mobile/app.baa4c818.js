@@ -6608,9 +6608,11 @@ function renderChartPanel(content) {
                     </div>
                 </div>`;
             };
-            const upcomingPreview = upcoming.slice(0, 2);
+            // Phil request 2026-05-26 (row 20260527-010538-0157): show ALL future appointments
+            // (don't cap at 2 — was hiding upcoming visits) plus last 3 past.
+            const upcomingPreview = upcoming;
             const pastPreview = past.slice(0, 3);
-            const extra = (upcoming.length - upcomingPreview.length) + (past.length - pastPreview.length);
+            const extra = past.length - pastPreview.length;
             return `
         <div id="appointments-section" style="padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06);">
             <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-tertiary); font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; align-items:center;">
@@ -6619,8 +6621,8 @@ function renderChartPanel(content) {
             </div>
             ${apptList.length > 0 ? `
             <div style="display:flex; flex-direction:column; gap:3px;">
-                ${upcomingPreview.length > 0 ? `<div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700;">Upcoming</div>${upcomingPreview.map(a => apptRow(a, true)).join('')}` : '<div style="font-size:10px; color:var(--text-tertiary); font-style:italic;">No upcoming appointments</div>'}
-                ${pastPreview.length > 0 ? `<div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; margin-top:2px;">Recent</div>${pastPreview.map(a => apptRow(a, false)).join('')}` : ''}
+                ${upcomingPreview.length > 0 ? `<div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; color:var(--cyan); font-weight:700;">Upcoming (${upcomingPreview.length})</div>${upcomingPreview.map(a => apptRow(a, true)).join('')}` : '<div style="font-size:10px; color:var(--text-tertiary); font-style:italic;">No upcoming appointments</div>'}
+                ${pastPreview.length > 0 ? `<div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-tertiary); font-weight:700; margin-top:2px;">Last ${pastPreview.length}</div>${pastPreview.map(a => apptRow(a, false)).join('')}` : ''}
                 ${extra > 0 ? `<div style="font-size:10px; color:var(--text-tertiary); padding:2px 4px;">+ ${extra} more</div>` : ''}
             </div>` : '<div style="font-size:11px; color:var(--text-tertiary); font-style:italic;">No appointments on file</div>'}
         </div>`;
@@ -7798,8 +7800,9 @@ function renderChartingTab(container, d) {
                 ` : '<div class="chart-empty" style="padding:12px; text-align:center; color:var(--text-tertiary);">No appointments on file</div>'}
             </div>
         </div>
-        <!-- All Clinical Notes (unified timeline) -->
-        <div class="chart-section">
+        <!-- All Clinical Notes (unified timeline) — collapsed by default per Phil request
+             2026-05-26 (row 20260527-010538-0157); click header to expand. -->
+        <div class="chart-section collapsed">
             <div class="chart-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
                 <span>📋 Clinical Notes (${allNotes.length})</span>
                 <span class="chart-chevron">›</span>
