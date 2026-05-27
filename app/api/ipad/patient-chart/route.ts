@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser, UnauthorizedError } from '@/lib/auth';
-import { query } from '@/lib/db';
+import { query, pgTimestampToUTCISO } from '@/lib/db';
 import Stripe from 'stripe';
 import { resolvePatientId, isUUID } from '@/lib/ipad-patient-resolver';
 
@@ -818,7 +818,13 @@ export async function GET(request: NextRequest) {
                 })(),
                 medications: medications?.medications || [],
                 allergies: await mergeAllergies(allergies?.user?.allergy_sensitivities || [], localPatientId),
-                appointments: appointments?.appointments || [],
+                // FIX(2026-05-26): Healthie returns `date` as Postgres-timestamp (e.g. "2026-05-12 04:30:00 -0700")
+                // which iPad/iOS new Date() cannot parse, so all rows rendered "—" and sorted as Past.
+                // Convert to ISO and drop migration junk + cancelled appts from the chart summary.
+                appointments: (appointments?.appointments || [])
+                    .filter((a: any) => a?.appointment_type?.name !== 'Migrated Appointment')
+                    .filter((a: any) => a?.pm_status !== 'Cancelled' && a?.status !== 'Cancelled')
+                    .map((a: any) => ({ ...a, date: pgTimestampToUTCISO(a.date) })),
                 documents: (documents?.documents || []).sort((a: any, b: any) => {
                     // Sort newest first so recent uploads appear at the top
                     const da = new Date(a.created_at || 0).getTime();
