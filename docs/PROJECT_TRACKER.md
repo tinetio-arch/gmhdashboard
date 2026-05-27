@@ -673,3 +673,8 @@ Single chokepoint for all `patients.status_key` writes. Spec: `docs/sot-modules/
 - 1 week post-deploy: monitor audit-gap query (any `status_key` change without an audit row indicates a writer bypassed both helper and trigger — should be 0).
 - Watch `patient_status_audit WHERE source = 'unknown'` — trigger fallback for rogue UPDATEs.
 - Pending: optional Telegram alert for inactive-target blocks (Phil's Q4 from spec).
+
+### 2026-05-26 — ABXTAC Supply Kit product image shipped (row 20260526-194714-cf4f)
+- WC product 308 / SKU YPB.290 ("Peptide Supply Kit") now has a 3D Gemini-rendered product image.
+- Process: Imagen 4 via the existing scripts/generate-3d-vials.py pattern; final asset at `/var/www/abxtac/3d-vials/YPB.290_mockup.png` and sideloaded into WC media (image id 327) → `https://abxtac.com/wp-content/uploads/2026/05/YPB.290_mockup.png`.
+- Why it matters: Supply Kit now has a proper catalog image so it surfaces correctly in the iPad + patient-app product feeds (both pull from WC catalog).
