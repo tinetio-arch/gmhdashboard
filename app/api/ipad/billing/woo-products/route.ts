@@ -127,13 +127,10 @@ export async function GET(request: NextRequest) {
     // Fetch products from WooCommerce
     const allProducts = await fetchWooProducts();
 
-    // New products (YPB.250+) are admin-only until approved for general use
-    const products = allProducts.filter(p => {
-      if (!p.sku?.startsWith('YPB.')) return true; // non-YPB (e.g. BioBox) always visible
-      const skuNum = parseInt(p.sku.split('.')[1] || '0');
-      if (skuNum >= 250) return isAdmin;
-      return true;
-    });
+    // iPad/staff-mobile catalog is staff-only (gmh_session_v2 required).
+    // Patient-facing visibility (e.g. YPB.250+ admin-only) is enforced separately
+    // on /api/headless/products via the app_product_visibility table.
+    const products = allProducts;
 
     // Filter by search query if provided
     let filtered = products;
