@@ -6421,6 +6421,7 @@ function renderChartPanel(content) {
                     <button onclick="showResetPasswordDialog()" style="padding:4px 10px; border-radius:6px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); color:var(--yellow); font-size:11px; font-weight:600; cursor:pointer;" title="Reset patient Healthie password">🔑 Password</button>
                     <button onclick="toggleInterestingPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.2); color:#a855f7; font-size:11px; font-weight:600; cursor:pointer;" title="Interesting facts about this patient">⭐ Interesting</button>
                     <button onclick="toggleCommsPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); color:#22c55e; font-size:11px; font-weight:600; cursor:pointer;" title="Clinic communications with this patient">💬 Comms</button>
+                    <button onclick="openPatientAiPanel('${chartPanelPatientId || ''}', '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="padding:4px 10px; border-radius:6px; background:linear-gradient(135deg, rgba(124,58,237,0.18), rgba(236,72,153,0.18)); border:1px solid rgba(236,72,153,0.35); color:#f0abfc; font-size:11px; font-weight:600; cursor:pointer;" title="Ask AI about this chart">✨ Ask AI</button>
                 </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">

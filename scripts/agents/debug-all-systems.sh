@@ -42,7 +42,7 @@ echo ""
 # ═══════════════════════════════════════
 # 1. PM2 SERVICES
 # ═══════════════════════════════════════
-echo "━━━ [1/8] PM2 Services ━━━"
+echo "━━━ [1/9] PM2 Services ━━━"
 TOTAL=$(pm2 jlist 2>/dev/null | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "0")
 ONLINE=$(pm2 jlist 2>/dev/null | python3 -c 'import sys,json; print(sum(1 for p in json.load(sys.stdin) if p["pm2_env"]["status"]=="online"))' 2>/dev/null || echo "0")
 CRASHED=$(pm2 jlist 2>/dev/null | python3 -c 'import sys,json; c=[p["name"] for p in json.load(sys.stdin) if p["pm2_env"]["status"]!="online"]; print(",".join(c) if c else "")' 2>/dev/null || echo "")
@@ -65,7 +65,7 @@ fi
 # 2. DATABASE
 # ═══════════════════════════════════════
 echo ""
-echo "━━━ [2/8] Database ━━━"
+echo "━━━ [2/9] Database ━━━"
 DB_CHECK=$(run_sql "SELECT 1")
 if [ "$DB_CHECK" = "1" ]; then
     pass "PostgreSQL RDS reachable"
@@ -92,7 +92,7 @@ fi
 # 3. DASHBOARD API ENDPOINTS
 # ═══════════════════════════════════════
 echo ""
-echo "━━━ [3/8] Dashboard API Endpoints ━━━"
+echo "━━━ [3/9] Dashboard API Endpoints ━━━"
 for EP in \
     "patient-services/?healthie_user_id=12123979" \
     "patient-context/?healthie_id=12123979" \
@@ -112,7 +112,7 @@ done
 # 4. GENDER FILTER
 # ═══════════════════════════════════════
 echo ""
-echo "━━━ [4/8] Gender Filter (Pelleting) ━━━"
+echo "━━━ [4/9] Gender Filter (Pelleting) ━━━"
 PHIL_RESP=$(curl -s -H "x-jarvis-secret: $SECRET" "http://localhost:3011/ops/api/headless/patient-services/?healthie_user_id=12123979" --max-time 10 2>/dev/null)
 PHIL_LEAK=$(echo "$PHIL_RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); ids=d.get("unlockedAppointmentTypeIds",[]); print("YES" if any(i in ids for i in ["504729","504730"]) else "NO")' 2>/dev/null || echo "ERROR")
 if [ "$PHIL_LEAK" = "NO" ]; then
@@ -135,7 +135,7 @@ fi
 # 5. DATE FORMATTING (no NaN)
 # ═══════════════════════════════════════
 echo ""
-echo "━━━ [5/8] Date Formatting ━━━"
+echo "━━━ [5/9] Date Formatting ━━━"
 CTX_RESP=$(curl -s -H "x-jarvis-secret: $SECRET" "http://localhost:3011/ops/api/headless/patient-context/?healthie_id=12123979" --max-time 10 2>/dev/null)
 DOB=$(echo "$CTX_RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("DATE_OF_BIRTH",""))' 2>/dev/null || echo "")
 if [ "$DOB" = "05-12-1985" ]; then
@@ -166,7 +166,7 @@ fi
 # 6. WHOLESALE PRICING SECURITY
 # ═══════════════════════════════════════
 echo ""
-echo "━━━ [6/8] Wholesale Pricing Security ━━━"
+echo "━━━ [6/9] Wholesale Pricing Security ━━━"
 ADMIN_RESP=$(curl -sL -H "x-jarvis-secret: $SECRET" "http://localhost:3011/ops/api/jarvis/peptide-eligibility/?healthieId=12123979" --max-time 15 2>/dev/null)
 ADMIN_TIER=$(echo "$ADMIN_RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tier",""))' 2>/dev/null || echo "")
 ADMIN_WC=$(echo "$ADMIN_RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(sum(1 for p in d.get("availableForShipping",[]) if p.get("wholesale_cost") is not None))' 2>/dev/null || echo "0")
@@ -189,7 +189,7 @@ fi
 # 7. LAMBDA HEALTH
 # ═══════════════════════════════════════
 echo ""
-echo "━━━ [7/8] Lambda Functions ━━━"
+echo "━━━ [7/9] Lambda Functions ━━━"
 
 BOOKING_FN="NowOptimalHeadlessStack-BookingLambdaCFA33E05-AscTUVcWiRuo"
 ASKAI_FN="NowOptimalHeadlessStack-AskAiLambda160D5144-qEQQ3FQOm7TG"
@@ -264,7 +264,7 @@ fi
 # 8. WEBSITES + INTEGRATION TESTS
 # ═══════════════════════════════════════
 echo ""
-echo "━━━ [8/8] Websites ━━━"
+echo "━━━ [8/9] Websites ━━━"
 for URL in https://nowoptimal.com https://nowmenshealth.care https://nowprimary.care https://abxtac.com; do
     CODE=$(curl -sL -o /dev/null -w "%{http_code}" "$URL" --max-time 10 2>/dev/null)
     DOMAIN=$(echo "$URL" | sed 's|https://||')
@@ -274,6 +274,42 @@ for URL in https://nowoptimal.com https://nowmenshealth.care https://nowprimary.
         fail "$DOMAIN" "HTTP $CODE"
     fi
 done
+
+# ═══════════════════════════════════════
+# 9. MOBILE APP RUNTIME (patient app — Peptide Shop bucket-safety)
+# ═══════════════════════════════════════
+echo ""
+echo "━━━ [9/9] Mobile App Runtime ━━━"
+
+# Auto-detect the patient app repo. Path moved historically; check current
+# location first, then fall back to the older scratch path.
+MOBILE_APP=""
+for CAND in \
+    "/home/ec2-user/gmhdashboard-worktrees/claude" \
+    "$HOME/.gemini/antigravity/scratch/nowoptimal-headless-app/mobile-app" \
+    "$HOME/nowoptimal-headless-app/mobile-app"; do
+    if [ -f "$CAND/scripts/agents/debug-mobile.sh" ]; then
+        MOBILE_APP="$CAND"
+        break
+    fi
+done
+
+if [ -z "$MOBILE_APP" ]; then
+    warn "Mobile App Runtime" "patient-app debug-mobile.sh not found — skipped"
+else
+    MOBILE_OUT=$(bash "$MOBILE_APP/scripts/agents/debug-mobile.sh" 2>&1)
+    if [ $? -eq 0 ]; then
+        # Surface the Peptide Shop runtime test as a single pass line.
+        if echo "$MOBILE_OUT" | grep -q "peptide-shop-runtime"; then
+            pass "Peptide Shop runtime (mobile) — bucket coherence + fake-category degrade"
+        else
+            pass "Mobile App Runtime"
+        fi
+    else
+        FAIL_LINE=$(echo "$MOBILE_OUT" | grep -E "^[[:space:]]*•" | head -1 | sed 's/^[[:space:]]*//')
+        fail "Mobile App Runtime" "${FAIL_LINE:-debug-mobile.sh failed}"
+    fi
+fi
 
 # ═══════════════════════════════════════
 # SUMMARY

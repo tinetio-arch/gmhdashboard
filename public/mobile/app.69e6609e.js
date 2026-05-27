@@ -53,6 +53,15 @@ let labOrders = [];             // from /ops/api/ipad/lab-orders (ordered but no
 let patient360Cache = {};       // patient_id -> 360 data
 let patient360CacheTs = {};     // patient_id -> epoch ms (TTL tracker — FIX 2026-04-22)
 const PATIENT_360_TTL_MS = 5 * 60 * 1000;  // 5 min — long enough to save requests, short enough to avoid stale vitals/meds
+
+// Patient-Chart AI (Phase 3, row 20260527-004147-828c): per-patient chat history
+// kept in memory so reopening the slide-over restores the conversation. The
+// backend caps to last 6 turns; we still send the full thread so the cap is
+// enforced server-side.
+let patientAiConversations = {};   // patient_id -> [{role: 'user'|'assistant', content, sources?, refusal?}]
+let patientAiCurrentPatientId = null;
+let patientAiCurrentPatientName = null;
+let patientAiInFlight = false;
 let allPatients = [];            // from /ops/api/patients
 let scribeSessions = [];         // from /ops/api/scribe/sessions
 let activeScribeSession = null;  // currently selected session
@@ -6412,6 +6421,7 @@ function renderChartPanel(content) {
                     <button onclick="showResetPasswordDialog()" style="padding:4px 10px; border-radius:6px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); color:var(--yellow); font-size:11px; font-weight:600; cursor:pointer;" title="Reset patient Healthie password">🔑 Password</button>
                     <button onclick="toggleInterestingPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.2); color:#a855f7; font-size:11px; font-weight:600; cursor:pointer;" title="Interesting facts about this patient">⭐ Interesting</button>
                     <button onclick="toggleCommsPanel()" style="padding:4px 10px; border-radius:6px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); color:#22c55e; font-size:11px; font-weight:600; cursor:pointer;" title="Clinic communications with this patient">💬 Comms</button>
+                    <button onclick="openPatientAiPanel('${chartPanelPatientId || ''}', '${(demo.full_name || 'Patient').replace(/'/g, "\\'")}')" style="padding:4px 10px; border-radius:6px; background:linear-gradient(135deg, rgba(124,58,237,0.18), rgba(236,72,153,0.18)); border:1px solid rgba(236,72,153,0.35); color:#f0abfc; font-size:11px; font-weight:600; cursor:pointer;" title="Ask AI about this chart">✨ Ask AI</button>
                 </div>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; padding:4px 0 4px; font-size:11px;">
@@ -11762,7 +11772,12 @@ async function selectPatient(id) {
                         ${patient.healthie_client_id ? '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(34,197,94,0.12); color:#22c55e;">✅ Healthie</span>' : '<span style="font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(239,68,68,0.12); color:#ef4444;">❌ Not linked</span>'}
                     </div>
                 </div>
-                <button onclick="openChartForPatient('${patient.healthie_client_id || id}', '${(name || '').replace(/'/g, "\\'")}')" style="padding:6px 14px; border-radius:8px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; color:#0a0f1a; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap;">Open Chart</button>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button onclick="openPatientAiPanel('${id}', '${(name || '').replace(/'/g, "\\'")}')" class="patient-ai-launch-btn" title="Ask AI about this chart">
+                        <span style="font-size:14px; line-height:1;">✨</span> Ask AI
+                    </button>
+                    <button onclick="openChartForPatient('${patient.healthie_client_id || id}', '${(name || '').replace(/'/g, "\\'")}')" style="padding:6px 14px; border-radius:8px; background:linear-gradient(135deg, #0891b2, #22d3ee); border:none; color:#0a0f1a; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap;">Open Chart</button>
+                </div>
             </div>
             <div id="patient360Data">
                 <div class="patient-360-loading">
@@ -24120,6 +24135,319 @@ async function viewPharmacyPdf(encodedS3Key) {
     }
 }
 
+
+// ─── PATIENT-CHART AI (slide-over chat) ────────────────────────────────
+// Phase 3 of dispatch row 20260527-004147-828c.
+// Sparkle "Ask AI" button on the patient detail screen opens this slide-over.
+// Backend: POST /ops/api/ipad/patient/<id>/ask/  (Phase 2). Trailing slash is
+// REQUIRED — next.config.js has trailingSlash:true and iOS WebKit drops the
+// POST body on the 308 redirect. Conversation is scoped to the open patient
+// and kept in memory (patientAiConversations[patientId]).
+
+function ensurePatientAiPanelMounted() {
+    if (document.getElementById('patientAiPanel')) return;
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'patientAiBackdrop';
+    backdrop.className = 'patient-ai-backdrop';
+    backdrop.onclick = closePatientAiPanel;
+
+    const panel = document.createElement('aside');
+    panel.id = 'patientAiPanel';
+    panel.className = 'patient-ai-panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'Ask AI about this chart');
+    panel.innerHTML = `
+        <div class="patient-ai-header">
+            <div class="patient-ai-title">
+                <span class="patient-ai-spark">✨</span>
+                <div>
+                    <div class="patient-ai-title-main">Ask AI</div>
+                    <div class="patient-ai-title-sub" id="patientAiPatientName">—</div>
+                </div>
+            </div>
+            <div style="display:flex; gap:6px; align-items:center;">
+                <button class="patient-ai-icon-btn" onclick="clearPatientAiConversation()" title="Clear conversation" aria-label="Clear conversation">↺</button>
+                <button class="patient-ai-icon-btn" onclick="closePatientAiPanel()" title="Close" aria-label="Close">✕</button>
+            </div>
+        </div>
+        <div class="patient-ai-disclaimer">
+            Decision-support only. Answers are grounded in this patient's chart — verify before acting.
+        </div>
+        <div class="patient-ai-messages" id="patientAiMessages"></div>
+        <form class="patient-ai-composer" id="patientAiComposer" onsubmit="event.preventDefault(); submitPatientAiComposer();">
+            <textarea id="patientAiInput" rows="1" placeholder="Ask about this chart…" autocomplete="off"></textarea>
+            <button type="submit" id="patientAiSendBtn" class="patient-ai-send" aria-label="Send">Send</button>
+        </form>
+    `;
+
+    document.body.appendChild(backdrop);
+    document.body.appendChild(panel);
+
+    // Textarea autosize + Enter-to-send (Shift+Enter = newline)
+    const ta = panel.querySelector('#patientAiInput');
+    ta.addEventListener('input', () => {
+        ta.style.height = 'auto';
+        ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    });
+    ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            submitPatientAiComposer();
+        }
+    });
+
+    // ESC closes
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && document.getElementById('patientAiPanel')?.classList.contains('open')) {
+            closePatientAiPanel();
+        }
+    });
+}
+
+function openPatientAiPanel(patientId, patientName) {
+    if (!patientId) return;
+    ensurePatientAiPanelMounted();
+    patientAiCurrentPatientId = patientId;
+    patientAiCurrentPatientName = patientName || '';
+
+    const nameEl = document.getElementById('patientAiPatientName');
+    if (nameEl) nameEl.textContent = patientName || 'Patient';
+
+    renderPatientAiMessages();
+
+    document.getElementById('patientAiBackdrop').classList.add('open');
+    document.getElementById('patientAiPanel').classList.add('open');
+
+    // Focus the composer after the panel finishes sliding in
+    setTimeout(() => {
+        const ta = document.getElementById('patientAiInput');
+        if (ta) ta.focus();
+    }, 220);
+}
+
+function closePatientAiPanel() {
+    document.getElementById('patientAiBackdrop')?.classList.remove('open');
+    document.getElementById('patientAiPanel')?.classList.remove('open');
+}
+
+function clearPatientAiConversation() {
+    if (!patientAiCurrentPatientId) return;
+    delete patientAiConversations[patientAiCurrentPatientId];
+    renderPatientAiMessages();
+    const ta = document.getElementById('patientAiInput');
+    if (ta) ta.focus();
+}
+
+function renderPatientAiMessages() {
+    const wrap = document.getElementById('patientAiMessages');
+    if (!wrap) return;
+    const history = patientAiConversations[patientAiCurrentPatientId] || [];
+
+    if (history.length === 0 && !patientAiInFlight) {
+        wrap.innerHTML = `
+            <div class="patient-ai-empty">
+                <div class="patient-ai-empty-title">What do you want to know about <strong>${sanitize(patientAiCurrentPatientName || 'this patient')}</strong>?</div>
+                <div class="patient-ai-empty-hint">Grounded in the chart only — won't invent data.</div>
+                <div class="patient-ai-suggestions">
+                    <button class="patient-ai-chip" onclick="usePatientAiSuggestion('Summarize this chart in 5 bullets.')">Summarize chart</button>
+                    <button class="patient-ai-chip" onclick="usePatientAiSuggestion('Any allergy or interaction red flags I should know before prescribing?')">Allergy / interaction risks</button>
+                    <button class="patient-ai-chip" onclick="usePatientAiSuggestion('What is overdue or stale in this chart? Labs, follow-ups, refills.')">What's overdue?</button>
+                    <button class="patient-ai-chip" onclick="usePatientAiSuggestion('Walk me through this patient\\'s active medication list.')">Active meds</button>
+                </div>
+            </div>`;
+        return;
+    }
+
+    let html = '';
+    history.forEach((msg, idx) => {
+        if (msg.role === 'user') {
+            html += `<div class="patient-ai-message user"><div class="patient-ai-bubble">${formatPatientAiBody(msg.content)}</div></div>`;
+        } else {
+            const cls = msg.refusal ? 'assistant refusal' : 'assistant';
+            const bodyId = `patientAiBody-${idx}`;
+            const body = msg._streaming ? '' : formatPatientAiBody(msg.content);
+            const sources = (msg.sources && msg.sources.length > 0)
+                ? `<div class="patient-ai-sources">${msg.sources.map(s => `<span class="patient-ai-source-chip">${sanitize(String(s))}</span>`).join('')}</div>`
+                : '';
+            const degraded = (msg.degradedSections && msg.degradedSections.length > 0)
+                ? `<div class="patient-ai-degraded">⚠ Some chart sections were unavailable when this answer was generated: ${msg.degradedSections.map(s => sanitize(String(s))).join(', ')}</div>`
+                : '';
+            html += `
+                <div class="patient-ai-message ${cls}">
+                    <div class="patient-ai-bubble">
+                        <div class="patient-ai-body" id="${bodyId}">${body}</div>
+                        ${degraded}
+                        ${sources}
+                    </div>
+                </div>`;
+        }
+    });
+
+    if (patientAiInFlight) {
+        html += `
+            <div class="patient-ai-message assistant">
+                <div class="patient-ai-bubble">
+                    <div class="patient-ai-typing"><span></span><span></span><span></span></div>
+                </div>
+            </div>`;
+    }
+
+    wrap.innerHTML = html;
+    wrap.scrollTop = wrap.scrollHeight;
+}
+
+function usePatientAiSuggestion(text) {
+    const ta = document.getElementById('patientAiInput');
+    if (!ta) return;
+    ta.value = text;
+    ta.focus();
+    // Trigger autosize
+    ta.dispatchEvent(new Event('input'));
+}
+
+function submitPatientAiComposer() {
+    const ta = document.getElementById('patientAiInput');
+    if (!ta) return;
+    const question = (ta.value || '').trim();
+    if (!question) return;
+    if (patientAiInFlight) return;
+    ta.value = '';
+    ta.style.height = 'auto';
+    askPatientAi(question);
+}
+
+async function askPatientAi(question) {
+    const patientId = patientAiCurrentPatientId;
+    if (!patientId) return;
+    patientAiInFlight = true;
+
+    if (!patientAiConversations[patientId]) patientAiConversations[patientId] = [];
+    const history = patientAiConversations[patientId];
+    history.push({ role: 'user', content: question });
+    renderPatientAiMessages();
+
+    // Only send {role, content} pairs to the backend (strip our local sources/refusal flags)
+    const wire = history
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({ role: m.role, content: m.content }));
+    // The newest user turn is already in `wire`; the API treats the last
+    // `messages` entry as the new question via `body.question`, so drop the
+    // duplicate from `conversation` and pass it separately.
+    const conversation = wire.slice(0, -1);
+
+    let data = null;
+    let outOfScope = false;
+    let httpError = null;
+    try {
+        const resp = await fetch(`/ops/api/ipad/patient/${encodeURIComponent(patientId)}/ask/`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question, conversation }),
+        });
+        if (resp.status === 403) {
+            // Scope-gate refusal: backend still returns a useful `data.answer`
+            const body = await resp.json().catch(() => null);
+            data = body?.data || null;
+            outOfScope = true;
+        } else if (!resp.ok) {
+            const body = await resp.json().catch(() => null);
+            httpError = body?.error || `HTTP ${resp.status}`;
+        } else {
+            const body = await resp.json();
+            data = body?.data || null;
+            if (!body?.success) httpError = body?.error || 'AI returned no answer';
+        }
+    } catch (err) {
+        console.error('[patient-ai] request failed:', err);
+        httpError = (err && err.message) || 'Network error';
+    }
+
+    patientAiInFlight = false;
+
+    if (httpError || !data) {
+        history.push({
+            role: 'assistant',
+            content: `Sorry — I couldn't reach the AI service (${httpError || 'no response'}). Try again in a moment.`,
+            refusal: true,
+        });
+        renderPatientAiMessages();
+        return;
+    }
+
+    const answer = (data.answer || '').toString();
+    const sources = Array.isArray(data.sources) ? data.sources : [];
+    const degraded = Array.isArray(data?.meta?.degradedSections) ? data.meta.degradedSections : [];
+
+    // Add the assistant message in streaming mode and reveal it char-by-char.
+    const msg = {
+        role: 'assistant',
+        content: answer,
+        sources: outOfScope ? [] : sources,
+        degradedSections: outOfScope ? [] : degraded,
+        refusal: outOfScope,
+        _streaming: true,
+    };
+    history.push(msg);
+    renderPatientAiMessages();
+
+    const idx = history.length - 1;
+    const bodyEl = document.getElementById(`patientAiBody-${idx}`);
+    if (bodyEl) {
+        streamRevealText(bodyEl, answer, () => {
+            msg._streaming = false;
+            // No need to re-render — the source chips were already in the DOM.
+        });
+    } else {
+        msg._streaming = false;
+    }
+}
+
+// Char-by-char reveal that gives a "streaming" UX on top of a non-streaming
+// JSON response. ~3ms/char with sane bounds; auto-scrolls the message list.
+function streamRevealText(el, fullText, doneCb) {
+    if (!el) { if (doneCb) doneCb(); return; }
+    const wrap = document.getElementById('patientAiMessages');
+    // Reveal in chunks so 1000-char answers don't take 3+ seconds.
+    const total = fullText.length;
+    const chunkSize = Math.max(2, Math.ceil(total / 200));
+    let i = 0;
+    const tick = () => {
+        i = Math.min(total, i + chunkSize);
+        el.innerHTML = formatPatientAiBody(fullText.slice(0, i));
+        if (wrap) wrap.scrollTop = wrap.scrollHeight;
+        if (i < total) {
+            setTimeout(tick, 12);
+        } else if (doneCb) {
+            doneCb();
+        }
+    };
+    tick();
+}
+
+// Lightweight markdown-ish renderer for the answer body. Escapes HTML first,
+// then bolds **like this**, turns lines starting with "- " or "* " into a
+// <ul>, and preserves paragraph breaks. Deliberately small — Claude tends to
+// answer in short paragraphs + bullets, not full markdown.
+function formatPatientAiBody(raw) {
+    if (!raw) return '';
+    const escaped = sanitize(String(raw))
+        // Sanitize escapes `/`; the bold regex below needs raw asterisks, which
+        // sanitize leaves alone, so we're fine.
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // Split into blocks on blank lines, then convert bullet runs to <ul>.
+    const blocks = escaped.split(/\n{2,}/);
+    return blocks.map(block => {
+        const lines = block.split(/\n/);
+        const isList = lines.every(l => /^\s*[-*•]\s+/.test(l)) && lines.length > 0;
+        if (isList) {
+            return '<ul>' + lines.map(l => `<li>${l.replace(/^\s*[-*•]\s+/, '')}</li>`).join('') + '</ul>';
+        }
+        return '<p>' + lines.join('<br>') + '</p>';
+    }).join('');
+}
 
 // ─── WEB PUSH (staff assignment banners) ────────────────────────────────
 // Registers /ipad/sw.js, then asks the browser for a push subscription with
