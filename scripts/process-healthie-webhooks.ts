@@ -7,6 +7,7 @@ dotenv.config({ path: '.env.local' });
 import { processPendingEvents, type WebhookEventRow } from '@/lib/healthie/processor';
 import { sendChatMessage } from '@/lib/notifications/chat';
 import { transitionStatus } from '@/lib/status-transitions';
+import { query } from '@/lib/db';
 import fetch from 'node-fetch';
 
 // Environment variables
@@ -33,6 +34,50 @@ async function sendTelegramAlert(message: string) {
     console.log('[Healthie Webhooks] Telegram alert sent');
   } catch (err) {
     console.error('[Healthie Webhooks] Failed to send Telegram alert:', err);
+  }
+}
+
+// FIX(2026-05-28): Healthie fires BOTH `billing_item.created` AND
+// `billing_item.updated` (and sometimes `.updated` twice) for the SAME billing
+// item. The dispatcher routes every `billing_item.*` event to handleBillingItems,
+// which re-fetches the same item and fired the SAME Telegram alert each time —
+// that's the "2x recurring payment received / 2x failed" spam Phil reported.
+// Event-type filtering can't fix it (some items emit `.updated` twice), so we
+// dedup at the alert level on (billing_item_id, kind). The INSERT ... ON CONFLICT
+// is atomic, so it also collapses the cron-overlap race (two runs picking up the
+// same 'received' events before either marks them processed). Fails OPEN on any
+// DB error so a real alert is never silently suppressed.
+let paymentAlertDedupTableReady = false;
+async function paymentAlertAlreadySent(
+  billingItemId: string | undefined | null,
+  kind: 'failed' | 'received'
+): Promise<boolean> {
+  if (!billingItemId) return false;
+  try {
+    if (!paymentAlertDedupTableReady) {
+      await query(
+        `CREATE TABLE IF NOT EXISTS healthie_payment_alert_dedup (
+           billing_item_id TEXT NOT NULL,
+           alert_kind TEXT NOT NULL,
+           alerted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+           PRIMARY KEY (billing_item_id, alert_kind)
+         )`,
+        []
+      );
+      paymentAlertDedupTableReady = true;
+    }
+    const rows = await query<{ billing_item_id: string }>(
+      `INSERT INTO healthie_payment_alert_dedup (billing_item_id, alert_kind)
+       VALUES ($1, $2)
+       ON CONFLICT (billing_item_id, alert_kind) DO NOTHING
+       RETURNING billing_item_id`,
+      [String(billingItemId), kind]
+    );
+    // A returned row means WE just claimed the alert (first time) → not a dup.
+    return rows.length === 0;
+  } catch (err) {
+    console.error('[Healthie Webhooks] payment alert dedup check failed (allowing alert):', err);
+    return false;
   }
 }
 
@@ -451,7 +496,11 @@ async function handleBillingItems(resourceId?: string) {
     if (isDeclinedPayment(state)) {
       const failReason = item.failure_reason || item.stripe_error || 'Card declined';
 
-      await sendTelegramAlert(`🚨 <b>RECURRING PAYMENT FAILED</b>\n\n<b>Patient:</b> ${patientName}\n<b>Package:</b> ${packageName}\n<b>Amount:</b> $${amount}\n<b>Reason:</b> ${failReason}\n\n⚠️ Patient status set to Hold - Payment Research.`);
+      if (await paymentAlertAlreadySent(resourceId, 'failed')) {
+        console.log(`[Healthie Webhooks] Duplicate billing_item event for #${resourceId} (failed) — Telegram alert already sent, skipping`);
+      } else {
+        await sendTelegramAlert(`🚨 <b>RECURRING PAYMENT FAILED</b>\n\n<b>Patient:</b> ${patientName}\n<b>Package:</b> ${packageName}\n<b>Amount:</b> $${amount}\n<b>Reason:</b> ${failReason}\n\n⚠️ Patient status set to Hold - Payment Research.`);
+      }
 
       // Update patient in DB — match by healthie_client_id first, fall back to name
       const { Pool } = await import('pg');
@@ -552,7 +601,11 @@ async function handleBillingItems(resourceId?: string) {
 
       const reactivated = await reactivatePatient(patientName, timestamp);
       if (reactivated) {
-        await sendTelegramAlert(`✅ <b>RECURRING PAYMENT RECEIVED</b>\n\n<b>Patient:</b> ${patientName}\n<b>Package:</b> ${packageName}\n<b>Amount:</b> $${amount}\n\n✅ Patient auto-reactivated from Hold - Payment Research.`);
+        if (await paymentAlertAlreadySent(resourceId, 'received')) {
+          console.log(`[Healthie Webhooks] Duplicate billing_item event for #${resourceId} (received) — Telegram alert already sent, skipping`);
+        } else {
+          await sendTelegramAlert(`✅ <b>RECURRING PAYMENT RECEIVED</b>\n\n<b>Patient:</b> ${patientName}\n<b>Package:</b> ${packageName}\n<b>Amount:</b> $${amount}\n\n✅ Patient auto-reactivated from Hold - Payment Research.`);
+        }
       }
     }
   } catch (err) {

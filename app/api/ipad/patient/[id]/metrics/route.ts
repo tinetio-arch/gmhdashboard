@@ -174,9 +174,16 @@ export async function POST(
                 `, {
                     input: {
                         user_id: String(healthieClientId),
-                        type: HEALTHIE_METRIC_TYPES[metric_type] || metric_type,
+                        // FIX(2026-05-28): `type` is Healthie's Entry STI discriminator
+                        // and must be 'MetricEntry'. We were sending the metric NAME
+                        // (e.g. 'Weight'), which made Healthie 500 with the opaque
+                        // "Internal server error" that spammed Telegram. The human-
+                        // readable metric name belongs in `category`. Matches the
+                        // working createEntry in app/api/ipad/patient-data/route.ts.
+                        // Verified live (broken shape 500s, this shape round-trips).
+                        type: 'MetricEntry',
                         metric_stat: metricStatValue,
-                        category: 'Vital',
+                        category: HEALTHIE_METRIC_TYPES[metric_type] || metric_type,
                         created_at: recordedAt,
                         description: notes ? `${notes} (by ${user.email})` : `Recorded by ${user.email}`,
                     }
