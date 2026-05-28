@@ -348,8 +348,10 @@ export class HealthieClient {
    * Retrieve medications for a user.
    */
   async getMedications(userId: string, options?: { active?: boolean }): Promise<HealthieMedication[]> {
+    // FIX(2026-05-28): Healthie tightened medications(patient_id:) to ID; $patientId
+    // was declared String, causing "Type mismatch ... (String / ID)". Verified live.
     const query = `
-      query Medications($patientId: String, $active: Boolean) {
+      query Medications($patientId: ID, $active: Boolean) {
         medications(patient_id: $patientId, active: $active) {
           id
           name
@@ -389,21 +391,26 @@ export class HealthieClient {
  * Retrieve allergies for a user.
  */
   async getAllergies(userId: string): Promise<HealthieAllergy[]> {
+    // FIX(2026-05-28): Healthie retired the root-level allergySensitivities(patient_id:)
+    // query ("Field 'allergySensitivities' doesn't exist on type 'Query'") and
+    // AllergySensitivity has no `notes` field. The working shape is
+    // user(id:){ allergy_sensitivities { ... } } with an ID variable. Verified live.
     const query = `
-    query AllergySensitivities($patientId: String) {
-      allergySensitivities(patient_id: $patientId) {
-        id
-        name
-        reaction
-        severity
-        notes
+    query Allergies($userId: ID) {
+      user(id: $userId) {
+        allergy_sensitivities {
+          id
+          name
+          reaction
+          severity
+        }
       }
     }
   `;
 
     try {
-      const result = await this.graphql<{ allergySensitivities: HealthieAllergy[] }>(query, { patientId: userId });
-      return result.allergySensitivities ?? [];
+      const result = await this.graphql<{ user: { allergy_sensitivities: HealthieAllergy[] } | null }>(query, { userId });
+      return result.user?.allergy_sensitivities ?? [];
     } catch (error) {
       // FIX(2026-05-20): propagate instead of silently returning [] — an empty
       // allergy list on an outage is a patient-safety hazard if shown as fact.
@@ -416,8 +423,10 @@ export class HealthieClient {
    * Retrieve prescriptions for a user.
    */
   async getPrescriptions(userId: string, options?: { status?: string }): Promise<HealthiePrescription[]> {
+    // FIX(2026-05-28): Healthie tightened prescriptions(patient_id:) to ID; $patientId
+    // was declared String, causing "Type mismatch ... (String / ID)". Verified live.
     const query = `
-      query Prescriptions($patientId: String, $status: String) {
+      query Prescriptions($patientId: ID, $status: String) {
         prescriptions(patient_id: $patientId, status: $status) {
           id
           product_name
