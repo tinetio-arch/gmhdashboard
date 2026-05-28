@@ -6,6 +6,33 @@ import { query } from '@/lib/db';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
+// CEO admins who legitimately need to see ALL org conversations (compliance,
+// coverage). Everyone else is FORCE-SCOPED to their own healthie_provider_id,
+// regardless of what the client passes. role='admin' alone is NOT enough —
+// e.g. Hannah is role=admin but is staff, not a CEO admin. (2026-05-28)
+const ORG_WIDE_MESSAGE_VIEWERS = new Set([
+    'admin@nowoptimal.com',
+    'admin@granitemountainhealth.com',
+    'philschafer7@gmail.com',
+]);
+
+/**
+ * Look up the logged-in user's Healthie provider id from the DB.
+ * Returns null if not set (staff who don't have their own Healthie inbox).
+ */
+async function getUserHealthieProviderId(userId: string): Promise<string | null> {
+    if (!userId) return null;
+    try {
+        const rows = await query<{ healthie_provider_id: string | null }>(
+            'SELECT healthie_provider_id FROM users WHERE user_id = $1 LIMIT 1',
+            [userId]
+        );
+        return rows[0]?.healthie_provider_id ?? null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * GET /api/ipad/messages
  * Fetches conversations from Healthie messaging system.
@@ -14,6 +41,15 @@ export const maxDuration = 30;
  *   - conversation_id (optional): Get messages for a specific conversation
  *   - patient_id (optional): Get conversations for a specific patient (Healthie user ID)
  *   - offset (optional): Pagination offset for conversations list (default 0)
+ *
+ * SECURITY (2026-05-28 — Phil flagged staff seeing his messages):
+ *   - ORG_WIDE_MESSAGE_VIEWERS (Phil) bypass scope.
+ *   - Everyone else: server force-injects provider_id = user.healthie_provider_id
+ *     on the global conversation list. Client-supplied provider_id is IGNORED.
+ *   - Users without a healthie_provider_id get an empty list on the global tab
+ *     (they have no clinical inbox of their own).
+ *   - patient_id chart-view is left scoped to that patient (staff legitimately
+ *     need patient-thread context when viewing the chart).
  */
 export async function GET(request: NextRequest) {
     let user;
@@ -29,8 +65,29 @@ export async function GET(request: NextRequest) {
         const { searchParams } = new URL(request.url);
         const conversationId = searchParams.get('conversation_id');
         const patientId = searchParams.get('patient_id');
-        const providerId = searchParams.get('provider_id');
+        // Client-supplied provider_id is IGNORED on the global list (force-scoped
+        // server-side below). Kept here only for the org-wide bypass case.
+        const clientProviderId = searchParams.get('provider_id');
         const offset = parseInt(searchParams.get('offset') || '0', 10);
+
+        const userEmail = (user?.email || '').toLowerCase();
+        const isOrgWideViewer = ORG_WIDE_MESSAGE_VIEWERS.has(userEmail);
+        const userHealthieProviderId = await getUserHealthieProviderId(user?.user_id);
+
+        // Server-side enforcement of per-staff scope on the global conversation list.
+        // Phil et al. → can pass any (or no) provider_id (view all).
+        // Everyone else → forced to their own healthie_provider_id; null = empty list.
+        let providerId: string | null = null;
+        let staffWithoutInbox = false;
+        if (!conversationId && !patientId) {
+            if (isOrgWideViewer) {
+                providerId = clientProviderId; // honor client filter for CEO bypass
+            } else if (userHealthieProviderId) {
+                providerId = userHealthieProviderId; // FORCE — ignore client
+            } else {
+                staffWithoutInbox = true; // non-admin with no Healthie linkage → empty
+            }
+        }
 
         // If conversation_id provided, fetch messages for that conversation
         // FIX(2026-03-25): Healthie removed conversation_id arg from conversationMemberships
@@ -86,6 +143,13 @@ export async function GET(request: NextRequest) {
                 },
                 messages,
             });
+        }
+
+        // Server-enforced scope short-circuit: a non-admin staff member with no
+        // healthie_provider_id has no clinical inbox to show on the global tab.
+        // Return empty conversations rather than the org-wide list.
+        if (staffWithoutInbox) {
+            return NextResponse.json({ success: true, conversations: [] });
         }
 
         // Otherwise list conversations
