@@ -204,6 +204,35 @@ export async function autoAddPeptideToStack(input: AutoAddInput): Promise<AutoAd
 }
 
 /**
+ * Look up peptide_products.product_id from a SKU and call autoAddPeptideToStack.
+ * Used by purchase paths that only carry SKU (mobile checkout, pending-orders
+ * approval) — keeps the SKU→UUID resolution out of the route handlers.
+ *
+ * Returns null if the SKU doesn't map to a known peptide product (e.g. Supply
+ * Kit, ancillaries) — caller treats null as "skip, not a peptide" and moves on.
+ */
+export async function autoAddPeptideToStackBySku(input: {
+  patient_id: string;
+  sku: string;
+  source_order_id?: string | null;
+  triggered_by_user_id?: string | null;
+  triggered_by_name?: string | null;
+}): Promise<AutoAddResult | null> {
+  const [product] = await query<{ product_id: string }>(
+    `SELECT product_id FROM peptide_products WHERE sku = $1 AND active = true LIMIT 1`,
+    [input.sku]
+  );
+  if (!product) return null;
+  return autoAddPeptideToStack({
+    patient_id: input.patient_id,
+    product_ref: product.product_id,
+    source_order_id: input.source_order_id ?? null,
+    triggered_by_user_id: input.triggered_by_user_id ?? null,
+    triggered_by_name: input.triggered_by_name ?? null
+  });
+}
+
+/**
  * Map handbook frequency codes to numeric cadence days. Unknown codes
  * return null (the stack row stores frequency_code as-is and lets the
  * provider set cadence_days explicitly if the code is non-standard).

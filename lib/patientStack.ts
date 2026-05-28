@@ -289,7 +289,140 @@ export async function fetchPatientStack(patientId: string): Promise<StackItemCom
     [patientId]
   );
   const mapped = rows.map(mapRow);
-  return Promise.all(mapped.map(computeStackItem));
+  const computed = await Promise.all(mapped.map(computeStackItem));
+
+  // Synthesize a 'testosterone' card for Men's Health patients who don't have
+  // a stored row yet. The dispense engine + dispenses table are the existing
+  // source of truth; this just surfaces them in the Stack shape so the patient
+  // app's GET /api/patients/[id]/stack/ never returns "empty" for an MH patient
+  // who's been receiving TRT. Stored TRT row, if it ever gets created, wins —
+  // we skip synthesis when one already exists.
+  const hasStoredTrt = computed.some(it => it.item_type === 'testosterone');
+  if (!hasStoredTrt && (await isMensHealthPatient(patientId))) {
+    const synthetic = await synthesizeTrtStackItem(patientId);
+    if (synthetic) {
+      computed.unshift(synthetic);
+    }
+  }
+  return computed;
+}
+
+/**
+ * Detect Men's Health enrollment using the canonical signal set from
+ * app/api/jarvis/peptide-eligibility + app/api/ipad/patient/[id]/ask:
+ * clinic name, client_type_key, and GHL tags. 'trt' / 'testosterone' tags
+ * are MH-equivalent because they're only applied to enrolled MH patients.
+ */
+async function isMensHealthPatient(patientId: string): Promise<boolean> {
+  const [row] = await query<{
+    clinic: string | null;
+    client_type_key: string | null;
+    ghl_tags: string[] | null;
+  }>(
+    `SELECT clinic, client_type_key, ghl_tags
+       FROM patients WHERE patient_id = $1::uuid LIMIT 1`,
+    [patientId]
+  );
+  if (!row) return false;
+  const clinic = (row.clinic || '').toLowerCase();
+  const clientTypeKey = (row.client_type_key || '').toLowerCase();
+  const tagsRaw = Array.isArray(row.ghl_tags) ? row.ghl_tags : [];
+  const tags = tagsRaw.map(t => String(t || '').toLowerCase().trim()).filter(Boolean);
+  return (
+    clinic.includes('men') ||
+    clinic.includes('nowmenshealth') ||
+    clientTypeKey === 'nowmenshealth' ||
+    clientTypeKey === 'qbo_tcmh_180_month' ||
+    clientTypeKey === 'jane_tcmh_180_month' ||
+    clientTypeKey === 'qbo_f_f_fr_veteran_140_month' ||
+    clientTypeKey === 'jane_f_f_fr_veteran_140_month' ||
+    clientTypeKey === 'mens_health_qbo' ||
+    tags.includes('trt') ||
+    tags.includes('testosterone') ||
+    tags.includes("men's health") ||
+    tags.includes('mens health')
+  );
+}
+
+/**
+ * Build a virtual StackItemComputed from the existing trtEligibility engine.
+ * Returns null when the engine reports state='n/a' (e.g. female patient
+ * tagged MH by mistake) — caller treats null as "don't surface a TRT card".
+ *
+ * The stack_id is prefixed `virtual-trt:` so any client mutation hits a 404
+ * (PATCH/DELETE/log on a non-existent UUID) rather than silently writing to
+ * a wrong row. To set a permanent dose, the provider POSTs through the
+ * normal stack endpoint and an upsert creates the real row.
+ */
+async function synthesizeTrtStackItem(patientId: string): Promise<StackItemComputed | null> {
+  const eligibility = await computeDispenseEligibility(patientId);
+  if (eligibility.state === 'n/a') return null;
+
+  // Cache healthie id for the patient app.
+  const [pt] = await query<{ healthie_client_id: string | null }>(
+    `SELECT healthie_client_id FROM patients WHERE patient_id = $1::uuid LIMIT 1`,
+    [patientId]
+  );
+
+  const today = new Date();
+  const todayMs = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  let daysUntilDue: number | null = null;
+  if (eligibility.nextEligibleDate) {
+    const dueMs = new Date(eligibility.nextEligibleDate).getTime();
+    daysUntilDue = Math.floor((dueMs - todayMs) / (24 * 60 * 60 * 1000));
+  }
+  const reorderNeeded =
+    eligibility.state === 'eligible' ||
+    eligibility.state === 'eligible-grace' ||
+    (daysUntilDue !== null && daysUntilDue <= 7);
+
+  const nowIso = new Date().toISOString();
+  const row: StackRow = {
+    stack_id: `virtual-trt:${patientId}`,
+    patient_id: patientId,
+    healthie_id: pt?.healthie_client_id ?? null,
+    item_type: 'testosterone',
+    product_ref: null,
+    product_sku: 'TRT-CYP',
+    display_name: 'Testosterone Cypionate',
+    recommended_dose: eligibility.doseMl,
+    dose_unit: eligibility.doseMl != null ? 'mL' : null,
+    frequency_code: null,
+    inject_days: null,
+    cadence_days: eligibility.cadenceDays,
+    anchor_date: eligibility.lastDispenseDate,
+    status: 'active',
+    vial_size_ml: 10,
+    syringes_dispensed: eligibility.syringeCount ?? 0,
+    amount_remaining: null,
+    next_due_date: eligibility.nextEligibleDate,
+    reminder_enabled: false,
+    reminder_time: null,
+    reminder_method: 'push',
+    recommended_by: null,
+    recommended_at: null,
+    dose_history: [],
+    source_order_id: null,
+    fda_ack_at: null,
+    created_at: nowIso,
+    updated_at: nowIso
+  };
+
+  return {
+    ...row,
+    computed: {
+      item_type: 'testosterone',
+      next_due_date: eligibility.nextEligibleDate,
+      days_until_due: daysUntilDue,
+      reorder_needed: reorderNeeded,
+      amount_remaining: null,
+      amount_unit: null,
+      injections_logged: null,
+      last_injection_at: null,
+      doses_remaining_estimate: eligibility.syringeCount,
+      trt_eligibility: eligibility
+    }
+  };
 }
 
 /** Fetch + compute a single stack row by id. Returns null if not found. */

@@ -17,6 +17,7 @@ import { requireApiUser } from '@/lib/auth';
 import { query, getPool } from '@/lib/db';
 import { sendPushMessages, loadTokensForPatient } from '@/lib/expoPush';
 import { SUPPLY_KIT_SKU } from '@/lib/peptideCategories';
+import { autoAddPeptideToStackBySku } from '@/lib/stackAutoAdd';
 import Stripe from 'stripe';
 
 export const dynamic = 'force-dynamic';
@@ -339,6 +340,25 @@ export async function POST(request: NextRequest) {
           [order.patient_name, item.unit_price, paymentIntent.id,
            `Approved pending order — ${item.name} (${item.sku}) — ${order.discount_tier || 'retail'} tier`]
         );
+      }
+
+      // Auto-add the approved peptide to the patient's Stack at handbook
+      // lowest dose so it's visible + usable immediately on approval.
+      // Idempotent — won't double-add if the patient already has it.
+      // Non-blocking: a Stack write failure must not unwind the approval.
+      try {
+        const r = await autoAddPeptideToStackBySku({
+          patient_id: order.patient_id,
+          sku: item.sku,
+          source_order_id: paymentIntent.id,
+          triggered_by_user_id: null,
+          triggered_by_name: `auto-add-on-approval (${staffEmail || 'staff'})`
+        });
+        if (r) {
+          console.log(`[Pending Orders] Stack ${r.created ? 'created' : r.reactivated ? 'reactivated' : 'reused'} for ${item.sku} → ${r.stack_id} (${r.status})`);
+        }
+      } catch (stackErr: any) {
+        console.error('[Pending Orders] autoAddPeptideToStack failed (non-blocking):', stackErr?.message);
       }
     }
 
