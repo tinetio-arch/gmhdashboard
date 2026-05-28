@@ -4,7 +4,7 @@ import { query } from '@/lib/db';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 90;
 
 // Haiku 3.5 for fast triage, Haiku 4.5 for the actual edit (fast + precise)
 const bedrock = new BedrockRuntimeClient({ region: 'us-east-2' });
