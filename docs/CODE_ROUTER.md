@@ -42,6 +42,7 @@
 | **4 websites · brand colors · ports** | `~/abxtac-website/` (Astro · 3009) · `~/nowoptimal-website/` (4001) · `~/nowmenshealth-website/` (4002) · `~/nowprimarycare-website/` (4003) · `/etc/nginx/conf.d/nowoptimal.conf` | `21-websites-brand-system.md` |
 | **Patient comms · push notifications · SMS · email gateway** | `~/gmhdashboard/lib/comms-gateway.ts` (single send fn) · `~/gmhdashboard/lib/comms-ledger.ts` (audit) · `~/gmhdashboard/lib/comms-profile.ts` (per-patient prefs) · `~/gmhdashboard/app/api/headless/push-tokens/register/route.ts` | memory [patient-comms-overhaul-direction] + [patient-comms-and-cron-alerts] |
 | **Pre-flight rule · SOT modules · CLAUDE_MEMORY_PINS** | `~/gmhdashboard/docs/sot-modules/INDEX.md` (decision tree) · `~/gmhdashboard/docs/CLAUDE_MEMORY_PINS.md` · `~/gmhdashboard/docs/DEPENDENCIES.md` (cross-system) · `~/gmhdashboard/docs/CODE_ROUTER.md` (this file) | memory [sot-module-index-and-pre-flight] |
+| **Healthie BillingItem field semantics (recipient/sender/note/state)** | Schema introspection in `~/gmhdashboard/app/api/ipad/ceo/revenue-breakdown/route.ts` (comments document it). Key facts: `BillingItem.sender` = patient (sends money); `BillingItem.recipient` = clinic (receives money); `BillingItem.note` = staff invoice comment ("sick visit", "PT 141 blend"); auto-generated notes are "Invoice for Package …" / "Failed Recurring Payment …" — filter those out for display; `state` = succeeded/failed/scheduled (filter to 'succeeded' for revenue); created_at is space-separated "YYYY-MM-DD HH:MM:SS ±HHMM" (NOT ISO 8601 — must normalize for Safari). | memory [healthie-revenue-classification-truth] |
 
 ---
 
@@ -64,3 +65,31 @@ Each row should be:
 - **SOT module / memory** if one documents the area.
 
 Keep rows short. Link out, don't summarize the file's behavior here.
+
+## Auto-add rules — when Claude MUST add a row (Phil 2026-05-28)
+
+Phil 2026-05-28: "I think you should automatically add rows, and have rules for how you decide when you should make a row."
+
+**ADD a row BEFORE answering when ANY of these triggers fires:**
+
+1. **Zero-match trigger.** `grep -i <topic>` against this file returns no hits AND the question is about a system area (route, lib file, table, cron, integration). The topic isn't in the map yet → add it.
+2. **New file discovered.** While investigating something, I find a canonical truth-source file (1+ table, route, or script) that isn't named in any existing row. Future-me will need to find it → add a row pointing at it.
+3. **Schema/semantics learning.** Field semantics on an external API, an undocumented gotcha, a non-obvious naming convention (like `BillingItem.recipient` = clinic / `BillingItem.sender` = patient). Save as a memory + add a CODE_ROUTER row that links to that memory.
+4. **Bug Phil flagged.** If Phil reports a bug in an area not yet in the router, the post-fix step is "add a row" so the bug investigation path is preserved for next time.
+
+**SKIP if any of these is true:**
+
+1. **Already-covered topic.** A grep on this file already returns a row whose canonical files would have led to the right answer.
+2. **Incidental code touch.** I'm reading a file purely to understand context for an unrelated change; no canonical truth-source is being established.
+3. **One-off / throwaway.** A migration script, a one-time data fix, a scratch query — no recurring system to point at.
+4. **The topic is too specific.** "How does function X work" is not a routable topic; "X's containing area" might be.
+
+**Auto-update workflow:**
+
+1. Identify canonical files (1–3 truth-source files first, 1–2 fetchers/helpers after).
+2. Identify SOT module (`~/gmhdashboard/docs/sot-modules/`) and/or Cowork memory if applicable.
+3. Add row to this file in the table above. Keep it terse.
+4. Commit to `~/gmhdashboard` master with message: `docs(router): add row for <topic> (auto-add by Claude)`.
+5. Now answer the original question.
+
+**Periodic review:** Phil can audit accumulated rows weekly. If a row is wrong or stale, prune it. If a row's keywords are too narrow and we keep grep-missing it, broaden them.

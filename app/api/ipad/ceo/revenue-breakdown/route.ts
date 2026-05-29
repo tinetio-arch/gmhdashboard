@@ -52,6 +52,14 @@ type HealthiePayment = {
   recurring_payment_id: string | null;
   recurring_payment_offering: string | null;
   recipient_name: string;
+  // Phil 2026-05-28: "put the invoice comment in there so we know what the
+  // payment is for. Staff usually put it in!" The staff-entered comment lives
+  // on BillingItem.note (also surfaced as shown_note — same content). For
+  // one-time charges it's the human description ("sick visit", "PT 141 blend",
+  // "pelleting"). For recurring it's usually system-generated ("Invoice for
+  // Package …" / "Failed Recurring Payment …") — UI suppresses those and
+  // shows offering_name instead.
+  note: string | null;
 };
 
 type PeriodBucket = { total: number; count: number };
@@ -119,11 +127,12 @@ async function getHealthieBuckets(): Promise<HealthieBuckets> {
             recipient: { id: string; full_name: string | null } | null;
           } | null;
           recurring_payment: { id: string; offering_name: string | null } | null;
+          note: string | null;
         }>;
       }>(
         `query CeoBillingItems($status: [String], $page: Int, $offset: Int, $start: String) {
            billingItems(status: $status, page_size: $page, offset: $offset, created_at_start: $start, order_by: CREATED_AT_DESC) {
-             id state created_at amount_paid is_recurring
+             id state created_at amount_paid is_recurring note
              offering { id name }
              sender { id full_name }
              requested_payment { id recipient { id full_name } }
@@ -146,6 +155,16 @@ async function getHealthieBuckets(): Promise<HealthieBuckets> {
           b.sender?.full_name ||
           b.requested_payment?.recipient?.full_name ||
           'Unknown';
+        // Filter out auto-generated system notes (recurring payment ledger
+        // entries like "Invoice for Package …" or "Failed Recurring Payment …")
+        // — those clutter the itemized lists and the recurring side already
+        // shows offering_name. We only carry through human-written notes.
+        const rawNote = (b.note || '').trim();
+        const isSystemNote =
+          /^Invoice for Package/i.test(rawNote) ||
+          /^Failed Recurring Payment/i.test(rawNote) ||
+          /^Package:/i.test(rawNote);
+        const humanNote = rawNote && !isSystemNote ? rawNote : null;
         items.push({
           id: b.id,
           created_at: isoCreatedAt,
@@ -156,6 +175,7 @@ async function getHealthieBuckets(): Promise<HealthieBuckets> {
           recurring_payment_id: b.recurring_payment?.id || null,
           recurring_payment_offering: b.recurring_payment?.offering_name || null,
           recipient_name: patientName,
+          note: humanNote,
         });
       }
       // Stop early once we've paged past the date window
@@ -439,6 +459,10 @@ export async function GET(request: NextRequest) {
         patient: r.recipient_name,
         paid_at: r.created_at,
         offering: r.offering_name || r.recurring_payment_offering,
+        // Staff invoice comment (e.g. "sick visit", "PT 141 blend"). Filtered
+        // upstream to drop the auto-generated "Invoice for Package …" /
+        // "Failed Recurring Payment …" cruft so only human-entered notes show.
+        note: r.note,
         recurring_payment_id: r.recurring_payment_id,
         state: r.state,
       });
