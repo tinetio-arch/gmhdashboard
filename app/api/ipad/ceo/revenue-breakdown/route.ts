@@ -79,6 +79,22 @@ async function getHealthieBuckets(): Promise<HealthieBuckets> {
   const startDate = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000)
     .toISOString().slice(0, 10);
   let offset = 0;
+  // Healthie returns created_at like "2026-05-28 17:03:04 -0700" (space-separated,
+  // not ISO 8601). V8/Chrome will parse this leniently but Safari/WebKit (Phil's
+  // iPhone) returns "Invalid Date." Normalize server-side so the API ships
+  // strict ISO 8601 ("2026-05-28T17:03:04-07:00") that every client parses cleanly.
+  const isoifyHealthieDate = (s: string | null | undefined): string | null => {
+    if (!s) return null;
+    // Match: YYYY-MM-DD<space>HH:MM:SS<space>±HHMM
+    const m = String(s).trim().match(/^(\d{4}-\d{2}-\d{2})[\sT](\d{2}:\d{2}:\d{2})(?:\.\d+)?\s*([+-]\d{2})\s*:?\s*(\d{2})?$/);
+    if (m) {
+      const tz = m[4] ? `${m[3]}:${m[4]}` : `${m[3]}:00`;
+      return `${m[1]}T${m[2]}${tz}`;
+    }
+    // Otherwise try to parse + serialize. Returns null if hopeless.
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  };
   try {
     for (let i = 0; i < MAX_PAGES; i++) {
       const data = await healthieGraphQL<{
@@ -89,7 +105,19 @@ async function getHealthieBuckets(): Promise<HealthieBuckets> {
           amount_paid: string | null;
           is_recurring: boolean | null;
           offering: { id: string; name: string | null } | null;
-          recipient: { id: string; full_name: string | null } | null;
+          // Patient name lives on BillingItem.sender (the entity SENDING the
+          // money). BillingItem.recipient is the clinic (Phil Schafer NP) —
+          // do NOT use it for patient name. Confirmed by introspection
+          // 2026-05-28 after Phil flagged the screenshot showing his own
+          // name on every row.
+          sender: { id: string; full_name: string | null } | null;
+          requested_payment: {
+            id: string;
+            // For requested-payment-backed items, the patient is the recipient
+            // OF THE INVOICE. Used as fallback when BillingItem.sender is null
+            // (rare; in our data the sender field is reliably set).
+            recipient: { id: string; full_name: string | null } | null;
+          } | null;
           recurring_payment: { id: string; offering_name: string | null } | null;
         }>;
       }>(
@@ -97,7 +125,8 @@ async function getHealthieBuckets(): Promise<HealthieBuckets> {
            billingItems(status: $status, page_size: $page, offset: $offset, created_at_start: $start, order_by: CREATED_AT_DESC) {
              id state created_at amount_paid is_recurring
              offering { id name }
-             recipient { id full_name }
+             sender { id full_name }
+             requested_payment { id recipient { id full_name } }
              recurring_payment { id offering_name }
            }
          }`,
@@ -111,22 +140,29 @@ async function getHealthieBuckets(): Promise<HealthieBuckets> {
         if (!b.created_at) continue;
         const amt = parseFloat(b.amount_paid || '0');
         if (!isFinite(amt) || amt <= 0) continue;
+        const isoCreatedAt = isoifyHealthieDate(b.created_at);
+        if (!isoCreatedAt) continue; // skip if we can't parse the date at all
+        const patientName =
+          b.sender?.full_name ||
+          b.requested_payment?.recipient?.full_name ||
+          'Unknown';
         items.push({
           id: b.id,
-          created_at: b.created_at,
+          created_at: isoCreatedAt,
           amount: amt,
           state: b.state || '',
           is_recurring: !!b.is_recurring,
           offering_name: b.offering?.name || null,
           recurring_payment_id: b.recurring_payment?.id || null,
           recurring_payment_offering: b.recurring_payment?.offering_name || null,
-          recipient_name: b.recipient?.full_name || 'Unknown',
+          recipient_name: patientName,
         });
       }
       // Stop early once we've paged past the date window
-      const oldest = batch[batch.length - 1].created_at;
+      const oldestRaw = batch[batch.length - 1].created_at;
+      const oldestIso = isoifyHealthieDate(oldestRaw);
       const cutoffMs = Date.now() - 35 * 24 * 60 * 60 * 1000;
-      if (oldest && new Date(oldest).getTime() < cutoffMs) break;
+      if (oldestIso && new Date(oldestIso).getTime() < cutoffMs) break;
       if (batch.length < PAGE) break;
       offset += PAGE;
     }
