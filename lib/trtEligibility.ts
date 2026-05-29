@@ -33,6 +33,13 @@ export type EligibilityResult = {
   cadenceDays: number;               // from patient.dose_frequency_days or default
   cadenceSource: 'patient' | 'default';
   reason: string;                    // human-readable for logs/tooltips
+  // Patient-self-logged injection data (NMH only, since 2026-05-28).
+  // NULL on n/a or first-dispense states. injectionsLogged = 0 means we have
+  // a last dispense but the patient hasn't self-logged anything since.
+  injectionsLogged: number | null;   // count from trt_injection_log since lastDispenseDate
+  lastInjectionAt: string | null;    // ISO timestamp of most recent self-log (NULL if none)
+  syringesRemaining: number | null;  // syringeCount − injectionsLogged (floored at 0)
+  nextDoseDate: string | null;       // ISO date — lastInjectionAt + cadenceDays (NULL if no log yet)
 };
 
 const DEFAULT_CADENCE_DAYS = 3.5;   // twice-weekly (modern TRT standard)
@@ -91,7 +98,11 @@ export async function computeDispenseEligibility(
       doseMl: null,
       cadenceDays: DEFAULT_CADENCE_DAYS,
       cadenceSource: 'default',
-      reason: 'patient_not_found'
+      reason: 'patient_not_found',
+      injectionsLogged: null,
+      lastInjectionAt: null,
+      syringesRemaining: null,
+      nextDoseDate: null,
     };
   }
 
@@ -109,7 +120,11 @@ export async function computeDispenseEligibility(
       doseMl: null,
       cadenceDays: DEFAULT_CADENCE_DAYS,
       cadenceSource: 'default',
-      reason: gender === 'F' ? 'female_not_eligible_for_trt' : 'gender_unset'
+      reason: gender === 'F' ? 'female_not_eligible_for_trt' : 'gender_unset',
+      injectionsLogged: null,
+      lastInjectionAt: null,
+      syringesRemaining: null,
+      nextDoseDate: null,
     };
   }
 
@@ -147,7 +162,11 @@ export async function computeDispenseEligibility(
       doseMl: null,
       cadenceDays,
       cadenceSource,
-      reason: 'no_prior_dispense'
+      reason: 'no_prior_dispense',
+      injectionsLogged: null,
+      lastInjectionAt: null,
+      syringesRemaining: null,
+      nextDoseDate: null,
     };
   }
 
@@ -167,7 +186,11 @@ export async function computeDispenseEligibility(
       doseMl,
       cadenceDays,
       cadenceSource,
-      reason: 'last_dispense_missing_syringe_count'
+      reason: 'last_dispense_missing_syringe_count',
+      injectionsLogged: null,
+      lastInjectionAt: null,
+      syringesRemaining: null,
+      nextDoseDate: null,
     };
   }
 
@@ -193,6 +216,38 @@ export async function computeDispenseEligibility(
     reason = `not yet — grace opens in ${daysUntilGrace}d, eligible in ${daysUntilEligible}d`;
   }
 
+  // Patient-self-logged TRT injections since the last dispense (NMH only,
+  // since 2026-05-28). Each row decrements syringes_remaining and sets
+  // nextDoseDate = lastInjectionAt + cadenceDays so the TRT card can show
+  // "next dose Saturday" rather than just "next refill on 6/23".
+  // Failure here is non-fatal: an error tolerantly degrades to "no logs".
+  let injectionsLogged = 0;
+  let lastInjectionAt: string | null = null;
+  try {
+    const logRows = await query<{
+      injections_logged: string;
+      last_at: string | null;
+    }>(
+      `SELECT COUNT(*)::text AS injections_logged,
+              MAX(injected_at)::text AS last_at
+         FROM trt_injection_log
+        WHERE patient_id = $1::uuid
+          AND injected_at >= $2::timestamptz`,
+      [patientId, lastDispense.dispense_date]
+    );
+    injectionsLogged = Number(logRows[0]?.injections_logged || '0');
+    lastInjectionAt = logRows[0]?.last_at || null;
+  } catch (e) {
+    // table-missing or txn error — degrade to "no logs", keep existing math.
+    injectionsLogged = 0;
+    lastInjectionAt = null;
+  }
+
+  const syringesRemaining = Math.max(0, syringeCount - injectionsLogged);
+  const nextDoseDate: string | null = lastInjectionAt
+    ? isoDate(new Date(new Date(lastInjectionAt).getTime() + cadenceDays * 24 * 60 * 60 * 1000))
+    : null;
+
   return {
     applicable: true,
     state,
@@ -205,7 +260,11 @@ export async function computeDispenseEligibility(
     doseMl,
     cadenceDays,
     cadenceSource,
-    reason
+    reason,
+    injectionsLogged,
+    lastInjectionAt,
+    syringesRemaining,
+    nextDoseDate,
   };
 }
 
@@ -266,7 +325,11 @@ export async function fetchBulkDispenseEligibility(
         doseMl: null,
         cadenceDays: DEFAULT_CADENCE_DAYS,
         cadenceSource: 'default',
-        reason: gender === 'F' ? 'female_not_eligible_for_trt' : 'gender_unset'
+        reason: gender === 'F' ? 'female_not_eligible_for_trt' : 'gender_unset',
+        injectionsLogged: null,
+        lastInjectionAt: null,
+        syringesRemaining: null,
+        nextDoseDate: null,
       });
       continue;
     }
@@ -291,7 +354,11 @@ export async function fetchBulkDispenseEligibility(
         doseMl,
         cadenceDays,
         cadenceSource,
-        reason: r.last_dispense_date ? 'last_dispense_missing_syringe_count' : 'no_prior_dispense'
+        reason: r.last_dispense_date ? 'last_dispense_missing_syringe_count' : 'no_prior_dispense',
+        injectionsLogged: null,
+        lastInjectionAt: null,
+        syringesRemaining: null,
+        nextDoseDate: null,
       });
       continue;
     }
@@ -329,7 +396,14 @@ export async function fetchBulkDispenseEligibility(
       doseMl,
       cadenceDays,
       cadenceSource,
-      reason
+      reason,
+      // Bulk fetch (used by /ops/patients) intentionally skips per-patient log
+      // lookups to keep the page snappy. Singletons (computeDispenseEligibility)
+      // hydrate these — that's the path the TRT card uses.
+      injectionsLogged: null,
+      lastInjectionAt: null,
+      syringesRemaining: null,
+      nextDoseDate: null,
     });
   }
 
