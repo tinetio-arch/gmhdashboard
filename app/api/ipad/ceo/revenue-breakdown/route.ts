@@ -33,40 +33,58 @@ export const maxDuration = 30;
 // already-bucketed totals — single load is ~3 page fetches at 100/page.
 // ────────────────────────────────────────────────────────────────────────
 
-type OnetimeItem = {
+// Classification by offering.billing_frequency. Phil 2026-05-28: every paid
+// requestedPayment is an offering charge; offering.billing_frequency tells
+// us whether it's a recurring membership (Monthly/Weekly/etc.) or a true
+// one-time charge (null/empty). Earlier hot-fix had labels inverted.
+type HealthiePayment = {
   id: string;
   paid_at: string;
   price: number;
-  billing_item_id: string | null;     // when set → also in HEALTHIE_BILLING_ITEMS
+  billing_item_id: string | null;
   invoice_type: string | null;
+  offering_id: string | null;
+  offering_name: string | null;
+  billing_frequency: string | null;  // raw string from Healthie ("Monthly", "Weekly", "", or null)
+  is_recurring: boolean;
   patient: string;
 };
 
-type OnetimeBuckets = {
+type PeriodBucket = { total: number; count: number };
+
+type HealthieBuckets = {
   cached_at: number;
-  // Three totals per period:
-  //   total_paid    = all paid requestedPayments (what Phil thinks of as "one-time")
-  //   overlap       = subset that has a billing_item_id (already in recurring cache;
-  //                   we MUST subtract this from recurring to avoid double-count)
-  //   pure_onetime  = total_paid − overlap (in our data this is usually 0 — Healthie
-  //                   creates a billing_item every time a paid invoice clears Stripe)
-  today: { total_paid: number; overlap: number; pure_onetime: number };
-  week:  { total_paid: number; overlap: number; pure_onetime: number };
-  month: { total_paid: number; overlap: number; pure_onetime: number };
-  daily: Array<{ day: string; total_paid: number; overlap: number; pure_onetime: number; count: number }>;
-  items: OnetimeItem[]; // up to ~500 most-recent for the granular list
+  // recurring = paid invoices whose offering has a non-empty billing_frequency
+  //            (subscription/membership auto-charges).
+  // onetime   = paid invoices whose offering has no billing_frequency
+  //            (ad-hoc / single charges).
+  // Source of truth = Healthie GraphQL requestedPayments; the Snowflake
+  // billing_items cache is intentionally NOT used for this split anymore
+  // — it lumps both and forced a flawed dedup last patch.
+  today: { recurring: PeriodBucket; onetime: PeriodBucket };
+  week:  { recurring: PeriodBucket; onetime: PeriodBucket };
+  month: { recurring: PeriodBucket; onetime: PeriodBucket };
+  daily: Array<{ day: string; recurring: number; onetime: number; recurring_count: number; onetime_count: number }>;
+  items: HealthiePayment[]; // up to ~500 most-recent for the granular list
 };
 
-let onetimeCache: OnetimeBuckets | null = null;
-const ONETIME_TTL_MS = 5 * 60 * 1000;
+let healthieCache: HealthieBuckets | null = null;
+const HEALTHIE_TTL_MS = 5 * 60 * 1000;
 
-async function getHealthieOnetimeBuckets(): Promise<OnetimeBuckets> {
-  if (onetimeCache && (Date.now() - onetimeCache.cached_at) < ONETIME_TTL_MS) {
-    return onetimeCache;
+function classifyRecurring(billing_frequency: string | null | undefined): boolean {
+  if (!billing_frequency) return false;
+  const v = String(billing_frequency).trim();
+  if (!v || v === '0' || v.toLowerCase() === 'none' || v.toLowerCase() === 'null') return false;
+  return true; // any other non-empty value (Monthly, Weekly, Yearly, an integer days, etc.) = recurring
+}
+
+async function getHealthieBuckets(): Promise<HealthieBuckets> {
+  if (healthieCache && (Date.now() - healthieCache.cached_at) < HEALTHIE_TTL_MS) {
+    return healthieCache;
   }
   const PAGE = 100;
-  const MAX_PAGES = 5; // 500 paid invoices is well past 30d for our volume
-  const items: OnetimeItem[] = [];
+  const MAX_PAGES = 6; // up to 600 paid invoices — covers 30d at Phil's volume
+  const items: HealthiePayment[] = [];
   let offset = 0;
   try {
     for (let i = 0; i < MAX_PAGES; i++) {
@@ -77,12 +95,15 @@ async function getHealthieOnetimeBuckets(): Promise<OnetimeBuckets> {
           price: string | null;
           billing_item_id: string | null;
           invoice_type: string | null;
+          offering_id: string | null;
+          offering: { id: string; name: string | null; billing_frequency: string | null } | null;
           recipient: { full_name: string | null } | null;
         }>;
       }>(
-        `query CeoOnetime($status: String, $page: Int, $offset: Int) {
+        `query CeoHealthieRev($status: String, $page: Int, $offset: Int) {
            requestedPayments(status_filter: $status, page_size: $page, offset: $offset, order_by: UPDATED_AT_DESC) {
-             id paid_at price billing_item_id invoice_type
+             id paid_at price billing_item_id invoice_type offering_id
+             offering { id name billing_frequency }
              recipient { full_name }
            }
          }`,
@@ -94,16 +115,20 @@ async function getHealthieOnetimeBuckets(): Promise<OnetimeBuckets> {
         if (!r.paid_at) continue;
         const p = parseFloat(r.price || '0');
         if (!isFinite(p) || p <= 0) continue;
+        const bf = r.offering?.billing_frequency ?? null;
         items.push({
           id: r.id,
           paid_at: r.paid_at,
           price: p,
           billing_item_id: r.billing_item_id || null,
           invoice_type: r.invoice_type || null,
+          offering_id: r.offering_id || null,
+          offering_name: r.offering?.name || null,
+          billing_frequency: bf,
+          is_recurring: classifyRecurring(bf),
           patient: r.recipient?.full_name || 'Unknown',
         });
       }
-      // Once the oldest in this batch is older than 35 days back we can stop
       const oldest = batch[batch.length - 1].paid_at;
       const cutoff = Date.now() - 35 * 24 * 60 * 60 * 1000;
       if (oldest && new Date(oldest).getTime() < cutoff) break;
@@ -112,7 +137,6 @@ async function getHealthieOnetimeBuckets(): Promise<OnetimeBuckets> {
     }
   } catch (e) {
     console.error('[CEO Revenue] requestedPayments fetch failed:', e instanceof Error ? e.message : e);
-    // Fall through with whatever we accumulated (likely none)
   }
   const tzDay = (d: Date) =>
     d.toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
@@ -128,34 +152,39 @@ async function getHealthieOnetimeBuckets(): Promise<OnetimeBuckets> {
     const d = new Date();
     return tzDay(new Date(d.getFullYear(), d.getMonth(), 1));
   })();
-  const emptyBucket = () => ({ total_paid: 0, overlap: 0, pure_onetime: 0 });
-  const todayB = emptyBucket();
-  const weekB = emptyBucket();
-  const monthB = emptyBucket();
-  type DayBucket = { total_paid: number; overlap: number; pure_onetime: number; count: number };
+  const empty = (): { recurring: PeriodBucket; onetime: PeriodBucket } => ({
+    recurring: { total: 0, count: 0 },
+    onetime: { total: 0, count: 0 },
+  });
+  const todayB = empty();
+  const weekB = empty();
+  const monthB = empty();
+  type DayBucket = { recurring: number; onetime: number; recurring_count: number; onetime_count: number };
   const byDay = new Map<string, DayBucket>();
-  const acc = (b: { total_paid: number; overlap: number; pure_onetime: number }, p: number, hasOverlap: boolean) => {
-    b.total_paid += p;
-    if (hasOverlap) b.overlap += p;
-    else b.pure_onetime += p;
+  const acc = (b: { recurring: PeriodBucket; onetime: PeriodBucket }, p: number, isRec: boolean) => {
+    if (isRec) {
+      b.recurring.total += p;
+      b.recurring.count += 1;
+    } else {
+      b.onetime.total += p;
+      b.onetime.count += 1;
+    }
   };
   for (const r of items) {
     const day = tzDay(new Date(r.paid_at));
-    const hasOverlap = !!r.billing_item_id; // paid req-payment has a corresponding billing_item
-    if (day >= nowDay) acc(todayB, r.price, hasOverlap);
-    if (day >= startOfWeek) acc(weekB, r.price, hasOverlap);
-    if (day >= startOfMonth) acc(monthB, r.price, hasOverlap);
-    const cur = byDay.get(day) || { total_paid: 0, overlap: 0, pure_onetime: 0, count: 0 };
-    cur.total_paid += r.price;
-    if (hasOverlap) cur.overlap += r.price; else cur.pure_onetime += r.price;
-    cur.count += 1;
+    if (day >= nowDay) acc(todayB, r.price, r.is_recurring);
+    if (day >= startOfWeek) acc(weekB, r.price, r.is_recurring);
+    if (day >= startOfMonth) acc(monthB, r.price, r.is_recurring);
+    const cur = byDay.get(day) || { recurring: 0, onetime: 0, recurring_count: 0, onetime_count: 0 };
+    if (r.is_recurring) { cur.recurring += r.price; cur.recurring_count += 1; }
+    else { cur.onetime += r.price; cur.onetime_count += 1; }
     byDay.set(day, cur);
   }
   const daily = Array.from(byDay.entries())
     .map(([day, v]) => ({ day, ...v }))
     .sort((a, b) => b.day.localeCompare(a.day))
     .slice(0, 60);
-  onetimeCache = {
+  healthieCache = {
     cached_at: Date.now(),
     today: todayB,
     week: weekB,
@@ -163,7 +192,7 @@ async function getHealthieOnetimeBuckets(): Promise<OnetimeBuckets> {
     daily,
     items,
   };
-  return onetimeCache;
+  return healthieCache;
 }
 
 // Service category rules — match on payment description
@@ -315,58 +344,26 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Also get Healthie recurring revenue from cache
+    // Healthie revenue — both recurring and one-time, classified from
+    // requestedPayments(status_filter:"paid").offering.billing_frequency.
+    // Source of truth = Healthie GraphQL. Snowflake cache no longer used
+    // (it lumped recurring and one-time, which broke the previous patch).
     let healthieRecurring = 0;
-    try {
-      const fs = require('fs');
-      const cache = JSON.parse(fs.readFileSync('/tmp/healthie-revenue-cache.json', 'utf8'));
-      if (specificDate) {
-        const entry = (cache.daily || []).find((d: any) => d.day === specificDate);
-        healthieRecurring = entry?.amount || 0;
-      } else if (period === 'today') {
-        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
-        const entry = (cache.daily || []).find((d: any) => d.day === today);
-        healthieRecurring = entry?.amount || 0;
-      } else if (period === 'week') {
-        healthieRecurring = cache.day7 || 0;
-      } else {
-        healthieRecurring = cache.day30 || 0;
-      }
-    } catch { /* cache unavailable */ }
-
-    // Healthie one-time sales (requestedPayments) + overlap-dedup against the
-    // recurring cache. CRITICAL: Healthie creates a billing_item every time a
-    // paid invoice clears Stripe, so the paid requestedPayment ALSO sits in
-    // HEALTHIE_BILLING_ITEMS — which is what `healthie_recurring` sums. Phil
-    // caught this on 2026-05-28 looking at the dashboard the same day I shipped
-    // the one-time bucket: the total was inflated by the overlap.
-    //
-    // Resolution (no double-count):
-    //   healthie_onetime           = paid requestedPayments (full $ — what
-    //                                Phil intuitively wants to see in the
-    //                                "one-time invoices" bucket)
-    //   healthie_recurring_pure    = healthie_recurring − overlap (true
-    //                                subscriptions/packages, no paid invoices
-    //                                folded in)
-    //   combined_total             = direct + healthie_recurring_pure + healthie_onetime
-    //                              ≡ direct + healthie_recurring + healthie_onetime_pure
-    // We expose all four values so the UI can show "what's truly recurring
-    // vs what's invoices" and the dashboard math adds up exactly once.
+    let healthieRecurringCount = 0;
     let healthieOnetime = 0;
-    let healthieOnetimeOverlap = 0;
-    let healthieOnetimePure = 0;
-    let healthieOnetimeDaily: Array<{ day: string; total_paid: number; overlap: number; pure_onetime: number; count: number }> = [];
-    let healthieOnetimeItems: OnetimeItem[] = [];
+    let healthieOnetimeCount = 0;
+    let healthieDaily: Array<{ day: string; recurring: number; onetime: number; recurring_count: number; onetime_count: number }> = [];
+    let healthieAllItems: HealthiePayment[] = [];
     try {
-      const buckets = await getHealthieOnetimeBuckets();
-      healthieOnetimeDaily = buckets.daily;
-      healthieOnetimeItems = buckets.items;
-      let b: { total_paid: number; overlap: number; pure_onetime: number };
+      const buckets = await getHealthieBuckets();
+      healthieDaily = buckets.daily;
+      healthieAllItems = buckets.items;
+      let b: { recurring: { total: number; count: number }; onetime: { total: number; count: number } };
       if (specificDate) {
         const entry = buckets.daily.find(d => d.day === specificDate);
         b = entry
-          ? { total_paid: entry.total_paid, overlap: entry.overlap, pure_onetime: entry.pure_onetime }
-          : { total_paid: 0, overlap: 0, pure_onetime: 0 };
+          ? { recurring: { total: entry.recurring, count: entry.recurring_count }, onetime: { total: entry.onetime, count: entry.onetime_count } }
+          : { recurring: { total: 0, count: 0 }, onetime: { total: 0, count: 0 } };
       } else if (period === 'today') {
         b = buckets.today;
       } else if (period === 'week') {
@@ -374,18 +371,16 @@ export async function GET(request: NextRequest) {
       } else {
         b = buckets.month;
       }
-      healthieOnetime = b.total_paid;
-      healthieOnetimeOverlap = b.overlap;
-      healthieOnetimePure = b.pure_onetime;
+      healthieRecurring = b.recurring.total;
+      healthieRecurringCount = b.recurring.count;
+      healthieOnetime = b.onetime.total;
+      healthieOnetimeCount = b.onetime.count;
     } catch (e) {
-      console.error('[CEO Revenue] healthie one-time bucket lookup failed:', e instanceof Error ? e.message : e);
+      console.error('[CEO Revenue] healthie bucket lookup failed:', e instanceof Error ? e.message : e);
     }
-    // Subtract overlap from the recurring figure → "pure recurring" =
-    // subscriptions/packages NOT created by a paid invoice.
-    const healthieRecurringPure = Math.max(0, healthieRecurring - healthieOnetimeOverlap);
-    // Items list for the One-Time card, scoped to the active period (so the
-    // drill-down on a specific day shows only that day's invoices).
-    const onetimeItemsForPeriod = (() => {
+    // Per-row items for the active period — split into the two buckets so
+    // the UI can render two separate itemized lists.
+    const { healthieRecurringItems, healthieOnetimeItems } = (() => {
       const tzDay = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
       const today = tzDay(new Date());
       const startOfWeek = (() => {
@@ -399,25 +394,27 @@ export async function GET(request: NextRequest) {
         const d = new Date();
         return tzDay(new Date(d.getFullYear(), d.getMonth(), 1));
       })();
-      const cutoff = specificDate
-        ? specificDate
+      const cutoff = specificDate ? specificDate
         : period === 'today' ? today
         : period === 'week' ? startOfWeek
         : startOfMonth;
       const eqOnly = !!specificDate;
-      return healthieOnetimeItems
-        .filter(r => {
-          const d = tzDay(new Date(r.paid_at));
-          return eqOnly ? d === cutoff : d >= cutoff;
-        })
-        .map(r => ({
-          amount: r.price,
-          patient: r.patient,
-          paid_at: r.paid_at,
-          invoice_type: r.invoice_type,
-          billing_item_id: r.billing_item_id,
-          double_counted_in_recurring: !!r.billing_item_id,
-        }));
+      const inPeriod = healthieAllItems.filter(r => {
+        const d = tzDay(new Date(r.paid_at));
+        return eqOnly ? d === cutoff : d >= cutoff;
+      });
+      const mapItem = (r: HealthiePayment) => ({
+        amount: r.price,
+        patient: r.patient,
+        paid_at: r.paid_at,
+        offering: r.offering_name,
+        billing_frequency: r.billing_frequency,
+        invoice_type: r.invoice_type,
+      });
+      return {
+        healthieRecurringItems: inPeriod.filter(r => r.is_recurring).map(mapItem),
+        healthieOnetimeItems: inPeriod.filter(r => !r.is_recurring).map(mapItem),
+      };
     })();
 
     // Top transactions
@@ -433,27 +430,24 @@ export async function GET(request: NextRequest) {
       success: true,
       generated_at: new Date().toISOString(),
       stripe_data_source: 'payment_transactions (real-time)',
-      healthie_data_source: 'billing cache (refreshes every 15 min)',
-      healthie_onetime_source: 'Healthie GraphQL requestedPayments (5-min route cache)',
+      healthie_data_source: 'Healthie GraphQL requestedPayments (5-min route cache)',
+      classifier: 'offering.billing_frequency non-empty → recurring; otherwise one-time',
       period,
       grand_total: grandTotal,
-      // Recurring figure on the dashboard — dedupes the paid invoices that
-      // also live in the cache. This is "true" recurring (subscriptions/packages).
-      healthie_recurring: healthieRecurringPure,
-      // Raw cache total (recurring + paid-invoice overlap) — kept for the
-      // audit-trail / data-source label only; UI should NOT add this back in.
-      healthie_recurring_raw_cache: healthieRecurring,
-      // One-time invoices Phil sent from Healthie UI. Full value (includes both
-      // those that overlap with the cache and those that don't).
+      // RECURRING — paid invoices for offerings with a billing frequency
+      // (Monthly/Weekly/etc.). These are membership / subscription auto-charges.
+      healthie_recurring: healthieRecurring,
+      healthie_recurring_count: healthieRecurringCount,
+      // ONE-TIME — paid invoices for offerings with NO billing frequency.
+      // Ad-hoc / single-charge invoices Phil sends manually.
       healthie_onetime: healthieOnetime,
-      healthie_onetime_overlap_in_recurring: healthieOnetimeOverlap,
-      healthie_onetime_pure: healthieOnetimePure,
-      // Combined total — adds direct iPad Stripe + true recurring + one-time
-      // (no double-count because we subtracted the overlap from recurring).
-      combined_total: grandTotal + healthieRecurringPure + healthieOnetime,
-      // Per-row itemization for the One-Time card.
-      healthie_onetime_items: onetimeItemsForPeriod,
-      healthie_onetime_count: onetimeItemsForPeriod.length,
+      healthie_onetime_count: healthieOnetimeCount,
+      // Combined total — direct + recurring + one-time. Single source of truth
+      // per bucket; no double-count.
+      combined_total: grandTotal + healthieRecurring + healthieOnetime,
+      // Per-row itemization for each bucket, scoped to the active period.
+      healthie_recurring_items: healthieRecurringItems,
+      healthie_onetime_items: healthieOnetimeItems,
       by_category: Object.entries(byCategory)
         .map(([k, v]) => ({ key: k, ...v }))
         .filter(c => c.total > 0)
@@ -469,10 +463,9 @@ export async function GET(request: NextRequest) {
       transaction_count: transactions.length,
       top_transactions: topTransactions,
       date_label: dateLabel,
-      // Daily breakdown from all three sources
+      // Daily breakdown: stripe + healthie_recurring + healthie_onetime per day
       daily_history: await (async () => {
         try {
-          // Direct Stripe daily
           const stripeDays = await query<any>(`
             SELECT created_at::date as day, COUNT(*) as txns, SUM(amount)::numeric(10,2) as total
             FROM payment_transactions
@@ -480,14 +473,6 @@ export async function GET(request: NextRequest) {
               AND created_at >= NOW() - INTERVAL '30 days'
             GROUP BY created_at::date ORDER BY day DESC
           `);
-          // Healthie recurring daily from cache
-          const fs = require('fs');
-          let healthieDays: any[] = [];
-          try {
-            const cache = JSON.parse(fs.readFileSync('/tmp/healthie-revenue-cache.json', 'utf8'));
-            healthieDays = cache.daily || [];
-          } catch {}
-          // Merge stripe + healthie recurring + healthie one-time into combined daily view
           const dayMap: Record<string, { stripe: number; healthie: number; healthie_onetime: number; total: number; txns: number }> = {};
           for (const d of stripeDays) {
             const day = typeof d.day === 'string' ? d.day : d.day.toISOString().split('T')[0];
@@ -495,19 +480,11 @@ export async function GET(request: NextRequest) {
             dayMap[day].stripe = parseFloat(d.total);
             dayMap[day].txns = parseInt(d.txns);
           }
-          for (const d of healthieDays) {
+          for (const d of healthieDaily) {
             if (!dayMap[d.day]) dayMap[d.day] = { stripe: 0, healthie: 0, healthie_onetime: 0, total: 0, txns: 0 };
-            dayMap[d.day].healthie = d.amount;
-          }
-          for (const d of healthieOnetimeDaily) {
-            if (!dayMap[d.day]) dayMap[d.day] = { stripe: 0, healthie: 0, healthie_onetime: 0, total: 0, txns: 0 };
-            dayMap[d.day].healthie_onetime = d.total_paid;
-            // Subtract per-day overlap so the "healthie" column shows pure
-            // subscriptions/packages, not paid invoices that are also in the
-            // one-time bucket. Without this the per-day rows would also
-            // double-count.
-            dayMap[d.day].healthie = Math.max(0, dayMap[d.day].healthie - d.overlap);
-            dayMap[d.day].txns += d.count;
+            dayMap[d.day].healthie = d.recurring;
+            dayMap[d.day].healthie_onetime = d.onetime;
+            dayMap[d.day].txns += d.recurring_count + d.onetime_count;
           }
           Object.values(dayMap).forEach(d => d.total = d.stripe + d.healthie + d.healthie_onetime);
           return Object.entries(dayMap)
