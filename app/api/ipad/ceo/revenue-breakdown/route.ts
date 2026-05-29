@@ -14,8 +14,105 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/auth';
 import { query } from '@/lib/db';
+import { healthieGraphQL } from '@/lib/healthieApi';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 30;
+
+// ────────────────────────────────────────────────────────────────────────
+// Healthie one-time sales (requestedPayments → invoices Phil sends from
+// Healthie UI). These are DIFFERENT from billing_items (the recurring
+// subscription path that lives in Snowflake HEALTHIE_BILLING_ITEMS and
+// powers the existing `healthie_recurring` figure). Until 2026-05-28
+// they were invisible on the CEO dashboard. Phil flagged: "We often do
+// one-time Healthie sales within Healthie. I do not see these purchases
+// tracked in the CEO dashboard."
+//
+// Cached on the route module for 5 min so back-to-back loads don't pay
+// the Healthie GraphQL roundtrip + pagination cost. The route returns the
+// already-bucketed totals — single load is ~3 page fetches at 100/page.
+// ────────────────────────────────────────────────────────────────────────
+
+type OnetimeBuckets = {
+  cached_at: number;
+  today: number;
+  week: number;
+  month: number;
+  daily: Array<{ day: string; amount: number; count: number }>;
+};
+
+let onetimeCache: OnetimeBuckets | null = null;
+const ONETIME_TTL_MS = 5 * 60 * 1000;
+
+async function getHealthieOnetimeBuckets(): Promise<OnetimeBuckets> {
+  if (onetimeCache && (Date.now() - onetimeCache.cached_at) < ONETIME_TTL_MS) {
+    return onetimeCache;
+  }
+  const PAGE = 100;
+  const MAX_PAGES = 5; // 500 paid invoices is well past 30d for our volume
+  const items: Array<{ paid_at: string | null; price: string | null }> = [];
+  let offset = 0;
+  try {
+    for (let i = 0; i < MAX_PAGES; i++) {
+      const data = await healthieGraphQL<{
+        requestedPayments: Array<{ paid_at: string | null; price: string | null }>;
+      }>(
+        `query CeoOnetime($status: String, $page: Int, $offset: Int) {
+           requestedPayments(status_filter: $status, page_size: $page, offset: $offset, order_by: UPDATED_AT_DESC) {
+             paid_at price
+           }
+         }`,
+        { status: 'paid', page: PAGE, offset }
+      );
+      const batch = data.requestedPayments || [];
+      if (batch.length === 0) break;
+      items.push(...batch);
+      // Once the oldest in this batch is older than 35 days back we can stop
+      const oldest = batch[batch.length - 1].paid_at;
+      const cutoff = Date.now() - 35 * 24 * 60 * 60 * 1000;
+      if (oldest && new Date(oldest).getTime() < cutoff) break;
+      if (batch.length < PAGE) break;
+      offset += PAGE;
+    }
+  } catch (e) {
+    console.error('[CEO Revenue] requestedPayments fetch failed:', e instanceof Error ? e.message : e);
+    // Fall through with whatever we accumulated (likely none)
+  }
+  const tzDay = (d: Date) =>
+    d.toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+  const nowDay = tzDay(new Date());
+  const startOfWeek = (() => {
+    const d = new Date();
+    const day = d.getDay();
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - ((day + 6) % 7));
+    return tzDay(monday);
+  })();
+  const startOfMonth = (() => {
+    const d = new Date();
+    return tzDay(new Date(d.getFullYear(), d.getMonth(), 1));
+  })();
+  let today = 0, week = 0, month = 0;
+  const byDay = new Map<string, { amount: number; count: number }>();
+  for (const r of items) {
+    const p = parseFloat(r.price || '0');
+    if (!isFinite(p) || p <= 0 || !r.paid_at) continue;
+    const day = tzDay(new Date(r.paid_at));
+    if (day >= nowDay) today += p;
+    if (day >= startOfWeek) week += p;
+    if (day >= startOfMonth) month += p;
+    const cur = byDay.get(day) || { amount: 0, count: 0 };
+    cur.amount += p;
+    cur.count += 1;
+    byDay.set(day, cur);
+  }
+  const daily = Array.from(byDay.entries())
+    .map(([day, v]) => ({ day, amount: v.amount, count: v.count }))
+    .sort((a, b) => b.day.localeCompare(a.day))
+    .slice(0, 60);
+  onetimeCache = { cached_at: Date.now(), today, week, month, daily };
+  return onetimeCache;
+}
 
 // Service category rules — match on payment description
 const CATEGORIES = [
@@ -185,6 +282,28 @@ export async function GET(request: NextRequest) {
       }
     } catch { /* cache unavailable */ }
 
+    // Healthie one-time sales (requestedPayments) — the bucket Phil flagged
+    // as missing on 2026-05-28. Includes invoices Phil sends from Healthie UI
+    // (offering charges, ad-hoc invoices, single-visit fees).
+    let healthieOnetime = 0;
+    let healthieOnetimeDaily: Array<{ day: string; amount: number; count: number }> = [];
+    try {
+      const buckets = await getHealthieOnetimeBuckets();
+      healthieOnetimeDaily = buckets.daily;
+      if (specificDate) {
+        const entry = buckets.daily.find(d => d.day === specificDate);
+        healthieOnetime = entry?.amount || 0;
+      } else if (period === 'today') {
+        healthieOnetime = buckets.today;
+      } else if (period === 'week') {
+        healthieOnetime = buckets.week;
+      } else {
+        healthieOnetime = buckets.month;
+      }
+    } catch (e) {
+      console.error('[CEO Revenue] healthie one-time bucket lookup failed:', e instanceof Error ? e.message : e);
+    }
+
     // Top transactions
     const topTransactions = transactions.slice(0, 15).map((tx: any) => ({
       amount: parseFloat(tx.amount),
@@ -199,10 +318,12 @@ export async function GET(request: NextRequest) {
       generated_at: new Date().toISOString(),
       stripe_data_source: 'payment_transactions (real-time)',
       healthie_data_source: 'billing cache (refreshes every 15 min)',
+      healthie_onetime_source: 'Healthie GraphQL requestedPayments (5-min route cache)',
       period,
       grand_total: grandTotal,
       healthie_recurring: healthieRecurring,
-      combined_total: grandTotal + healthieRecurring,
+      healthie_onetime: healthieOnetime,
+      combined_total: grandTotal + healthieRecurring + healthieOnetime,
       by_category: Object.entries(byCategory)
         .map(([k, v]) => ({ key: k, ...v }))
         .filter(c => c.total > 0)
@@ -218,7 +339,7 @@ export async function GET(request: NextRequest) {
       transaction_count: transactions.length,
       top_transactions: topTransactions,
       date_label: dateLabel,
-      // Daily breakdown from both sources
+      // Daily breakdown from all three sources
       daily_history: await (async () => {
         try {
           // Direct Stripe daily
@@ -229,26 +350,31 @@ export async function GET(request: NextRequest) {
               AND created_at >= NOW() - INTERVAL '30 days'
             GROUP BY created_at::date ORDER BY day DESC
           `);
-          // Healthie daily from cache
+          // Healthie recurring daily from cache
           const fs = require('fs');
           let healthieDays: any[] = [];
           try {
             const cache = JSON.parse(fs.readFileSync('/tmp/healthie-revenue-cache.json', 'utf8'));
             healthieDays = cache.daily || [];
           } catch {}
-          // Merge into combined daily view
-          const dayMap: Record<string, { stripe: number; healthie: number; total: number; txns: number }> = {};
+          // Merge stripe + healthie recurring + healthie one-time into combined daily view
+          const dayMap: Record<string, { stripe: number; healthie: number; healthie_onetime: number; total: number; txns: number }> = {};
           for (const d of stripeDays) {
             const day = typeof d.day === 'string' ? d.day : d.day.toISOString().split('T')[0];
-            if (!dayMap[day]) dayMap[day] = { stripe: 0, healthie: 0, total: 0, txns: 0 };
+            if (!dayMap[day]) dayMap[day] = { stripe: 0, healthie: 0, healthie_onetime: 0, total: 0, txns: 0 };
             dayMap[day].stripe = parseFloat(d.total);
             dayMap[day].txns = parseInt(d.txns);
           }
           for (const d of healthieDays) {
-            if (!dayMap[d.day]) dayMap[d.day] = { stripe: 0, healthie: 0, total: 0, txns: 0 };
+            if (!dayMap[d.day]) dayMap[d.day] = { stripe: 0, healthie: 0, healthie_onetime: 0, total: 0, txns: 0 };
             dayMap[d.day].healthie = d.amount;
           }
-          Object.values(dayMap).forEach(d => d.total = d.stripe + d.healthie);
+          for (const d of healthieOnetimeDaily) {
+            if (!dayMap[d.day]) dayMap[d.day] = { stripe: 0, healthie: 0, healthie_onetime: 0, total: 0, txns: 0 };
+            dayMap[d.day].healthie_onetime = d.amount;
+            dayMap[d.day].txns += d.count;
+          }
+          Object.values(dayMap).forEach(d => d.total = d.stripe + d.healthie + d.healthie_onetime);
           return Object.entries(dayMap)
             .map(([day, data]) => ({ day, ...data }))
             .sort((a, b) => b.day.localeCompare(a.day))
