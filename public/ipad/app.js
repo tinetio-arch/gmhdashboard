@@ -3205,6 +3205,18 @@ function renderLabOrderCard(order) {
     `;
 }
 
+// FIX(2026-05-30): The iPad PWA pins user-scalable=no on the viewport so the
+// kiosk surface doesn't accidentally pinch-zoom. That also blocks pinch on
+// embedded PDFs, so providers couldn't zoom in to show patients a lab value.
+// Relax the viewport only while a PDF modal is on-screen; restore on close.
+function setPdfModalZoomAllowed(allow) {
+    var meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) return;
+    meta.setAttribute('content', allow
+        ? 'width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover'
+        : 'width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover');
+}
+
 async function openLabRequisition(orderId) {
     // Reuses the iPad's existing PDF viewer modal (#pdfViewerModal) for parity with
     // viewLabPdf. The /requisition route returns raw PDF bytes, so we fetch as a blob
@@ -3226,6 +3238,7 @@ async function openLabRequisition(orderId) {
     iframe.src = '';
     iframe.style.display = 'none';
     modal.classList.add('visible');
+    setPdfModalZoomAllowed(true);
     if (loading) loading.style.display = 'flex';
 
     try {
@@ -3474,6 +3487,7 @@ async function viewLabPdf(labId, patientName) {
     title.textContent = `${patientName} — Lab Results`;
     iframe.src = '';
     modal.classList.add('visible');
+    setPdfModalZoomAllowed(true);
     iframe.style.display = 'none';
     document.getElementById('pdfViewerLoading').style.display = 'flex';
 
@@ -3512,6 +3526,7 @@ function closeLabPdf() {
     const iframe = document.getElementById('pdfViewerFrame');
     if (modal) modal.classList.remove('visible');
     if (iframe) iframe.src = '';
+    setPdfModalZoomAllowed(false);
 }
 // ============================================================
 // SCRIBE VIEW — AI Medical Scribe

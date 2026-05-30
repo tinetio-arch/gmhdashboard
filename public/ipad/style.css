@@ -1053,6 +1053,30 @@ h6 {
     text-decoration-color: var(--red);
 }
 
+/* FIX(2026-05-30): the lab-card action row mixed a short .btn-view-pdf
+   chip (~32px) with .btn-approve / .btn-reject at 52px, so the View PDF
+   button floated tiny next to two giant buttons. Match heights so the
+   row reads as one balanced control bar, and give Reject real button
+   affordance instead of a stray text-underline link. */
+.lab-actions .btn-view-pdf {
+    padding: 14px 18px;
+    font-size: 14px;
+    min-height: 52px;
+}
+
+.lab-actions .btn-reject {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: var(--radius-sm);
+    color: var(--red);
+    text-decoration: none;
+}
+
+.lab-actions .btn-reject:active {
+    background: rgba(239, 68, 68, 0.18);
+    transform: scale(0.97);
+}
+
 /* ============================================================
    FAXES VIEW
    ============================================================ */
@@ -3281,6 +3305,31 @@ h6 {
     width: 100%;
     border: none;
     background: white;
+}
+
+/* FIX(2026-05-30): re-enable native iOS pinch-zoom inside the PDF modal.
+   body { touch-action: pan-y } blocks pinch globally for the kiosk PWA;
+   this scopes the gesture back on for the lab-result + requisition PDFs
+   so providers can zoom in to show patients a specific value. JS in
+   setPdfModalZoomAllowed() also relaxes the viewport meta on open. */
+.pdf-viewer-modal,
+.pdf-viewer-frame {
+    touch-action: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* FIX(2026-05-30): the lab-card .btn-approve / .btn-reject rules cascade
+   into the modal header and (a) overflow the thin header band with their
+   52px min-height and (b) collapse via inherited flex:1. Reset them
+   locally so the header reads as a tidy [Close] [title] [Approve|Reject]
+   row instead of giant buttons crashing through it. */
+.pdf-viewer-header-actions .btn-approve,
+.pdf-viewer-header-actions .btn-reject {
+    flex: 0 0 auto;
+    min-height: 0;
+    text-transform: none;
+    letter-spacing: normal;
+    text-decoration: none;
 }
 
 /* ─── VIEW PDF BUTTON ────────────────────────────────── */
