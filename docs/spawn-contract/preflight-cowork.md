@@ -14,6 +14,7 @@ false sense that work is deployed when it is not.
 
 ## Before you touch any file
 1. Read `docs/sot-modules/INDEX.md` → identify relevant modules → read those.
+2. **Read `docs/CODE_ROUTER.md`** → topic-to-source-file lookup. Grep it for the keywords in your task to find the canonical files BEFORE writing code. If the topic isn't in the table, read the relevant files first, then add a row before opening your PR — auto-add rules are in the file.
 2. Read `docs/DEPENDENCIES.md` and `docs/PROJECT_TRACKER.md`.
 3. Read `docs/CLAUDE_MEMORY_PINS.md` for mandatory context.
 4. Read the **Learned Patterns** snapshot embedded in this contract — it carries Phil's

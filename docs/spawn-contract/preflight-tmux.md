@@ -11,6 +11,7 @@ pre-deploy gate**.
    If so, coordinate with Phil; do **not** stomp.
 3. `claude-coord claim <paths>` — register your intent (advisory).
 4. Read `docs/sot-modules/INDEX.md` → identify relevant modules → read those.
+5. **Read `docs/CODE_ROUTER.md`** → topic-to-source-file lookup. Grep it for the keywords in your task (e.g. "peptide visibility", "CEO revenue", "iPad vitals", "TRT self-log") to find the canonical files BEFORE writing code. If your topic isn't in the table, read the relevant files first, then add a row before finishing — auto-add rules are in the file.
 5. Read `docs/DEPENDENCIES.md` (what your change affects) and `docs/PROJECT_TRACKER.md`
    (current system state).
 6. Pin critical facts from `docs/CLAUDE_MEMORY_PINS.md` into `/memory`.

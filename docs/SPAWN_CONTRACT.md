@@ -3,7 +3,7 @@
 
 # SPAWN_CONTRACT
 
-_Generated 2026-05-26 15:50 MST. Every Cowork task and tmux session spawned by Dispatch
+_Generated 2026-05-30 07:52 MST. Every Cowork task and tmux session spawned by Dispatch
 inherits this contract. Source: `docs/spawn-contract/*.md` + live learned-patterns._
 
 # Phil's Standing Rules
@@ -116,6 +116,7 @@ pre-deploy gate**.
    If so, coordinate with Phil; do **not** stomp.
 3. `claude-coord claim <paths>` — register your intent (advisory).
 4. Read `docs/sot-modules/INDEX.md` → identify relevant modules → read those.
+5. **Read `docs/CODE_ROUTER.md`** → topic-to-source-file lookup. Grep it for the keywords in your task (e.g. "peptide visibility", "CEO revenue", "iPad vitals", "TRT self-log") to find the canonical files BEFORE writing code. If your topic isn't in the table, read the relevant files first, then add a row before finishing — auto-add rules are in the file.
 5. Read `docs/DEPENDENCIES.md` (what your change affects) and `docs/PROJECT_TRACKER.md`
    (current system state).
 6. Pin critical facts from `docs/CLAUDE_MEMORY_PINS.md` into `/memory`.
@@ -168,6 +169,7 @@ false sense that work is deployed when it is not.
 
 ## Before you touch any file
 1. Read `docs/sot-modules/INDEX.md` → identify relevant modules → read those.
+2. **Read `docs/CODE_ROUTER.md`** → topic-to-source-file lookup. Grep it for the keywords in your task to find the canonical files BEFORE writing code. If the topic isn't in the table, read the relevant files first, then add a row before opening your PR — auto-add rules are in the file.
 2. Read `docs/DEPENDENCIES.md` and `docs/PROJECT_TRACKER.md`.
 3. Read `docs/CLAUDE_MEMORY_PINS.md` for mandatory context.
 4. Read the **Learned Patterns** snapshot embedded in this contract — it carries Phil's
@@ -188,7 +190,7 @@ false sense that work is deployed when it is not.
 
 ## Learned Patterns (Phil — HIGHEST PRIORITY, overrides defaults)
 
-> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-26 15:50 MST
+> snapshot of /home/ec2-user/.claude/coord/learned-patterns.md as of 2026-05-30 07:52 MST
 
 # Learned patterns
 
