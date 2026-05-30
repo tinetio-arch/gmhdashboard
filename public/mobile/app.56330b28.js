@@ -3205,6 +3205,18 @@ function renderLabOrderCard(order) {
     `;
 }
 
+// FIX(2026-05-30): The iPad PWA pins user-scalable=no on the viewport so the
+// kiosk surface doesn't accidentally pinch-zoom. That also blocks pinch on
+// embedded PDFs, so providers couldn't zoom in to show patients a lab value.
+// Relax the viewport only while a PDF modal is on-screen; restore on close.
+function setPdfModalZoomAllowed(allow) {
+    var meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) return;
+    meta.setAttribute('content', allow
+        ? 'width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover'
+        : 'width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover');
+}
+
 async function openLabRequisition(orderId) {
     // Reuses the iPad's existing PDF viewer modal (#pdfViewerModal) for parity with
     // viewLabPdf. The /requisition route returns raw PDF bytes, so we fetch as a blob
@@ -3226,6 +3238,7 @@ async function openLabRequisition(orderId) {
     iframe.src = '';
     iframe.style.display = 'none';
     modal.classList.add('visible');
+    setPdfModalZoomAllowed(true);
     if (loading) loading.style.display = 'flex';
 
     try {
@@ -3474,6 +3487,7 @@ async function viewLabPdf(labId, patientName) {
     title.textContent = `${patientName} — Lab Results`;
     iframe.src = '';
     modal.classList.add('visible');
+    setPdfModalZoomAllowed(true);
     iframe.style.display = 'none';
     document.getElementById('pdfViewerLoading').style.display = 'flex';
 
@@ -3512,6 +3526,7 @@ function closeLabPdf() {
     const iframe = document.getElementById('pdfViewerFrame');
     if (modal) modal.classList.remove('visible');
     if (iframe) iframe.src = '';
+    setPdfModalZoomAllowed(false);
 }
 // ============================================================
 // SCRIBE VIEW — AI Medical Scribe
@@ -5101,7 +5116,7 @@ async function aiEditNote() {
         const result = await apiFetch(`/ops/api/scribe/notes/${noteId}/edit-ai/`, {
             method: 'POST',
             body: JSON.stringify({ edit_instruction: instruction }),
-            _timeout: 45000,
+            _timeout: 90000,
         });
         dismissPersistentToast();
         if (result?.success) {
@@ -6324,13 +6339,27 @@ function renderChartPanel(content) {
         return dateB - dateA;
     });
 
-    // Safe date formatter for vitals
+    // Safe date formatter for vitals — relative for recent, year for older.
+    // Phil 2026-05-28: "put the date the vitals were done next to the vitals" —
+    // old format dropped the year so a vital from 2024 looked the same as today.
     function fmtVitalDate(dt) {
         if (!dt) return '';
         try {
             const d = new Date(dt);
             if (isNaN(d.getTime())) return '';
-            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: CLINIC_TIMEZONE });
+            const now = new Date();
+            const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+            const dDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+            const dayDiff = Math.round((startOfToday - dDay) / 86400000);
+            if (dayDiff === 0) return 'Today';
+            if (dayDiff === 1) return 'Yesterday';
+            if (dayDiff > 1 && dayDiff <= 7) return `${dayDiff} days ago`;
+            // Within current calendar year → no year suffix.
+            if (d.getFullYear() === now.getFullYear()) {
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: CLINIC_TIMEZONE });
+            }
+            // Older → include year so providers can tell at a glance.
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: CLINIC_TIMEZONE });
         } catch { return ''; }
     }
 
@@ -6401,8 +6430,23 @@ function renderChartPanel(content) {
         }
     }
 
-    // Get last 8 vitals (most recent, deduplicated, BP merged)
-    const recentVitals = merged.slice(0, 8);
+    // Per-category dedup — Phil 2026-05-28: "only showing the most recent vitals
+    // in the patient's chart." After the 5-min value-bucket dedup and BP merge,
+    // collapse to ONE entry per vital category (BP, HR, Temp, SpO2, Weight, etc.),
+    // keeping the latest. `merged` is already sorted by created_at DESC server-side,
+    // so the first hit per category is the most recent.
+    const _latestByCategory = new Map();
+    for (const v of merged) {
+        const catKey = (v.category || v.type || '').toLowerCase().trim();
+        if (!catKey) continue;
+        if (!_latestByCategory.has(catKey)) {
+            _latestByCategory.set(catKey, v);
+        }
+    }
+    const dedupedByCategory = Array.from(_latestByCategory.values());
+    // Cap at 8 categories for layout sanity; if there are more, scrollable grid
+    // would be next iteration.
+    const recentVitals = dedupedByCategory.slice(0, 8);
 
     content.innerHTML = `
         <!-- Patient Photo + Demographics -->
@@ -14908,7 +14952,7 @@ async function showRevenueBreakdown(initialPeriod) {
     }
 
     function renderBreakdown(data) {
-        const netRevenue = data.grand_total + data.healthie_recurring - (data.refunds?.total || 0);
+        const netRevenue = data.grand_total + data.healthie_recurring + (data.healthie_onetime || 0) - (data.refunds?.total || 0);
         const daily = data.daily_history || [];
         const isDateDrillDown = !!data.date_label && data.date_label.match(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -14930,23 +14974,63 @@ async function showRevenueBreakdown(initialPeriod) {
 
                 <!-- Day Totals -->
                 <div style="background:#111827; border:1px solid #1f2937; border-radius:12px; padding:16px; margin-bottom:14px;">
-                    <div style="display:flex; justify-content:space-around; text-align:center;">
-                        <div>
-                            <div style="font-size:24px; font-weight:800; color:#22d3ee;">$${data.grand_total.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
-                            <div style="font-size:10px; color:#6b7280;">iPad Stripe</div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px 6px; text-align:center;">
+                        <div style="padding:6px 0;">
+                            <div style="font-size:18px; font-weight:800; color:#22d3ee; line-height:1.1;">$${data.grand_total.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                            <div style="font-size:9px; color:#6b7280; margin-top:2px;">iPad Stripe</div>
                         </div>
-                        <div>
-                            <div style="font-size:24px; font-weight:800; color:#f59e0b;">$${data.healthie_recurring.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
-                            <div style="font-size:10px; color:#6b7280;">Healthie</div>
+                        <div style="padding:6px 0;">
+                            <div style="font-size:18px; font-weight:800; color:#f59e0b; line-height:1.1;">$${data.healthie_recurring.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                            <div style="font-size:9px; color:#6b7280; margin-top:2px;">Healthie Recurring</div>
                         </div>
-                        <div>
-                            <div style="font-size:24px; font-weight:800; color:#10b981;">$${(data.grand_total + data.healthie_recurring).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
-                            <div style="font-size:10px; color:#6b7280;">Total</div>
+                        <div style="padding:6px 0;">
+                            <div style="font-size:18px; font-weight:800; color:#fbbf24; line-height:1.1;">$${(data.healthie_onetime || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                            <div style="font-size:9px; color:#6b7280; margin-top:2px;">Healthie One-Time</div>
+                        </div>
+                        <div style="padding:6px 0; border-left:1px solid #1f2937;">
+                            <div style="font-size:18px; font-weight:800; color:#10b981; line-height:1.1;">$${(data.combined_total || (data.grand_total + data.healthie_recurring + (data.healthie_onetime || 0))).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                            <div style="font-size:9px; color:#6b7280; margin-top:2px;">Total</div>
                         </div>
                     </div>
                 </div>
 
                 ${data.healthie_recurring > 0 ? '<div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:12px; margin-bottom:14px;"><div style="font-size:12px; font-weight:600; color:#f59e0b; margin-bottom:4px;">🔄 Healthie Recurring: $' + data.healthie_recurring.toLocaleString('en-US',{minimumFractionDigits:0}) + '</div><div style="font-size:11px; color:#6b7280;">Subscription & package payments processed through Healthie Stripe</div></div>' : ''}
+
+                ${(data.healthie_onetime || 0) > 0 ? '<div style="background:#111827; border:1px solid #1f2937; border-radius:10px; padding:12px; margin-bottom:14px;"><div style="font-size:12px; font-weight:600; color:#fbbf24; margin-bottom:4px;">🧾 Healthie One-Time: $' + data.healthie_onetime.toLocaleString('en-US',{minimumFractionDigits:0}) + '</div><div style="font-size:11px; color:#6b7280;">Invoices sent from Healthie (offering charges, single-visit fees, ad-hoc one-time sales)</div></div>' : ''}
+
+                <!-- Healthie One-Time itemized list (Phil 2026-05-28: granular breakdown) -->
+                ${(data.healthie_onetime_items && data.healthie_onetime_items.length > 0) ? '<div style="margin-bottom:14px;">' +
+                    '<div style="font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; font-weight:600;">🧾 Healthie One-Time Invoices (' + data.healthie_onetime_items.length + ')</div>' +
+                    data.healthie_onetime_items.map(function(it) {
+                        return '<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #1f2937;">' +
+                            '<span style="font-size:16px;">🧾</span>' +
+                            '<div style="flex:1; min-width:0;">' +
+                                '<div style="font-size:13px; color:#f0f4f8; font-weight:600;">' + (it.patient || 'Unknown patient') + '</div>' +
+                                '<div style="font-size:11px; color:#6b7280;">' + (it.note || it.offering || it.invoice_type || 'invoice') + ' · ' + (it.paid_at ? new Date(it.paid_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '') + '</div>' +
+                            '</div>' +
+                            '<div style="font-size:13px; font-weight:700; color:#fbbf24;">$' + it.amount.toFixed(0) + '</div>' +
+                        '</div>';
+                    }).join('') +
+                '</div>' : ''}
+
+                <!-- Healthie Recurring itemized list (Phil 2026-05-28: subscription/membership auto-charges) -->
+                ${(data.healthie_recurring_items && data.healthie_recurring_items.length > 0) ? '<div style="margin-bottom:14px;">' +
+                    '<div style="font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; font-weight:600;">🔄 Healthie Recurring Memberships (' + data.healthie_recurring_items.length + ')</div>' +
+                    data.healthie_recurring_items.map(function(it) {
+                        var off = (it.offering || 'membership');
+                        if (off.length > 38) off = off.slice(0, 36) + '…';
+                        var freq = it.billing_frequency || '';
+                        return '<div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #1f2937;">' +
+                            '<span style="font-size:16px;">🔄</span>' +
+                            '<div style="flex:1; min-width:0;">' +
+                                '<div style="font-size:13px; color:#f0f4f8; font-weight:600;">' + (it.patient || 'Unknown patient') + '</div>' +
+                                '<div style="font-size:11px; color:#6b7280;">' + off + (freq ? ' · ' + freq : '') + ' · ' + (it.paid_at ? new Date(it.paid_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '') + '</div>' +
+                                (it.note ? '<div style="font-size:10px; color:#9ca3af; margin-top:2px;">' + it.note + '</div>' : '') +
+                            '</div>' +
+                            '<div style="font-size:13px; font-weight:700; color:#f59e0b;">$' + it.amount.toFixed(0) + '</div>' +
+                        '</div>';
+                    }).join('') +
+                '</div>' : ''}
 
                 <!-- Every Individual Stripe Charge -->
                 <div style="margin-bottom:14px;">
@@ -15006,6 +15090,10 @@ async function showRevenueBreakdown(initialPeriod) {
                         <div style="font-size:18px; font-weight:700; color:#f59e0b;">$${data.healthie_recurring.toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
                         <div style="font-size:9px; color:#6b7280;">Healthie Recurring</div>
                     </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:18px; font-weight:700; color:#fbbf24;">$${(data.healthie_onetime || 0).toLocaleString('en-US', {minimumFractionDigits: 0})}</div>
+                        <div style="font-size:9px; color:#6b7280;">Healthie One-Time</div>
+                    </div>
                     ${(data.refunds?.total || 0) > 0 ? '<div style="text-align:center;"><div style="font-size:18px; font-weight:700; color:#ef4444;">-$' + (data.refunds.total).toLocaleString('en-US', {minimumFractionDigits: 0}) + '</div><div style="font-size:9px; color:#6b7280;">Refunds</div></div>' : ''}
                 </div>
             </div>
@@ -15021,7 +15109,8 @@ async function showRevenueBreakdown(initialPeriod) {
                 '<div style="display:flex; padding:4px 0; border-bottom:2px solid #374151; margin-bottom:4px;">' +
                     '<div style="flex:2; font-size:10px; color:#6b7280; font-weight:600;">DATE</div>' +
                     '<div style="flex:1; text-align:right; font-size:10px; color:#22d3ee; font-weight:600;">STRIPE</div>' +
-                    '<div style="flex:1; text-align:right; font-size:10px; color:#f59e0b; font-weight:600;">HEALTHIE</div>' +
+                    '<div style="flex:1; text-align:right; font-size:10px; color:#f59e0b; font-weight:600;">RECURRING</div>' +
+                    '<div style="flex:1; text-align:right; font-size:10px; color:#fbbf24; font-weight:600;">1-TIME</div>' +
                     '<div style="flex:1; text-align:right; font-size:10px; color:#10b981; font-weight:600;">TOTAL</div>' +
                 '</div>' +
                 daily.slice(0, 14).map(function(d) {
@@ -15031,6 +15120,7 @@ async function showRevenueBreakdown(initialPeriod) {
                         '<div style="flex:2; font-size:12px; color:#d1d5db;">' + dayLabel + '</div>' +
                         '<div style="flex:1; text-align:right; font-size:12px; color:#22d3ee; font-weight:600;">$' + (d.stripe || 0).toLocaleString('en-US', {minimumFractionDigits: 0}) + '</div>' +
                         '<div style="flex:1; text-align:right; font-size:12px; color:#f59e0b; font-weight:600;">$' + (d.healthie || 0).toLocaleString('en-US', {minimumFractionDigits: 0}) + '</div>' +
+                        '<div style="flex:1; text-align:right; font-size:12px; color:#fbbf24; font-weight:600;">$' + (d.healthie_onetime || 0).toLocaleString('en-US', {minimumFractionDigits: 0}) + '</div>' +
                         '<div style="flex:1; text-align:right; font-size:13px; color:#10b981; font-weight:700;">$' + d.total.toLocaleString('en-US', {minimumFractionDigits: 0}) + '</div>' +
                     '</div>';
                 }).join('') +
@@ -15068,7 +15158,7 @@ async function showRevenueBreakdown(initialPeriod) {
                     '<span style="font-size:12px; font-weight:600; color:#10b981; margin-left:6px;">$' + tx.amount.toFixed(0) + '</span></div>'; }).join('') + '</div>' : ''}
 
             <div style="font-size:8px; color:#4b5563; text-align:center; margin-top:6px;">
-                iPad Stripe = one-time charges · Healthie = recurring subs (cache 15min) · Refunds excluded
+                iPad Stripe = direct charges · Recurring = subscriptions/packages (cache 15min) · 1-Time = Healthie invoices (cache 5min) · Refunds excluded
             </div>
         </div>`;
     }
